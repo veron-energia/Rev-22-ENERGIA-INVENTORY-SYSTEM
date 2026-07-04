@@ -2,11 +2,12 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { Customer } from '../types';
 import { Modal } from '../components/ui';
-import { Plus, Pencil, Trash2, Search, Users, RefreshCw } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye } from 'lucide-react';
 
 const blank = (c?: Customer) => ({
   full_name: c?.full_name ?? '', phone: c?.phone ?? '', email: c?.email ?? '',
   address: c?.address ?? '', notes: c?.notes ?? '', is_active: c?.is_active ?? true,
+  referred_by: c?.referred_by ?? '',
 });
 
 const CustomersPage: React.FC = () => {
@@ -18,6 +19,8 @@ const CustomersPage: React.FC = () => {
   const [form, setForm] = useState(blank());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [profileFor, setProfileFor] = useState<Customer | null>(null);
+  const [profileStats, setProfileStats] = useState<any>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -26,6 +29,12 @@ const CustomersPage: React.FC = () => {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const openProfile = async (c: Customer) => {
+    setProfileFor(c); setProfileStats(null);
+    const { data } = await supabase.rpc('customer_profile_stats', { p_customer_id: c.id });
+    setProfileStats(data ?? {});
+  };
 
   const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
   const openEdit = (c: Customer) => { setForm(blank(c)); setEditId(c.id); setErr(null); setModalOpen(true); };
@@ -38,6 +47,7 @@ const CustomersPage: React.FC = () => {
       full_name: form.full_name.trim(), phone: form.phone.trim(),
       email: form.email.trim() || null, address: form.address.trim() || null,
       notes: form.notes.trim() || null, is_active: form.is_active,
+      referred_by: form.referred_by || null, is_referrer: true,
     };
     const res = editId
       ? await supabase.from('customers').update(payload).eq('id', editId)
@@ -92,6 +102,7 @@ const CustomersPage: React.FC = () => {
                     <td style={{ color: 'var(--text-secondary)' }}>{c.email || '—'}</td>
                     <td>{c.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}><Eye size={13} /> Profile</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(c)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>
                     </div></td>
@@ -115,10 +126,48 @@ const CustomersPage: React.FC = () => {
             <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
             <div className="form-group"><label>Address</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Optional" /></div>
             <div className="form-group"><label>Notes</label><textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional" /></div>
+            <div className="form-group">
+              <label>Referred by (optional)</label>
+              <select value={form.referred_by} onChange={e => setForm(f => ({ ...f, referred_by: e.target.value }))}>
+                <option value="">— No referrer —</option>
+                {rows.filter(c => c.id !== editId).map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
+              </select>
+              <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>The customer who introduced this customer. Drives Tier 1 / Tier 2 commission.</span>
+            </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>
           </div>
+        </Modal>
+      )}
+
+      {profileFor && (
+        <Modal title={`Profile — ${profileFor.full_name}`} maxWidth={460} onClose={() => setProfileFor(null)}
+          footer={<button className="btn btn-secondary" onClick={() => setProfileFor(null)}>Close</button>}>
+          {!profileStats ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
+            <div className="form-grid">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Paid purchases</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.purchases ?? 0}</div>
+                </div>
+                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total spend</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>S${Number(profileStats.total_spend ?? 0).toFixed(2)}</div>
+                </div>
+                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Customers referred</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.referred_count ?? 0}</div>
+                </div>
+                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Referred by</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{profileStats.referrer_name ?? '—'}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Phone: {profileFor.phone}{profileFor.email ? ` · ${profileFor.email}` : ''}</div>
+              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Tier 1 / Tier 2 commission earnings will appear here once the commission update (5B) is applied.</div></div>
+            </div>
+          )}
         </Modal>
       )}
     </div>

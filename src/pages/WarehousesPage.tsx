@@ -33,6 +33,7 @@ const WarehousesPage: React.FC = () => {
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.code.trim()) { setErr('Name and code are required.'); return; }
+    if (!form.address.trim()) { setErr('Address is required (used on printed warehouse invoices).'); return; }
     setSaving(true); setErr(null);
     const payload = { name: form.name.trim(), code: form.code.trim(), address: form.address.trim() || null, is_active: form.is_active };
     const res = editId
@@ -96,7 +97,7 @@ const WarehousesPage: React.FC = () => {
               <div className="form-group"><label>Name *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Main Warehouse" autoFocus /></div>
               <div className="form-group"><label>Code *</label><input value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} placeholder="WH-MAIN" /></div>
             </div>
-            <div className="form-group"><label>Address</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Optional" /></div>
+            <div className="form-group"><label>Address *</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="e.g. 1 Coleman St, Singapore" /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { ROLE_LABELS } from '../types';
-import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight } from 'lucide-react';
+import { ROLE_LABELS, isManagerOrAbove } from '../types';
+import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock } from 'lucide-react';
 
 interface Counts {
   products: number;
@@ -33,6 +33,11 @@ const DashboardPage: React.FC = () => {
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [todaySales, setTodaySales] = useState(0);
   const [todayCount, setTodayCount] = useState(0);
+  // 5G-2 additions (Manager+ only — the underlying tables are RLS-gated)
+  const [unpaidCommission, setUnpaidCommission] = useState(0);
+  const [redemptionCount, setRedemptionCount] = useState(0);
+  const [activeRentals, setActiveRentals] = useState(0);
+  const [overdueRentals, setOverdueRentals] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -54,6 +59,21 @@ const DashboardPage: React.FC = () => {
       const sales = (paidToday ?? []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
       setTodaySales(sales);
       setTodayCount((paidToday ?? []).length);
+
+      // 5G-2 stats: unpaid commission, voucher redemptions, rentals.
+      if (isManagerOrAbove(profile?.role)) {
+        const [comm, redemp, rent] = await Promise.all([
+          supabase.from('commissions').select('commission_amount').eq('status', 'earned'),
+          supabase.from('voucher_redemptions').select('id', { count: 'exact', head: true }),
+          supabase.from('rentals').select('status,expected_return_date').in('status', ['paid', 'active']),
+        ]);
+        setUnpaidCommission(((comm.data as any[]) ?? []).reduce((s, x) => s + Number(x.commission_amount), 0));
+        setRedemptionCount(redemp.count ?? 0);
+        const rents = (rent.data as any[]) ?? [];
+        setActiveRentals(rents.length);
+        const today = new Date().toISOString().slice(0, 10);
+        setOverdueRentals(rents.filter(r => r.expected_return_date < today).length);
+      }
 
       // Low stock across warehouse + store inventory.
       const [wh, st, prods, whs, sts] = await Promise.all([
@@ -81,7 +101,7 @@ const DashboardPage: React.FC = () => {
       });
       setLowStock(alerts);
     })();
-  }, []);
+  }, [profile?.role]);
 
 
   useEffect(() => {
@@ -117,6 +137,15 @@ const DashboardPage: React.FC = () => {
         <StatCard icon={<Warehouse size={22} color="#b45309" />} label="Warehouses" value={loading ? '—' : counts.warehouses} tint="var(--accent-light)" />
         <StatCard icon={<Store size={22} color="var(--primary)" />} label="Stores" value={loading ? '—' : counts.stores} tint="var(--primary-light)" />
       </div>
+
+      {isManagerOrAbove(profile?.role) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 28 }}>
+          <StatCard icon={<Star size={22} color="var(--primary)" />} label="Unpaid commission" value={loading ? '—' : `S$${unpaidCommission.toFixed(2)}`} tint="var(--primary-light)" />
+          <StatCard icon={<Ticket size={22} color="var(--success)" />} label="Voucher redemptions" value={loading ? '—' : redemptionCount} tint="var(--success-light)" />
+          <StatCard icon={<KeyRound size={22} color="#b45309" />} label="Rentals out (paid/active)" value={loading ? '—' : activeRentals} tint="var(--accent-light)" />
+          <StatCard icon={<CalendarClock size={22} color="var(--danger)" />} label="Overdue rentals" value={loading ? '—' : overdueRentals} tint="var(--danger-light)" />
+        </div>
+      )}
 
       {/* Phase 2 alerts */}
       {(pendingApprovals > 0 || lowStock.length > 0) && (

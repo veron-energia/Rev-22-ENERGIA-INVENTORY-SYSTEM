@@ -14,8 +14,11 @@ import StoreInventoryPage from './pages/StoreInventoryPage';
 import TransfersPage from './pages/TransfersPage';
 import StockMovementsPage from './pages/StockMovementsPage';
 import CustomersPage from './pages/CustomersPage';
-import AffiliatesPage from './pages/AffiliatesPage';
 import PriceListPage from './pages/PriceListPage';
+import CommissionsPage from './pages/CommissionsPage';
+import VouchersPage from './pages/VouchersPage';
+import PromotionsPage from './pages/PromotionsPage';
+import SpecialPage from './pages/SpecialPage';
 import InvoicesPage from './pages/InvoicesPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
@@ -73,9 +76,12 @@ const AppRoutes: React.FC = () => {
       <Route path="/transfers" element={<Protected><TransfersPage /></Protected>} />
       <Route path="/stock-movements" element={<Protected><StockMovementsPage /></Protected>} />
       <Route path="/customers" element={<Protected><CustomersPage /></Protected>} />
-      <Route path="/affiliates" element={<Protected><AffiliatesPage /></Protected>} />
       <Route path="/price-list" element={<Protected><PriceListPage /></Protected>} />
       <Route path="/invoices" element={<Protected><InvoicesPage /></Protected>} />
+      <Route path="/commissions" element={<Protected><CommissionsPage /></Protected>} />
+      <Route path="/vouchers" element={<Protected><VouchersPage /></Protected>} />
+      <Route path="/promotions" element={<Protected><PromotionsPage /></Protected>} />
+      <Route path="/special" element={<Protected><SpecialPage /></Protected>} />
       <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
       <Route path="/adjustments" element={<Protected><AdjustmentsPage /></Protected>} />
       <Route path="/audit-log" element={<Protected><AuditLogPage /></Protected>} />

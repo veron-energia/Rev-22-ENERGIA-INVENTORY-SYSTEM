@@ -37,6 +37,7 @@ const StoresPage: React.FC = () => {
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.code.trim()) { setErr('Name and code are required.'); return; }
+    if (!form.address.trim()) { setErr('Address is required (used on printed invoices).'); return; }
     setSaving(true); setErr(null);
     const payload = { name: form.name.trim(), code: form.code.trim(), address: form.address.trim() || null, is_active: form.is_active };
     const res = editId

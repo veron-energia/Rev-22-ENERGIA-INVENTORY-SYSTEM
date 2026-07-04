@@ -5,8 +5,7 @@ import { ROLE_LABELS, isManagerOrAbove, isOwnerOrManager, isOwnerOrAdmin, canMan
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
-  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3,
-} from 'lucide-react';
+  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Menu, X } from 'lucide-react';
 
 interface NavItem {
   to: string;
@@ -36,13 +35,16 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/store-inventory', label: 'Store Stock', icon: <PackageOpen size={17} />, show: true },
     { to: '/transfers', label: 'Transfers', icon: <ArrowLeftRight size={17} />, show: true },
     { to: '/stock-movements', label: 'Stock History', icon: <History size={17} />, show: isManagerOrAbove(role) || role === 'inventory_manager' },
+    { to: '/special', label: 'Special & Rentals', icon: <KeyRound size={17} />, show: isOwnerOrManager(role) },
   ];
 
   const salesNav: NavItem[] = [
     { to: '/invoices', label: 'Invoices', icon: <FileText size={17} />, show: true },
     { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: true },
-    { to: '/affiliates', label: 'Affiliates', icon: <Star size={17} />, show: isManagerOrAbove(role) },
+    { to: '/commissions', label: 'Commissions', icon: <Star size={17} />, show: isManagerOrAbove(role) },
     { to: '/price-list', label: 'Price List', icon: <Tag size={17} />, show: isOwnerOrManager(role) },
+    { to: '/vouchers', label: 'Vouchers', icon: <Ticket size={17} />, show: isOwnerOrManager(role) },
+    { to: '/promotions', label: 'Promotions', icon: <Package2 size={17} />, show: isOwnerOrManager(role) },
   ];
 
   const controlsNav: NavItem[] = [
@@ -87,10 +89,20 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     );
   };
 
+  const [mobileOpen, setMobileOpen] = React.useState(false);
+
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div className="app-shell">
+      {/* Mobile top bar */}
+      <div className="mobile-topbar">
+        <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setMobileOpen(o => !o)} aria-label="Menu">
+          {mobileOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
+        <strong style={{ fontSize: 15 }}>Energia</strong>
+      </div>
+      {mobileOpen && <div className="sidebar-backdrop" onClick={() => setMobileOpen(false)} />}
       {/* Sidebar */}
-      <aside style={{ width: 240, background: 'var(--surface)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', position: 'sticky', top: 0, height: '100vh' }}>
+      <aside className={`sidebar ${mobileOpen ? 'open' : ''}`} onClick={() => setMobileOpen(false)}>
         <div style={{ padding: '20px 18px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 34, height: 34, borderRadius: 9, background: 'var(--primary)' }}>
@@ -133,7 +145,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
       {/* Main content */}
       <main style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 36px' }}>
+        <div className="app-main" style={{ maxWidth: 1200, margin: '0 auto' }}>
           {children}
         </div>
       </main>
