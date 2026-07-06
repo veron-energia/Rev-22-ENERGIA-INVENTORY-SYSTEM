@@ -7,7 +7,10 @@ export type LocationType = 'warehouse' | 'store';
 export interface Profile {
   id: string;
   full_name: string;
-  email: string;
+  email: string;             // Work Email — this IS the Supabase Auth login address
+  personal_email: string | null;
+  personal_phone: string | null;
+  work_phone: string | null;
   role: UserRole;
   is_active: boolean;
   deleted_at: string | null;
@@ -20,6 +23,7 @@ export interface Warehouse {
   name: string;
   code: string;
   address: string | null;
+  phone: string | null;
   is_active: boolean;
   deleted_at: string | null;
   created_at: string;
@@ -30,6 +34,7 @@ export interface Store {
   name: string;
   code: string;
   address: string | null;
+  phone: string | null;
   is_active: boolean;
   deleted_at: string | null;
   created_at: string;
