@@ -24,6 +24,10 @@ const StatusBadge: React.FC<{ s: ApprovalStatus }> = ({ s }) => {
 const TransfersPage: React.FC = () => {
   const { profile } = useAuth();
   const canApprove = isOwnerOrManager(profile?.role);
+  const isStaff = profile?.role === 'staff';
+  const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
+  const [approveSourceWh, setApproveSourceWh] = useState('');
+  const [storePrices, setStorePrices] = useState<{ store_id: string; product_id: string }[]>([]);
 
   const [requests, setRequests] = useState<TransferRequest[]>([]);
   const [linesByReq, setLinesByReq] = useState<Record<string, TransferRequestLine[]>>({});
@@ -52,13 +56,15 @@ const TransfersPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [req, lns, wh, st, prod, prof] = await Promise.all([
+    const [req, lns, wh, st, prod, prof, myStore, prc] = await Promise.all([
       supabase.from('transfer_requests').select('*').order('created_at', { ascending: false }),
       supabase.from('transfer_request_lines').select('*'),
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('*'),
+      supabase.rpc('my_assigned_store_id'),
+      supabase.from('store_product_prices').select('store_id,product_id').is('deleted_at', null).eq('is_active', true),
     ]);
     setRequests((req.data as TransferRequest[]) ?? []);
     const grouped: Record<string, TransferRequestLine[]> = {};
@@ -68,6 +74,8 @@ const TransfersPage: React.FC = () => {
     setStores((st.data as Store[]) ?? []);
     setProducts((prod.data as Product[]) ?? []);
     setProfiles((prof.data as Profile[]) ?? []);
+    setAssignedStoreId((myStore.data as string | null) ?? null);
+    setStorePrices((prc.data as { store_id: string; product_id: string }[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -91,9 +99,24 @@ const TransfersPage: React.FC = () => {
   };
 
   const handleCreate = async () => {
-    if (!sourceId || !destId) { setCreateErr('Select source and destination.'); return; }
     const validLines = lines.filter(l => l.product_id && l.quantity > 0);
     if (validLines.length === 0) { setCreateErr('Add at least one product with quantity.'); return; }
+
+    // Staff: simplified request — product + qty + note only. Destination is
+    // their assigned store; source is chosen by Owner/Manager at approval.
+    if (isStaff) {
+      if (!assignedStoreId) { setCreateErr('You are not assigned to a store, so you cannot request a transfer.'); return; }
+      setSaving(true); setCreateErr(null);
+      const { error } = await supabase.rpc('create_staff_transfer_request', {
+        p_lines: validLines, p_note: note.trim() || null,
+      });
+      setSaving(false);
+      if (error) { setCreateErr(error.message); return; }
+      setCreateOpen(false); resetCreate(); loadAll();
+      return;
+    }
+
+    if (!sourceId || !destId) { setCreateErr('Select source and destination.'); return; }
     setSaving(true); setCreateErr(null);
     const { error } = await supabase.rpc('create_transfer_request', {
       p_transfer_type: tType, p_source_type: cfg.src, p_source_id: sourceId,
@@ -108,14 +131,16 @@ const TransfersPage: React.FC = () => {
     setApproveReq(req);
     const reqLines = linesByReq[req.id] ?? [];
     setApproveLines(reqLines.map(l => ({ product_id: l.product_id, quantity: l.quantity })));
-    setApproveNote(''); setRejectReason(''); setApproveErr(null);
+    setApproveNote(''); setRejectReason(''); setApproveErr(null); setApproveSourceWh('');
   };
 
   const handleApprove = async () => {
     if (!approveReq) return;
     setApproveBusy(true); setApproveErr(null);
+    if (!approveReq.source_id && !approveSourceWh) { setApproveErr('Choose a source warehouse to approve this request.'); setApproveBusy(false); return; }
     const { error } = await supabase.rpc('approve_transfer', {
       p_request_id: approveReq.id, p_approved_lines: approveLines, p_note: approveNote.trim() || null,
+      p_source_warehouse_id: approveReq.source_id ? null : (approveSourceWh || null),
     });
     setApproveBusy(false);
     if (error) { setApproveErr(error.message); return; }
@@ -217,28 +242,37 @@ const TransfersPage: React.FC = () => {
           footer={<><button className="btn btn-secondary" onClick={() => setCreateOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={saving}>{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
           <div className="form-grid">
             {createErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{createErr}</div></div>}
-            <div className="form-group">
-              <label>Transfer Type</label>
-              <select value={tType} onChange={e => { setTType(e.target.value as TransferType); setSourceId(''); setDestId(''); }}>
-                {TRANSFER_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </div>
-            <div className="form-grid-2">
-              <div className="form-group">
-                <label>From ({cfg.src})</label>
-                <select value={sourceId} onChange={e => { setSourceId(e.target.value); if (e.target.value === destId) setDestId(''); }}>
-                  <option value="">— Select —</option>
-                  {sourceOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
-                <label>To ({cfg.dest})</label>
-                <select value={destId} onChange={e => setDestId(e.target.value)}>
-                  <option value="">— Select —</option>
-                  {destOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                </select>
-              </div>
-            </div>
+            {isStaff ? (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
+                Requesting stock into your store: <strong>{stores.find(s => s.id === (assignedStoreId ?? ''))?.name ?? 'No store assigned'}</strong>.
+                An Owner or Manager will choose which warehouse to send it from when they approve.
+              </div></div>
+            ) : (
+              <>
+                <div className="form-group">
+                  <label>Transfer Type</label>
+                  <select value={tType} onChange={e => { setTType(e.target.value as TransferType); setSourceId(''); setDestId(''); }}>
+                    {TRANSFER_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                </div>
+                <div className="form-grid-2">
+                  <div className="form-group">
+                    <label>From ({cfg.src})</label>
+                    <select value={sourceId} onChange={e => { setSourceId(e.target.value); if (e.target.value === destId) setDestId(''); }}>
+                      <option value="">— Select —</option>
+                      {sourceOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>To ({cfg.dest})</label>
+                    <select value={destId} onChange={e => setDestId(e.target.value)}>
+                      <option value="">— Select —</option>
+                      {destOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
             <div>
               <label>Products</label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -246,7 +280,10 @@ const TransfersPage: React.FC = () => {
                   <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <select value={line.product_id} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: e.target.value } : l))} style={{ flex: 1 }}>
                       <option value="">— Product —</option>
-                      {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+                      {(isStaff && assignedStoreId
+                        ? products.filter(p => storePrices.some(sp => sp.store_id === assignedStoreId && sp.product_id === p.id))
+                        : products
+                      ).map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
                     </select>
                     <input type="number" min={1} value={line.quantity || ''} placeholder="Qty" style={{ width: 90 }}
                       onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, quantity: +e.target.value } : l))} />
@@ -271,8 +308,17 @@ const TransfersPage: React.FC = () => {
           <div className="form-grid">
             {approveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{approveErr}</div></div>}
             <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-              {locName(approveReq.source_type, approveReq.source_id)} → {locName(approveReq.dest_type, approveReq.dest_id)}
+              {approveReq.source_id ? locName(approveReq.source_type, approveReq.source_id) : <em>source not chosen yet</em>} → {locName(approveReq.dest_type, approveReq.dest_id)}
             </p>
+            {!approveReq.source_id && (
+              <div className="form-group">
+                <label>Source Warehouse * <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— this was a Staff request; choose where the stock ships from</span></label>
+                <select value={approveSourceWh} onChange={e => setApproveSourceWh(e.target.value)}>
+                  <option value="">— Select warehouse —</option>
+                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <label>Approved Quantities <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— lower a quantity for partial approval, set 0 to exclude</span></label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>

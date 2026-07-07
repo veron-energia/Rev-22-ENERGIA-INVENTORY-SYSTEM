@@ -5,7 +5,7 @@ import { ROLE_LABELS, isManagerOrAbove, isOwnerOrManager, isOwnerOrAdmin, canMan
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
-  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Menu, X } from 'lucide-react';
+  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Award, Menu, X } from 'lucide-react';
 
 interface NavItem {
   to: string;
@@ -35,16 +35,17 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/store-inventory', label: 'Store Stock', icon: <PackageOpen size={17} />, show: true },
     { to: '/transfers', label: 'Transfers', icon: <ArrowLeftRight size={17} />, show: true },
     { to: '/stock-movements', label: 'Stock History', icon: <History size={17} />, show: isManagerOrAbove(role) || role === 'inventory_manager' },
+    { to: '/special', label: 'Special & Rentals', icon: <KeyRound size={17} />, show: isOwnerOrManager(role) },
   ];
 
   const salesNav: NavItem[] = [
     { to: '/invoices', label: 'Invoices', icon: <FileText size={17} />, show: true },
     { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: true },
     { to: '/commissions', label: 'Commissions', icon: <Star size={17} />, show: isManagerOrAbove(role) },
+    { to: '/staff-commissions', label: 'Staff Commissions', icon: <Award size={17} />, show: isManagerOrAbove(role) },
     { to: '/price-list', label: 'Price List', icon: <Tag size={17} />, show: isOwnerOrManager(role) },
     { to: '/vouchers', label: 'Vouchers', icon: <Ticket size={17} />, show: isOwnerOrManager(role) },
     { to: '/promotions', label: 'Promotions', icon: <Package2 size={17} />, show: isOwnerOrManager(role) },
-    { to: '/special', label: 'Special & Rentals', icon: <KeyRound size={17} />, show: isOwnerOrManager(role) },
   ];
 
   const controlsNav: NavItem[] = [

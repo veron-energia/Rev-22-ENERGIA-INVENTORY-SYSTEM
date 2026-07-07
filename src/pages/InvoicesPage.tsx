@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
-  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager,
+  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES,
 } from '../types';
 import { Modal } from '../components/ui';
 import { exportCsv } from '../lib/csv';
@@ -33,6 +33,9 @@ const InvoicesPage: React.FC = () => {
   const [choiceGroups, setChoiceGroups] = useState<PromotionChoiceGroup[]>([]);
   const [choiceOptions, setChoiceOptions] = useState<PromotionChoiceOption[]>([]);
   const [storeInv, setStoreInv] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
+  const [cServiceStaff, setCServiceStaff] = useState<string[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,13 +57,14 @@ const InvoicesPage: React.FC = () => {
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
   const [detailSelections, setDetailSelections] = useState<any[]>([]);      // chosen items for this invoice
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
+  const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
   const [payErr, setPayErr] = useState<string | null>(null);
   const [payBusy, setPayBusy] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -72,6 +76,8 @@ const InvoicesPage: React.FC = () => {
       supabase.from('promotion_choice_groups').select('*'),
       supabase.from('promotion_choice_options').select('*'),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
+      supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
+      supabase.rpc('my_assigned_store_id'),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -84,6 +90,9 @@ const InvoicesPage: React.FC = () => {
     setChoiceGroups((cg.data as PromotionChoiceGroup[]) ?? []);
     setChoiceOptions((co.data as PromotionChoiceOption[]) ?? []);
     setStoreInv((si.data as any[]) ?? []);
+    const allProfiles = (prof.data as Profile[]) ?? [];
+    setProfiles(allProfiles);
+    setAssignedStoreId((myStore.data as string | null) ?? null);
     setLoading(false);
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -232,13 +241,16 @@ const InvoicesPage: React.FC = () => {
   const sellableVouchers = useMemo(() => vouchers, [vouchers]);
 
   const resetCreate = () => {
-    setCStore(''); setCCustomer('');
+    setCStore(isStaff ? (assignedStoreId ?? '') : '');
+    setCCustomer('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
-    setCDiscountVoucher(''); setCErr(null);
+    setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
   };
 
   const handleCreate = async () => {
-    if (!cStore) { setCErr('Select a store.'); return; }
+    if (isStaff && !assignedStoreId) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
+    const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
+    if (!effectiveStore) { setCErr('Select a store.'); return; }
     if (!cCustomer) { setCErr('Select a customer.'); return; }
     const activeLines = cLines.filter(l => l.quantity > 0 && (l.kind === 'product' ? l.product_id : l.kind === 'voucher' ? l.voucher_id : l.promotion_id));
     if (activeLines.length === 0) { setCErr('Add at least one product or voucher.'); return; }
@@ -271,9 +283,10 @@ const InvoicesPage: React.FC = () => {
       : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null });
     setCSaving(true); setCErr(null);
     const { error } = await supabase.rpc('create_invoice', {
-      p_store_id: cStore, p_customer_id: cCustomer, p_affiliate_id: null,
+      p_store_id: effectiveStore, p_customer_id: cCustomer, p_affiliate_id: null,
       p_items: validLines, p_discount_total: cDiscount || 0, p_notes: null,
       p_discount_voucher_id: cDiscountVoucher || null,
+      p_service_staff: cServiceStaff,
     });
     setCSaving(false);
     if (error) { setCErr(error.message); return; }
@@ -282,13 +295,15 @@ const InvoicesPage: React.FC = () => {
 
   const openDetail = async (inv: Invoice) => {
     setDetail(inv);
-    const [items, pays] = await Promise.all([
+    const [items, pays, svc] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
+      supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
     ]);
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
     setDetailPayments((pays.data as InvoicePayment[]) ?? []);
+    setDetailServiceStaff(((svc.data as any[]) ?? []).map(r => r.staff_id));
     // Promotion contents: fixed items of the promotions on this invoice + this invoice's chosen selections.
     const promoIds = its.filter(i => i.line_kind === 'promotion' && (i as any).promotion_id).map(i => (i as any).promotion_id);
     const itemIds = its.map(i => i.id);
@@ -345,6 +360,10 @@ const InvoicesPage: React.FC = () => {
   };
 
   const canExport = isOwnerOrManager(profile?.role);
+  const isStaff = profile?.role === 'staff';
+  const serviceStaffOptions = useMemo(() => profiles.filter(p => SERVICE_STAFF_ROLES.includes(p.role)), [profiles]);
+  const staffName = (id: string) => profiles.find(p => p.id === id)?.full_name ?? '—';
+  const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
 
   const filtered = invoices.filter(i => statusFilter === 'all' || i.status === statusFilter);
 
@@ -491,10 +510,14 @@ const InvoicesPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group">
                 <label>Store *</label>
-                <select value={cStore} onChange={e => { setCStore(e.target.value); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
-                  <option value="">— Select store —</option>
-                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                {isStaff ? (
+                  <input value={stores.find(s => s.id === (assignedStoreId ?? ''))?.name ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />
+                ) : (
+                  <select value={cStore} onChange={e => { setCStore(e.target.value); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
+                    <option value="">— Select store —</option>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                )}
               </div>
               <div className="form-group">
                 <label>Customer *</label>
@@ -517,7 +540,27 @@ const InvoicesPage: React.FC = () => {
               );
             })()}
 
-            {cStore && (
+            {effectiveStore && (
+              <div>
+                <label>Served by <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— select everyone who served this customer (Owner / Manager / Staff)</span></label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {serviceStaffOptions.length === 0 && <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No eligible staff found.</span>}
+                  {serviceStaffOptions.map(s => {
+                    const on = cServiceStaff.includes(s.id);
+                    return (
+                      <button key={s.id} type="button"
+                        className={`btn btn-sm ${on ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setCServiceStaff(prev => on ? prev.filter(x => x !== s.id) : [...prev, s.id])}>
+                        {on ? '✓ ' : ''}{s.full_name}
+                      </button>
+                    );
+                  })}
+                </div>
+                {cServiceStaff.length > 0 && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>Staff commission will be split equally among {cServiceStaff.length} selected once the invoice is paid.</div>}
+              </div>
+            )}
+
+            {effectiveStore && (
               <div>
                 <label>Items <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— products (priced at this store) or sellable vouchers</span></label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
@@ -749,6 +792,15 @@ const InvoicesPage: React.FC = () => {
             </div>
 
             {/* Existing payments */}
+            {detailServiceStaff.length > 0 && (
+              <div>
+                <label>Served by</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                  {detailServiceStaff.map(id => <span key={id} className="badge badge-primary">{staffName(id)}</span>)}
+                </div>
+              </div>
+            )}
+
             {detailPayments.length > 0 && (
               <div>
                 <label>Payments Recorded</label>

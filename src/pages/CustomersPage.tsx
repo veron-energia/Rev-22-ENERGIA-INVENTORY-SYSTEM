@@ -1,12 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { Customer } from '../types';
+import { Customer, CustomerGender } from '../types';
 import { Modal } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye } from 'lucide-react';
 
 const blank = (c?: Customer) => ({
   full_name: c?.full_name ?? '', phone: c?.phone ?? '', email: c?.email ?? '',
-  address: c?.address ?? '', notes: c?.notes ?? '', is_active: c?.is_active ?? true,
+  date_of_birth: c?.date_of_birth ?? '', gender: (c?.gender ?? '') as CustomerGender | '',
+  gender_other: c?.gender_other ?? '', occupation: c?.occupation ?? '',
+  notes: c?.notes ?? '', is_active: c?.is_active ?? true,
   referred_by: c?.referred_by ?? '',
 });
 
@@ -45,7 +47,11 @@ const CustomersPage: React.FC = () => {
     setSaving(true); setErr(null);
     const payload = {
       full_name: form.full_name.trim(), phone: form.phone.trim(),
-      email: form.email.trim() || null, address: form.address.trim() || null,
+      email: form.email.trim() || null,
+      date_of_birth: form.date_of_birth || null,
+      gender: form.gender || null,
+      gender_other: form.gender === 'other' ? (form.gender_other.trim() || null) : null,
+      occupation: form.occupation.trim() || null,
       notes: form.notes.trim() || null, is_active: form.is_active,
       referred_by: form.referred_by || null, is_referrer: true,
     };
@@ -123,8 +129,24 @@ const CustomersPage: React.FC = () => {
               <div className="form-group"><label>Full Name *</label><input value={form.full_name} onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))} autoFocus /></div>
               <div className="form-group"><label>Phone * (unique)</label><input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="e.g. 91234567" /></div>
             </div>
-            <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
-            <div className="form-group"><label>Address</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Optional" /></div>
+            <div className="form-grid-2">
+              <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
+              <div className="form-group"><label>Date of Birth</label><input type="date" value={form.date_of_birth} onChange={e => setForm(f => ({ ...f, date_of_birth: e.target.value }))} /></div>
+            </div>
+            <div className="form-grid-2">
+              <div className="form-group"><label>Gender</label>
+                <select value={form.gender} onChange={e => setForm(f => ({ ...f, gender: e.target.value as CustomerGender | '' }))}>
+                  <option value="">— Not specified —</option>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div className="form-group"><label>Occupation</label><input value={form.occupation} onChange={e => setForm(f => ({ ...f, occupation: e.target.value }))} placeholder="Optional" /></div>
+            </div>
+            {form.gender === 'other' && (
+              <div className="form-group"><label>Please specify gender</label><input value={form.gender_other} onChange={e => setForm(f => ({ ...f, gender_other: e.target.value }))} placeholder="Free text" autoFocus /></div>
+            )}
             <div className="form-group"><label>Notes</label><textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional" /></div>
             <div className="form-group">
               <label>Referred by (optional)</label>
@@ -164,7 +186,13 @@ const CustomersPage: React.FC = () => {
                   <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{profileStats.referrer_name ?? '—'}</div>
                 </div>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Phone: {profileFor.phone}{profileFor.email ? ` · ${profileFor.email}` : ''}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+                <span>Phone: {profileFor.phone}</span>
+                {profileFor.email && <span>· {profileFor.email}</span>}
+                {profileFor.date_of_birth && <span>· DOB: {new Date(profileFor.date_of_birth).toLocaleDateString()}</span>}
+                {profileFor.gender && <span>· {profileFor.gender === 'other' ? (profileFor.gender_other || 'Other') : (profileFor.gender.charAt(0).toUpperCase() + profileFor.gender.slice(1))}</span>}
+                {profileFor.occupation && <span>· {profileFor.occupation}</span>}
+              </div>
               <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Tier 1 / Tier 2 commission earnings will appear here once the commission update (5B) is applied.</div></div>
             </div>
           )}
