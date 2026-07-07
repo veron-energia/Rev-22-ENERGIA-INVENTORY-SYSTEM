@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store as StoreT, Profile, UserStoreAssignment, isOwnerOrManager, isOwnerOrAdmin, ROLE_LABELS } from '../types';
 import { Modal, RoleGate } from '../components/ui';
+import { uploadStoreAsset } from '../lib/storeAssets';
 import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, X } from 'lucide-react';
 
 const StoresPage: React.FC = () => {
@@ -14,8 +15,9 @@ const StoresPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', is_active: true });
+  const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' });
   const [saving, setSaving] = useState(false);
+  const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   // Assignment management
@@ -32,15 +34,29 @@ const StoresPage: React.FC = () => {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => { setForm({ name: '', code: '', address: '', phone: '', is_active: true }); setEditId(null); setErr(null); setModalOpen(true); };
-  const openEdit = (s: StoreT) => { setForm({ name: s.name, code: s.code, address: s.address ?? '', phone: s.phone ?? '', is_active: s.is_active }); setEditId(s.id); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm({ name: '', code: '', address: '', phone: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' }); setEditId(null); setErr(null); setModalOpen(true); };
+  const openEdit = (s: StoreT) => { setForm({
+      name: s.name, code: s.code, address: s.address ?? '', phone: s.phone ?? '', is_active: s.is_active,
+      email: s.email ?? '', website: s.website ?? '', co_reg_no: s.co_reg_no ?? '',
+      paynow_uen: s.paynow_uen ?? '', bank_account: s.bank_account ?? '',
+      gst_enabled: s.gst_enabled ?? false, gst_rate: Number(s.gst_rate ?? 9),
+      company_logo_url: s.company_logo_url ?? '', store_logo_url: s.store_logo_url ?? '',
+      qr_paynow_url: s.qr_paynow_url ?? '', qr_grabpay_url: s.qr_grabpay_url ?? '', qr_atome_url: s.qr_atome_url ?? '',
+    }); setEditId(s.id); setErr(null); setModalOpen(true); };
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.code.trim()) { setErr('Name and code are required.'); return; }
     if (!form.address.trim()) { setErr('Address is required (used on printed invoices).'); return; }
     if (!form.phone.trim()) { setErr('Phone number is required (used on printed invoices).'); return; }
     setSaving(true); setErr(null);
-    const payload = { name: form.name.trim(), code: form.code.trim(), address: form.address.trim() || null, phone: form.phone.trim() || null, is_active: form.is_active };
+    const payload = {
+      name: form.name.trim(), code: form.code.trim(), address: form.address.trim() || null, phone: form.phone.trim() || null, is_active: form.is_active,
+      email: form.email.trim() || null, website: form.website.trim() || null, co_reg_no: form.co_reg_no.trim() || null,
+      paynow_uen: form.paynow_uen.trim() || null, bank_account: form.bank_account.trim() || null,
+      gst_enabled: form.gst_enabled, gst_rate: form.gst_rate || 0,
+      company_logo_url: form.company_logo_url || null, store_logo_url: form.store_logo_url || null,
+      qr_paynow_url: form.qr_paynow_url || null, qr_grabpay_url: form.qr_grabpay_url || null, qr_atome_url: form.qr_atome_url || null,
+    };
     const res = editId
       ? await supabase.from('stores').update(payload).eq('id', editId)
       : await supabase.from('stores').insert(payload);
@@ -140,6 +156,58 @@ const StoresPage: React.FC = () => {
               <div className="form-group"><label>Address *</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Used on printed invoices" /></div>
               <div className="form-group"><label>Phone *</label><input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="e.g. 6337 2768" /></div>
             </div>
+
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: 4 }}>Invoice details (per store)</div>
+            <div className="form-grid-2">
+              <div className="form-group"><label>Email</label><input value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="info@rev22.com" /></div>
+              <div className="form-group"><label>Website</label><input value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} placeholder="www.energia.sg" /></div>
+            </div>
+            <div className="form-grid-2">
+              <div className="form-group"><label>Co. Reg No.</label><input value={form.co_reg_no} onChange={e => setForm(f => ({ ...f, co_reg_no: e.target.value }))} placeholder="201104431Z" /></div>
+              <div className="form-group"><label>PayNow UEN</label><input value={form.paynow_uen} onChange={e => setForm(f => ({ ...f, paynow_uen: e.target.value }))} placeholder="201104431Z" /></div>
+            </div>
+            <div className="form-group"><label>Bank Account</label><input value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} placeholder="Rev 22 Pte Ltd UOB 348 309 0275" /></div>
+
+            <div className="form-grid-2">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input type="checkbox" checked={form.gst_enabled} onChange={e => setForm(f => ({ ...f, gst_enabled: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Charge GST on invoices</span>
+              </label>
+              {form.gst_enabled && <div className="form-group" style={{ marginBottom: 0 }}><label>GST Rate (%)</label><input type="number" min={0} step={0.1} value={form.gst_rate || ''} onChange={e => setForm(f => ({ ...f, gst_rate: +e.target.value }))} /></div>}
+            </div>
+
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: 4 }}>Logos &amp; QR images (per store)</div>
+            {!editId ? (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Save the store first, then reopen Edit to upload the company logo, store logo, and PayNow / GrabPay / Atome QR images.</div></div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+                {([
+                  ['company_logo_url', 'Company Logo'],
+                  ['store_logo_url', 'Store Logo'],
+                  ['qr_paynow_url', 'PayNow QR'],
+                  ['qr_grabpay_url', 'GrabPay QR'],
+                  ['qr_atome_url', 'Atome QR'],
+                ] as [keyof typeof form, string][]).map(([field, label]) => (
+                  <div key={field} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>{label}</div>
+                    {form[field] ? <img src={form[field] as string} alt={label} style={{ maxWidth: '100%', maxHeight: 72, objectFit: 'contain', marginBottom: 6 }} />
+                      : <div style={{ height: 72, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 11 }}>None</div>}
+                    <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-block' }}>
+                      {uploadingField === field ? 'Uploading…' : (form[field] ? 'Replace' : 'Upload')}
+                      <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingField}
+                        onChange={async e => {
+                          const file = e.target.files?.[0]; if (!file || !editId) return;
+                          setUploadingField(field);
+                          try { const url = await uploadStoreAsset(editId, field, file); setForm(f => ({ ...f, [field]: url })); }
+                          catch (er: any) { setErr(er.message ?? 'Upload failed'); }
+                          finally { setUploadingField(null); e.target.value = ''; }
+                        }} />
+                    </label>
+                    {form[field] && <button type="button" className="btn btn-danger btn-sm" style={{ marginLeft: 4 }} onClick={() => setForm(f => ({ ...f, [field]: '' }))}>Remove</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>

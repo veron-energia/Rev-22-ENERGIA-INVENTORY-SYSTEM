@@ -35,6 +35,18 @@ export interface Store {
   code: string;
   address: string | null;
   phone: string | null;
+  email: string | null;
+  website: string | null;
+  co_reg_no: string | null;
+  paynow_uen: string | null;
+  bank_account: string | null;
+  gst_enabled: boolean;
+  gst_rate: number;
+  company_logo_url: string | null;
+  store_logo_url: string | null;
+  qr_paynow_url: string | null;
+  qr_grabpay_url: string | null;
+  qr_atome_url: string | null;
   is_active: boolean;
   deleted_at: string | null;
   created_at: string;
