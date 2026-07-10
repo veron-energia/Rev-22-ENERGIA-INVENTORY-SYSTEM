@@ -437,68 +437,84 @@ const InvoicesPage: React.FC = () => {
           ${st.store_logo_url ? `<img src="${esc(st.store_logo_url)}" style="max-height:48px;max-width:180px;object-fit:contain" />` : ''}
         </div>` : '';
 
+    // "How to Pay" — QR images + PayNow UEN + Bank Account together in one row.
     const qrs = [
       [st.qr_paynow_url, 'PayNow'], [st.qr_grabpay_url, 'GrabPay'], [st.qr_atome_url, 'Atome'],
     ].filter(([u]) => !!u) as [string, string][];
-    const qrBlock = qrs.length
-      ? `<div style="display:flex;gap:22px;margin-top:16px;flex-wrap:wrap">${qrs.map(([u, label]) =>
-          `<div style="text-align:center"><img src="${esc(u)}" style="width:96px;height:96px;object-fit:contain" /><div class="mut">${label}</div></div>`).join('')}</div>`
+    const payDetailBits = [
+      st.paynow_uen ? `PayNow UEN: ${esc(st.paynow_uen)}` : '',
+      st.bank_account ? `Bank: ${esc(st.bank_account)}` : '',
+    ].filter(Boolean);
+    const payRow = (qrs.length || payDetailBits.length)
+      ? `<div class="payrow">
+          ${qrs.map(([u, label]) => `<div class="qr"><img src="${esc(u)}" /><div class="mut">${label}</div></div>`).join('')}
+          ${payDetailBits.length ? `<div class="paydetail">${payDetailBits.map(b => `<div>${b}</div>`).join('')}</div>` : ''}
+        </div>`
       : '';
 
     const footerBits = [
       storePhone ? `DID: ${esc(storePhone)}` : '',
       st.email ? `Email: ${esc(st.email)}` : '',
       st.website ? `Website: ${esc(st.website)}` : '',
-      st.co_reg_no ? `Co. Reg No.: ${esc(st.co_reg_no)}` : '', 
+      st.co_reg_no ? `Co. Reg No.: ${esc(st.co_reg_no)}` : '',
     ].filter(Boolean).join(' &nbsp;|&nbsp; ');
 
-    const footerBitsTwo = [
-      st.paynow_uen ? `PayNow UEN: ${esc(st.paynow_uen)}` : '',
-      st.bank_account ? `Bank Account: ${esc(st.bank_account)}` : '',
-    ].filter(Boolean).join(' &nbsp;|&nbsp; ');
+    // One invoice copy — rendered twice (customer + store) on a single A4 page.
+    const copyHtml = `
+      <div class="copy">
+        ${logosTop}
+        <div class="head">
+          <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div></div>
+          <div style="text-align:right"><h1>${esc(detail.invoice_no)}</h1>
+            <div class="mut">${esc(store?.name ?? '')}</div>
+            ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
+            ${storePhone ? `<div class="mut">Tel: ${esc(storePhone)}</div>` : ''}
+            <div class="mut">Date: ${new Date(detail.created_at).toLocaleDateString()}</div>
+            <div class="mut">Status: ${esc(detail.status)}</div></div>
+        </div>
+        <h2>Bill To</h2>
+        <div>${esc(cust?.full_name ?? '—')}</div><div class="mut">${esc(cust?.phone ?? '')}</div>
+        <h2>Items</h2>
+        <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>${itemRows}</tbody></table>
+        <table class="totals">
+          <tr><td>Subtotal</td><td class="r">S$${Number(detail.subtotal).toFixed(2)}</td></tr>
+          <tr><td>Discount</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
+          ${gstEnabled && gstRate > 0 ? `<tr><td>GST (${gstRate}%, incl.)</td><td class="r">S$${gstAmount.toFixed(2)}</td></tr>` : ''}
+          <tr class="grand"><td>Total</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
+        </table>
+        ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
+        ${authorisedBlock}
+        ${payRow ? `<h2>How to Pay</h2>${payRow}` : ''}
+        <div class="signrow">
+          <div class="sign"><div class="signline"></div>Customer Signature</div>
+        </div>
+        <div class="terms">Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.</div>
+        ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
+      </div>`;
 
     const html = `<!doctype html><html><head><title>${esc(detail.invoice_no)}</title><style>
-      body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:32px;}
-      h1{font-size:20px;margin:0;} h2{font-size:13px;margin:18px 0 6px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
-      .mut{color:#666;font-size:11px;} .r{text-align:right;}
-      table{width:100%;border-collapse:collapse;margin-top:6px;}
-      th{font-size:11px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:5px 6px;}
-      th.r{text-align:right;} td{padding:5px 6px;border-bottom:1px solid #eee;vertical-align:top;}
-      tr.sub td{border-bottom:none;padding:1px 6px 1px 18px;font-size:11.5px;color:#555;}
-      .totals{margin-top:10px;width:280px;margin-left:auto;} .totals td{border:none;padding:3px 6px;}
-      .paytbl td{border:none;padding:3px 6px;}
-      .grand{font-size:16px;font-weight:bold;border-top:1px solid #999;}
-      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:12px;}
-      .terms{margin-top:26px;padding-top:12px;border-top:1px solid #ccc;font-size:11.5px;color:#333;} .footer{margin-top:14px;padding-top:10px;border-top:1px solid #ccc;font-size:10.5px;color:#444;line-height:1.7;text-align:center;}
-      .footertwo{font-size:10.5px;color:#444;line-height:1.7;text-align:center;}
+      @page { size: A4; margin: 10mm; }
+      body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;}
+      h1{font-size:18px;margin:0;} h2{font-size:12px;margin:12px 0 4px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
+      .mut{color:#666;font-size:10.5px;} .r{text-align:right;}
+      table{width:100%;border-collapse:collapse;margin-top:4px;}
+      th{font-size:10px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:4px 6px;}
+      th.r{text-align:right;} td{padding:4px 6px;border-bottom:1px solid #eee;vertical-align:top;}
+      tr.sub td{border-bottom:none;padding:1px 6px 1px 18px;font-size:11px;color:#555;}
+      .totals{margin-top:8px;width:260px;margin-left:auto;} .totals td{border:none;padding:2px 6px;}
+      .paytbl td{border:none;padding:2px 6px;}
+      .grand{font-size:15px;font-weight:bold;border-top:1px solid #999;}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;}
+      .payrow{display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin-top:6px;}
+      .payrow .qr{text-align:center;} .payrow .qr img{width:92px;height:92px;object-fit:contain;}
+      .payrow .paydetail{font-size:11px;line-height:1.7;color:#333;}
+      .signrow{margin-top:30px;} .sign{width:250px;font-size:11px;color:#333;}
+      .signline{border-bottom:1px solid #333;height:34px;margin-bottom:4px;}
+      .terms{margin-top:14px;padding-top:8px;border-top:1px solid #ccc;font-size:11px;color:#333;}
+      .footer{margin-top:8px;padding-top:6px;border-top:1px solid #ccc;font-size:10px;color:#444;line-height:1.6;text-align:center;}
+      .copy{padding:2mm 0;box-sizing:border-box;}
     </style></head><body>
-      ${logosTop}
-      <div class="head">
-        <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div></div>
-        <div style="text-align:right"><h1>${esc(detail.invoice_no)}</h1>
-          <div class="mut">${esc(store?.name ?? '')}</div>
-          ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
-          ${storePhone ? `<div class="mut">Tel: ${esc(storePhone)}</div>` : ''}
-          <div class="mut">Date: ${new Date(detail.created_at).toLocaleDateString()}</div>
-          <div class="mut">Status: ${esc(detail.status)}</div></div>
-      </div>
-      <h2>Bill To</h2>
-      <div>${esc(cust?.full_name ?? '—')}</div><div class="mut">${esc(cust?.phone ?? '')}</div>
-      <h2>Items</h2>
-      <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>${itemRows}</tbody></table>
-      <table class="totals">
-        <tr><td>Subtotal</td><td class="r">S$${Number(detail.subtotal).toFixed(2)}</td></tr>
-        <tr><td>Discount</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
-        ${gstEnabled && gstRate > 0 ? `<tr><td>GST (${gstRate}%, incl.)</td><td class="r">S$${gstAmount.toFixed(2)}</td></tr>` : ''}
-        <tr class="grand"><td>Total</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
-      </table>
-      ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
-      ${authorisedBlock}
-      ${qrBlock}
-      <p class="mut" style="margin-top:26px">Thank you for shopping with Energia.</p>
-      <div class="terms">Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.</div>
-      ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
-      ${footerBitsTwo ? `<div class="footertwo">${footerBitsTwo}</div>` : ''}
+      ${copyHtml}
       <script>window.onload=function(){window.print();}</script>
     </body></html>`;
     const w = window.open('', '_blank');

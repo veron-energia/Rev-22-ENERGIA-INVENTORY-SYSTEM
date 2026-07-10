@@ -20,6 +20,7 @@ import VouchersPage from './pages/VouchersPage';
 import PromotionsPage from './pages/PromotionsPage';
 import SpecialPage from './pages/SpecialPage';
 import StaffCommissionsPage from './pages/StaffCommissionsPage';
+import NotFoundPage from './pages/NotFoundPage';
 import InvoicesPage from './pages/InvoicesPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
@@ -90,7 +91,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/reports" element={<Protected><ReportsPage /></Protected>} />
       <Route path="/payment-methods" element={<Protected><PaymentMethodsPage /></Protected>} />
       <Route path="/users" element={<Protected><UsersPage /></Protected>} />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
 };
