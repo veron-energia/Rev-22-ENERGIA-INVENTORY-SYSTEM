@@ -7,11 +7,11 @@ import {
   WarehouseInventory, StoreInventory, Warehouse, isManagerOrAbove,
 } from '../types';
 import { NoAccess } from '../components/ui';
-import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound } from 'lucide-react';
+import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award } from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -35,10 +35,12 @@ const ReportsPage: React.FC = () => {
   const [specialSales, setSpecialSales] = useState<any[]>([]);
   const [rentals, setRentals] = useState<any[]>([]);
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [serviceStaff, setServiceStaff] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, co, cu, wh, wi, si, it, vc, pm, rd, ss, re, sp] = await Promise.all([
+    const [inv, st, pr, co, cu, wh, wi, si, it, vc, pm, rd, ss, re, sp, prof, iss] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null),
       supabase.from('stores').select('*'),
       supabase.from('products').select('*'),
@@ -54,6 +56,8 @@ const ReportsPage: React.FC = () => {
       supabase.from('special_sales').select('*'),
       supabase.from('rentals').select('*'),
       supabase.from('special_products').select('*').is('deleted_at', null),
+      supabase.from('profiles').select('id,full_name,role').is('deleted_at', null),
+      supabase.from('invoice_service_staff').select('invoice_id,staff_id'),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -70,6 +74,8 @@ const ReportsPage: React.FC = () => {
     setSpecialSales((ss.data as any[]) ?? []);
     setRentals((re.data as any[]) ?? []);
     setSpecialProducts((sp.data as any[]) ?? []);
+    setProfiles((prof.data as any[]) ?? []);
+    setServiceStaff((iss.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -116,16 +122,51 @@ const ReportsPage: React.FC = () => {
   const topProducts = Object.entries(prodAgg).map(([id, v]) => ({ name: pName(id), ...v })).sort((a, b) => b.qty - a.qty);
 
   // Customers report
+  const genderLabel = (c: any) => c.gender === 'other' ? (c.gender_other || 'Other') : c.gender ? (c.gender.charAt(0).toUpperCase() + c.gender.slice(1)) : '';
   const custRows = customers.map(c => {
     const cInv = paid.filter(i => i.customer_id === c.id);
-    return { name: c.full_name, phone: c.phone, count: cInv.length, total: cInv.reduce((s, i) => s + Number(i.total_amount), 0) };
+    return { name: c.full_name, phone: c.phone, dob: (c as any).date_of_birth ?? '', gender: genderLabel(c), occupation: (c as any).occupation ?? '', count: cInv.length, total: cInv.reduce((s, i) => s + Number(i.total_amount), 0) };
   }).filter(r => r.count > 0).sort((a, b) => b.total - a.total);
+
+  const staffPName = (id: string) => profiles.find(p => p.id === id)?.full_name ?? '—';
+
+  // Sales by invoice creator (created_by).
+  const salesByCreator = (() => {
+    const map = new Map<string, { name: string; count: number; total: number }>();
+    paid.forEach(i => {
+      const id = (i as any).created_by; if (!id) return;
+      const g = map.get(id) ?? { name: staffPName(id), count: 0, total: 0 };
+      g.count += 1; g.total += Number(i.total_amount); map.set(id, g);
+    });
+    return Array.from(map.values()).filter(r => r.count > 0).sort((a, b) => b.total - a.total);
+  })();
+
+  // Sales by service staff — shared performance, equal split of each paid
+  // invoice's total across its service staff.
+  const salesByServiceStaff = (() => {
+    const byInv = new Map<string, string[]>();
+    serviceStaff.forEach(r => {
+      const arr = byInv.get(r.invoice_id) ?? []; arr.push(r.staff_id); byInv.set(r.invoice_id, arr);
+    });
+    const map = new Map<string, { name: string; invoices: number; shared: number; fullTotal: number }>();
+    paid.forEach(i => {
+      const staff = byInv.get(i.id); if (!staff || staff.length === 0) return;
+      const share = Number(i.total_amount) / staff.length;
+      staff.forEach(sid => {
+        const g = map.get(sid) ?? { name: staffPName(sid), invoices: 0, shared: 0, fullTotal: 0 };
+        g.invoices += 1; g.shared += share; g.fullTotal += Number(i.total_amount); map.set(sid, g);
+      });
+    });
+    return Array.from(map.values()).filter(r => r.invoices > 0).sort((a, b) => b.shared - a.shared);
+  })();
 
   const totalRevenue = paid.reduce((s, i) => s + Number(i.total_amount), 0);
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'sales_store', label: 'Sales by Store', icon: <TrendingUp size={15} /> },
     { id: 'top_products', label: 'Top Products', icon: <Package size={15} /> },
+    { id: 'sales_creator', label: 'Sales by Creator', icon: <UserCircle size={15} /> },
+    { id: 'sales_service_staff', label: 'Sales by Service Staff', icon: <Award size={15} /> },
     { id: 'sales_affiliate', label: 'Sales by Referrer', icon: <Star size={15} /> },
     { id: 'vouchers', label: 'Vouchers', icon: <Ticket size={15} /> },
     { id: 'promotions', label: 'Promotions', icon: <Package2 size={15} /> },
@@ -183,6 +224,7 @@ const ReportsPage: React.FC = () => {
       sales_store: salesByStore, sales_affiliate: salesByReferrer, commission: commissionRows,
       top_products: topProducts, customers: custRows, stock: stockExport,
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
+      sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
@@ -254,11 +296,25 @@ const ReportsPage: React.FC = () => {
                     : specialRows.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right' }}>{r.units_sold}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.sales_revenue)}</td><td style={{ textAlign: 'right' }}>{r.rentals}</td><td style={{ textAlign: 'right' }}>{money(r.rental_fees)}</td><td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.late_fees > 0 ? money(r.late_fees) : '—'}</td></tr>)}</tbody>
                 </table>
               )}
+              {tab === 'sales_creator' && (
+                <table>
+                  <thead><tr><th>Invoice Creator</th><th style={{ textAlign: 'right' }}>Invoices</th><th style={{ textAlign: 'right' }}>Total Sales</th></tr></thead>
+                  <tbody>{salesByCreator.length === 0 ? <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No sales yet</td></tr>
+                    : salesByCreator.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right' }}>{r.count}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.total)}</td></tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'sales_service_staff' && (
+                <table>
+                  <thead><tr><th>Service Staff</th><th style={{ textAlign: 'right' }}>Invoices Served</th><th style={{ textAlign: 'right' }}>Shared Sales (equal split)</th><th style={{ textAlign: 'right' }}>Invoice Value Touched</th></tr></thead>
+                  <tbody>{salesByServiceStaff.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No service-staff sales yet — add "Served by" staff when creating invoices</td></tr>
+                    : salesByServiceStaff.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right' }}>{r.invoices}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.shared)}</td><td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(r.fullTotal)}</td></tr>)}</tbody>
+                </table>
+              )}
               {tab === 'customers' && (
                 <table>
-                  <thead><tr><th>Customer</th><th>Phone</th><th style={{ textAlign: 'right' }}>Purchases</th><th style={{ textAlign: 'right' }}>Total Spent</th></tr></thead>
-                  <tbody>{custRows.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No customer purchases yet</td></tr>
-                    : custRows.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ fontSize: 12.5 }}>{r.phone}</td><td style={{ textAlign: 'right' }}>{r.count}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.total)}</td></tr>)}</tbody>
+                  <thead><tr><th>Customer</th><th>Phone</th><th>DOB</th><th>Gender</th><th>Occupation</th><th style={{ textAlign: 'right' }}>Purchases</th><th style={{ textAlign: 'right' }}>Total Spent</th></tr></thead>
+                  <tbody>{custRows.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No customer purchases yet</td></tr>
+                    : custRows.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ fontSize: 12.5 }}>{r.phone}</td><td style={{ fontSize: 12.5 }}>{r.dob ? new Date(r.dob).toLocaleDateString() : '—'}</td><td style={{ fontSize: 12.5 }}>{r.gender || '—'}</td><td style={{ fontSize: 12.5 }}>{r.occupation || '—'}</td><td style={{ textAlign: 'right' }}>{r.count}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.total)}</td></tr>)}</tbody>
                 </table>
               )}
               {tab === 'stock' && (

@@ -520,6 +520,11 @@ const InvoicesPage: React.FC = () => {
     const w = window.open('', '_blank');
     if (!w) { alert('Please allow pop-ups to print.'); return; }
     w.document.write(html); w.document.close();
+    // Audit: record that this invoice was printed.
+    supabase.rpc('write_audit', {
+      p_table: 'invoices', p_record: detail.id, p_action: 'invoice_printed',
+      p_old: null, p_new: { invoice_no: detail.invoice_no },
+    }).then(() => {}, () => {});
   };
 
   const statusOptions: ('all' | InvoiceStatus)[] = ['all', 'unpaid', 'partially_paid', 'paid', 'cancelled', 'refunded'];

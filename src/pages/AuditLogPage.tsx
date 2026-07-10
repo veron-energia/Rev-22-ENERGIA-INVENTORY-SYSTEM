@@ -11,6 +11,9 @@ const ACTION_CLS: Record<string, string> = {
   invoice_refunded: 'badge-danger', invoice_cancelled: 'badge-danger',
   transfer_rejected: 'badge-danger', invoice_deleted: 'badge-danger',
   transfer_partially_approved: 'badge-primary',
+  staff_commission_earned: 'badge-success', staff_commission_paid: 'badge-success',
+  staff_commission_reversed: 'badge-danger',
+  transfer_requested_by_staff: 'badge-primary', commission_paid: 'badge-success', invoice_printed: 'badge-muted',
 };
 
 const AuditLogPage: React.FC = () => {
