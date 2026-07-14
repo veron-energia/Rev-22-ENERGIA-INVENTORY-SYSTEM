@@ -70,7 +70,7 @@ const AuditLogPage: React.FC = () => {
           : filtered.length === 0 ? <div className="empty-state"><ScrollText size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No audit entries</p></div>
           : (
             <table>
-              <thead><tr><th>When</th><th>Action</th><th>Table</th><th>By</th><th>Details</th></tr></thead>
+              <thead><tr><th>When</th><th>Action</th><th>Table</th><th>By</th><th>Role</th><th>Reason</th><th>Details</th></tr></thead>
               <tbody>
                 {filtered.map(l => (
                   <tr key={l.id}>
@@ -78,8 +78,10 @@ const AuditLogPage: React.FC = () => {
                     <td><span className={`badge ${ACTION_CLS[l.action] ?? 'badge-muted'}`}>{l.action.replace(/_/g, ' ')}</span></td>
                     <td style={{ fontSize: 12.5 }}>{l.table_name}</td>
                     <td style={{ fontSize: 12.5 }}>{uName(l.changed_by)}</td>
-                    <td style={{ fontSize: 11.5, color: 'var(--text-muted)', maxWidth: 280, fontFamily: 'var(--font-display)' }}>
-                      {l.new_data ? JSON.stringify(l.new_data).slice(0, 80) : l.old_data ? JSON.stringify(l.old_data).slice(0, 80) : '—'}
+                    <td style={{ fontSize: 12 }}>{l.actor_role ? l.actor_role.replace(/_/g, ' ') : '—'}</td>
+                    <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 160 }}>{l.reason || '—'}</td>
+                    <td style={{ fontSize: 11.5, color: 'var(--text-muted)', maxWidth: 240, fontFamily: 'var(--font-display)' }}>
+                      {l.new_data ? JSON.stringify(l.new_data).slice(0, 70) : l.old_data ? JSON.stringify(l.old_data).slice(0, 70) : '—'}
                     </td>
                   </tr>
                 ))}

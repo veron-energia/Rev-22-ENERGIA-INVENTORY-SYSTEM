@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { Customer, CustomerGender } from '../types';
+import { useAuth } from '../context/AuthContext';
+import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
-import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone } from 'lucide-react';
 
 const blank = (c?: Customer) => ({
   full_name: c?.full_name ?? '', phone: c?.phone ?? '', email: c?.email ?? '',
@@ -13,7 +14,10 @@ const blank = (c?: Customer) => ({
 });
 
 const CustomersPage: React.FC = () => {
+  const { profile } = useAuth();
+  const canComplete = isOwnerOrManager(profile?.role);   // complete profile view: Owner/Manager only
   const [rows, setRows] = useState<Customer[]>([]);
+  const [phoneHistory, setPhoneHistory] = useState<{ customer_id: string; phone: string; reason: string | null; created_at: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
@@ -23,11 +27,30 @@ const CustomersPage: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
   const [profileFor, setProfileFor] = useState<Customer | null>(null);
   const [profileStats, setProfileStats] = useState<any>(null);
+  const [phoneFor, setPhoneFor] = useState<Customer | null>(null);
+  const [newPhone, setNewPhone] = useState('');
+  const [phoneReason, setPhoneReason] = useState('');
+  const [phoneErr, setPhoneErr] = useState<string | null>(null);
+  const [phoneBusy, setPhoneBusy] = useState(false);
+  const submitPhoneChange = async () => {
+    if (!phoneFor) return;
+    if (!newPhone.trim()) { setPhoneErr('Enter the new phone number.'); return; }
+    if (!phoneReason.trim()) { setPhoneErr('A reason is required.'); return; }
+    setPhoneBusy(true); setPhoneErr(null);
+    const { error } = await supabase.rpc('change_customer_phone', { p_customer_id: phoneFor.id, p_new_phone: newPhone.trim(), p_reason: phoneReason.trim() });
+    setPhoneBusy(false);
+    if (error) { setPhoneErr(error.message); return; }
+    setPhoneFor(null); load();
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('customers').select('*').is('deleted_at', null).order('created_at', { ascending: false });
-    setRows((data as Customer[]) ?? []);
+    const [cust, ph] = await Promise.all([
+      supabase.from('customers').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+      supabase.from('customer_phone_history').select('customer_id,phone,reason,created_at'),
+    ]);
+    setRows((cust.data as Customer[]) ?? []);
+    setPhoneHistory((ph.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -73,9 +96,20 @@ const CustomersPage: React.FC = () => {
     load();
   };
 
+  const histByPhone = useMemo(() => {
+    const m = new Map<string, string[]>();
+    phoneHistory.forEach(h => { const a = m.get(h.customer_id) ?? []; a.push(h.phone); m.set(h.customer_id, a); });
+    return m;
+  }, [phoneHistory]);
+
   const filtered = rows.filter(c => {
-    const q = search.toLowerCase();
-    return !q || c.full_name.toLowerCase().includes(q) || c.phone.includes(q) || (c.email ?? '').toLowerCase().includes(q);
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    const hist = histByPhone.get(c.id) ?? [];
+    return c.full_name.toLowerCase().includes(q)
+      || c.phone.toLowerCase().includes(q)
+      || hist.some(p => p.toLowerCase().includes(q))
+      || (c.email ?? '').toLowerCase().includes(q);
   });
 
   return (
@@ -90,7 +124,7 @@ const CustomersPage: React.FC = () => {
 
       <div style={{ marginBottom: 14, position: 'relative', maxWidth: 360 }}>
         <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, phone, email…" style={{ paddingLeft: 34 }} />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, phone (incl. old), or email…" style={{ paddingLeft: 34 }} />
       </div>
 
       <div className="card">
@@ -109,6 +143,7 @@ const CustomersPage: React.FC = () => {
                     <td>{c.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}><Eye size={13} /> Profile</button>
+                      <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(c)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>
                     </div></td>
@@ -163,29 +198,45 @@ const CustomersPage: React.FC = () => {
         </Modal>
       )}
 
+      {phoneFor && (
+        <Modal title={`Change Phone — ${phoneFor.full_name}`} maxWidth={420} onClose={() => setPhoneFor(null)}
+          footer={<><button className="btn btn-secondary" onClick={() => setPhoneFor(null)}>Cancel</button><button className="btn btn-primary" onClick={submitPhoneChange} disabled={phoneBusy}>{phoneBusy ? 'Saving…' : 'Change Number'}</button></>}>
+          <div className="form-grid">
+            {phoneErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{phoneErr}</div></div>}
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Current number: <strong>{phoneFor.phone}</strong> — it will move into this customer's phone history.</div>
+            <div className="form-group"><label>New Phone Number *</label><input value={newPhone} onChange={e => setNewPhone(e.target.value)} placeholder="e.g. 91234567" autoFocus /></div>
+            <div className="form-group"><label>Reason *</label><input value={phoneReason} onChange={e => setPhoneReason(e.target.value)} placeholder="Why is the number changing?" /></div>
+          </div>
+        </Modal>
+      )}
+
       {profileFor && (
         <Modal title={`Profile — ${profileFor.full_name}`} maxWidth={460} onClose={() => setProfileFor(null)}
           footer={<button className="btn btn-secondary" onClick={() => setProfileFor(null)}>Close</button>}>
           {!profileStats ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
             <div className="form-grid">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Paid purchases</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.purchases ?? 0}</div>
+              {canComplete ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Paid purchases</div>
+                    <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.purchases ?? 0}</div>
+                  </div>
+                  <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total spend</div>
+                    <div style={{ fontSize: 20, fontWeight: 700 }}>S${Number(profileStats.total_spend ?? 0).toFixed(2)}</div>
+                  </div>
+                  <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Customers referred</div>
+                    <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.referred_count ?? 0}</div>
+                  </div>
+                  <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Referred by</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{profileStats.referrer_name ?? '—'}</div>
+                  </div>
                 </div>
-                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total spend</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>S${Number(profileStats.total_spend ?? 0).toFixed(2)}</div>
-                </div>
-                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Customers referred</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.referred_count ?? 0}</div>
-                </div>
-                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Referred by</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{profileStats.referrer_name ?? '—'}</div>
-                </div>
-              </div>
+              ) : (
+                <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Limited view — financial, commission, and audit history are visible to Owners and Managers only.</div></div>
+              )}
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
                 <span>Phone: {profileFor.phone}</span>
                 {profileFor.email && <span>· {profileFor.email}</span>}
@@ -193,7 +244,22 @@ const CustomersPage: React.FC = () => {
                 {profileFor.gender && <span>· {profileFor.gender === 'other' ? (profileFor.gender_other || 'Other') : (profileFor.gender.charAt(0).toUpperCase() + profileFor.gender.slice(1))}</span>}
                 {profileFor.occupation && <span>· {profileFor.occupation}</span>}
               </div>
-              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Tier 1 / Tier 2 commission earnings will appear here once the commission update (5B) is applied.</div></div>
+              {canComplete && (() => {
+                const hist = phoneHistory.filter(h => h.customer_id === profileFor.id).sort((a, b) => b.created_at.localeCompare(a.created_at));
+                return hist.length > 0 ? (
+                  <div>
+                    <label>Phone history</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                      {hist.map((h, i) => (
+                        <div key={i} style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 3 }}>
+                          <span style={{ fontFamily: 'var(--font-display)' }}>{h.phone}</span>
+                          <span style={{ color: 'var(--text-muted)' }}>{h.reason || '—'} · {new Date(h.created_at).toLocaleDateString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              })()}
             </div>
           )}
         </Modal>

@@ -21,6 +21,7 @@ import PromotionsPage from './pages/PromotionsPage';
 import SpecialPage from './pages/SpecialPage';
 import StaffCommissionsPage from './pages/StaffCommissionsPage';
 import NotFoundPage from './pages/NotFoundPage';
+import ExchangesPage from './pages/ExchangesPage';
 import InvoicesPage from './pages/InvoicesPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
@@ -85,6 +86,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/promotions" element={<Protected><PromotionsPage /></Protected>} />
       <Route path="/special" element={<Protected><SpecialPage /></Protected>} />
       <Route path="/staff-commissions" element={<Protected><StaffCommissionsPage /></Protected>} />
+      <Route path="/exchanges" element={<Protected><ExchangesPage /></Protected>} />
       <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
       <Route path="/adjustments" element={<Protected><AdjustmentsPage /></Protected>} />
       <Route path="/audit-log" element={<Protected><AuditLogPage /></Protected>} />

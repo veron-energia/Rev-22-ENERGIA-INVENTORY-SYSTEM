@@ -72,6 +72,8 @@ export interface Product {
   image_url: string | null;
   supplier_name: string | null;
   default_cost_price: number;
+  is_important: boolean;
+  brand_id: string | null;
   is_active: boolean;
   deleted_at: string | null;
   created_at: string;
@@ -349,6 +351,12 @@ export interface AuditLog {
   old_data: any;
   new_data: any;
   changed_by: string | null;
+  actor_role: string | null;
+  module: string | null;
+  reason: string | null;
+  store_id: string | null;
+  ip_address: string | null;
+  device_info: string | null;
   created_at: string;
 }
 
@@ -552,3 +560,23 @@ export interface StaffCommissionPayout {
   status: string; paid_by: string | null; paid_at: string; created_at: string;
 }
 export const SERVICE_STAFF_ROLES: UserRole[] = ['owner', 'manager', 'staff'];
+
+// ── Spec Phase 1: dropdowns + audit extension ───────────────────────────────
+export interface Brand { id: string; name: string; is_active: boolean; deleted_at: string | null; created_at: string; updated_at: string; }
+export interface Category { id: string; name: string; is_active: boolean; deleted_at: string | null; created_at: string; updated_at: string; }
+export interface Supplier {
+  id: string; name: string; contact_person: string | null; phone: string | null; email: string | null;
+  address: string | null; notes: string | null; is_active: boolean; deleted_at: string | null; created_at: string; updated_at: string;
+}
+
+// ── Spec Phase 3: exchanges ──────────────────────────────────────────────────
+export interface ProductExchange {
+  id: string; exchange_no: string; original_invoice_id: string; customer_id: string;
+  processing_store_id: string; affiliate_id: string | null;
+  returned_credit_total: number; replacement_total: number; topup_amount: number; nonrefundable_amount: number;
+  status: string; reason: string | null; notes: string | null; created_by: string | null; created_at: string; locked_at: string | null;
+}
+export interface ProductExchangeItem {
+  id: string; exchange_id: string; direction: 'returned' | 'replacement';
+  original_invoice_item_id: string | null; product_id: string; quantity: number; unit_price: number; line_total: number;
+}
