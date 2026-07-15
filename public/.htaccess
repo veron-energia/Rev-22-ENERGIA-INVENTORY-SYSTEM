@@ -1,0 +1,14 @@
+# SPA fallback for Apache. Without this, /survey/<token> returns Apache's 404
+# because no such file exists on disk — every route is handled by React.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Leave real files and directories alone (JS, CSS, images).
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Everything else -> index.html, and React Router takes over.
+  RewriteRule ^ index.html [L]
+</IfModule>

@@ -1,0 +1,4 @@
+# SPA fallback: serve index.html for any path that isn't a real file, so
+# deep links like /survey/<token> and /invoices work on direct entry.
+# 200 (not 301) = rewrite, not redirect — the URL stays as typed.
+/*    /index.html   200

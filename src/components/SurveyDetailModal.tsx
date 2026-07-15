@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Modal } from './ui';
 import { Download, RefreshCw, FileText, Check } from 'lucide-react';
+import SurveyAttachments from './SurveyAttachments';
 
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
 const yn = (v: boolean | null | undefined) => v === true ? 'Yes' : v === false ? 'No' : '—';
@@ -27,20 +28,25 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   const [cond, setCond] = useState('');
   const [rec, setRec] = useState('');
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const { data: r, error } = await supabase.rpc('health_survey_detail', { p_survey_id: surveyId });
-      if (error) { setErr(error.message); setLoading(false); return; }
-      setData(r);
+  // `initial` seeds the consultant fields on first load only, so an
+  // attachment refresh never overwrites text the user is mid-way typing.
+  const load = useCallback(async (initial = false) => {
+    if (initial) setLoading(true);
+    const { data: r, error } = await supabase.rpc('health_survey_detail', { p_survey_id: surveyId });
+    if (error) { setErr(error.message); setLoading(false); return; }
+    setData(r);
+    if (initial) {
       const s = (r as any)?.survey ?? {};
       setAcidity(s.acidity_result ?? '');
       setGoals(s.health_goals ?? '');
       setCond(s.remarks_condition ?? '');
       setRec(s.remarks_recommendation ?? '');
-      setLoading(false);
-    })();
+    }
+    setLoading(false);
   }, [surveyId]);
+
+  useEffect(() => { load(true); }, [load]);
+  const reload = useCallback(() => { load(false); }, [load]);
 
   const save = async () => {
     setBusy(true); setErr(null);
@@ -171,10 +177,18 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
               <label>Remarks — Condition</label>
               <textarea rows={2} value={cond} onChange={e => setCond(e.target.value)} disabled={readOnly} />
             </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
+            <div className="form-group">
               <label>Remarks — Recommendation</label>
               <textarea rows={2} value={rec} onChange={e => setRec(e.target.value)} disabled={readOnly} />
             </div>
+
+            <SurveyAttachments
+              surveyId={surveyId}
+              storeId={s.store_id}
+              attachments={data?.attachments ?? []}
+              readOnly={readOnly}
+              onChanged={reload}
+            />
           </div>
         </div>
       )}
