@@ -1,14 +1,14 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
+import TherapyQualifyModal, { TOPUP_GAP, sgTodayStr } from '../components/TherapyQualifyModal';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
-  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES,
-} from '../types';
+  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
 import { Modal } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import {
-  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer,
+  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles,
 } from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
@@ -35,6 +35,8 @@ const InvoicesPage: React.FC = () => {
   const [storeInv, setStoreInv] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
+  const [therapyRules, setTherapyRules] = useState<TherapyPackageRule[]>([]);
+  const [qualifyFor, setQualifyFor] = useState<{ storeId: string; customerId: string } | null>(null);
   const [cServiceStaff, setCServiceStaff] = useState<string[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
@@ -57,6 +59,7 @@ const InvoicesPage: React.FC = () => {
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
   const [detailSelections, setDetailSelections] = useState<any[]>([]);      // chosen items for this invoice
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
+  const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
   const [payErr, setPayErr] = useState<string | null>(null);
@@ -64,7 +67,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -78,6 +81,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
       supabase.rpc('my_assigned_store_id'),
+      supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -93,6 +97,7 @@ const InvoicesPage: React.FC = () => {
     const allProfiles = (prof.data as Profile[]) ?? [];
     setProfiles(allProfiles);
     setAssignedStoreId((myStore.data as string | null) ?? null);
+    setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -295,11 +300,14 @@ const InvoicesPage: React.FC = () => {
 
   const openDetail = async (inv: Invoice) => {
     setDetail(inv);
-    const [items, pays, svc] = await Promise.all([
+    setDetailTherapy(null);
+    const [items, pays, svc, ther] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
+      supabase.rpc('invoice_therapy_summary', { p_invoice_id: inv.id }),
     ]);
+    setDetailTherapy(ther.data ?? null);
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
     setDetailPayments((pays.data as InvoicePayment[]) ?? []);
@@ -325,10 +333,24 @@ const InvoicesPage: React.FC = () => {
     const valid = payLines.filter(p => p.payment_method_id && p.amount > 0);
     if (valid.length === 0) { setPayErr('Add at least one payment.'); return; }
     setPayBusy(true); setPayErr(null);
+    const paidStore = detail.store_id, paidCustomer = detail.customer_id;
     const { error } = await supabase.rpc('pay_invoice', { p_invoice_id: detail.id, p_payments: valid });
     setPayBusy(false);
     if (error) { setPayErr(error.message); return; }
-    setDetail(null); loadAll();
+    setDetail(null); await loadAll();
+    // Auto-prompt therapy qualification if the customer's same-day eligible
+    // total reaches (or is within TOPUP_GAP of) the smallest package.
+    await maybePromptTherapy(paidStore, paidCustomer);
+  };
+
+  const maybePromptTherapy = async (storeId: string, customerId: string) => {
+    if (therapyRules.length === 0) return;
+    const smallest = Math.min(...therapyRules.map(r => Number(r.qualifying_amount)));
+    const { data } = await supabase.rpc('therapy_eligible_invoices', { p_customer_id: customerId, p_store_id: storeId, p_sg_date: sgTodayStr() });
+    const total = ((data as any[]) ?? []).reduce((s, r) => s + Number(r.total_amount), 0);
+    if (total >= smallest - TOPUP_GAP) {
+      setQualifyFor({ storeId, customerId });
+    }
   };
 
   const handleDelete = async (inv: Invoice) => {
@@ -459,6 +481,35 @@ const InvoicesPage: React.FC = () => {
       st.co_reg_no ? `Co. Reg No.: ${esc(st.co_reg_no)}` : '',
     ].filter(Boolean).join(' &nbsp;|&nbsp; ');
 
+    // Therapy block for print (spec 4.12) — only when this invoice qualified one.
+    const th = detailTherapy;
+    const therapyBlock = (th && th.used) ? `
+      <h2>Unlimited Therapy</h2>
+      <div class="ther">
+        <div class="mut">
+          Eligible: S$${Number(th.eligible_total).toFixed(2)}${Number(th.topup_amount) > 0 ? ` &nbsp;|&nbsp; Qualification top-up: S$${Number(th.topup_amount).toFixed(2)}` : ''} &nbsp;|&nbsp; Applied: S$${Number(th.qualified_total).toFixed(2)}${Number(th.forfeited_total) > 0 ? ` &nbsp;|&nbsp; Forfeited: S$${Number(th.forfeited_total).toFixed(2)}` : ''}
+        </div>
+        ${(th.linked_invoices ?? []).length > 1
+          ? `<div class="mut">Combined invoices: ${(th.linked_invoices ?? []).map((li: any) => `${esc(li.invoice_no)} (S$${Number(li.contributed_amount).toFixed(2)})`).join(', ')}</div>`
+          : ''}
+        ${(th.entitlements ?? []).map((en: any) => `
+          <div class="entb">
+            <div><strong>${esc(en.package_name)}</strong> — ${en.entitlement_kind === 'unlimited' ? `${en.duration_months} month(s) unlimited` : `${en.voucher_qty} voucher(s)`}</div>
+            <div class="mut">${esc(en.entitlement_no)} &nbsp;|&nbsp; Created: ${new Date(en.created_at).toLocaleDateString()} &nbsp;|&nbsp; Activate by: ${new Date(en.activation_deadline).toLocaleDateString()} &nbsp;|&nbsp; Status: ${esc(String(en.status).replace(/_/g, ' '))}</div>
+            ${(en.beneficiaries ?? []).length
+              ? `<table class="bentbl"><thead><tr><th>Beneficiary</th><th>Portion</th><th>Activated</th><th>Ends</th><th>Status</th></tr></thead><tbody>
+                  ${(en.beneficiaries ?? []).map((b: any) => `<tr>
+                    <td>${esc(b.name)}</td>
+                    <td>${b.portion_months ? `${b.portion_months} mo` : `${b.portion_vouchers} vouchers`}</td>
+                    <td>${b.activation_date ? new Date(b.activation_date).toLocaleDateString() : '—'}</td>
+                    <td>${b.ending_date ? new Date(b.ending_date).toLocaleDateString() : (b.portion_vouchers ? 'No expiry' : '—')}</td>
+                    <td>${esc(String(b.status).replace(/_/g, ' '))}</td>
+                  </tr>`).join('')}
+                </tbody></table>`
+              : `<div class="mut">No beneficiary assigned yet.</div>`}
+          </div>`).join('')}
+      </div>` : '';
+
     // One invoice copy — rendered twice (customer + store) on a single A4 page.
     const copyHtml = `
       <div class="copy">
@@ -483,6 +534,7 @@ const InvoicesPage: React.FC = () => {
           <tr class="grand"><td>Total</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
         </table>
         ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
+        ${therapyBlock}
         ${authorisedBlock}
         ${payRow ? `<h2>How to Pay</h2>${payRow}` : ''}
         <div class="signrow">
@@ -501,6 +553,11 @@ const InvoicesPage: React.FC = () => {
       th{font-size:10px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:4px 6px;}
       th.r{text-align:right;} td{padding:4px 6px;border-bottom:1px solid #eee;vertical-align:top;}
       tr.sub td{border-bottom:none;padding:1px 6px 1px 18px;font-size:11px;color:#555;}
+      .ther{border:1px solid #ddd;border-radius:4px;padding:6px 8px;margin-top:4px;}
+      .entb{margin-top:6px;padding-top:6px;border-top:1px solid #eee;}
+      .entb:first-of-type{border-top:none;padding-top:0;margin-top:4px;}
+      .bentbl{margin-top:3px;} .bentbl th{font-size:9px;padding:2px 4px;border-bottom:1px solid #ccc;}
+      .bentbl td{font-size:10.5px;padding:2px 4px;border-bottom:1px solid #f2f2f2;}
       .totals{margin-top:8px;width:260px;margin-left:auto;} .totals td{border:none;padding:2px 6px;}
       .paytbl td{border:none;padding:2px 6px;}
       .grand{font-size:15px;font-weight:bold;border-top:1px solid #999;}
@@ -804,7 +861,7 @@ const InvoicesPage: React.FC = () => {
         <Modal title={`Invoice ${detail.invoice_no}`} maxWidth={560} onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button></>
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setQualifyFor({ storeId: detail.store_id, customerId: detail.customer_id })}><Sparkles size={14} /> Qualify for Therapy</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
               : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button></>
@@ -895,6 +952,78 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
+            {/* Therapy (spec 4.12) */}
+            {detailTherapy?.used && (
+              <div>
+                <label>Unlimited Therapy</label>
+                <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 12, marginTop: 4 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', fontSize: 12.5, marginBottom: 8 }}>
+                    <span>Eligible amount: <strong>{money(detailTherapy.eligible_total)}</strong></span>
+                    {Number(detailTherapy.topup_amount) > 0 && <span>Qualification top-up: <strong>{money(detailTherapy.topup_amount)}</strong></span>}
+                    <span>Applied to packages: <strong>{money(detailTherapy.qualified_total)}</strong></span>
+                    {Number(detailTherapy.forfeited_total) > 0 &&
+                      <span style={{ color: 'var(--danger)' }}>Forfeited balance: <strong>{money(detailTherapy.forfeited_total)}</strong></span>}
+                  </div>
+
+                  {(detailTherapy.linked_invoices ?? []).length > 1 && (
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      Combined invoices: {(detailTherapy.linked_invoices ?? []).map((li: any, i: number) => (
+                        <span key={i}>{i > 0 && ', '}
+                          <strong style={{ color: li.is_this_invoice ? 'var(--primary)' : undefined }}>{li.invoice_no}</strong> ({money(li.contributed_amount)})
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {(detailTherapy.entitlements ?? []).map((en: any, i: number) => (
+                    <div key={i} style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 6 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                        <div style={{ fontSize: 13 }}>
+                          <strong>{en.package_name}</strong>
+                          <span style={{ color: 'var(--text-muted)' }}> · {en.entitlement_kind === 'unlimited' ? `${en.duration_months} month(s) unlimited` : `${en.voucher_qty} voucher(s)`}</span>
+                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                            {en.entitlement_no} · created {new Date(en.created_at).toLocaleDateString()} · activate by {new Date(en.activation_deadline).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <span className={`badge ${en.status === 'expired_before_activation' || en.status === 'cancelled' ? 'badge-danger' : en.status === 'activated' ? 'badge-success' : 'badge-muted'}`}>
+                          {String(en.status).replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      {(en.beneficiaries ?? []).length > 0 && (
+                        <div style={{ marginTop: 6, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
+                          {(en.beneficiaries ?? []).map((b: any, j: number) => (
+                            <div key={j} style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, fontSize: 12, marginBottom: 2 }}>
+                              <span>
+                                <strong>{b.name}</strong>
+                                <span style={{ color: 'var(--text-muted)' }}> · {b.portion_months ? `${b.portion_months} mo` : `${b.portion_vouchers} vouchers`}</span>
+                                {b.transferred_from && <span style={{ color: 'var(--text-muted)' }}> · transferred from {b.transferred_from}</span>}
+                              </span>
+                              <span style={{ color: 'var(--text-secondary)' }}>
+                                {b.activation_date
+                                  ? <>{new Date(b.activation_date).toLocaleDateString()}{b.ending_date ? ` → ${new Date(b.ending_date).toLocaleDateString()}` : ' · no expiry'}</>
+                                  : 'not activated'}
+                                {' '}<span className={`badge ${b.status === 'active' ? 'badge-success' : b.status === 'scheduled' ? 'badge-primary' : b.status === 'cancelled' || b.status === 'expired_before_activation' ? 'badge-danger' : 'badge-muted'}`} style={{ fontSize: 10 }}>{String(b.status).replace(/_/g, ' ')}</span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {(en.beneficiaries ?? []).length === 0 && (
+                        <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--text-muted)' }}>No beneficiary assigned yet.</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {detailTherapy && !detailTherapy.used && detailTherapy.eligible && (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}>
+                <span>💡</span>
+                <div>This invoice hasn't been used for therapy qualification yet — it's still eligible.</div>
+              </div>
+            )}
+
             {/* Payment entry (only if not fully paid) */}
             {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (
               <div>
@@ -950,6 +1079,15 @@ const InvoicesPage: React.FC = () => {
           </div>
         </Modal>
       )}
+      {qualifyFor && (
+        <TherapyQualifyModal
+          stores={stores} customers={customers} rules={therapyRules}
+          prefill={{ storeId: qualifyFor.storeId, customerId: qualifyFor.customerId, sgDate: sgTodayStr(), autoFind: true }}
+          onClose={() => setQualifyFor(null)}
+          onCreated={(res) => { setQualifyFor(null); alert(`Created ${res?.entitlement_ids?.length ?? 0} therapy entitlement(s). Forfeited S$${Number(res?.forfeited ?? 0).toFixed(2)}.`); }}
+        />
+      )}
+
     </div>
   );
 };

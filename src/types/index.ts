@@ -580,3 +580,36 @@ export interface ProductExchangeItem {
   id: string; exchange_id: string; direction: 'returned' | 'replacement';
   original_invoice_item_id: string | null; product_id: string; quantity: number; unit_price: number; line_total: number;
 }
+
+// ── Spec Phase 4: therapy ────────────────────────────────────────────────────
+export interface TherapyPackageRule {
+  id: string; store_id: string; name: string; qualifying_amount: number;
+  entitlement_kind: 'unlimited' | 'voucher'; duration_months: number | null; voucher_qty: number | null;
+  activation_deadline_days: number; is_active: boolean; effective_date: string; deleted_at: string | null;
+  created_at: string; updated_at: string;
+}
+export interface TherapyEntitlement {
+  id: string; entitlement_no: string; customer_id: string; store_id: string; rule_id: string | null;
+  package_name: string; entitlement_kind: 'unlimited' | 'voucher'; duration_months: number | null; voucher_qty: number | null;
+  qualifying_amount: number; qualified_value: number; forfeited_value: number;
+  activation_deadline: string; status: string; created_by: string | null; created_at: string;
+  qualification_group_id: string | null;
+}
+
+// ── Spec Phase 4B: beneficiaries, activation, date changes ───────────────────
+export type TherapyStatus = 'pending_activation' | 'scheduled' | 'active' | 'ended'
+  | 'expired_before_activation' | 'cancelled' | 'suspended';
+export interface TherapyBeneficiary {
+  id: string; entitlement_id: string; beneficiary_customer_id: string;
+  portion_months: number | null; portion_vouchers: number | null;
+  activation_date: string | null; ending_date: string | null;
+  status: TherapyStatus; activated_by: string | null; activated_at: string | null;
+  transferred_from: string | null; transferred_at: string | null;
+  cancelled_reason: string | null; created_at: string; updated_at: string;
+}
+export interface TherapyDateChangeRequest {
+  id: string; beneficiary_id: string; field: 'activation_date' | 'ending_date';
+  old_value: string | null; new_value: string; reason: string; status: string;
+  requested_by: string | null; requested_role: string | null;
+  approved_by: string | null; approved_at: string | null; rejection_reason: string | null; created_at: string;
+}
