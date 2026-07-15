@@ -23,6 +23,8 @@ import StaffCommissionsPage from './pages/StaffCommissionsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ExchangesPage from './pages/ExchangesPage';
 import TherapyPage from './pages/TherapyPage';
+import PublicSurveyPage from './pages/PublicSurveyPage';
+import SurveysPage from './pages/SurveysPage';
 import InvoicesPage from './pages/InvoicesPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
@@ -70,6 +72,8 @@ const AppRoutes: React.FC = () => {
 
   return (
     <Routes>
+      {/* Public: no login required (QR survey) */}
+      <Route path="/survey/:token" element={<PublicSurveyPage />} />
       <Route path="/login" element={session ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route path="/" element={<Protected><DashboardPage /></Protected>} />
       <Route path="/products" element={<Protected><ProductsPage /></Protected>} />
@@ -89,6 +93,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/staff-commissions" element={<Protected><StaffCommissionsPage /></Protected>} />
       <Route path="/exchanges" element={<Protected><ExchangesPage /></Protected>} />
       <Route path="/therapy" element={<Protected><TherapyPage /></Protected>} />
+      <Route path="/surveys" element={<Protected><SurveysPage /></Protected>} />
       <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
       <Route path="/adjustments" element={<Protected><AdjustmentsPage /></Protected>} />
       <Route path="/audit-log" element={<Protected><AuditLogPage /></Protected>} />

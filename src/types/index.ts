@@ -613,3 +613,29 @@ export interface TherapyDateChangeRequest {
   requested_by: string | null; requested_role: string | null;
   approved_by: string | null; approved_at: string | null; rejection_reason: string | null; created_at: string;
 }
+
+// ── Spec Phase 5: health & wellness survey ───────────────────────────────────
+export interface SurveyLink {
+  id: string; token: string; store_id: string; event_name: string | null;
+  is_active: boolean; expires_at: string | null; created_by: string | null; created_at: string;
+}
+export interface HealthSymptomOption {
+  id: string; category: string; label: string; sort_order: number; is_active: boolean;
+}
+export interface HealthSurvey {
+  id: string; survey_no: string; store_id: string; survey_link_id: string | null;
+  customer_id: string | null; event_name: string | null;
+  full_name: string; date_of_birth: string | null; age: number | null;
+  sex: 'male' | 'female' | null; phone: string; email: string | null; occupation: string | null;
+  has_medical_condition: boolean | null; drinks_alcohol: boolean | null;
+  smokes: boolean | null; on_treatment: boolean | null;
+  treatment_list: string | null; others_text: string | null;
+  consent_newsletter_email: boolean; consent_marketing_email: boolean;
+  consent_marketing_sms: boolean; consent_marketing_phone: boolean;
+  signature_data: string | null; signed_date: string | null;
+  acidity_result: 'red' | 'green' | 'blue' | null;
+  remarks_condition: string | null; remarks_recommendation: string | null;
+  reviewed_by: string | null; reviewed_at: string | null; pdf_url: string | null;
+  health_goals: string | null;
+  submitted_at: string; ip_address: string | null; device_info: string | null;
+}
