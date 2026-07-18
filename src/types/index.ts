@@ -639,3 +639,27 @@ export interface HealthSurvey {
   health_goals: string | null;
   submitted_at: string; ip_address: string | null; device_info: string | null;
 }
+
+
+
+// ── Membership system (Phase 2) ──────────────────────────────────────────────
+export interface MembershipPlan {
+  id: string; name: string; duration_months: number; description: string | null;
+  is_active: boolean; is_complimentary: boolean; is_system: boolean;
+  deleted_at: string | null; created_at: string;
+}
+export interface MembershipPlanStorePrice {
+  id: string; plan_id: string; store_id: string; membership_fee: number;
+  available_at_store: boolean; is_active: boolean; deleted_at: string | null;
+}
+export interface CustomerMembership {
+  id: string; membership_no: string; customer_id: string; plan_id: string;
+  store_id: string | null; member_id: string | null;
+  source: 'sale' | 'complimentary' | 'migration' | 'renewal';
+  invoice_id: string | null; invoice_item_id: string | null; fee_snapshot: number;
+  start_date: string | null; expiry_date: string | null;
+  status: 'pending_payment' | 'active' | 'expiring_soon' | 'expired' | 'cancelled' | 'suspended';
+  is_complimentary: boolean; is_renewal: boolean; previous_membership_id: string | null;
+  activated_at: string | null; cancelled_at: string | null; suspended_at: string | null;
+  deleted_at: string | null; created_at: string;
+}

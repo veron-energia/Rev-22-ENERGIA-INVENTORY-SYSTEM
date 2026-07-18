@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
+import { isOwnerOrManager } from '../types';
 import { Modal } from './ui';
-import { Download, RefreshCw, FileText, Check } from 'lucide-react';
+import { Download, RefreshCw, FileText, Check, Lock } from 'lucide-react';
 import SurveyAttachments from './SurveyAttachments';
 
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -16,7 +17,8 @@ const ACIDITY: { v: 'red' | 'green' | 'blue'; label: string; color: string }[] =
 
 const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSaved: () => void }> = ({ surveyId, onClose, onSaved }) => {
   const { profile } = useAuth();
-  const readOnly = profile?.role === 'inventory_manager';
+  // Staff (and Admin) may SEE the consultant section but not edit it.
+  const readOnly = !isOwnerOrManager(profile?.role);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -148,6 +150,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <FileText size={14} style={{ color: 'var(--primary)' }} />
               <strong style={{ fontSize: 13 }}>Consultant section</strong>
+              {readOnly && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 999, padding: '1px 7px' }}><Lock size={9} /> View only — Owner/Manager can edit</span>}
               {s.reviewed_at && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 last saved {new Date(s.reviewed_at).toLocaleString()}{data.reviewer ? ` by ${data.reviewer}` : ''}</span>}
             </div>

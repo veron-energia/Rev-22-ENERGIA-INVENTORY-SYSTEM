@@ -5,7 +5,7 @@ import { ROLE_LABELS, isManagerOrAbove, isOwnerOrManager, isOwnerOrAdmin, canMan
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
-  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Award, Repeat, Sparkles, ClipboardList, Menu, X } from 'lucide-react';
+  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Award, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X } from 'lucide-react';
 
 interface NavItem {
   to: string;
@@ -44,6 +44,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/therapy', label: 'Therapy', icon: <Sparkles size={17} />, show: true },
     { to: '/surveys', label: 'Health Surveys', icon: <ClipboardList size={17} />, show: true },
     { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: true },
+    { to: '/memberships', label: 'Memberships', icon: <CreditCard size={17} />, show: true },
+    { to: '/affiliates', label: 'Affiliates', icon: <UserPlus size={17} />, show: true },
     { to: '/commissions', label: 'Commissions', icon: <Star size={17} />, show: isManagerOrAbove(role) },
     { to: '/staff-commissions', label: 'Staff Commissions', icon: <Award size={17} />, show: isManagerOrAbove(role) },
     { to: '/price-list', label: 'Price List', icon: <Tag size={17} />, show: isOwnerOrManager(role) },
