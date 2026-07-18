@@ -269,6 +269,9 @@ export interface StoreProductPrice {
   store_id: string;
   product_id: string;
   selling_price: number;
+  member_price: number | null;
+  non_member_price: number | null;
+  eligibility: 'both' | 'member_only' | 'non_member_only';
   is_active: boolean;
   created_at: string;
 }

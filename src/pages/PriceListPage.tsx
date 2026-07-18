@@ -17,7 +17,9 @@ const PriceListPage: React.FC = () => {
   const [search, setSearch] = useState('');
 
   const [editProduct, setEditProduct] = useState<Product | null>(null);
-  const [priceVal, setPriceVal] = useState(0);
+  const [mPrice, setMPrice] = useState<string>('');
+  const [nmPrice, setNmPrice] = useState<string>('');
+  const [elig, setElig] = useState<'both'|'member_only'|'non_member_only'>('both');
   const [saving, setSaving] = useState(false);
 
   const loadBase = useCallback(async () => {
@@ -43,18 +45,30 @@ const PriceListPage: React.FC = () => {
 
   const priceFor = (productId: string) => prices.find(p => p.product_id === productId);
 
-  const openEdit = (p: Product) => { setEditProduct(p); setPriceVal(priceFor(p.id)?.selling_price ?? 0); };
+  const openEdit = (p: Product) => {
+    const pr = priceFor(p.id);
+    setEditProduct(p);
+    setMPrice(pr?.member_price != null ? String(pr.member_price) : (pr?.selling_price != null ? String(pr.selling_price) : ''));
+    setNmPrice(pr?.non_member_price != null ? String(pr.non_member_price) : '');
+    setElig((pr?.eligibility as any) ?? 'both');
+  };
 
   const handleSave = async () => {
     if (!editProduct) return;
-    if (priceVal < 0) { alert('Price cannot be negative.'); return; }
+    const m = mPrice === '' ? null : Number(mPrice);
+    const nm = nmPrice === '' ? null : Number(nmPrice);
+    // Enforce the same required-price rule the DB enforces, for a friendly message.
+    if (elig === 'both' && (m == null || nm == null)) { alert('Available to Both requires both Member and Non-Member prices.'); return; }
+    if (elig === 'member_only' && m == null) { alert('Member Only requires a Member price.'); return; }
+    if (elig === 'non_member_only' && nm == null) { alert('Non-Member Only requires a Non-Member price.'); return; }
+    if ((m != null && m < 0) || (nm != null && nm < 0)) { alert('Prices cannot be negative.'); return; }
     setSaving(true);
-    const existing = priceFor(editProduct.id);
-    const res = existing
-      ? await supabase.from('store_product_prices').update({ selling_price: priceVal, is_active: true }).eq('id', existing.id)
-      : await supabase.from('store_product_prices').insert({ store_id: selectedStore, product_id: editProduct.id, selling_price: priceVal });
+    const { error } = await supabase.rpc('set_product_prices', {
+      p_store_id: selectedStore, p_product_id: editProduct.id,
+      p_member: m, p_non_member: nm, p_eligibility: elig,
+    });
     setSaving(false);
-    if (res.error) { alert(res.error.message); return; }
+    if (error) { alert(error.message); return; }
     setEditProduct(null);
     loadPrices(selectedStore);
   };
@@ -101,8 +115,20 @@ const PriceListPage: React.FC = () => {
                           <td><strong>{p.name}</strong></td>
                           <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{p.sku}</td>
                           <td><span className={`badge ${p.product_type === 'own' ? 'badge-primary' : 'badge-accent'}`}>{p.product_type === 'own' ? 'Own' : '3rd Party'}</span></td>
-                          <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 14 }}>
-                            {price ? `S$${price.selling_price.toFixed(2)}` : <span className="badge badge-danger">No price</span>}
+                          <td style={{ textAlign: 'right', fontSize: 12.5 }}>
+                            {(() => {
+                              if (!price) return <span className="badge badge-danger">No price</span>;
+                              const elig = price.eligibility ?? 'both';
+                              const needM = elig !== 'non_member_only';
+                              const needN = elig !== 'member_only';
+                              const incomplete = (needM && price.member_price == null) || (needN && price.non_member_price == null);
+                              return <div>
+                                {needM && <div>M: <strong>{price.member_price != null ? `S$${Number(price.member_price).toFixed(2)}` : '—'}</strong></div>}
+                                {needN && <div>NM: <strong>{price.non_member_price != null ? `S$${Number(price.non_member_price).toFixed(2)}` : '—'}</strong></div>}
+                                <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{elig === 'both' ? 'Both' : elig === 'member_only' ? 'Member only' : 'Non-member only'}</div>
+                                {incomplete && <span className="badge badge-danger" style={{ fontSize: 10 }}>Incomplete</span>}
+                              </div>;
+                            })()}
                           </td>
                           <td style={{ textAlign: 'right' }}>
                             <button className="btn btn-secondary btn-sm" onClick={() => openEdit(p)}><Pencil size={13} /> {price ? 'Edit' : 'Set Price'}</button>
@@ -121,9 +147,28 @@ const PriceListPage: React.FC = () => {
       {editProduct && (
         <Modal title={`Price — ${editProduct.name}`} maxWidth={380} onClose={() => setEditProduct(null)}
           footer={<><button className="btn btn-secondary" onClick={() => setEditProduct(null)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Price'}</button></>}>
-          <div className="form-group">
-            <label>Selling Price (S$) at {stores.find(s => s.id === selectedStore)?.name}</label>
-            <input type="number" min={0} step={0.01} value={priceVal || ''} onChange={e => setPriceVal(+e.target.value)} autoFocus placeholder="0.00" />
+          <div className="form-grid">
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Eligibility at {stores.find(s => s.id === selectedStore)?.name}</label>
+              <select value={elig} onChange={e => setElig(e.target.value as any)}>
+                <option value="both">Available to Both</option>
+                <option value="member_only">Member Only</option>
+                <option value="non_member_only">Non-Member Only</option>
+              </select>
+            </div>
+            {elig !== 'non_member_only' && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Member Price (S$){elig === 'both' || elig === 'member_only' ? ' *' : ''}</label>
+                <input type="number" min={0} step={0.01} value={mPrice} onChange={e => setMPrice(e.target.value)} placeholder="0.00" />
+              </div>
+            )}
+            {elig !== 'member_only' && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Non-Member Price (S$){elig === 'both' || elig === 'non_member_only' ? ' *' : ''}</label>
+                <input type="number" min={0} step={0.01} value={nmPrice} onChange={e => setNmPrice(e.target.value)} placeholder="0.00" />
+              </div>
+            )}
+            <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Products need their required prices before stock can be transferred into a store.</div>
           </div>
         </Modal>
       )}
