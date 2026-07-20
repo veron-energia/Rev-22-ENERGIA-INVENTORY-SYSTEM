@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, Customer, UnlimitedTherapyPackage, UnlimitedTherapyStorePrice, PurchasedTherapyEntitlement, isOwnerOrManager } from '../types';
-import { Modal } from '../components/ui';
+import { Modal, DateModal, ReasonModal } from '../components/ui';
 import { RefreshCw, Plus, Sparkles, Search, CalendarClock, Play, Ban, Archive, Pencil } from 'lucide-react';
 import StorePriceEditor from '../components/StorePriceEditor';
 
@@ -43,6 +43,9 @@ const TherapyPage: React.FC = () => {
   const [pkgName, setPkgName] = useState(''); const [pkgMonths, setPkgMonths] = useState(12);
   const [pkgDesc, setPkgDesc] = useState(''); const [pkgActive, setPkgActive] = useState(true);
   const [priceFor, setPriceFor] = useState<{ id: string; name: string } | null>(null);
+  const [reschedEnt, setReschedEnt] = useState<PurchasedTherapyEntitlement | null>(null);
+  const [reschedDate, setReschedDate] = useState<string | null>(null);   // step 1 result -> step 2 asks reason
+  const [refundEnt, setRefundEnt] = useState<PurchasedTherapyEntitlement | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -79,23 +82,21 @@ const TherapyPage: React.FC = () => {
     if (error) { setErr(error.message); return; }
     setActEnt(null); load();
   };
-  const doReschedule = async (e: PurchasedTherapyEntitlement) => {
-    const nd = prompt('New scheduled date (YYYY-MM-DD):', e.scheduled_date ?? sgToday());
-    if (!nd) return;
-    const reason = prompt('Reason for the date change (required):')?.trim();
-    if (!reason) return;
+  const doReschedule = (e: PurchasedTherapyEntitlement) => { setReschedEnt(e); setReschedDate(null); };
+  const submitReschedule = async (e: PurchasedTherapyEntitlement, newDate: string, reason: string) => {
     setBusy(e.id);
-    const { error } = await supabase.rpc('reschedule_purchased_therapy', { p_entitlement_id: e.id, p_new_date: nd, p_reason: reason });
+    const { error } = await supabase.rpc('reschedule_purchased_therapy', { p_entitlement_id: e.id, p_new_date: newDate, p_reason: reason });
     setBusy(null);
+    setReschedEnt(null); setReschedDate(null);
     if (error) { setErr(error.message); return; }
     load();
   };
-  const doRefund = async (e: PurchasedTherapyEntitlement) => {
-    const reason = prompt('Refund reason (required) — allowed only before activation:')?.trim();
-    if (!reason) return;
+  const doRefund = (e: PurchasedTherapyEntitlement) => setRefundEnt(e);
+  const submitRefund = async (e: PurchasedTherapyEntitlement, reason: string) => {
     setBusy(e.id);
     const { error } = await supabase.rpc('refund_purchased_therapy', { p_entitlement_id: e.id, p_reason: reason });
     setBusy(null);
+    setRefundEnt(null);
     if (error) { setErr(error.message); return; }
     load();
   };
@@ -294,6 +295,23 @@ const TherapyPage: React.FC = () => {
         </Modal>
       )}
 
+      {reschedEnt && reschedDate === null && (
+        <DateModal title={`Reschedule — ${reschedEnt.entitlement_no}`} label="New scheduled date"
+          initial={reschedEnt.scheduled_date ?? sgToday()} min={sgToday()} max={reschedEnt.activation_deadline}
+          confirmLabel="Next" helpText={`Must be on or before the deadline ${d(reschedEnt.activation_deadline)}.`}
+          onClose={() => setReschedEnt(null)} onSubmit={(dt) => setReschedDate(dt)} />
+      )}
+      {reschedEnt && reschedDate !== null && (
+        <ReasonModal title="Reason for date change" label="Reason for the date change"
+          confirmLabel="Save" onClose={() => { setReschedEnt(null); setReschedDate(null); }}
+          onSubmit={(reason) => submitReschedule(reschedEnt, reschedDate, reason)} />
+      )}
+      {refundEnt && (
+        <ReasonModal title={`Refund — ${refundEnt.entitlement_no}`} label="Refund reason"
+          placeholder="Why is this being refunded? (allowed only before activation)"
+          confirmLabel="Refund" onClose={() => setRefundEnt(null)}
+          onSubmit={(reason) => submitRefund(refundEnt, reason)} />
+      )}
       {priceFor && (
         <StorePriceEditor kind="therapy" targetId={priceFor.id} targetName={priceFor.name}
           stores={stores} onClose={() => setPriceFor(null)} />

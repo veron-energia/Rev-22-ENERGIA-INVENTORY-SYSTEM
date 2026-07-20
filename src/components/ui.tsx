@@ -46,3 +46,68 @@ export const Modal: React.FC<{
     </div>
   </div>
 );
+
+// Reusable input modals to replace browser prompt() calls.
+export const ReasonModal: React.FC<{
+  title: string;
+  label?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  onSubmit: (reason: string) => void;
+  onClose: () => void;
+  required?: boolean;
+}> = ({ title, label = 'Reason', placeholder = 'Enter a reason…', confirmLabel = 'Confirm', onSubmit, onClose, required = true }) => {
+  const [val, setVal] = React.useState('');
+  const [err, setErr] = React.useState<string | null>(null);
+  const submit = () => {
+    if (required && !val.trim()) { setErr('This field is required.'); return; }
+    onSubmit(val.trim());
+  };
+  return (
+    <Modal title={title} maxWidth={440} onClose={onClose}
+      footer={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit}>{confirmLabel}</button></>}>
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label>{label}{required ? ' *' : ''}</label>
+        <textarea rows={3} value={val} autoFocus placeholder={placeholder}
+          onChange={e => { setVal(e.target.value); setErr(null); }}
+          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); }} />
+        {err && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
+      </div>
+    </Modal>
+  );
+};
+
+export const DateModal: React.FC<{
+  title: string;
+  label?: string;
+  initial?: string;
+  min?: string;
+  max?: string;
+  confirmLabel?: string;
+  helpText?: string;
+  onSubmit: (date: string) => void;
+  onClose: () => void;
+}> = ({ title, label = 'Date', initial = '', min, max, confirmLabel = 'Confirm', helpText, onSubmit, onClose }) => {
+  const [val, setVal] = React.useState(initial);
+  const [err, setErr] = React.useState<string | null>(null);
+  const submit = () => {
+    if (!val) { setErr('Please choose a date.'); return; }
+    if (min && val < min) { setErr(`Date can't be before ${min}.`); return; }
+    if (max && val > max) { setErr(`Date can't be after ${max}.`); return; }
+    onSubmit(val);
+  };
+  return (
+    <Modal title={title} maxWidth={400} onClose={onClose}
+      footer={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit}>{confirmLabel}</button></>}>
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label>{label}</label>
+        <input type="date" value={val} min={min} max={max} autoFocus
+          onChange={e => { setVal(e.target.value); setErr(null); }} />
+        {helpText && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>{helpText}</div>}
+        {err && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
+      </div>
+    </Modal>
+  );
+};

@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
-import { Modal } from '../components/ui';
+import { Modal, ReasonModal } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles,
@@ -39,7 +39,6 @@ const InvoicesPage: React.FC = () => {
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
   const [therapyRules, setTherapyRules] = useState<TherapyPackageRule[]>([]);
   const [therapyPackages, setTherapyPackages] = useState<any[]>([]);
-  const [addTherapyPkg, setAddTherapyPkg] = useState('');
   const [cServiceStaff, setCServiceStaff] = useState<string[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
@@ -53,6 +52,14 @@ const InvoicesPage: React.FC = () => {
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
   const [cDiscountVoucher, setCDiscountVoucher] = useState('');
   const [cDiscount, setCDiscount] = useState(0);
+  const [saveEarthOn, setSaveEarthOn] = useState(false);
+  const [saveEarthLabel, setSaveEarthLabel] = useState('Save Earth Project');
+  const [saveEarthAmount, setSaveEarthAmount] = useState(1);
+  const [saveEarthDefault, setSaveEarthDefault] = useState<{ label: string; amount: number }>({ label: 'Save Earth Project', amount: 1 });
+  const [seSettingsOpen, setSeSettingsOpen] = useState(false);
+  const [seLabel, setSeLabel] = useState('Save Earth Project');
+  const [seAmount, setSeAmount] = useState(1);
+  const [seBusy, setSeBusy] = useState(false);
   const [cErr, setCErr] = useState<string | null>(null);
   const [cSaving, setCSaving] = useState(false);
 
@@ -78,12 +85,18 @@ const InvoicesPage: React.FC = () => {
   const [cMembership, setCMembership] = useState<{ plan_id: string; member_id: string; fee: number; plan_name: string; owned_id?: string | null } | null>(null);
   const [priceReview, setPriceReview] = useState<PriceReviewResult | null>(null);
   const [overrideItem, setOverrideItem] = useState<InvoiceItem | null>(null);
+  const [pendingOverride, setPendingOverride] = useState<{ lineIndex: number; mode: 'member' | 'non_member' } | null>(null);
+  const [refundLine, setRefundLine] = useState<InvoiceItem | null>(null);
+  const [membRefundOpen, setMembRefundOpen] = useState(false);
+  const [membRefundMethod, setMembRefundMethod] = useState<'deduct' | 'topup'>('deduct');
+  const [refundBusy, setRefundBusy] = useState(false);
+  const [membRefundReasonOpen, setMembRefundReasonOpen] = useState(false);
   const [voucherStorePrices, setVoucherStorePrices] = useState<any[]>([]);
   const [promoStorePrices, setPromoStorePrices] = useState<any[]>([]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, utpk, utsp, vsp, psp] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, utpk, utsp, aset, vsp, psp] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -100,6 +113,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).eq('is_active', true).order('duration_months'),
       supabase.from('unlimited_therapy_store_prices').select('*').is('deleted_at', null),
+      supabase.from('app_settings').select('save_earth_label, save_earth_amount').maybeSingle(),
       supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
       supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
     ]);
@@ -120,6 +134,8 @@ const InvoicesPage: React.FC = () => {
     setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
     setTherapyPackages((utpk?.data as any[]) ?? []);
     setTherapyPrices((utsp?.data as any[]) ?? []);
+    const se = aset?.data as any;
+    if (se) setSaveEarthDefault({ label: se.save_earth_label ?? 'Save Earth Project', amount: Number(se.save_earth_amount ?? 1) });
     setVoucherStorePrices((vsp.data as any[]) ?? []);
     setPromoStorePrices((psp.data as any[]) ?? []);
     setLoading(false);
@@ -314,8 +330,9 @@ const InvoicesPage: React.FC = () => {
   const previewTotal = useMemo(() => {
     const discountable = Math.max(0, createSubtotal + topupPreview - thirdPartySum - lineVoucherDiscountPreview);
     const invLevel = Math.min((cDiscount || 0) + voucherDiscountPreview, discountable);
-    return Math.max(0, createSubtotal + topupPreview - lineVoucherDiscountPreview - invLevel);
-  }, [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview, voucherDiscountPreview]);
+    const se = saveEarthOn ? Math.max(0, saveEarthAmount || 0) : 0;
+    return Math.max(0, createSubtotal + topupPreview - lineVoucherDiscountPreview - invLevel - se);
+  }, [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview, voucherDiscountPreview, saveEarthOn, saveEarthAmount]);
 
 
   // All vouchers can be sold as a line item (a discount voucher sold now is
@@ -329,6 +346,7 @@ const InvoicesPage: React.FC = () => {
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCMembership(null); setMemberStatus(null);
+    setSaveEarthOn(false); setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount);
   };
 
   const clearOverridesOnContextChange = (cls: LineDraft[]): LineDraft[] => {
@@ -398,6 +416,13 @@ const InvoicesPage: React.FC = () => {
     });
     setCSaving(false);
     if (error) { setCErr(error.message); return; }
+    // Save Earth discount (applied post-create; snapshots the global default).
+    if (newInvId && saveEarthOn) {
+      await supabase.rpc('set_invoice_save_earth', {
+        p_invoice_id: newInvId, p_applied: true,
+        p_label: saveEarthLabel || null, p_amount: saveEarthAmount,
+      });
+    }
     // E: record a create-time override audit + correct original_price per line.
     if (newInvId && allItems.some((it: any) => it.price_mode_override)) {
       const { data: createdItems } = await supabase.from('invoice_items')
@@ -717,6 +742,7 @@ const InvoicesPage: React.FC = () => {
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canExport && <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button>}
+          {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
         </div>
       </div>
@@ -878,9 +904,9 @@ const InvoicesPage: React.FC = () => {
                           onChange={e => {
                             const v = e.target.value;
                             if (v === 'auto') { setCLines(ls => ls.map((l, j) => j === i ? { ...l, price_mode_override: '', override_reason: '' } : l)); return; }
-                            const reason = prompt('Override reason (required) — this may bypass Member/Non-Member eligibility:');
-                            if (!reason?.trim()) { e.target.value = line.price_mode_override || 'auto'; return; }
-                            setCLines(ls => ls.map((l, j) => j === i ? { ...l, price_mode_override: v as any, override_reason: reason.trim() } : l));
+                            // Reset the select back to its stored value; the modal drives the real change.
+                            e.target.value = line.price_mode_override || 'auto';
+                            setPendingOverride({ lineIndex: i, mode: v as 'member' | 'non_member' });
                           }}>
                           <option value="auto">{effMember ? 'Auto (M)' : 'Auto (NM)'}</option>
                           <option value="member">M *</option>
@@ -1004,6 +1030,19 @@ const InvoicesPage: React.FC = () => {
 
             <div className="form-grid-2">
               <div className="form-group"><label>Manual Discount (S$)</label><input type="number" min={0} step={0.01} value={cDiscount || ''} onChange={e => setCDiscount(+e.target.value)} placeholder="0.00" /></div>
+              <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={saveEarthOn} style={{ width: 'auto' }}
+                    onChange={e => { setSaveEarthOn(e.target.checked); if (e.target.checked) { setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount); } }} />
+                  {saveEarthDefault.label} (S${Number(saveEarthDefault.amount).toFixed(2)})
+                </label>
+                {saveEarthOn && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                    <input value={saveEarthLabel} onChange={e => setSaveEarthLabel(e.target.value)} placeholder="Label for this invoice" style={{ flex: 1, minWidth: 160 }} />
+                    <input type="number" min={0} step={0.01} value={saveEarthAmount} onChange={e => setSaveEarthAmount(Math.max(0, +e.target.value))} style={{ width: 110 }} />
+                  </div>
+                )}
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
                 {cMembership && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>incl. membership — {cMembership.plan_name} {money(membershipFee)}</div>}
                 <div style={{ textAlign: 'right', fontSize: 13, color: 'var(--text-secondary)' }}>Subtotal: <strong>{money(createSubtotal)}</strong></div>
@@ -1011,6 +1050,7 @@ const InvoicesPage: React.FC = () => {
                 {(cDiscount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− manual discount {money(cDiscount)}</div>}
                 {lineVoucherDiscountPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− line vouchers {money(lineVoucherDiscountPreview)}</div>}
                 {cDiscountVoucher && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− voucher discount {money(voucherDiscountPreview)}</div>}
+                {saveEarthOn && (saveEarthAmount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− {saveEarthLabel || 'Save Earth'} {money(saveEarthAmount)}</div>}
                 <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 700, marginTop: 2 }}>Total: {money(previewTotal)}</div>
               </div>
             </div>
@@ -1023,7 +1063,9 @@ const InvoicesPage: React.FC = () => {
         <Modal title={`Invoice ${detail.invoice_no}`} maxWidth={560} onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button></>
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+                  {isOwnerOrManager(profile?.role) && detailItems.some(it => it.line_kind === 'membership') && <button className="btn btn-danger" onClick={() => { setMembRefundMethod('deduct'); setMembRefundOpen(true); }}>Refund Membership</button>}
+                  <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>{isOwnerOrManager(profile?.role) ? 'Refund/Cancel' : 'Request Refund'}</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
               : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button></>
@@ -1214,25 +1256,6 @@ const InvoicesPage: React.FC = () => {
             {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (
               <div>
                 {payErr && <div className="alert alert-danger"><span>⚠</span><div>{payErr}</div></div>}
-                {detail.status === 'unpaid' && Number(detail.paid_amount) === 0 && detail.customer_id && therapyPackages.length > 0 && (
-                  <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 10 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Add Unlimited Therapy</div>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <select value={addTherapyPkg} onChange={e => setAddTherapyPkg(e.target.value)} style={{ maxWidth: 260 }}>
-                        <option value="">— select a package —</option>
-                        {therapyPackages.map(p => <option key={p.id} value={p.id}>{p.name} ({p.duration_months} mo)</option>)}
-                      </select>
-                      <button className="btn btn-secondary btn-sm" disabled={!addTherapyPkg} onClick={async () => {
-                        const { error } = await supabase.rpc('add_therapy_line', { p_invoice_id: detail.id, p_package_id: addTherapyPkg, p_mode: null });
-                        if (error) { alert(error.message); return; }
-                        setAddTherapyPkg('');
-                        const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
-                        if (invRow) await openDetail(invRow as Invoice); await loadAll();
-                      }}>Add</button>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Non-stock · Member/Non-Member priced · activates after full payment (within 1 year).</div>
-                  </div>
-                )}
                 {detailItems.some(it => it.line_kind === 'membership') && (
                   <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 10, background: 'var(--surface-2)' }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Member ID — required before any payment</div>
@@ -1310,6 +1333,62 @@ const InvoicesPage: React.FC = () => {
         </Modal>
       )}
 
+      {refundLine && detail && (
+        <ReasonModal title={`Refund line`} label="Refund reason"
+          placeholder="Why is this line being refunded?"
+          confirmLabel="Refund line" onClose={() => setRefundLine(null)}
+          onSubmit={async (reason) => {
+            setRefundBusy(true);
+            const { error } = await supabase.rpc('refund_invoice_line', { p_invoice_item_id: refundLine.id, p_reason: reason, p_return_stock: refundLine.line_kind === 'product' });
+            setRefundBusy(false); setRefundLine(null);
+            if (error) { alert(error.message); return; }
+            const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+            if (invRow) await openDetail(invRow as Invoice); await loadAll();
+          }} />
+      )}
+      {membRefundOpen && detail && (
+        <Modal title="Refund Membership" maxWidth={460} onClose={() => setMembRefundOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setMembRefundOpen(false)}>Cancel</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              Refunding the membership cancels it immediately, reverses its commissions, and reprices any Member-priced lines to Non-Member. Choose how to handle the price difference:
+            </div>
+            <label style={{ display: 'flex', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <input type="radio" checked={membRefundMethod === 'deduct'} onChange={() => setMembRefundMethod('deduct')} style={{ width: 'auto' }} />
+              <span><strong>Deduct from refund</strong> — subtract the difference from the membership refund (top-up only if the difference exceeds the refund).</span>
+            </label>
+            <label style={{ display: 'flex', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <input type="radio" checked={membRefundMethod === 'topup'} onChange={() => setMembRefundMethod('topup')} style={{ width: 'auto' }} />
+              <span><strong>Create top-up invoice</strong> — refund the full membership fee and bill the difference on a new top-up invoice.</span>
+            </label>
+            <button className="btn btn-danger" disabled={refundBusy} onClick={() => { setMembRefundOpen(false); setMembRefundReasonOpen(true); }}>Continue</button>
+          </div>
+        </Modal>
+      )}
+      {membRefundReasonOpen && detail && (
+        <ReasonModal title="Membership refund reason" label="Reason"
+          confirmLabel="Refund membership" onClose={() => setMembRefundReasonOpen(false)}
+          onSubmit={async (reason) => {
+            setRefundBusy(true);
+            const { error } = await supabase.rpc('refund_membership_line', { p_invoice_id: detail.id, p_reason: reason, p_method: membRefundMethod });
+            setRefundBusy(false); setMembRefundReasonOpen(false);
+            if (error) { alert(error.message); return; }
+            const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+            if (invRow) await openDetail(invRow as Invoice); await loadAll();
+          }} />
+      )}
+      {pendingOverride && (
+        <ReasonModal title="Manual price override"
+          label="Override reason"
+          placeholder="Why is this line being overridden? (may bypass Member/Non-Member eligibility)"
+          confirmLabel="Apply override"
+          onClose={() => setPendingOverride(null)}
+          onSubmit={(reason) => {
+            const { lineIndex, mode } = pendingOverride;
+            setCLines(ls => ls.map((l, j) => j === lineIndex ? { ...l, price_mode_override: mode, override_reason: reason } : l));
+            setPendingOverride(null);
+          }} />
+      )}
       {priceReview && detail && (
         <PaymentPriceReview review={priceReview} busy={payBusy}
           onClose={() => setPriceReview(null)}
@@ -1320,6 +1399,24 @@ const InvoicesPage: React.FC = () => {
           lineName={overrideItem.line_kind === 'voucher' ? (vouchers.find(v => v.id === overrideItem.voucher_id)?.name ?? 'Voucher') : overrideItem.line_kind === 'promotion' ? (promotions.find(p => p.id === (overrideItem as any).promotion_id)?.name ?? 'Promotion') : prodName(overrideItem.product_id ?? '')}
           onClose={() => setOverrideItem(null)}
           onDone={async () => { setOverrideItem(null); const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single(); if (invRow) await openDetail(invRow as Invoice); await loadAll(); }} />
+      )}
+      {seSettingsOpen && (
+        <Modal title="Save Earth Project — Global Defaults" maxWidth={420} onClose={() => setSeSettingsOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setSeSettingsOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" disabled={seBusy} onClick={async () => {
+              setSeBusy(true);
+              const { error } = await supabase.rpc('set_save_earth_defaults', { p_label: seLabel, p_amount: seAmount });
+              setSeBusy(false);
+              if (error) { alert(error.message); return; }
+              setSaveEarthDefault({ label: seLabel, amount: seAmount });
+              setSeSettingsOpen(false);
+            }}>Save</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>These defaults are copied onto each invoice when the cashier ticks Save Earth. Editing them here does not change past invoices.</div>
+            <div className="form-group" style={{ marginBottom: 0 }}><label>Default label</label><input value={seLabel} onChange={e => setSeLabel(e.target.value)} /></div>
+            <div className="form-group" style={{ marginBottom: 0 }}><label>Default amount (S$)</label><input type="number" min={0} step={0.01} value={seAmount} onChange={e => setSeAmount(Math.max(0, +e.target.value))} /></div>
+          </div>
+        </Modal>
       )}
     </div>
   );
