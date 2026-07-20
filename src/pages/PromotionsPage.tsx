@@ -6,6 +6,7 @@ import {
   PROMO_TYPE_LABELS, PromotionType, isOwnerOrManager,
   PromotionChoiceGroup, PromotionChoiceOption,
 } from '../types';
+import StorePriceEditor from '../components/StorePriceEditor';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Package2, RefreshCw, X, Layers } from 'lucide-react';
 
@@ -25,6 +26,7 @@ const PromotionsPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [mnmFor, setMnmFor] = useState<{ id: string; name: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
@@ -331,6 +333,7 @@ const PromotionsPage: React.FC = () => {
                     <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openItems(p)}><Layers size={13} /> Items</button>
+                      <button className="btn btn-secondary btn-sm" title="Member / Non-Member store prices" onClick={() => setMnmFor({ id: p.id, name: p.name })}>M/NM</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(p)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(p)}><Trash2 size={13} /></button>
                     </div></td>
@@ -604,6 +607,10 @@ const PromotionsPage: React.FC = () => {
             </div>
           </div>
         </Modal>
+      )}
+      {mnmFor && (
+        <StorePriceEditor kind="promotion" targetId={mnmFor.id} targetName={mnmFor.name}
+          stores={stores} onClose={() => setMnmFor(null)} />
       )}
     </div>
   );

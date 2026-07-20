@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import MembershipBadge from '../components/MembershipBadge';
+import { MembershipStatusPanel, MembershipSelector, MemberIdField, FullMembershipStatus } from '../components/MembershipInvoice';
+import { LineOverrideModal, PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import { useAuth } from '../context/AuthContext';
 import TherapyQualifyModal, { TOPUP_GAP, sgTodayStr } from '../components/TherapyQualifyModal';
 import {
@@ -20,7 +23,7 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { kind: 'product' | 'voucher' | 'promotion'; product_id: string; voucher_id: string; promotion_id: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; }
+interface LineDraft { kind: 'product' | 'voucher' | 'promotion'; product_id: string; voucher_id: string; promotion_id: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; price_mode_override?: '' | 'member' | 'non_member'; override_reason?: string; }
 
 const InvoicesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -61,13 +64,26 @@ const InvoicesPage: React.FC = () => {
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
   const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
+  const [detailMembership, setDetailMembership] = useState<any>(null);   // customer_memberships row (paid invoices)
+  const [detailResv, setDetailResv] = useState<string | null>(null);      // reserved Member ID for this invoice
+  const [detailOwnedId, setDetailOwnedId] = useState<string | null>(null);// customer's permanent Member ID
+  const [midInput, setMidInput] = useState('');
+  const [midErr, setMidErr] = useState<string | null>(null);
+  const [midBusy, setMidBusy] = useState(false);
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
   const [payErr, setPayErr] = useState<string | null>(null);
   const [payBusy, setPayBusy] = useState(false);
+  // Phase 4: membership-aware pricing
+  const [memberStatus, setMemberStatus] = useState<FullMembershipStatus | null>(null);
+  const [cMembership, setCMembership] = useState<{ plan_id: string; member_id: string; fee: number; plan_name: string; owned_id?: string | null } | null>(null);
+  const [priceReview, setPriceReview] = useState<PriceReviewResult | null>(null);
+  const [overrideItem, setOverrideItem] = useState<InvoiceItem | null>(null);
+  const [voucherStorePrices, setVoucherStorePrices] = useState<any[]>([]);
+  const [promoStorePrices, setPromoStorePrices] = useState<any[]>([]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, vsp, psp] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -82,6 +98,8 @@ const InvoicesPage: React.FC = () => {
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
       supabase.rpc('my_assigned_store_id'),
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
+      supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
+      supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -98,6 +116,8 @@ const InvoicesPage: React.FC = () => {
     setProfiles(allProfiles);
     setAssignedStoreId((myStore.data as string | null) ?? null);
     setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
+    setVoucherStorePrices((vsp.data as any[]) ?? []);
+    setPromoStorePrices((psp.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -106,31 +126,73 @@ const InvoicesPage: React.FC = () => {
   const custName = (id: string) => customers.find(c => c.id === id)?.full_name ?? '—';
   const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
   const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
-  const priceFor = (storeId: string, productId: string) =>
-    prices.find(p => p.store_id === storeId && p.product_id === productId)?.selling_price ?? null;
+  const isStaff = profile?.role === 'staff';
+  const activeStore = isStaff ? (assignedStoreId ?? '') : cStore;
+  const effMember = (memberStatus?.is_member ?? false) || !!cMembership;
+  // Strict mode-aware pricing (Phase 4): NO fallback to legacy selling_price.
+  const priceRowFor = (storeId: string, productId: string) =>
+    prices.find(p => p.store_id === storeId && p.product_id === productId);
+  const priceFor = (storeId: string, productId: string, member: boolean = effMember) => {
+    const r = priceRowFor(storeId, productId);
+    if (!r) return null;
+    return member ? (r.member_price ?? null) : (r.non_member_price ?? null);
+  };
 
   // Products available at the chosen store (those with a price).
   const stockQty = (storeId: string, productId: string): number =>
     storeInv.find(s => s.store_id === storeId && s.product_id === productId)?.current_qty ?? 0;
 
+  // D: a product is offered if it has a usable price in SOME mode (auto or via
+  // override) and has stock. We classify rather than hide, so an override
+  // candidate (e.g. member-only product for a non-member) stays selectable
+  // with a clear label. Only truly unpriced/inactive items are dropped.
+  const productAvail = (pid: string): { ok: boolean; label: string; needsOverride: boolean } => {
+    const r = prices.find(x => x.store_id === activeStore && x.product_id === pid);
+    if (!r) return { ok: false, label: 'no price', needsOverride: false };
+    const autoM = effMember;
+    const autoPrice = autoM ? r.member_price : r.non_member_price;
+    const elig = r.eligibility ?? 'both';
+    const autoEligible = elig === 'both' || (elig === 'member_only' && autoM) || (elig === 'non_member_only' && !autoM);
+    if (autoEligible && autoPrice != null) return { ok: true, label: `${money(autoPrice)}`, needsOverride: false };
+    // Not available automatically — is it available by override in the other mode?
+    const other = autoM ? r.non_member_price : r.member_price;
+    if (other != null) return { ok: true, label: `override → ${money(other)}`, needsOverride: true };
+    if (autoPrice != null) return { ok: true, label: `override → ${money(autoPrice)}`, needsOverride: true };
+    return { ok: false, label: 'missing price', needsOverride: false };
+  };
   const storeProducts = useMemo(() =>
-    cStore ? products.filter(p => priceFor(cStore, p.id) !== null && stockQty(cStore, p.id) > 0) : [],
-    [cStore, products, prices, storeInv]);
+    activeStore ? products.filter(p => productAvail(p.id).ok && stockQty(activeStore, p.id) > 0) : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeStore, products, prices, storeInv, effMember, memberStatus, cMembership]);
 
-  const voucherPrice = (id: string) => vouchers.find(v => v.id === id)?.selling_price ?? null;
+  const voucherPrice = (id: string, member: boolean = effMember) => {
+    const r = voucherStorePrices.find(x => x.voucher_id === id && x.store_id === activeStore && x.available_at_store !== false);
+    if (!r) return null;
+    return member ? (r.member_price ?? null) : (r.non_member_price ?? null);
+  };
 
-  const promoPrice = (id: string) => promotions.find(p => p.id === id)?.fixed_price ?? null;
+  const promoPrice = (id: string, member: boolean = effMember) => {
+    const r = promoStorePrices.find(x => x.promotion_id === id && x.store_id === activeStore && x.available_at_store !== false);
+    if (!r) return null;
+    return member ? (r.member_price ?? null) : (r.non_member_price ?? null);
+  };
 
+  const lineMember = (l: LineDraft): boolean =>
+    l.price_mode_override ? l.price_mode_override === 'member' : effMember;
   const lineUnit = (l: LineDraft): number | null =>
-    l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id) : null)
-    : l.kind === 'promotion' ? (l.promotion_id ? promoPrice(l.promotion_id) : null)
-    : (cStore && l.product_id ? priceFor(cStore, l.product_id) : null);
+    l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id, lineMember(l)) : null)
+    : l.kind === 'promotion' ? (l.promotion_id ? promoPrice(l.promotion_id, lineMember(l)) : null)
+    : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
 
+  const membershipFee = cMembership?.fee ?? 0;
   const createSubtotal = useMemo(() =>
     cLines.reduce((sum, l) => {
       const price = lineUnit(l);
       return sum + (price ? price * l.quantity : 0);
-    }, 0), [cLines, cStore, prices, vouchers]);
+    }, 0) + membershipFee,
+    // B: every input that can change a line's applied price must be here,
+    // or totals go stale when the pricing mode flips.
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, effMember, memberStatus, cMembership]);
 
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
@@ -147,12 +209,16 @@ const InvoicesPage: React.FC = () => {
   const selSum = (l: LineDraft, gId: string) => Object.values(l.selections[gId] ?? {}).reduce((s, n) => s + (n || 0), 0);
 
   // Baseline of a product group = cheapest listed option at the chosen store.
-  const groupBaseline = (gId: string): number | null => {
-    if (!cStore) return null;
-    const prices = optionsFor(gId)
-      .map(o => (o.product_id ? priceFor(cStore, o.product_id) : null))
+  // G: baseline follows the applied pricing mode — a top-up computed under the
+  // previous mode is never reused (the memo recomputes on mode change).
+  // C: baseline resolves in the promotion LINE's applied mode, not the
+  // invoice-wide automatic mode.
+  const groupBaseline = (gId: string, member: boolean = effMember): number | null => {
+    if (!activeStore) return null;
+    const opts = optionsFor(gId)
+      .map(o => (o.product_id ? priceFor(activeStore, o.product_id, member) : null))
       .filter((p): p is number => p != null);
-    return prices.length ? Math.min(...prices) : null;
+    return opts.length ? Math.min(...opts) : null;
   };
 
   // 3rd-party product lines are discount-proof: invoice-level discounts never touch them.
@@ -162,29 +228,30 @@ const InvoicesPage: React.FC = () => {
       if (l.kind !== 'product' || !l.product_id || !isThirdParty(l.product_id)) return s;
       const u = lineUnit(l);
       return s + (u ? u * l.quantity : 0);
-    }, 0), [cLines, cStore, prices, products]);
+    }, 0), [cLines, activeStore, prices, products, effMember, memberStatus, cMembership]);
 
   // Total top-up across all promotion lines (mirrors promotion_selections_topup).
   const topupPreview = useMemo(() => {
-    if (!cStore) return 0;
+    if (!activeStore) return 0;
     let sum = 0;
     for (const l of cLines) {
       if (l.kind !== 'promotion' || !l.promotion_id) continue;
+      const lm = l.price_mode_override ? l.price_mode_override === 'member' : effMember;
       for (const g of groupsFor(l.promotion_id)) {
         if (g.item_kind !== 'product') continue;
-        const baseline = groupBaseline(g.id);
+        const baseline = groupBaseline(g.id, lm);
         if (baseline == null) continue;
         // Listed options never pay a top-up — only picks outside the options do.
         const listed = new Set(optionsFor(g.id).map(o => o.product_id).filter(Boolean));
         for (const [pid, q] of Object.entries(l.selections[g.id] ?? {})) {
           if (!q || listed.has(pid)) continue;
-          const pr = priceFor(cStore, pid);
+          const pr = priceFor(activeStore, pid, lm);
           if (pr != null && pr > baseline) sum += (pr - baseline) * q;
         }
       }
     }
     return sum;
-  }, [cLines, cStore, prices, choiceGroups, choiceOptions]);
+  }, [cLines, activeStore, prices, choiceGroups, choiceOptions, effMember, memberStatus, cMembership]);
 
   // Mirror of SQL voucher_discount_amount for previews.
   const voucherDiscAmount = (v: Voucher | undefined, base: number): number => {
@@ -209,7 +276,7 @@ const InvoicesPage: React.FC = () => {
       const unit = lineUnit(l);
       if (!unit) return sum;
       return sum + voucherDiscAmount(vouchers.find(v => v.id === l.line_voucher_id), unit * l.quantity);
-    }, 0), [cLines, vouchers, cStore, prices]);
+    }, 0), [cLines, vouchers, activeStore, prices, voucherStorePrices, promoStorePrices, effMember, memberStatus, cMembership]);
 
   // Whole-invoice voucher: base = subtotal − manual − line-voucher discounts (matches SQL).
   const voucherDiscountPreview = useMemo(() => {
@@ -250,6 +317,17 @@ const InvoicesPage: React.FC = () => {
     setCCustomer('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
+    setCMembership(null); setMemberStatus(null);
+  };
+
+  const clearOverridesOnContextChange = (cls: LineDraft[]): LineDraft[] => {
+    const hadOverrides = cls.some(l => l.price_mode_override);
+    if (hadOverrides) {
+      // M: an override reason entered for one customer/store must not silently
+      // carry to another. Warn, then clear the manual modes back to Auto.
+      setCErr('Customer or store changed — manual Member/Non-Member overrides were cleared. Re-apply if still needed.');
+    }
+    return cls.map(l => ({ ...l, price_mode_override: '', override_reason: '' }));
   };
 
   const handleCreate = async () => {
@@ -258,7 +336,7 @@ const InvoicesPage: React.FC = () => {
     if (!effectiveStore) { setCErr('Select a store.'); return; }
     if (!cCustomer) { setCErr('Select a customer.'); return; }
     const activeLines = cLines.filter(l => l.quantity > 0 && (l.kind === 'product' ? l.product_id : l.kind === 'voucher' ? l.voucher_id : l.promotion_id));
-    if (activeLines.length === 0) { setCErr('Add at least one product or voucher.'); return; }
+    if (activeLines.length === 0 && !cMembership) { setCErr('Add at least one product, voucher, promotion or membership.'); return; }
     // Choice-group completeness check (client-side; server re-validates).
     for (const l of activeLines) {
       if (l.kind !== 'promotion') continue;
@@ -271,8 +349,11 @@ const InvoicesPage: React.FC = () => {
         }
       }
     }
+    const ovr = (l: LineDraft) => l.price_mode_override
+      ? { price_mode_override: l.price_mode_override, override_reason: l.override_reason || null }
+      : {};
     const validLines = activeLines.map(l => l.kind === 'voucher'
-      ? { kind: 'voucher', voucher_id: l.voucher_id, quantity: l.quantity }
+      ? { kind: 'voucher', voucher_id: l.voucher_id, quantity: l.quantity, ...ovr(l) }
       : l.kind === 'promotion'
       ? {
           kind: 'promotion', promotion_id: l.promotion_id, quantity: l.quantity,
@@ -284,29 +365,47 @@ const InvoicesPage: React.FC = () => {
                 ? { product_id: itemId, voucher_id: null, quantity: q }
                 : { product_id: null, voucher_id: itemId, quantity: q })),
           })),
+          ...ovr(l),
         }
-      : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null });
+      : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null, ...ovr(l) });
+    const allItems: any[] = [...validLines];
+    if (cMembership) allItems.push({ kind: 'membership', plan_id: cMembership.plan_id, member_id: (cMembership.owned_id || cMembership.member_id) || null, quantity: 1 });
     setCSaving(true); setCErr(null);
-    const { error } = await supabase.rpc('create_invoice', {
+    const { data: newInvId, error } = await supabase.rpc('create_invoice', {
       p_store_id: effectiveStore, p_customer_id: cCustomer, p_affiliate_id: null,
-      p_items: validLines, p_discount_total: cDiscount || 0, p_notes: null,
+      p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
       p_discount_voucher_id: cDiscountVoucher || null,
       p_service_staff: cServiceStaff,
     });
     setCSaving(false);
     if (error) { setCErr(error.message); return; }
+    // E: record a create-time override audit + correct original_price per line.
+    if (newInvId && allItems.some((it: any) => it.price_mode_override)) {
+      const { data: createdItems } = await supabase.from('invoice_items')
+        .select('id').eq('invoice_id', newInvId).eq('price_overridden', true);
+      for (const it of (createdItems as any[]) ?? []) {
+        await supabase.rpc('audit_create_time_override', { p_item_id: it.id });
+      }
+    }
     setCreateOpen(false); resetCreate(); loadAll();
   };
 
   const openDetail = async (inv: Invoice) => {
     setDetail(inv);
     setDetailTherapy(null);
-    const [items, pays, svc, ther] = await Promise.all([
+    const [items, pays, svc, ther, memb, resv, owned] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
       supabase.rpc('invoice_therapy_summary', { p_invoice_id: inv.id }),
+      supabase.from('customer_memberships').select('*').eq('invoice_id', inv.id).is('deleted_at', null).maybeSingle(),
+      supabase.from('member_id_reservations').select('member_id').eq('invoice_id', inv.id).maybeSingle(),
+      supabase.from('member_ids').select('member_id').eq('customer_id', inv.customer_id).maybeSingle(),
     ]);
+    setDetailMembership(memb.data ?? null);
+    setDetailResv((resv.data as any)?.member_id ?? null);
+    setDetailOwnedId((owned.data as any)?.member_id ?? null);
+    setMidInput(''); setMidErr(null);
     setDetailTherapy(ther.data ?? null);
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
@@ -334,9 +433,18 @@ const InvoicesPage: React.FC = () => {
     if (valid.length === 0) { setPayErr('Add at least one payment.'); return; }
     setPayBusy(true); setPayErr(null);
     const paidStore = detail.store_id, paidCustomer = detail.customer_id;
-    const { error } = await supabase.rpc('pay_invoice', { p_invoice_id: detail.id, p_payments: valid });
+    const { data, error } = await supabase.rpc('pay_invoice', { p_invoice_id: detail.id, p_payments: valid });
     setPayBusy(false);
     if (error) { setPayErr(error.message); return; }
+    const res: any = data;
+    if (res?.review_required) {
+      // Prices changed; nothing was charged. Refresh the (repriced) invoice
+      // and show the review so staff confirm the new total with the customer.
+      const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+      if (invRow) await openDetail(invRow as Invoice);
+      setPriceReview(res as PriceReviewResult);
+      return;
+    }
     setDetail(null); await loadAll();
     // Auto-prompt therapy qualification if the customer's same-day eligible
     // total reaches (or is within TOPUP_GAP of) the smallest package.
@@ -382,7 +490,6 @@ const InvoicesPage: React.FC = () => {
   };
 
   const canExport = isOwnerOrManager(profile?.role);
-  const isStaff = profile?.role === 'staff';
   const serviceStaffOptions = useMemo(() => profiles.filter(p => SERVICE_STAFF_ROLES.includes(p.role)), [profiles]);
   const staffName = (id: string) => profiles.find(p => p.id === id)?.full_name ?? '—';
   const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
@@ -420,14 +527,23 @@ const InvoicesPage: React.FC = () => {
       ].join('');
     };
     const lineName = (it: InvoiceItem) =>
-      it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
+      it.line_kind === 'membership' ? `Membership: ${it.plan_name_snapshot ?? ''}`
+      : it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
       : it.line_kind === 'promotion' ? `Promotion: ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? ''}`
       : prodName(it.product_id ?? '');
     const itemRows = detailItems.map(it => {
       const lv = (it as any).line_voucher_id
         ? `<div class="mut">Voucher ${esc(vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? '')} −S$${Number((it as any).line_discount ?? 0).toFixed(2)}</div>` : '';
       const tu = Number((it as any).topup_amount ?? 0) > 0 ? `<div class="mut">incl. top-up S$${Number((it as any).topup_amount).toFixed(2)}</div>` : '';
-      return `<tr><td>${esc(lineName(it))}${lv}${tu}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r"><b>S$${Number(it.line_total).toFixed(2)}</b></td></tr>` +
+      const modeBits: string[] = [];
+      if (it.price_mode) modeBits.push(it.price_mode === 'member' ? 'Member price' : 'Non-Member price');
+      if (it.member_price_snapshot != null) modeBits.push(`M S$${Number(it.member_price_snapshot).toFixed(2)}`);
+      if (it.non_member_price_snapshot != null) modeBits.push(`NM S$${Number(it.non_member_price_snapshot).toFixed(2)}`);
+      const md = modeBits.length ? `<div class="mut">${esc(modeBits.join(' · '))}</div>` : '';
+      const ov = it.price_overridden ? `<div class="mut"><b>Manual Override</b>${it.override_reason ? ` — ${esc(it.override_reason)}` : ''}</div>` : '';
+      const mem = it.line_kind === 'membership'
+        ? `<div class="mut">${it.plan_months_snapshot ?? ''} months · Member ID ${esc(it.member_id_snapshot ?? '—')}</div>` : '';
+      return `<tr><td>${esc(lineName(it))}${md}${ov}${mem}${lv}${tu}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r"><b>S$${Number(it.line_total).toFixed(2)}</b></td></tr>` +
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
@@ -625,7 +741,7 @@ const InvoicesPage: React.FC = () => {
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => openDetail(inv)}><Eye size={13} /> View</button>
-                        {inv.status !== 'paid' && inv.status !== 'cancelled' && inv.status !== 'refunded' && (
+                        {inv.status !== 'paid' && inv.status !== 'partially_paid' && inv.status !== 'cancelled' && inv.status !== 'refunded' && Number(inv.paid_amount) === 0 && (
                           <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(inv)}><Trash2 size={13} /></button>
                         )}
                       </div>
@@ -650,7 +766,7 @@ const InvoicesPage: React.FC = () => {
                 {isStaff ? (
                   <input value={stores.find(s => s.id === (assignedStoreId ?? ''))?.name ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />
                 ) : (
-                  <select value={cStore} onChange={e => { setCStore(e.target.value); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
+                  <select value={cStore} onChange={e => { setCStore(e.target.value); setCMembership(null); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
                     <option value="">— Select store —</option>
                     {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
@@ -658,7 +774,7 @@ const InvoicesPage: React.FC = () => {
               </div>
               <div className="form-group">
                 <label>Customer *</label>
-                <select value={cCustomer} onChange={e => setCCustomer(e.target.value)}>
+                <select value={cCustomer} onChange={e => { setCCustomer(e.target.value); setCMembership(null); setMemberStatus(null); setCLines(ls => clearOverridesOnContextChange(ls)); }}>
                   <option value="">— Select customer —</option>
                   {customers.map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
                 </select>
@@ -676,6 +792,20 @@ const InvoicesPage: React.FC = () => {
                 </div>
               );
             })()}
+
+            {cCustomer && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <MembershipStatusPanel customerId={cCustomer} onStatus={setMemberStatus} />
+                {activeStore && (
+                  <MembershipSelector storeId={activeStore} memberStatus={memberStatus} customerId={cCustomer}
+                    value={cMembership} onChange={setCMembership} />
+                )}
+                {cMembership && !memberStatus?.is_member && !cMembership.owned_id && (
+                  <MemberIdField value={cMembership.member_id} isRenewal={false}
+                    onChange={v => setCMembership(m => m ? { ...m, member_id: v } : m)} />
+                )}
+              </div>
+            )}
 
             {effectiveStore && (
               <div>
@@ -714,21 +844,34 @@ const InvoicesPage: React.FC = () => {
                         {line.kind === 'product' ? (
                           <select value={line.product_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: e.target.value } : l))} style={{ flex: 1 }}>
                             <option value="">— Product —</option>
-                            {storeProducts.map(p => <option key={p.id} value={p.id}>{p.name} — {money(priceFor(cStore, p.id)!)}</option>)}
+                            {storeProducts.map(p => { const a = productAvail(p.id); return <option key={p.id} value={p.id}>{p.name} — {a.label}{a.needsOverride ? ' *' : ''}</option>; })}
                           </select>
                         ) : line.kind === 'voucher' ? (
                           <select value={line.voucher_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, voucher_id: e.target.value } : l))} style={{ flex: 1 }}>
                             <option value="">— Voucher —</option>
-                            {sellableVouchers.map(v => <option key={v.id} value={v.id}>{v.name} — {money(v.selling_price)}</option>)}
+                            {sellableVouchers.map(v => <option key={v.id} value={v.id}>{v.name}{voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}</option>)}
                           </select>
                         ) : (
                           <select value={line.promotion_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, promotion_id: e.target.value } : l))} style={{ flex: 1 }}>
                             <option value="">— Promotion —</option>
-                            {promotions.map(p => <option key={p.id} value={p.id}>{p.name} — {money(p.fixed_price)}</option>)}
+                            {promotions.map(p => <option key={p.id} value={p.id}>{p.name}{promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}</option>)}
                           </select>
                         )}
                         <input type="number" min={1} value={line.quantity || ''} placeholder="Qty" style={{ width: 70 }}
                           onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, quantity: +e.target.value } : l))} />
+                        <select title="Pricing mode — Auto follows membership; M*/NM* are manual overrides (reason required, may bypass eligibility)"
+                          value={line.price_mode_override || 'auto'} style={{ width: 78 }}
+                          onChange={e => {
+                            const v = e.target.value;
+                            if (v === 'auto') { setCLines(ls => ls.map((l, j) => j === i ? { ...l, price_mode_override: '', override_reason: '' } : l)); return; }
+                            const reason = prompt('Override reason (required) — this may bypass Member/Non-Member eligibility:');
+                            if (!reason?.trim()) { e.target.value = line.price_mode_override || 'auto'; return; }
+                            setCLines(ls => ls.map((l, j) => j === i ? { ...l, price_mode_override: v as any, override_reason: reason.trim() } : l));
+                          }}>
+                          <option value="auto">{effMember ? 'Auto (M)' : 'Auto (NM)'}</option>
+                          <option value="member">M *</option>
+                          <option value="non_member">NM *</option>
+                        </select>
                         <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
                         <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setCLines(ls => ls.filter((_, j) => j !== i))} disabled={cLines.length === 1}><X size={13} /></button>
                       </div>
@@ -756,7 +899,7 @@ const InvoicesPage: React.FC = () => {
                         const got = selSum(line, g.id);
                         const done = got === need;
                         const isProd = g.item_kind === 'product';
-                        const baseline = isProd ? groupBaseline(g.id) : null;
+                        const baseline = isProd ? groupBaseline(g.id, line.price_mode_override ? line.price_mode_override === 'member' : effMember) : null;
                         const optionItemIds = optionsFor(g.id)
                           .map(o => (isProd ? o.product_id : o.voucher_id))
                           .filter((x): x is string => !!x)
@@ -767,9 +910,12 @@ const InvoicesPage: React.FC = () => {
                         const itemName = (id: string) => isProd
                           ? (products.find(p => p.id === id)?.name ?? '—')
                           : (vouchers.find(v => v.id === id)?.name ?? '—');
+                        // Display value inside a promotion choice picker. Products use
+                        // the mode-aware store price; the voucher branch shows its
+                        // Member/Non-Member store price (no legacy selling_price).
                         const itemPrice = (id: string): number | null => isProd
-                          ? priceFor(cStore, id)
-                          : (vouchers.find(v => v.id === id)?.selling_price ?? null);
+                          ? priceFor(activeStore, id)
+                          : voucherPrice(id);
                         const setQty = (itemId: string, q: number) => setCLines(ls => ls.map((l, j) => j === i
                           ? { ...l, selections: { ...l.selections, [g.id]: { ...(l.selections[g.id] ?? {}), [itemId]: Math.max(0, q) } } }
                           : l));
@@ -807,7 +953,8 @@ const InvoicesPage: React.FC = () => {
                                   <select value="" onChange={e => { if (e.target.value) setQty(e.target.value, (line.selections[g.id]?.[e.target.value] ?? 0) + 1); }} style={{ flex: 1, fontSize: 12.5 }} disabled={done}>
                                     <option value="">— pick any product (top-up applies above base) —</option>
                                     {storeProducts.filter(p => !displayIds.includes(p.id)).map(p => {
-                                      const pr = priceFor(cStore, p.id);
+                                      const lm = line.price_mode_override ? line.price_mode_override === 'member' : effMember;
+                                      const pr = priceFor(activeStore, p.id, lm);
                                       const tu = baseline != null && pr != null && pr > baseline ? pr - baseline : 0;
                                       return <option key={p.id} value={p.id}>{p.name} — {pr != null ? money(pr) : '—'}{tu > 0 ? ` (+${money(tu)} top-up)` : ''}</option>;
                                     })}
@@ -844,6 +991,7 @@ const InvoicesPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group"><label>Manual Discount (S$)</label><input type="number" min={0} step={0.01} value={cDiscount || ''} onChange={e => setCDiscount(+e.target.value)} placeholder="0.00" /></div>
               <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+                {cMembership && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>incl. membership — {cMembership.plan_name} {money(membershipFee)}</div>}
                 <div style={{ textAlign: 'right', fontSize: 13, color: 'var(--text-secondary)' }}>Subtotal: <strong>{money(createSubtotal)}</strong></div>
                 {topupPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>+ top-up {money(topupPreview)}</div>}
                 {(cDiscount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− manual discount {money(cDiscount)}</div>}
@@ -872,6 +1020,7 @@ const InvoicesPage: React.FC = () => {
               <div>
                 <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{storeName(detail.store_id)} · {custName(detail.customer_id)}</div>
                 <div style={{ marginTop: 4 }}><StatusBadge s={detail.status} /></div>
+                <div style={{ marginTop: 6 }}><MembershipBadge customerId={detail.customer_id} compact /></div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(detail.total_amount)}</div>
@@ -899,7 +1048,30 @@ const InvoicesPage: React.FC = () => {
                     return (
                       <React.Fragment key={it.id}>
                         <tr>
-                          <td>{it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : prodName(it.product_id ?? '')}
+                          <td>{it.line_kind === 'membership' ? `💳 ${it.plan_name_snapshot ?? 'Membership'}` : it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : prodName(it.product_id ?? '')}
+                            {it.line_kind === 'membership' && (
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                {it.plan_months_snapshot ? `${it.plan_months_snapshot} months · ` : ''}Member ID: {it.member_id_snapshot ?? detailResv ?? detailOwnedId ?? 'pending'}
+                                {detailMembership && <> · {detailMembership.is_renewal ? 'Renewal' : 'New'} · {new Date(detailMembership.start_date).toLocaleDateString('en-GB')} → {new Date(detailMembership.expiry_date).toLocaleDateString('en-GB')}</>}
+                                {detail.status === 'unpaid' && Number(detail.paid_amount) === 0 && (
+                                  <button className="btn btn-danger btn-sm" style={{ marginLeft: 8, padding: '1px 7px', fontSize: 10.5 }}
+                                    onClick={async () => { const { error } = await supabase.rpc('remove_membership_line', { p_item_id: it.id }); if (error) alert(error.message); else { const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single(); if (invRow) await openDetail(invRow as Invoice); await loadAll(); } }}>
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                            {it.price_mode && (
+                              <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+                                {it.price_mode === 'member' ? 'Member price' : 'Non-Member price'}
+                                {it.member_price_snapshot != null && ` · M ${money(Number(it.member_price_snapshot))}`}
+                                {it.non_member_price_snapshot != null && ` · NM ${money(Number(it.non_member_price_snapshot))}`}
+                                {it.price_overridden && <span style={{ color: 'var(--danger)', fontWeight: 600 }}> · Override: {it.override_reason}</span>}
+                                {['product','voucher','promotion'].includes(it.line_kind ?? '') && detail.status === 'unpaid' && Number(detail.paid_amount) === 0 && (
+                                  <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6, padding: '1px 7px', fontSize: 10.5 }} onClick={() => setOverrideItem(it)}>M/NM</button>
+                                )}
+                              </div>
+                            )}
                             {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                           </td>
@@ -1028,6 +1200,31 @@ const InvoicesPage: React.FC = () => {
             {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (
               <div>
                 {payErr && <div className="alert alert-danger"><span>⚠</span><div>{payErr}</div></div>}
+                {detailItems.some(it => it.line_kind === 'membership') && (
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 10, background: 'var(--surface-2)' }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Member ID — required before any payment</div>
+                    {detailOwnedId ? (
+                      <div style={{ fontSize: 12.5 }}>This customer permanently owns <strong>{detailOwnedId}</strong> — it is reused automatically. Nothing to enter.</div>
+                    ) : detailResv ? (
+                      <div style={{ fontSize: 12.5 }}>Reserved for this invoice: <strong>{detailResv}</strong>. It becomes permanent on full payment.</div>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <input value={midInput} onChange={e => { setMidInput(e.target.value); setMidErr(null); }}
+                          placeholder="Enter physical Member ID" style={{ maxWidth: 220 }} />
+                        <button className="btn btn-primary btn-sm" disabled={midBusy || !midInput.trim()}
+                          onClick={async () => {
+                            setMidBusy(true); setMidErr(null);
+                            const { error } = await supabase.rpc('reserve_member_id', {
+                              p_member_id: midInput.trim(), p_customer_id: detail.customer_id, p_invoice_id: detail.id });
+                            setMidBusy(false);
+                            if (error) { setMidErr(error.message); return; }
+                            setDetailResv(midInput.trim()); setMidInput('');
+                          }}>{midBusy ? 'Reserving…' : 'Reserve'}</button>
+                      </div>
+                    )}
+                    {midErr && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{midErr}</div>}
+                  </div>
+                )}
                 <label>Record Payment <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— split across methods if needed</span></label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
@@ -1088,6 +1285,17 @@ const InvoicesPage: React.FC = () => {
         />
       )}
 
+      {priceReview && detail && (
+        <PaymentPriceReview review={priceReview} busy={payBusy}
+          onClose={() => setPriceReview(null)}
+          onConfirm={() => { setPriceReview(null); handlePay(); }} />
+      )}
+      {overrideItem && detail && (
+        <LineOverrideModal item={overrideItem}
+          lineName={overrideItem.line_kind === 'voucher' ? (vouchers.find(v => v.id === overrideItem.voucher_id)?.name ?? 'Voucher') : overrideItem.line_kind === 'promotion' ? (promotions.find(p => p.id === (overrideItem as any).promotion_id)?.name ?? 'Promotion') : prodName(overrideItem.product_id ?? '')}
+          onClose={() => setOverrideItem(null)}
+          onDone={async () => { setOverrideItem(null); const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single(); if (invRow) await openDetail(invRow as Invoice); await loadAll(); }} />
+      )}
     </div>
   );
 };

@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Voucher, VoucherKind, VoucherStoreStock, Store, VOUCHER_KIND_LABELS, isOwnerOrManager } from '../types';
+import StorePriceEditor from '../components/StorePriceEditor';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Ticket, RefreshCw, Boxes } from 'lucide-react';
 
@@ -21,6 +22,7 @@ const VouchersPage: React.FC = () => {
 
   const [rows, setRows] = useState<Voucher[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [mnmFor, setMnmFor] = useState<{ id: string; name: string } | null>(null);
   const [stock, setStock] = useState<VoucherStoreStock[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -147,6 +149,7 @@ const VouchersPage: React.FC = () => {
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{money(v.selling_price)}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       {v.qty_type === 'limited' && <button className="btn btn-secondary btn-sm" onClick={() => openStock(v)}><Boxes size={13} /> Stock</button>}
+                      <button className="btn btn-secondary btn-sm" title="Member / Non-Member store prices" onClick={() => setMnmFor({ id: v.id, name: v.name })}>M/NM</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(v)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(v)}><Trash2 size={13} /></button>
                     </div></td>
@@ -243,6 +246,10 @@ const VouchersPage: React.FC = () => {
             </div>
           </div>
         </Modal>
+      )}
+      {mnmFor && (
+        <StorePriceEditor kind="voucher" targetId={mnmFor.id} targetName={mnmFor.name}
+          stores={stores} onClose={() => setMnmFor(null)} />
       )}
     </div>
   );

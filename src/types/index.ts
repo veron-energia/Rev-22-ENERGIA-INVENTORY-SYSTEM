@@ -302,7 +302,7 @@ export interface InvoiceItem {
   id: string;
   invoice_id: string;
   product_id: string | null;
-  line_kind?: 'product' | 'voucher' | 'promotion';
+  line_kind?: 'product' | 'voucher' | 'promotion' | 'membership' | 'therapy';
   voucher_id?: string | null;
   promotion_id?: string | null;
   line_voucher_id?: string | null;
@@ -311,6 +311,22 @@ export interface InvoiceItem {
   quantity: number;
   unit_price: number;
   line_total: number;
+  // Phase 4 permanent price snapshots
+  price_mode?: 'member' | 'non_member' | null;
+  price_source?: string | null;
+  price_source_id?: string | null;
+  store_id_snapshot?: string | null;
+  member_price_snapshot?: number | null;
+  non_member_price_snapshot?: number | null;
+  original_price?: number | null;
+  price_overridden?: boolean;
+  override_reason?: string | null;
+  override_by?: string | null;
+  override_at?: string | null;
+  membership_plan_id?: string | null;
+  plan_name_snapshot?: string | null;
+  plan_months_snapshot?: number | null;
+  member_id_snapshot?: string | null;
 }
 
 export interface InvoicePayment {
@@ -665,4 +681,26 @@ export interface CustomerMembership {
   is_complimentary: boolean; is_renewal: boolean; previous_membership_id: string | null;
   activated_at: string | null; cancelled_at: string | null; suspended_at: string | null;
   deleted_at: string | null; created_at: string;
+}
+
+export interface AffiliateRow {
+  customer_id: string;
+  full_name: string;
+  phone: string;
+  member_id: string | null;
+  membership_status: string | null;
+  membership_plan: string | null;
+  membership_expiry: string | null;
+  affiliate_state: string;
+  block_reason: string | null;
+  store_id: string | null;
+  store_name: string | null;
+  direct_referrals: number;
+  downline: number;
+  lifetime_earned: number;
+  unpaid_payable: number;
+  blocked_commission: number;
+  last_commission_date: string | null;
+  has_profile: boolean;
+  manually_suspended: boolean;
 }

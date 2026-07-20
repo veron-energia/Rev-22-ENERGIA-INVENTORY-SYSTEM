@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
+import MembershipBadge from '../components/MembershipBadge';
 import { Modal } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone } from 'lucide-react';
 
@@ -215,6 +216,7 @@ const CustomersPage: React.FC = () => {
           footer={<button className="btn btn-secondary" onClick={() => setProfileFor(null)}>Close</button>}>
           {!profileStats ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
             <div className="form-grid">
+            <MembershipBadge customerId={profileFor.id} />
               {canComplete ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
