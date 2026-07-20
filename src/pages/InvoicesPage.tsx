@@ -4,7 +4,6 @@ import MembershipBadge from '../components/MembershipBadge';
 import { MembershipStatusPanel, MembershipSelector, MemberIdField, FullMembershipStatus } from '../components/MembershipInvoice';
 import { LineOverrideModal, PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import { useAuth } from '../context/AuthContext';
-import TherapyQualifyModal, { TOPUP_GAP, sgTodayStr } from '../components/TherapyQualifyModal';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
@@ -23,7 +22,7 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { kind: 'product' | 'voucher' | 'promotion'; product_id: string; voucher_id: string; promotion_id: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; price_mode_override?: '' | 'member' | 'non_member'; override_reason?: string; }
+interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy'; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; price_mode_override?: '' | 'member' | 'non_member'; override_reason?: string; }
 
 const InvoicesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -39,7 +38,8 @@ const InvoicesPage: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
   const [therapyRules, setTherapyRules] = useState<TherapyPackageRule[]>([]);
-  const [qualifyFor, setQualifyFor] = useState<{ storeId: string; customerId: string } | null>(null);
+  const [therapyPackages, setTherapyPackages] = useState<any[]>([]);
+  const [addTherapyPkg, setAddTherapyPkg] = useState('');
   const [cServiceStaff, setCServiceStaff] = useState<string[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
@@ -83,7 +83,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, vsp, psp] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, utpk, utsp, vsp, psp] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -98,6 +98,8 @@ const InvoicesPage: React.FC = () => {
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
       supabase.rpc('my_assigned_store_id'),
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
+      supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).eq('is_active', true).order('duration_months'),
+      supabase.from('unlimited_therapy_store_prices').select('*').is('deleted_at', null),
       supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
       supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
     ]);
@@ -116,6 +118,8 @@ const InvoicesPage: React.FC = () => {
     setProfiles(allProfiles);
     setAssignedStoreId((myStore.data as string | null) ?? null);
     setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
+    setTherapyPackages((utpk?.data as any[]) ?? []);
+    setTherapyPrices((utsp?.data as any[]) ?? []);
     setVoucherStorePrices((vsp.data as any[]) ?? []);
     setPromoStorePrices((psp.data as any[]) ?? []);
     setLoading(false);
@@ -165,6 +169,12 @@ const InvoicesPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeStore, products, prices, storeInv, effMember, memberStatus, cMembership]);
 
+  const [therapyPrices, setTherapyPrices] = useState<any[]>([]);
+  const therapyPrice = (pkgId: string, member: boolean = effMember): number | null => {
+    const r = therapyPrices.find(x => x.package_id === pkgId && x.store_id === activeStore && x.available_at_store !== false);
+    if (!r) return null;
+    return member ? (r.member_price ?? null) : (r.non_member_price ?? null);
+  };
   const voucherPrice = (id: string, member: boolean = effMember) => {
     const r = voucherStorePrices.find(x => x.voucher_id === id && x.store_id === activeStore && x.available_at_store !== false);
     if (!r) return null;
@@ -180,7 +190,8 @@ const InvoicesPage: React.FC = () => {
   const lineMember = (l: LineDraft): boolean =>
     l.price_mode_override ? l.price_mode_override === 'member' : effMember;
   const lineUnit = (l: LineDraft): number | null =>
-    l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id, lineMember(l)) : null)
+    l.kind === 'therapy' ? (l.therapy_package_id ? therapyPrice(l.therapy_package_id, lineMember(l)) : null)
+    : l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id, lineMember(l)) : null)
     : l.kind === 'promotion' ? (l.promotion_id ? promoPrice(l.promotion_id, lineMember(l)) : null)
     : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
 
@@ -192,7 +203,7 @@ const InvoicesPage: React.FC = () => {
     }, 0) + membershipFee,
     // B: every input that can change a line's applied price must be here,
     // or totals go stale when the pricing mode flips.
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, effMember, memberStatus, cMembership]);
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, effMember, memberStatus, cMembership]);
 
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
@@ -335,8 +346,8 @@ const InvoicesPage: React.FC = () => {
     const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
     if (!effectiveStore) { setCErr('Select a store.'); return; }
     if (!cCustomer) { setCErr('Select a customer.'); return; }
-    const activeLines = cLines.filter(l => l.quantity > 0 && (l.kind === 'product' ? l.product_id : l.kind === 'voucher' ? l.voucher_id : l.promotion_id));
-    if (activeLines.length === 0 && !cMembership) { setCErr('Add at least one product, voucher, promotion or membership.'); return; }
+    const activeLines = cLines.filter(l => l.quantity > 0 && (l.kind === 'product' ? l.product_id : l.kind === 'voucher' ? l.voucher_id : l.kind === 'therapy' ? l.therapy_package_id : l.promotion_id));
+    if (activeLines.length === 0 && !cMembership) { setCErr('Add at least one product, voucher, promotion, therapy or membership.'); return; }
     // Choice-group completeness check (client-side; server re-validates).
     for (const l of activeLines) {
       if (l.kind !== 'promotion') continue;
@@ -367,8 +378,16 @@ const InvoicesPage: React.FC = () => {
           })),
           ...ovr(l),
         }
+      : l.kind === 'therapy'
+      ? { kind: 'therapy', therapy_package_id: l.therapy_package_id, quantity: 1, ...ovr(l) }
       : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null, ...ovr(l) });
-    const allItems: any[] = [...validLines];
+    const allItems: any[] = validLines.filter(Boolean);
+    // create_invoice requires at least one product/voucher/promotion/membership
+    // to open the invoice. Therapy is added right after. For a therapy-ONLY sale,
+    // create the invoice, then it gets the therapy line — but we need a seed, so
+    // require a membership or another line, OR fall back to creating an empty
+    // invoice shell is not supported. Guide the user in that rare case.
+
     if (cMembership) allItems.push({ kind: 'membership', plan_id: cMembership.plan_id, member_id: (cMembership.owned_id || cMembership.member_id) || null, quantity: 1 });
     setCSaving(true); setCErr(null);
     const { data: newInvId, error } = await supabase.rpc('create_invoice', {
@@ -446,19 +465,8 @@ const InvoicesPage: React.FC = () => {
       return;
     }
     setDetail(null); await loadAll();
-    // Auto-prompt therapy qualification if the customer's same-day eligible
-    // total reaches (or is within TOPUP_GAP of) the smallest package.
-    await maybePromptTherapy(paidStore, paidCustomer);
-  };
-
-  const maybePromptTherapy = async (storeId: string, customerId: string) => {
-    if (therapyRules.length === 0) return;
-    const smallest = Math.min(...therapyRules.map(r => Number(r.qualifying_amount)));
-    const { data } = await supabase.rpc('therapy_eligible_invoices', { p_customer_id: customerId, p_store_id: storeId, p_sg_date: sgTodayStr() });
-    const total = ((data as any[]) ?? []).reduce((s, r) => s + Number(r.total_amount), 0);
-    if (total >= smallest - TOPUP_GAP) {
-      setQualifyFor({ storeId, customerId });
-    }
+    // Phase 6: target-based therapy qualification is retired. Unlimited Therapy
+    // is sold as an invoice line instead; no post-payment qualify prompt.
   };
 
   const handleDelete = async (inv: Invoice) => {
@@ -836,10 +844,11 @@ const InvoicesPage: React.FC = () => {
                     return (
                     <React.Fragment key={i}>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '' } : l))} style={{ width: 110 }}>
+                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '' } : l))} style={{ width: 110 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
                           <option value="promotion">Promotion</option>
+                          {therapyPackages.length > 0 && <option value="therapy">Therapy</option>}
                         </select>
                         {line.kind === 'product' ? (
                           <select value={line.product_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: e.target.value } : l))} style={{ flex: 1 }}>
@@ -850,6 +859,11 @@ const InvoicesPage: React.FC = () => {
                           <select value={line.voucher_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, voucher_id: e.target.value } : l))} style={{ flex: 1 }}>
                             <option value="">— Voucher —</option>
                             {sellableVouchers.map(v => <option key={v.id} value={v.id}>{v.name}{voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}</option>)}
+                          </select>
+                        ) : line.kind === 'therapy' ? (
+                          <select value={line.therapy_package_id ?? ''} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, therapy_package_id: e.target.value } : l))} style={{ flex: 1 }}>
+                            <option value="">— Therapy Package —</option>
+                            {therapyPackages.map(p => { const pr = therapyPrice(p.id); return <option key={p.id} value={p.id}>{p.name} ({p.duration_months}mo){pr != null ? ` — ${money(pr)}` : ' — no price for this store'}</option>; })}
                           </select>
                         ) : (
                           <select value={line.promotion_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, promotion_id: e.target.value } : l))} style={{ flex: 1 }}>
@@ -1009,7 +1023,7 @@ const InvoicesPage: React.FC = () => {
         <Modal title={`Invoice ${detail.invoice_no}`} maxWidth={560} onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setQualifyFor({ storeId: detail.store_id, customerId: detail.customer_id })}><Sparkles size={14} /> Qualify for Therapy</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button></>
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
               : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button></>
@@ -1200,6 +1214,25 @@ const InvoicesPage: React.FC = () => {
             {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (
               <div>
                 {payErr && <div className="alert alert-danger"><span>⚠</span><div>{payErr}</div></div>}
+                {detail.status === 'unpaid' && Number(detail.paid_amount) === 0 && detail.customer_id && therapyPackages.length > 0 && (
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 10 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Add Unlimited Therapy</div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <select value={addTherapyPkg} onChange={e => setAddTherapyPkg(e.target.value)} style={{ maxWidth: 260 }}>
+                        <option value="">— select a package —</option>
+                        {therapyPackages.map(p => <option key={p.id} value={p.id}>{p.name} ({p.duration_months} mo)</option>)}
+                      </select>
+                      <button className="btn btn-secondary btn-sm" disabled={!addTherapyPkg} onClick={async () => {
+                        const { error } = await supabase.rpc('add_therapy_line', { p_invoice_id: detail.id, p_package_id: addTherapyPkg, p_mode: null });
+                        if (error) { alert(error.message); return; }
+                        setAddTherapyPkg('');
+                        const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+                        if (invRow) await openDetail(invRow as Invoice); await loadAll();
+                      }}>Add</button>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Non-stock · Member/Non-Member priced · activates after full payment (within 1 year).</div>
+                  </div>
+                )}
                 {detailItems.some(it => it.line_kind === 'membership') && (
                   <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 10, background: 'var(--surface-2)' }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Member ID — required before any payment</div>
@@ -1275,14 +1308,6 @@ const InvoicesPage: React.FC = () => {
             <div className="form-group"><label>Reason *</label><textarea rows={2} value={actionReason} onChange={e => setActionReason(e.target.value)} placeholder="Why is this being requested?" autoFocus /></div>
           </div>
         </Modal>
-      )}
-      {qualifyFor && (
-        <TherapyQualifyModal
-          stores={stores} customers={customers} rules={therapyRules}
-          prefill={{ storeId: qualifyFor.storeId, customerId: qualifyFor.customerId, sgDate: sgTodayStr(), autoFind: true }}
-          onClose={() => setQualifyFor(null)}
-          onCreated={(res) => { setQualifyFor(null); alert(`Created ${res?.entitlement_ids?.length ?? 0} therapy entitlement(s). Forfeited S$${Number(res?.forfeited ?? 0).toFixed(2)}.`); }}
-        />
       )}
 
       {priceReview && detail && (

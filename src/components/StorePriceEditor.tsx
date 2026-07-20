@@ -9,15 +9,15 @@ const money = (n: number | null) => n == null ? '—' : `S$${Number(n).toFixed(2
 /** Per-store Member / Non-Member price editor for vouchers and promotions.
  *  Owner/Manager only (RPCs enforce it server-side). */
 const StorePriceEditor: React.FC<{
-  kind: 'voucher' | 'promotion';
+  kind: 'voucher' | 'promotion' | 'therapy';
   targetId: string;
   targetName: string;
   stores: Store[];
   onClose: () => void;
 }> = ({ kind, targetId, targetName, stores, onClose }) => {
-  const table = kind === 'voucher' ? 'voucher_store_prices' : 'promotion_store_prices';
-  const idCol = kind === 'voucher' ? 'voucher_id' : 'promotion_id';
-  const rpc = kind === 'voucher' ? 'set_voucher_prices' : 'set_promotion_prices';
+  const table = kind === 'voucher' ? 'voucher_store_prices' : kind === 'promotion' ? 'promotion_store_prices' : 'unlimited_therapy_store_prices';
+  const idCol = kind === 'voucher' ? 'voucher_id' : kind === 'promotion' ? 'promotion_id' : 'package_id';
+  const rpc = kind === 'voucher' ? 'set_voucher_prices' : kind === 'promotion' ? 'set_promotion_prices' : 'set_unlimited_therapy_price';
 
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,12 +47,10 @@ const StorePriceEditor: React.FC<{
   const save = async (storeId: string) => {
     const d = drafts[storeId];
     setBusyStore(storeId); setErr(null);
-    const { error } = await supabase.rpc(rpc, {
-      [`p_${idCol}`]: targetId, p_store_id: storeId,
-      p_member: d.m === '' ? null : Number(d.m),
-      p_non_member: d.nm === '' ? null : Number(d.nm),
-      p_available: d.avail,
-    } as any);
+    const args: any = kind === 'therapy'
+      ? { p_package_id: targetId, p_store_id: storeId, p_member: d.m === '' ? null : Number(d.m), p_non_member: d.nm === '' ? null : Number(d.nm), p_available: d.avail }
+      : { [`p_${idCol}`]: targetId, p_store_id: storeId, p_member: d.m === '' ? null : Number(d.m), p_non_member: d.nm === '' ? null : Number(d.nm), p_available: d.avail };
+    const { error } = await supabase.rpc(rpc, args);
     setBusyStore(null);
     if (error) { setErr(error.message); return; }
     load();

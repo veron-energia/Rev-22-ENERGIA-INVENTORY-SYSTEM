@@ -704,3 +704,44 @@ export interface AffiliateRow {
   has_profile: boolean;
   manually_suspended: boolean;
 }
+
+export interface UnlimitedTherapyPackage {
+  id: string;
+  name: string;
+  duration_months: number;
+  description: string | null;
+  is_active: boolean;
+  deleted_at: string | null;
+  created_at: string;
+}
+
+export interface UnlimitedTherapyStorePrice {
+  id: string;
+  package_id: string;
+  store_id: string;
+  member_price: number | null;
+  non_member_price: number | null;
+  available_at_store: boolean;
+  deleted_at: string | null;
+}
+
+export interface PurchasedTherapyEntitlement {
+  id: string;
+  entitlement_no: string;
+  customer_id: string;
+  store_id: string;
+  package_id: string;
+  invoice_id: string;
+  invoice_item_id: string | null;
+  package_name: string;
+  duration_months: number;
+  price_snapshot: number;
+  price_mode: string | null;
+  purchase_date: string;
+  activation_deadline: string;
+  scheduled_date: string | null;
+  activation_date: string | null;
+  expiry_date: string | null;
+  status: 'pending_activation' | 'scheduled' | 'active' | 'expired' | 'cancelled' | 'refunded';
+  created_at: string;
+}
