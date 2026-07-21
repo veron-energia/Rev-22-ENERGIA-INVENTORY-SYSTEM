@@ -39,6 +39,8 @@ const DashboardPage: React.FC = () => {
   const [activeRentals, setActiveRentals] = useState(0);
   const [overdueRentals, setOverdueRentals] = useState(0);
   const [summary, setSummary] = useState<any>(null);
+  // Phase 11: transfer receipt alerts (awaiting receipt / overdue / open discrepancies)
+  const [transferAlerts, setTransferAlerts] = useState<{ awaiting_receipt: number; overdue: number; open_discrepancies: number } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -54,6 +56,10 @@ const DashboardPage: React.FC = () => {
       // Phase 8: role-scoped dashboard summary (Owner/Manager get the full set).
       const { data: sum } = await supabase.rpc('dashboard_summary');
       setSummary(sum ?? null);
+
+      // Phase 11: transfer receipt / overdue / discrepancy alerts.
+      const { data: ta } = await supabase.rpc('transfer_receipt_alerts');
+      setTransferAlerts((ta as any) ?? null);
 
       // Today's paid sales.
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
@@ -166,9 +172,24 @@ const DashboardPage: React.FC = () => {
         </div>
       )}
 
-      {/* Phase 2 alerts */}
-      {(pendingApprovals > 0 || lowStock.length > 0) && (
+      {/* Phase 2 + Phase 11 alerts */}
+      {(pendingApprovals > 0 || lowStock.length > 0 ||
+        (transferAlerts && (transferAlerts.awaiting_receipt > 0 || transferAlerts.open_discrepancies > 0))) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginBottom: 28 }}>
+          {transferAlerts && (transferAlerts.awaiting_receipt > 0 || transferAlerts.open_discrepancies > 0) && (
+            <div className="card" style={{ padding: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <ArrowLeftRight size={18} color="var(--primary)" />
+                <h3 style={{ fontSize: 15 }}>Transfers</h3>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
+                <div>Awaiting receipt: <strong>{transferAlerts.awaiting_receipt}</strong></div>
+                {transferAlerts.overdue > 0 && <div style={{ color: 'var(--danger)' }}>Overdue &gt; 7 days: <strong>{transferAlerts.overdue}</strong></div>}
+                {transferAlerts.open_discrepancies > 0 && <div style={{ color: 'var(--danger)' }}>Open discrepancies: <strong>{transferAlerts.open_discrepancies}</strong></div>}
+                <div><a href="/transfers">Go to Transfers →</a></div>
+              </div>
+            </div>
+          )}
           {pendingApprovals > 0 && (
             <div className="card" style={{ padding: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>

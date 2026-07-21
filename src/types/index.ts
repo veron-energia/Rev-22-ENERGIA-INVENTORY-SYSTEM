@@ -132,7 +132,10 @@ export type StockMovementType =
   | 'store_sale'
   | 'invoice_cancel_return'
   | 'invoice_refund_return'
-  | 'inventory_adjustment';
+  | 'inventory_adjustment'
+  | 'transfer_dispatch'
+  | 'transfer_receipt'
+  | 'transfer_discrepancy';
 
 export interface StockMovement {
   id: string;
@@ -149,7 +152,10 @@ export interface StockMovement {
   created_at: string;
 }
 
-export type ApprovalStatus = 'pending' | 'approved' | 'partially_approved' | 'rejected' | 'cancelled';
+export type ApprovalStatus =
+  | 'pending' | 'approved' | 'partially_approved' | 'rejected' | 'cancelled'
+  // Phase 11 transfer lifecycle
+  | 'in_transit' | 'received' | 'received_with_discrepancy' | 'completed';
 export type TransferType = 'warehouse_to_warehouse' | 'warehouse_to_store' | 'store_to_store';
 
 export interface TransferLine {
@@ -190,6 +196,9 @@ export const MOVEMENT_LABELS: Record<StockMovementType, string> = {
   invoice_cancel_return: 'Cancel Return',
   invoice_refund_return: 'Refund Return',
   inventory_adjustment: 'Adjustment',
+  transfer_dispatch: 'Transfer Dispatch',
+  transfer_receipt: 'Transfer Receipt',
+  transfer_discrepancy: 'Transfer Discrepancy',
 };
 
 export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {
@@ -198,6 +207,10 @@ export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {
   partially_approved: 'Partially Approved',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
+  in_transit: 'In Transit',
+  received: 'Received',
+  received_with_discrepancy: 'Received — Discrepancy',
+  completed: 'Completed',
 };
 
 // Can create transfer requests (everyone except pure-readonly — all roles here can)
@@ -220,6 +233,18 @@ export interface TransferRequest {
   created_at: string;
   approved_at: string | null;
   completed_at: string | null;
+  version?: number;
+  edited_at?: string | null;
+  edited_by?: string | null;
+  edit_count?: number;
+  // Phase 11 — dispatch / receipt / discrepancy
+  dispatched_at?: string | null;
+  received_at?: string | null;
+  received_by?: string | null;
+  receipt_note?: string | null;
+  has_discrepancy?: boolean;
+  discrepancy_resolved?: boolean;
+  was_partial?: boolean;
 }
 
 export interface TransferRequestLine {
@@ -229,6 +254,13 @@ export interface TransferRequestLine {
   quantity: number;
   approved_quantity: number | null;
   created_at: string;
+  // Phase 11
+  in_transit_quantity?: number | null;
+  received_quantity?: number | null;
+  discrepancy_quantity?: number | null;
+  discrepancy_reason?: string | null;
+  discrepancy_resolution?: string | null;
+  discrepancy_resolved_at?: string | null;
 }
 
 // ── Phase 3: Sales types ─────────────────────────────────────────────────────
