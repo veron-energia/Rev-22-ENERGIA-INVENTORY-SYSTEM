@@ -7,11 +7,11 @@ import {
   WarehouseInventory, StoreInventory, Warehouse, isManagerOrAbove,
 } from '../types';
 import { NoAccess } from '../components/ui';
-import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award } from 'lucide-react';
+import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award, CreditCard, Sparkles } from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -37,6 +37,11 @@ const ReportsPage: React.FC = () => {
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<any[]>([]);
   const [serviceStaff, setServiceStaff] = useState<any[]>([]);
+  const [repMembership, setRepMembership] = useState<any[]>([]);
+  const [repPricing, setRepPricing] = useState<any[]>([]);
+  const [repAffiliate, setRepAffiliate] = useState<any[]>([]);
+  const [repTherapy, setRepTherapy] = useState<any[]>([]);
+  const [repDiscounts, setRepDiscounts] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -76,6 +81,19 @@ const ReportsPage: React.FC = () => {
     setSpecialProducts((sp.data as any[]) ?? []);
     setProfiles((prof.data as any[]) ?? []);
     setServiceStaff((iss.data as any[]) ?? []);
+    // Phase 8 report views (via RPC).
+    const [rm, rp, ra, rt, rdc] = await Promise.all([
+      supabase.rpc('report_memberships'),
+      supabase.rpc('report_pricing'),
+      supabase.rpc('report_affiliates'),
+      supabase.rpc('report_therapy'),
+      supabase.rpc('report_discounts'),
+    ]);
+    setRepMembership((rm.data as any[]) ?? []);
+    setRepPricing((rp.data as any[]) ?? []);
+    setRepAffiliate((ra.data as any[]) ?? []);
+    setRepTherapy((rt.data as any[]) ?? []);
+    setRepDiscounts((rdc.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -174,6 +192,11 @@ const ReportsPage: React.FC = () => {
     { id: 'commission', label: 'Commission', icon: <BarChart3 size={15} /> },
     { id: 'customers', label: 'Customers', icon: <Users size={15} /> },
     { id: 'stock', label: 'Stock Balance', icon: <Package size={15} /> },
+    { id: 'r_membership', label: 'Membership', icon: <CreditCard size={15} /> },
+    { id: 'r_pricing', label: 'Pricing', icon: <KeyRound size={15} /> },
+    { id: 'r_affiliate', label: 'Affiliate', icon: <Star size={15} /> },
+    { id: 'r_therapy', label: 'Therapy', icon: <Sparkles size={15} /> },
+    { id: 'r_discounts', label: 'Discounts', icon: <Ticket size={15} /> },
   ];
 
   // 5G-2: voucher / promotion / special reports (paid invoices only).
@@ -225,6 +248,8 @@ const ReportsPage: React.FC = () => {
       top_products: topProducts, customers: custRows, stock: stockExport,
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
       sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
+      r_membership: repMembership, r_pricing: repPricing, r_affiliate: repAffiliate,
+      r_therapy: repTherapy, r_discounts: repDiscounts,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
@@ -330,6 +355,41 @@ const ReportsPage: React.FC = () => {
                       return <tr key={s.id}><td><strong>🏪 {s.name}</strong></td><td>Store</td><td style={{ textAlign: 'right' }}>{rows.length}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{rows.reduce((s, i) => s + i.current_qty, 0)}</td></tr>;
                     })}
                   </tbody>
+                </table>
+              )}
+              {tab === 'r_membership' && (
+                <table>
+                  <thead><tr><th>Membership</th><th>Customer</th><th>Member ID</th><th>Plan</th><th>Store</th><th>Start</th><th>Expiry</th><th>Status</th><th style={{ textAlign: 'right' }}>Days Left</th></tr></thead>
+                  <tbody>{repMembership.length === 0 ? <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No memberships</td></tr>
+                    : repMembership.map((r, i) => <tr key={i}><td>{r.membership_no}</td><td><strong>{r.customer_name}</strong></td><td style={{ color: r.missing_member_id ? 'var(--danger)' : undefined }}>{r.member_id ?? 'missing'}</td><td>{r.plan_name ?? '—'}</td><td style={{ color: r.missing_store ? 'var(--danger)' : undefined }}>{r.store_name ?? 'missing'}</td><td style={{ fontSize: 12 }}>{r.start_date ? new Date(r.start_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.expiry_date ? new Date(r.expiry_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ textTransform: 'capitalize' }}>{r.is_complimentary ? 'complimentary' : r.status}</td><td style={{ textAlign: 'right' }}>{r.days_left ?? '—'}</td></tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'r_pricing' && (
+                <table>
+                  <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Customer</th><th>Item</th><th>Kind</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Price</th><th>Mode</th><th>Override</th></tr></thead>
+                  <tbody>{repPricing.length === 0 ? <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No paid lines</td></tr>
+                    : repPricing.slice(0, 500).map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{r.paid_date ? new Date(r.paid_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.store_name}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td><td>{r.item_name}</td><td style={{ fontSize: 12 }}>{r.line_kind}</td><td style={{ textAlign: 'right' }}>{r.quantity}</td><td style={{ textAlign: 'right' }}>{money(Number(r.unit_price))}</td><td>{r.price_mode === 'member' ? 'Member' : r.price_mode === 'non_member' ? 'Non-Member' : '—'}</td><td style={{ fontSize: 11.5, color: r.price_overridden ? 'var(--danger)' : 'var(--text-muted)' }}>{r.price_overridden ? (r.override_reason ?? 'yes') : '—'}</td></tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'r_affiliate' && (
+                <table>
+                  <thead><tr><th>Customer</th><th>Member ID</th><th>Eligibility</th><th>Store</th><th style={{ textAlign: 'right' }}>Referrals</th><th style={{ textAlign: 'right' }}>Tier 1</th><th style={{ textAlign: 'right' }}>Tier 2</th><th style={{ textAlign: 'right' }}>Earned</th><th style={{ textAlign: 'right' }}>Paid</th><th style={{ textAlign: 'right' }}>Reversed</th><th style={{ textAlign: 'right' }}>Blocked</th></tr></thead>
+                  <tbody>{repAffiliate.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No affiliates</td></tr>
+                    : repAffiliate.map((r, i) => <tr key={i}><td><strong>{r.customer_name}</strong></td><td>{r.member_id ?? '—'}</td><td style={{ fontSize: 12 }}>{r.affiliate_state === 'active' ? 'Eligible' : (r.block_reason ?? r.affiliate_state)}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{r.direct_referrals}</td><td style={{ textAlign: 'right' }}>{money(Number(r.tier1_earned))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.tier2_earned))}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.earned))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.paid))}</td><td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.reversed))}</td><td style={{ textAlign: 'right', color: Number(r.blocked) > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>{money(Number(r.blocked))}</td></tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'r_therapy' && (
+                <table>
+                  <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Store</th><th style={{ textAlign: 'right' }}>Price</th><th>Mode</th><th>Purchased</th><th>Activation</th><th>Expiry</th><th>Status</th><th>Type</th></tr></thead>
+                  <tbody>{repTherapy.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No therapy</td></tr>
+                    : repTherapy.map((r, i) => <tr key={i}><td>{r.entitlement_no}</td><td><strong>{r.customer_name}</strong></td><td>{r.package_name}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{money(Number(r.price_snapshot))}</td><td>{r.price_mode === 'member' ? 'M' : r.price_mode === 'non_member' ? 'NM' : '—'}</td><td style={{ fontSize: 12 }}>{r.purchase_date ? new Date(r.purchase_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.activation_date ? new Date(r.activation_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.expiry_date ? new Date(r.expiry_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ textTransform: 'capitalize' }}>{String(r.status).replace('_', ' ')}</td><td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.is_legacy ? 'Legacy' : 'Purchased'}</td></tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'r_discounts' && (
+                <table>
+                  <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Staff</th><th>Customer</th><th style={{ textAlign: 'right' }}>Save Earth</th><th style={{ textAlign: 'right' }}>Voucher</th><th style={{ textAlign: 'right' }}>Promotion</th><th style={{ textAlign: 'right' }}>Line</th><th style={{ textAlign: 'right' }}>Manual</th><th style={{ textAlign: 'right' }}>Total</th></tr></thead>
+                  <tbody>{repDiscounts.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No discounts</td></tr>
+                    : repDiscounts.map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{r.paid_date ? new Date(r.paid_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.store_name}</td><td style={{ fontSize: 12 }}>{r.staff_names ?? '—'}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td><td style={{ textAlign: 'right' }}>{money(Number(r.save_earth))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.voucher_discount))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.promotion_discount))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.line_discount))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.manual_discount))}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.total_discount))}</td></tr>)}</tbody>
                 </table>
               )}
             </>

@@ -186,7 +186,13 @@ const MembershipsPage: React.FC = () => {
   const shown = rows.filter(r => {
     if (filter === 'missing_member_id' && r.member_id) return false;
     if (filter === 'missing_store' && r.store_id) return false;
-    if (filter !== 'all' && filter !== 'missing_member_id' && filter !== 'missing_store' && r.status !== filter) return false;
+    if (filter === 'complimentary' && !r.is_complimentary && (r.status as string) !== 'complimentary') return false;
+    if (filter === 'expiring_soon') {
+      const dl = r.expiry_date ? Math.round((new Date(r.expiry_date).getTime() - Date.now()) / 86400000) : null;
+      if (!(dl != null && dl >= 0 && dl <= 90 && r.status === 'active')) return false;
+    }
+    const skipStatusMatch = ['all', 'missing_member_id', 'missing_store', 'complimentary', 'expiring_soon'];
+    if (!skipStatusMatch.includes(filter) && r.status !== filter) return false;
     if (!q) return true;
     const c = customers.find(x => x.id === r.customer_id);
     return (!!c && (c.full_name.toLowerCase().includes(q) || c.phone.toLowerCase().includes(q)))
@@ -222,9 +228,9 @@ const MembershipsPage: React.FC = () => {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-            {(['all', 'active', 'expiring_soon', 'expired', 'pending_payment', 'suspended', 'cancelled', 'missing_member_id', 'missing_store'] as const).map(v => (
+            {(['all', 'pending_payment', 'active', 'expiring_soon', 'expired', 'suspended', 'cancelled', 'complimentary', 'missing_member_id', 'missing_store'] as const).map(v => (
               <button key={v} className={`btn btn-sm ${filter === v ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(v)}>
-                {v === 'missing_member_id' ? 'Missing Member ID' : v === 'missing_store' ? 'Missing Store' : (STATUS[v]?.label ?? 'All')}
+                {v === 'missing_member_id' ? 'Missing Member ID' : v === 'missing_store' ? 'Missing Store' : v === 'complimentary' ? 'Complimentary' : v === 'expiring_soon' ? 'Expiring Soon' : v === 'all' ? 'All' : (STATUS[v]?.label ?? v)}
               </button>
             ))}
           </div>

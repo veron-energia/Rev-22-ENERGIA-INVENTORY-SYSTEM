@@ -25,6 +25,7 @@ const AuditLogPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [tableFilter, setTableFilter] = useState('all');
+  const [moduleFilter, setModuleFilter] = useState('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,9 +41,11 @@ const AuditLogPage: React.FC = () => {
 
   const uName = (id: string | null) => id ? (profiles.find(p => p.id === id)?.full_name ?? '—') : 'System';
   const tables = ['all', ...Array.from(new Set(logs.map(l => l.table_name)))];
+  const modules = ['all', ...Array.from(new Set(logs.map(l => l.module).filter(Boolean) as string[]))];
 
   const filtered = logs.filter(l => {
     if (tableFilter !== 'all' && l.table_name !== tableFilter) return false;
+    if (moduleFilter !== 'all' && l.module !== moduleFilter) return false;
     const q = search.toLowerCase();
     return !q || l.action.toLowerCase().includes(q) || l.table_name.toLowerCase().includes(q) || uName(l.changed_by).toLowerCase().includes(q);
   });
@@ -59,6 +62,9 @@ const AuditLogPage: React.FC = () => {
           <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search action, table, user…" style={{ paddingLeft: 34 }} />
         </div>
+        <select value={moduleFilter} onChange={e => setModuleFilter(e.target.value)} style={{ maxWidth: 180 }}>
+          {modules.map(m => <option key={m} value={m}>{m === 'all' ? 'All modules' : m}</option>)}
+        </select>
         <select value={tableFilter} onChange={e => setTableFilter(e.target.value)} style={{ maxWidth: 200 }}>
           {tables.map(t => <option key={t} value={t}>{t === 'all' ? 'All tables' : t}</option>)}
         </select>

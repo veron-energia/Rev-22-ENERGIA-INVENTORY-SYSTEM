@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import MembershipBadge from '../components/MembershipBadge';
 import { Modal } from '../components/ui';
-import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 
 const blank = (c?: Customer) => ({
   full_name: c?.full_name ?? '', phone: c?.phone ?? '', email: c?.email ?? '',
@@ -27,7 +27,12 @@ const CustomersPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [profileFor, setProfileFor] = useState<Customer | null>(null);
+  const [overviewFor, setOverviewFor] = useState<Customer | null>(null);
+  const [overview, setOverview] = useState<any>(null);
+  const [ovLoading, setOvLoading] = useState(false);
   const [profileStats, setProfileStats] = useState<any>(null);
+  const [timeline, setTimeline] = useState<any[] | null>(null);
+  const [expandedInv, setExpandedInv] = useState<Record<string, boolean>>({});
   const [phoneFor, setPhoneFor] = useState<Customer | null>(null);
   const [newPhone, setNewPhone] = useState('');
   const [phoneReason, setPhoneReason] = useState('');
@@ -56,10 +61,19 @@ const CustomersPage: React.FC = () => {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  const openOverview = async (c: Customer) => {
+    setOverviewFor(c); setOverview(null); setOvLoading(true);
+    const { data } = await supabase.rpc('customer_overview', { p_customer_id: c.id });
+    setOverview(data ?? null); setOvLoading(false);
+  };
   const openProfile = async (c: Customer) => {
-    setProfileFor(c); setProfileStats(null);
+    setProfileFor(c); setProfileStats(null); setTimeline(null); setExpandedInv({});
     const { data } = await supabase.rpc('customer_profile_stats', { p_customer_id: c.id });
     setProfileStats(data ?? {});
+    if (canComplete) {
+      const { data: tl } = await supabase.rpc('customer_purchase_timeline', { p_customer_id: c.id });
+      setTimeline((tl as any[]) ?? []);
+    }
   };
 
   const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
@@ -143,7 +157,8 @@ const CustomersPage: React.FC = () => {
                     <td style={{ color: 'var(--text-secondary)' }}>{c.email || '—'}</td>
                     <td>{c.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}><Eye size={13} /> Profile</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openOverview(c)}><Eye size={13} /> View</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}>Profile</button>
                       <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(c)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>
@@ -199,6 +214,60 @@ const CustomersPage: React.FC = () => {
         </Modal>
       )}
 
+      {overviewFor && (
+        <Modal title={`${overviewFor.full_name}`} maxWidth={640} onClose={() => setOverviewFor(null)}
+          footer={<button className="btn btn-secondary" onClick={() => setOverviewFor(null)}>Close</button>}>
+          {ovLoading || !overview ? <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>Loading…</div> : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 }}>
+              <section>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>Membership</div>
+                {overview.membership_status?.is_member ? (
+                  <div>
+                    {overview.membership_status.plan_name} · Member ID <strong>{overview.member_id ?? 'missing'}</strong><br />
+                    {overview.membership_status.start_date && <>Start {new Date(overview.membership_status.start_date).toLocaleDateString('en-GB')} → Expiry {overview.membership_status.expiry_date ? new Date(overview.membership_status.expiry_date).toLocaleDateString('en-GB') : '—'}</>}
+                    {overview.membership_status.days_left != null && <> · {overview.membership_status.days_left} days left</>}
+                    {overview.membership_status.warning && <div style={{ color: 'var(--danger)' }}>{overview.membership_status.warning}</div>}
+                  </div>
+                ) : <div style={{ color: 'var(--text-muted)' }}>No active membership</div>}
+              </section>
+              <section>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>Affiliate</div>
+                <div style={{ color: 'var(--text-muted)' }}>{overview.affiliate_state?.eligible ? 'Eligible' : (overview.affiliate_state?.block_reason ?? overview.affiliate_state?.state ?? '—')}</div>
+              </section>
+              {overview.memberships?.length > 1 && (
+                <section>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Membership history</div>
+                  {overview.memberships.map((m: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{m.membership_no} · {m.plan ?? '—'} · {m.status}{m.cancelled_at ? ` · cancelled (${m.cancel_reason ?? ''})` : ''}</div>)}
+                </section>
+              )}
+              {overview.refunds?.length > 0 && (
+                <section>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Refunds / cancellations</div>
+                  {overview.refunds.map((r: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{r.invoice} · S${Number(r.amount).toFixed(2)} · {r.kind} · {r.reason}</div>)}
+                </section>
+              )}
+              {overview.purchased_therapy?.length > 0 && (
+                <section>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Purchased therapy</div>
+                  {overview.purchased_therapy.map((t: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t.no} · {t.package} · {String(t.status).replace('_', ' ')}{t.expiry ? ` · expires ${new Date(t.expiry).toLocaleDateString('en-GB')}` : ''}</div>)}
+                </section>
+              )}
+              {overview.legacy_therapy?.length > 0 && (
+                <section>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Legacy therapy</div>
+                  {overview.legacy_therapy.map((t: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t.no} · {t.package} · {t.status}</div>)}
+                </section>
+              )}
+              {overview.deleted_invoices?.length > 0 && (
+                <section>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Deleted invoice history</div>
+                  {overview.deleted_invoices.map((iv: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{iv.invoice} · S${Number(iv.total).toFixed(2)} · deleted {new Date(iv.deleted_at).toLocaleDateString('en-GB')}</div>)}
+                </section>
+              )}
+            </div>
+          )}
+        </Modal>
+      )}
       {phoneFor && (
         <Modal title={`Change Phone — ${phoneFor.full_name}`} maxWidth={420} onClose={() => setPhoneFor(null)}
           footer={<><button className="btn btn-secondary" onClick={() => setPhoneFor(null)}>Cancel</button><button className="btn btn-primary" onClick={submitPhoneChange} disabled={phoneBusy}>{phoneBusy ? 'Saving…' : 'Change Number'}</button></>}>
@@ -262,6 +331,52 @@ const CustomersPage: React.FC = () => {
                   </div>
                 ) : null;
               })()}
+              {canComplete && timeline && timeline.length > 0 && (
+                <div>
+                  <label>Purchase timeline</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+                    {timeline.map((inv: any) => {
+                      const open = !!expandedInv[inv.invoice_id];
+                      const statusCls = inv.status === 'paid' ? 'badge-success' : inv.status === 'unpaid' ? 'badge-accent' : inv.status === 'cancelled' || inv.status === 'refunded' ? 'badge-danger' : 'badge-muted';
+                      return (
+                        <div key={inv.invoice_id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+                          <div onClick={() => setExpandedInv(s => ({ ...s, [inv.invoice_id]: !s[inv.invoice_id] }))}
+                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', cursor: 'pointer', background: 'var(--surface-2)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                              <span style={{ fontWeight: 600, fontSize: 13 }}>{inv.invoice_no}</span>
+                              {inv.is_topup && <span className="badge badge-muted" style={{ fontSize: 10 }}>top-up</span>}
+                              <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{inv.date ? new Date(inv.date).toLocaleDateString('en-GB') : '—'}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span className={`badge ${statusCls}`} style={{ fontSize: 10, textTransform: 'capitalize' }}>{inv.status}</span>
+                              <span style={{ fontWeight: 700, fontSize: 13 }}>S${Number(inv.total).toFixed(2)}</span>
+                            </div>
+                          </div>
+                          {open && (
+                            <div style={{ padding: '6px 10px 8px 30px' }}>
+                              {(inv.items ?? []).map((it: any, j: number) => (
+                                <div key={j} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', borderBottom: j < inv.items.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                                  <span>
+                                    <span style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{String(it.kind).replace('_', ' ')}</span> · {it.name}
+                                    {it.qty > 1 && <span style={{ color: 'var(--text-muted)' }}> ×{it.qty}</span>}
+                                    {it.price_mode && <span style={{ color: 'var(--text-muted)' }}> · {it.price_mode === 'member' ? 'M' : 'NM'}</span>}
+                                  </span>
+                                  <span style={{ fontWeight: 600 }}>S${Number(it.line_total).toFixed(2)}</span>
+                                </div>
+                              ))}
+                              {Number(inv.save_earth) > 0 && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>🌱 Save Earth: S${Number(inv.save_earth).toFixed(2)}</div>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {canComplete && timeline && timeline.length === 0 && (
+                <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No purchases yet.</div>
+              )}
             </div>
           )}
         </Modal>

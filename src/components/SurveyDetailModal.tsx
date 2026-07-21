@@ -29,6 +29,9 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   const [goals, setGoals] = useState('');
   const [cond, setCond] = useState('');
   const [rec, setRec] = useState('');
+  const [notes, setNotes] = useState<any[]>([]);
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteSaved, setNoteSaved] = useState(false);
 
   // `initial` seeds the consultant fields on first load only, so an
   // attachment refresh never overwrites text the user is mid-way typing.
@@ -37,6 +40,8 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
     const { data: r, error } = await supabase.rpc('health_survey_detail', { p_survey_id: surveyId });
     if (error) { setErr(error.message); setLoading(false); return; }
     setData(r);
+    const { data: nz } = await supabase.rpc('consultant_notes_for', { p_survey_id: surveyId, p_customer_id: null });
+    setNotes((nz as any[]) ?? []);
     if (initial) {
       const s = (r as any)?.survey ?? {};
       setAcidity(s.acidity_result ?? '');
@@ -65,6 +70,25 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
     onSaved();
   };
 
+  // Each submit adds a NEW timestamped consultant note (running log), leaving
+  // Save Review (which updates the single survey review) untouched.
+  const submitNote = async () => {
+    setNoteBusy(true); setErr(null);
+    const { error } = await supabase.rpc('add_consultant_note', {
+      p_survey_id: surveyId,
+      p_customer_id: (data?.survey?.customer_id) ?? null,
+      p_acidity: acidity || null,
+      p_health_goals: goals || null,
+      p_condition: cond || null,
+      p_recommendation: rec || null,
+      p_attachments: [],
+    });
+    setNoteBusy(false);
+    if (error) { setErr(error.message); return; }
+    setNoteSaved(true); setTimeout(() => setNoteSaved(false), 2000);
+    load(false);
+  };
+
   const downloadPdf = async () => {
     const { data: p, error } = await supabase.from('health_survey_pdfs').select('pdf_base64').eq('survey_id', surveyId).maybeSingle();
     if (error || !p?.pdf_base64) { setErr(error?.message ?? 'No signed PDF is stored for this submission.'); return; }
@@ -89,6 +113,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       footer={<>
         <button className="btn btn-secondary" onClick={onClose}>Close</button>
         {data?.has_pdf && <button className="btn btn-secondary" onClick={downloadPdf}><Download size={14} /> Signed PDF</button>}
+        {!readOnly && <button className="btn btn-secondary" onClick={submitNote} disabled={noteBusy}>{noteBusy ? 'Submitting…' : noteSaved ? <><Check size={14} /> Added</> : 'Submit as Note'}</button>}
         {!readOnly && <button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : saved ? <><Check size={14} /> Saved</> : 'Save Review'}</button>}
       </>}>
       {loading ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : !s ? <div className="empty-state">Not found</div> : (
@@ -192,6 +217,25 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
               readOnly={readOnly}
               onChanged={reload}
             />
+
+            {notes.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                <strong style={{ fontSize: 13 }}>Consultant notes timeline</strong>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                  {notes.map((n: any) => (
+                    <div key={n.id} style={{ borderLeft: '2px solid var(--primary)', paddingLeft: 10 }}>
+                      <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 2 }}>
+                        {new Date(n.created_at).toLocaleString('en-GB')} · {n.author ?? '—'}
+                        {n.acidity_result && <span> · Acidity: <span style={{ textTransform: 'capitalize' }}>{n.acidity_result}</span></span>}
+                      </div>
+                      {n.health_goals && <div style={{ fontSize: 12.5 }}><span style={{ color: 'var(--text-muted)' }}>Goals:</span> {n.health_goals}</div>}
+                      {n.remarks_condition && <div style={{ fontSize: 12.5 }}><span style={{ color: 'var(--text-muted)' }}>Condition:</span> {n.remarks_condition}</div>}
+                      {n.remarks_recommendation && <div style={{ fontSize: 12.5 }}><span style={{ color: 'var(--text-muted)' }}>Recommendation:</span> {n.remarks_recommendation}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
