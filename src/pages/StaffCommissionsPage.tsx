@@ -79,7 +79,7 @@ const StaffCommissionsPage: React.FC = () => {
   const [rateBusy, setRateBusy] = useState(false);
   const saveRate = async () => {
     setRateBusy(true);
-    const { error } = await supabase.from('app_settings').update({ staff_commission_rate: rateDraft, updated_at: new Date().toISOString() }).eq('id', true);
+    const { error } = await supabase.rpc('set_staff_commission_rate', { p_rate: rateDraft });
     setRateBusy(false);
     if (error) { alert(error.message); return; }
     setRateOpen(false); load();
