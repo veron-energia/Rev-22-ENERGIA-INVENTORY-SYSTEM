@@ -127,6 +127,15 @@ const TikTokImportPage: React.FC = () => {
   const [mapKind, setMapKind] = useState<'product' | 'voucher' | 'promotion'>('product');
   const [mapTarget, setMapTarget] = useState('');
   const [correctRow, setCorrectRow] = useState<any>(null);
+  // Phase 16 — lifecycle state.
+  const [statusMaps, setStatusMaps] = useState<any[]>([]);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [newStatus, setNewStatus] = useState(''); const [newAction, setNewAction] = useState<'deduct' | 'return' | 'none'>('deduct'); const [newShipped, setNewShipped] = useState(false);
+  const [physReturns, setPhysReturns] = useState<any[]>([]);
+  const [resolvePr, setResolvePr] = useState<any>(null);
+  const [prRestock, setPrRestock] = useState(true); const [prReason, setPrReason] = useState('damaged'); const [prNote, setPrNote] = useState('');
+  const [negPrompt, setNegPrompt] = useState<string | null>(null);
+  const [negAck, setNegAck] = useState(false); const [negReason, setNegReason] = useState('');
   const [corrDelta, setCorrDelta] = useState(0);
   const [corrReason, setCorrReason] = useState('');
   const orderInput = useRef<HTMLInputElement>(null);
@@ -134,19 +143,23 @@ const TikTokImportPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [st, mine, pr, vc, pm, rep] = await Promise.all([
+    const [st, mine, pr, vc, pm, rep, sm, phr] = await Promise.all([
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.rpc('my_assigned_store_id'),
       supabase.from('products').select('id,name,sku,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('vouchers').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('promotions').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.rpc('report_tiktok_imports', { p_store_id: null, p_from: null, p_to: null }),
+      supabase.from('tiktok_status_mappings').select('*').order('sort_order'),
+      supabase.from('tiktok_physical_returns').select('*').eq('status', 'awaiting').order('created_at'),
     ]);
     setStores((st.data as Store[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
     setVouchers((vc.data as any[]) ?? []);
     setPromotions((pm.data as any[]) ?? []);
     setBatches((rep.data as any[]) ?? []);
+    setStatusMaps((sm.data as any[]) ?? []);
+    setPhysReturns((phr.data as any[]) ?? []);
     const assigned = (mine.data as string | null) ?? null;
     setAssignedStore(assigned);
     setStoreId(prev => prev || assigned || '');
@@ -237,16 +250,27 @@ const TikTokImportPage: React.FC = () => {
     if (activeBatch) await loadBatchRows(activeBatch.id);
   };
 
-  const confirmBatch = async () => {
+  const confirmBatch = async (allowNegative = false, negativeReason: string | null = null) => {
     if (!activeBatch) return;
     const ids = rows.filter(r => selected[r.id]).map(r => r.id);
     if (ids.length === 0) { setErr('Select at least one row to confirm.'); return; }
     setBusy('confirm'); setErr(null);
-    const { data, error } = await supabase.rpc('confirm_tiktok_batch', { p_batch_id: activeBatch.id, p_row_ids: ids });
+    const { data, error } = await supabase.rpc('confirm_tiktok_batch', {
+      p_batch_id: activeBatch.id, p_row_ids: ids,
+      p_allow_negative: allowNegative, p_negative_reason: negativeReason,
+    });
     setBusy(null);
-    if (error) { setErr(error.message); return; }
+    if (error) {
+      // Negative stock demands an explicit, reasoned confirmation.
+      if (error.message.includes('NEGATIVE_STOCK_CONFIRMATION_REQUIRED')) {
+        setNegPrompt(error.message.split('NEGATIVE_STOCK_CONFIRMATION_REQUIRED:')[1]?.trim() ?? error.message);
+        setNegAck(false); setNegReason('');
+        return;
+      }
+      setErr(error.message); return;
+    }
     const res = data as any;
-    alert(`Confirmed: ${res.applied} rows applied (${res.units_deducted} units deducted, ${res.units_returned} returned), ${res.skipped} skipped.`);
+    alert(`Confirmed: ${res.applied} rows applied (${res.units_deducted} deducted, ${res.units_returned} returned, ${res.awaiting_physical_return ?? 0} awaiting physical return), ${res.skipped} skipped.`);
     await load(); await loadBatchRows(activeBatch.id);
   };
 
@@ -264,7 +288,10 @@ const TikTokImportPage: React.FC = () => {
       <div className="page-header">
         <div><h1>TikTok Sales Import</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Upload TikTok order and settlement files — sheets are detected by headers, IDs stay exact, and stock only moves when you confirm.</p></div>
-        <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} /> Refresh</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {canManage && <button className="btn btn-secondary" onClick={() => setStatusOpen(true)}>Status Mappings</button>}
+          <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} /> Refresh</button>
+        </div>
       </div>
 
       {err && <div className="alert alert-danger" style={{ marginBottom: 14 }}>{err}</div>}
@@ -301,6 +328,28 @@ const TikTokImportPage: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Physical returns awaiting confirmation */}
+          {physReturns.length > 0 && (
+            <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 4 }}>Awaiting Physical Return</h3>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Cancelled after shipment — stock is NOT returned automatically. Confirm each parcel when it arrives (or record why it never will).
+              </p>
+              <table>
+                <thead><tr><th>Order ID</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Expected Qty</th><th>Since</th><th></th></tr></thead>
+                <tbody>{physReturns.map(pr => (
+                  <tr key={pr.id}>
+                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{pr.order_id}</td>
+                    <td style={{ fontSize: 12 }}>{pr.seller_sku}</td>
+                    <td style={{ textAlign: 'right' }}>{pr.expected_qty}</td>
+                    <td style={{ fontSize: 12 }}>{new Date(pr.created_at).toLocaleDateString()}</td>
+                    <td><button className="btn btn-secondary btn-sm" onClick={() => { setResolvePr(pr); setPrRestock(true); setPrReason('damaged'); setPrNote(''); }}>Resolve</button></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
 
           {/* Batches */}
           <div className="card" style={{ padding: 16, marginBottom: 14 }}>
@@ -339,7 +388,7 @@ const TikTokImportPage: React.FC = () => {
                 <h3 style={{ fontSize: 14.5, flex: 1 }}>{activeBatch.file_name} — {staged ? 'Preview (no stock moved yet)' : 'Confirmed (locked)'}</h3>
                 {staged && <>
                   <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{selCount} selected</span>
-                  <button className="btn btn-primary btn-sm" disabled={busy !== null || selCount === 0} onClick={confirmBatch}>
+                  <button className="btn btn-primary btn-sm" disabled={busy !== null || selCount === 0} onClick={() => confirmBatch()}>
                     <CheckCircle2 size={13} /> {busy === 'confirm' ? 'Confirming…' : 'Confirm Selected Rows'}
                   </button>
                 </>}
@@ -347,7 +396,7 @@ const TikTokImportPage: React.FC = () => {
               <table>
                 <thead><tr>
                   {staged && <th></th>}
-                  <th>#</th><th>Order ID</th><th>Seller SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>TikTok Status</th><th>Mapping</th><th>Staging Status</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th></th>
+                  <th>#</th><th>Order ID</th><th>Seller SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>TikTok Status</th><th>Mapping</th><th>Staging Status</th><th>Prev → New</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th style={{ textAlign: 'right' }}>Δ $</th><th></th>
                 </tr></thead>
                 <tbody>{rows.map(r => (
                   <tr key={r.id} style={{ opacity: r.excluded && !r.confirmed ? 0.45 : 1 }}>
@@ -369,8 +418,13 @@ const TikTokImportPage: React.FC = () => {
                     </td>
                     <td><span className={`badge ${STATUS_BADGE[r.staging_status] ?? 'badge-muted'}`}>{r.staging_status}</span>
                       {r.confirmed && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>applied</div>}</td>
+                    <td style={{ fontSize: 11.5 }}>
+                      {r.previous_row_id
+                        ? <>v{r.version_no}: {r.prev_quantity}×{r.prev_order_status ?? '?'} → {r.quantity}×{r.order_status ?? '?'}</>
+                        : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600, color: r.stock_delta > 0 ? 'var(--danger)' : r.stock_delta < 0 ? 'var(--success)' : 'inherit' }}>
                       {r.stock_delta > 0 ? `−${r.stock_delta}` : r.stock_delta < 0 ? `+${-r.stock_delta}` : '0'}</td>
+                    <td style={{ textAlign: 'right', fontSize: 12 }}>{r.financial_delta != null ? Number(r.financial_delta).toFixed(2) : '—'}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       {staged && !r.confirmed && (
                         <button className="btn btn-danger btn-sm btn-icon" title="Remove staged row"
@@ -389,6 +443,127 @@ const TikTokImportPage: React.FC = () => {
             </div>
           )}
         </>
+      )}
+
+      {/* Negative-stock explicit confirmation */}
+      {negPrompt && (
+        <Modal title="Negative Stock — Explicit Confirmation Required" maxWidth={460} onClose={() => setNegPrompt(null)}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setNegPrompt(null)}>Cancel</button>
+            <button className="btn btn-danger" disabled={busy !== null || !negAck || !negReason.trim()}
+              onClick={() => { const reason = negReason.trim(); setNegPrompt(null); confirmBatch(true, reason); }}>
+              Confirm Into Negative Stock
+            </button>
+          </>}>
+          <div className="form-grid">
+            <div className="alert alert-danger" style={{ fontSize: 12.5 }}>
+              <strong>Warning:</strong> confirming will drive stock below zero for {negPrompt}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Only confirmed TikTok sales may go negative — invoices, transfers and adjustments stay blocked. This confirmation is audit-logged and shows on the dashboard until stock is replenished.
+            </div>
+            <div><label>Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
+              <input value={negReason} onChange={e => setNegReason(e.target.value)} placeholder="e.g. LIVE oversold, replenishment on the way" /></div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5 }}>
+              <input type="checkbox" checked={negAck} onChange={e => setNegAck(e.target.checked)} style={{ width: 'auto' }} />
+              I understand these TikTok sales exceed recorded stock and confirm the deduction anyway.
+            </label>
+          </div>
+        </Modal>
+      )}
+
+      {/* Physical return resolution */}
+      {resolvePr && (
+        <Modal title={`Physical Return — order ${resolvePr.order_id}`} maxWidth={440} onClose={() => setResolvePr(null)}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setResolvePr(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy !== null || (!prRestock && prReason === 'other' && !prNote.trim())}
+              onClick={async () => {
+                setBusy('pr'); setErr(null);
+                const { error } = await supabase.rpc('resolve_tiktok_physical_return', {
+                  p_return_id: resolvePr.id, p_restock: prRestock,
+                  p_reason: prRestock ? null : prReason, p_note: prNote.trim() || null,
+                });
+                setBusy(null);
+                if (error) { setErr(error.message); return; }
+                setResolvePr(null); load(); if (activeBatch) loadBatchRows(activeBatch.id);
+              }}>{busy === 'pr' ? 'Saving…' : 'Resolve'}</button>
+          </>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5 }}>Expected quantity: <strong>{resolvePr.expected_qty}</strong> × {resolvePr.seller_sku}</div>
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, marginBottom: 4 }}>
+                <input type="radio" checked={prRestock} onChange={() => setPrRestock(true)} style={{ width: 'auto' }} /> Stock Return — parcel received, put stock back
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
+                <input type="radio" checked={!prRestock} onChange={() => setPrRestock(false)} style={{ width: 'auto' }} /> No Stock Return — reason required
+              </label>
+            </div>
+            {!prRestock && (
+              <div><label>Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
+                <select value={prReason} onChange={e => setPrReason(e.target.value)}>
+                  <option value="damaged">Damaged</option>
+                  <option value="lost">Lost</option>
+                  <option value="not_received">Not received</option>
+                  <option value="other">Other</option>
+                </select></div>
+            )}
+            <div><label>Note{!prRestock && prReason === 'other' && <span style={{ color: 'var(--danger)' }}> *</span>}</label>
+              <input value={prNote} onChange={e => setPrNote(e.target.value)} /></div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Status mappings (Owner/Manager) */}
+      {statusOpen && (
+        <Modal title="TikTok Status Mappings" maxWidth={540} onClose={() => setStatusOpen(false)}
+          footer={<button className="btn btn-secondary" onClick={() => setStatusOpen(false)}>Close</button>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Each TikTok order status maps to Deduct Stock, Return Stock or No Stock Action. "Marks shipped" controls the cancellation lifecycle: after a shipped status, cancellations wait for the physical return instead of restocking automatically. Unknown statuses are treated as Invalid Status.
+            </div>
+            <div>
+              {statusMaps.map(m => (
+                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, opacity: m.is_active ? 1 : 0.5 }}>{m.status_label}</span>
+                  <select value={m.action} style={{ maxWidth: 150 }} onChange={async e => {
+                    const { error } = await supabase.rpc('upsert_tiktok_status_mapping', { p_status_label: m.status_label, p_action: e.target.value, p_marks_shipped: m.marks_shipped, p_is_active: m.is_active });
+                    if (error) setErr(error.message); else load();
+                  }}>
+                    <option value="deduct">Deduct Stock</option>
+                    <option value="return">Return Stock</option>
+                    <option value="none">No Stock Action</option>
+                  </select>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5 }}>
+                    <input type="checkbox" checked={m.marks_shipped} style={{ width: 'auto' }} onChange={async e => {
+                      const { error } = await supabase.rpc('upsert_tiktok_status_mapping', { p_status_label: m.status_label, p_action: m.action, p_marks_shipped: e.target.checked, p_is_active: m.is_active });
+                      if (error) setErr(error.message); else load();
+                    }} /> shipped
+                  </label>
+                  <button className={`btn btn-sm ${m.is_active ? 'btn-danger' : 'btn-primary'}`} onClick={async () => {
+                    const { error } = await supabase.rpc('set_tiktok_status_mapping_active', { p_id: m.id, p_active: !m.is_active });
+                    if (error) setErr(error.message); else load();
+                  }}>{m.is_active ? 'Deactivate' : 'Activate'}</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input placeholder="New TikTok status" value={newStatus} onChange={e => setNewStatus(e.target.value)} style={{ flex: 1 }} />
+              <select value={newAction} onChange={e => setNewAction(e.target.value as any)} style={{ maxWidth: 140 }}>
+                <option value="deduct">Deduct</option>
+                <option value="return">Return</option>
+                <option value="none">No Action</option>
+              </select>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5 }}>
+                <input type="checkbox" checked={newShipped} onChange={e => setNewShipped(e.target.checked)} style={{ width: 'auto' }} /> shipped
+              </label>
+              <button className="btn btn-primary btn-sm" disabled={!newStatus.trim()} onClick={async () => {
+                const { error } = await supabase.rpc('upsert_tiktok_status_mapping', { p_status_label: newStatus.trim(), p_action: newAction, p_marks_shipped: newShipped, p_is_active: true });
+                if (error) setErr(error.message); else { setNewStatus(''); setNewShipped(false); load(); }
+              }}>Add</button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* SKU mapping */}
@@ -433,7 +608,7 @@ const TikTokImportPage: React.FC = () => {
           </>}>
           <div className="form-grid">
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Positive deducts additional stock; negative returns stock. Applies through the row's mapping ({correctRow.matched_kind}: {targetName(correctRow) ?? '?'}) and is recorded with your reason.
+              Creates an Owner/Manager correction batch with a reversing (negative) or additional (positive) stock movement. Applies through the row's mapping ({correctRow.matched_kind}: {targetName(correctRow) ?? '?'}) and is recorded with your reason.
             </div>
             <div><label>Quantity delta</label>
               <input type="number" value={corrDelta} onChange={e => setCorrDelta(parseInt(e.target.value || '0', 10))} /></div>

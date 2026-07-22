@@ -43,6 +43,8 @@ const DashboardPage: React.FC = () => {
   const [transferAlerts, setTransferAlerts] = useState<{ awaiting_receipt: number; overdue: number; open_discrepancies: number } | null>(null);
   // Phase 14 — top customer sources.
   const [topSources, setTopSources] = useState<{ source_label: string; customers_count: number; surveys_count: number }[]>([]);
+  // Phase 16 — negative TikTok stock alerts.
+  const [negStock, setNegStock] = useState<{ store_name: string; kind: string; item_name: string; current_qty: number }[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -62,6 +64,8 @@ const DashboardPage: React.FC = () => {
       // Phase 11: transfer receipt / overdue / discrepancy alerts.
       const { data: ta } = await supabase.rpc('transfer_receipt_alerts');
       const { data: srcs } = await supabase.rpc('report_customer_sources', { p_from: null, p_to: null });
+      const { data: neg } = await supabase.rpc('tiktok_negative_stock_alerts');
+      setNegStock(((neg as any[]) ?? []).filter(n => Number(n.current_qty) < 0));
       setTopSources((((srcs as any[]) ?? []).filter(r => Number(r.customers_count) > 0 || Number(r.surveys_count) > 0)
         .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
       setTransferAlerts((ta as any) ?? null);
@@ -193,6 +197,21 @@ const DashboardPage: React.FC = () => {
                 {transferAlerts.open_discrepancies > 0 && <div style={{ color: 'var(--danger)' }}>Open discrepancies: <strong>{transferAlerts.open_discrepancies}</strong></div>}
                 <div><a href="/transfers">Go to Transfers →</a></div>
               </div>
+            </div>
+          )}
+          {negStock.length > 0 && (
+            <div className="card" style={{ padding: 20, borderLeft: '3px solid var(--danger)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <AlertTriangle size={18} color="var(--danger)" />
+                <h3 style={{ fontSize: 15 }}>Negative TikTok Stock</h3>
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Confirmed TikTok sales exceeded recorded stock — replenish or adjust.</p>
+              {negStock.slice(0, 6).map((n, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '3px 0' }}>
+                  <span>{n.item_name} <span style={{ color: 'var(--text-muted)' }}>({n.kind}, {n.store_name})</span></span>
+                  <strong style={{ color: 'var(--danger)' }}>{n.current_qty}</strong>
+                </div>
+              ))}
             </div>
           )}
           {topSources.length > 0 && (
