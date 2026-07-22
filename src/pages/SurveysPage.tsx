@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Store, SurveyLink, HealthSurvey, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import SurveyDetailModal from '../components/SurveyDetailModal';
+import SourceOptionsModal from '../components/SourceOptionsModal';
 import { RefreshCw, Plus, QrCode, Copy, ClipboardList, Search, Link2, Check, Eye, FileText } from 'lucide-react';
 
 const randomToken = () => {
@@ -67,6 +68,7 @@ const SurveysPage: React.FC = () => {
 
   // ---- QR ----
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [qrFor, setQrFor] = useState<SurveyLink | null>(null);
   const [qrImg, setQrImg] = useState('');
   const [copied, setCopied] = useState(false);
@@ -106,6 +108,7 @@ const SurveysPage: React.FC = () => {
         <div><h2>Health Surveys</h2><p><strong>New Customer Form</strong> submissions from the public QR code. Each submission creates a new customer.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          {canManage && <button className="btn btn-secondary" onClick={() => setSourcesOpen(true)}>Customer Sources</button>}
           {canManage && tab === 'links' && <button className="btn btn-primary" onClick={() => { setAddOpen(true); setErr(null); }}><Plus size={16} /> New QR Link</button>}
         </div>
       </div>
@@ -135,13 +138,15 @@ const SurveysPage: React.FC = () => {
                   <p style={{ fontWeight: 600, marginTop: 8 }}>{surveys.length === 0 ? 'No forms submitted yet' : 'No submissions match'}</p>
                   {surveys.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Create a QR link and let a customer scan it.</p>}</div>
               : <table>
-                  <thead><tr><th>Survey</th><th>Name</th><th>Contact</th><th>Store / Event</th><th>Submitted</th><th>Review</th><th></th></tr></thead>
+                  <thead><tr><th>Survey</th><th>Name</th><th>Contact</th><th>Source</th><th>Store / Event</th><th>Submitted</th><th>Review</th><th></th></tr></thead>
                   <tbody>{shown.map(s => (
                     <tr key={s.id}>
                       <td><strong>{s.survey_no}</strong>
                         {s.pdf_url && <div style={{ fontSize: 10.5, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 3 }}><FileText size={10} /> signed PDF</div>}</td>
                       <td>{s.full_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s.sex ?? ''}{s.age ? ` · ${s.age}y` : ''}</div></td>
                       <td style={{ fontSize: 12.5 }}>{s.phone}{s.email && <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{s.email}</div>}</td>
+                      <td style={{ fontSize: 12.5 }}>{(s as any).source_label ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        {(s as any).source_details && <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{(s as any).source_details}</div>}</td>
                       <td style={{ fontSize: 12.5 }}>{sName(s.store_id)}{s.event_name && <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{s.event_name}</div>}</td>
                       <td style={{ fontSize: 12.5 }}>{new Date(s.submitted_at).toLocaleString()}</td>
                       <td>
@@ -186,6 +191,7 @@ const SurveysPage: React.FC = () => {
       )}
 
       {detailId && <SurveyDetailModal surveyId={detailId} onClose={() => setDetailId(null)} onSaved={load} />}
+      {sourcesOpen && <SourceOptionsModal onClose={() => setSourcesOpen(false)} />}
 
       {addOpen && (
         <Modal title="New Customer Form — QR Link" maxWidth={440} onClose={() => setAddOpen(false)}

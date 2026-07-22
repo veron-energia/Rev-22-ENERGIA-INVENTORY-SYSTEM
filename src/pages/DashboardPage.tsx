@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { ROLE_LABELS, isManagerOrAbove } from '../types';
-import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, TrendingUp, Clock, Ban, Sparkles } from 'lucide-react';
+import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, TrendingUp, Clock, Ban, Sparkles, Users } from 'lucide-react';
 
 interface Counts {
   products: number;
@@ -41,6 +41,8 @@ const DashboardPage: React.FC = () => {
   const [summary, setSummary] = useState<any>(null);
   // Phase 11: transfer receipt alerts (awaiting receipt / overdue / open discrepancies)
   const [transferAlerts, setTransferAlerts] = useState<{ awaiting_receipt: number; overdue: number; open_discrepancies: number } | null>(null);
+  // Phase 14 — top customer sources.
+  const [topSources, setTopSources] = useState<{ source_label: string; customers_count: number; surveys_count: number }[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -59,6 +61,9 @@ const DashboardPage: React.FC = () => {
 
       // Phase 11: transfer receipt / overdue / discrepancy alerts.
       const { data: ta } = await supabase.rpc('transfer_receipt_alerts');
+      const { data: srcs } = await supabase.rpc('report_customer_sources', { p_from: null, p_to: null });
+      setTopSources((((srcs as any[]) ?? []).filter(r => Number(r.customers_count) > 0 || Number(r.surveys_count) > 0)
+        .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
       setTransferAlerts((ta as any) ?? null);
 
       // Today's paid sales.
@@ -188,6 +193,20 @@ const DashboardPage: React.FC = () => {
                 {transferAlerts.open_discrepancies > 0 && <div style={{ color: 'var(--danger)' }}>Open discrepancies: <strong>{transferAlerts.open_discrepancies}</strong></div>}
                 <div><a href="/transfers">Go to Transfers →</a></div>
               </div>
+            </div>
+          )}
+          {topSources.length > 0 && (
+            <div className="card" style={{ padding: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <Users size={18} color="var(--primary)" />
+                <h3 style={{ fontSize: 15 }}>Customer Sources</h3>
+              </div>
+              {topSources.map((r, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '3px 0' }}>
+                  <span>{r.source_label}</span>
+                  <span style={{ color: 'var(--text-muted)' }}><strong style={{ color: 'var(--text)' }}>{r.customers_count}</strong> customers · {r.surveys_count} surveys</span>
+                </div>
+              ))}
             </div>
           )}
           {pendingApprovals > 0 && (

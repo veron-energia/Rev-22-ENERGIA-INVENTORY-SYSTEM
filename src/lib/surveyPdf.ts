@@ -11,6 +11,8 @@ export interface SurveyPdfInput {
   phone: string;
   email?: string | null;
   occupation?: string | null;
+  source_label?: string | null;
+  source_details?: string | null;
   has_medical_condition?: boolean | null;
   drinks_alcohol?: boolean | null;
   smokes?: boolean | null;
@@ -72,6 +74,7 @@ export const buildSurveyPdf = (s: SurveyPdfInput): string => {
   row([['Name', s.full_name], ['HP No.', s.phone]]);
   row([['Date of Birth', d(s.date_of_birth)], ['Age', s.age ? String(s.age) : '—'], ['Sex', s.sex ? (s.sex === 'female' ? 'Female' : 'Male') : '—']]);
   row([['Email', s.email || '—'], ['Occupation', s.occupation || '—']]);
+  row([['How did you hear about us?', (s.source_label || '—') + (s.source_details ? ` — ${s.source_details}` : '')]]);
   line(y); y += 6;
 
   // Declarations

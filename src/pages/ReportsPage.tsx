@@ -11,7 +11,7 @@ import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticke
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -43,6 +43,7 @@ const ReportsPage: React.FC = () => {
   const [repTherapy, setRepTherapy] = useState<any[]>([]);
   const [repDiscounts, setRepDiscounts] = useState<any[]>([]);
   const [repFoc, setRepFoc] = useState<any[]>([]);
+  const [repSources, setRepSources] = useState<any[]>([]);
   const [focSummary, setFocSummary] = useState<any>(null);
 
   const load = useCallback(async () => {
@@ -84,7 +85,7 @@ const ReportsPage: React.FC = () => {
     setProfiles((prof.data as any[]) ?? []);
     setServiceStaff((iss.data as any[]) ?? []);
     // Phase 8 report views (via RPC).
-    const [rm, rp, ra, rt, rdc, rfl, rfs] = await Promise.all([
+    const [rm, rp, ra, rt, rdc, rfl, rfs, rsrc] = await Promise.all([
       supabase.rpc('report_memberships'),
       supabase.rpc('report_pricing'),
       supabase.rpc('report_affiliates'),
@@ -93,6 +94,8 @@ const ReportsPage: React.FC = () => {
       // Phase 12 — FOC. Defaults to the last 30 days on the server.
       supabase.rpc('report_foc_lines', { p_from: null, p_to: null, p_store_id: null }),
       supabase.rpc('report_foc_summary', { p_from: null, p_to: null, p_store_id: null }),
+      // Phase 14 — customer sources (current vs survey snapshots).
+      supabase.rpc('report_customer_sources', { p_from: null, p_to: null }),
     ]);
     setRepMembership((rm.data as any[]) ?? []);
     setRepPricing((rp.data as any[]) ?? []);
@@ -101,6 +104,7 @@ const ReportsPage: React.FC = () => {
     setRepDiscounts((rdc.data as any[]) ?? []);
     setRepFoc((rfl.data as any[]) ?? []);
     setFocSummary(rfs.data ?? null);
+    setRepSources((rsrc.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -205,6 +209,7 @@ const ReportsPage: React.FC = () => {
     { id: 'r_therapy', label: 'Therapy', icon: <Sparkles size={15} /> },
     { id: 'r_discounts', label: 'Discounts', icon: <Ticket size={15} /> },
     { id: 'r_foc', label: 'FOC', icon: <Gift size={15} /> },
+    { id: 'r_sources', label: 'Sources', icon: <Users size={15} /> },
   ];
 
   // 5G-2: voucher / promotion / special reports (paid invoices only).
@@ -257,7 +262,7 @@ const ReportsPage: React.FC = () => {
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
       sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
       r_membership: repMembership, r_pricing: repPricing, r_affiliate: repAffiliate,
-      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc,
+      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
@@ -391,6 +396,18 @@ const ReportsPage: React.FC = () => {
                   <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Store</th><th style={{ textAlign: 'right' }}>Price</th><th>Mode</th><th>Purchased</th><th>Activation</th><th>Expiry</th><th>Status</th><th>Type</th></tr></thead>
                   <tbody>{repTherapy.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No therapy</td></tr>
                     : repTherapy.map((r, i) => <tr key={i}><td>{r.entitlement_no}</td><td><strong>{r.customer_name}</strong></td><td>{r.package_name}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{money(Number(r.price_snapshot))}</td><td>{r.price_mode === 'member' ? 'M' : r.price_mode === 'non_member' ? 'NM' : '—'}</td><td style={{ fontSize: 12 }}>{r.purchase_date ? new Date(r.purchase_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.activation_date ? new Date(r.activation_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.expiry_date ? new Date(r.expiry_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ textTransform: 'capitalize' }}>{String(r.status).replace('_', ' ')}</td><td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.is_legacy ? 'Legacy' : 'Purchased'}</td></tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'r_sources' && (
+                <table>
+                  <thead><tr><th>Source</th><th style={{ textAlign: 'right' }}>Customers (current source)</th><th style={{ textAlign: 'right' }}>Surveys (submission snapshot)</th><th>Status</th></tr></thead>
+                  <tbody>{repSources.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No source data</td></tr>
+                    : repSources.map((r, i) => <tr key={i}>
+                        <td style={{ fontWeight: 600 }}>{r.source_label}</td>
+                        <td style={{ textAlign: 'right' }}>{r.customers_count}</td>
+                        <td style={{ textAlign: 'right' }}>{r.surveys_count}</td>
+                        <td>{r.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                      </tr>)}</tbody>
                 </table>
               )}
               {tab === 'r_foc' && (

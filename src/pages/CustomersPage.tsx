@@ -21,6 +21,15 @@ const CustomersPage: React.FC = () => {
   const [phoneHistory, setPhoneHistory] = useState<{ customer_id: string; phone: string; reason: string | null; created_at: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Phase 14 — customer source: filter + staff correction.
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [sourceOpts, setSourceOpts] = useState<{ id: string; label: string; requires_details: boolean }[]>([]);
+  const [srcFor, setSrcFor] = useState<Customer | null>(null);
+  const [srcOptId, setSrcOptId] = useState('');
+  const [srcDetails, setSrcDetails] = useState('');
+  const [srcReason, setSrcReason] = useState('');
+  const [srcErr, setSrcErr] = useState<string | null>(null);
+  const [srcBusy, setSrcBusy] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blank());
@@ -51,12 +60,14 @@ const CustomersPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [cust, ph] = await Promise.all([
+    const [cust, ph, srcs] = await Promise.all([
       supabase.from('customers').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('customer_phone_history').select('customer_id,phone,reason,created_at'),
+      supabase.rpc('active_customer_source_options'),
     ]);
     setRows((cust.data as Customer[]) ?? []);
     setPhoneHistory((ph.data as any[]) ?? []);
+    setSourceOpts((srcs.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -118,6 +129,8 @@ const CustomersPage: React.FC = () => {
   }, [phoneHistory]);
 
   const filtered = rows.filter(c => {
+    if (sourceFilter === '__none' && (c as any).source_option_id) return false;
+    if (sourceFilter && sourceFilter !== '__none' && (c as any).source_option_id !== sourceFilter) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
     const hist = histByPhone.get(c.id) ?? [];
@@ -140,6 +153,11 @@ const CustomersPage: React.FC = () => {
       <div style={{ marginBottom: 14, position: 'relative', maxWidth: 360 }}>
         <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, phone (incl. old), or email…" style={{ paddingLeft: 34 }} />
+        <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={{ maxWidth: 190, marginLeft: 8 }} title="Filter by customer source">
+          <option value="">All sources</option>
+          {sourceOpts.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+          <option value="__none">No source recorded</option>
+        </select>
       </div>
 
       <div className="card">
@@ -148,18 +166,24 @@ const CustomersPage: React.FC = () => {
           : filtered.length === 0 ? <div className="empty-state"><Users size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No customers yet</p></div>
           : (
             <table>
-              <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Source</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {filtered.map(c => (
                   <tr key={c.id}>
                     <td><strong>{c.full_name}</strong>{c.notes && <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{c.notes.slice(0, 40)}</div>}</td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 13 }}>{c.phone}</td>
                     <td style={{ color: 'var(--text-secondary)' }}>{c.email || '—'}</td>
+                    <td style={{ fontSize: 12.5 }}>
+                      {(c as any).source_label ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      {(c as any).source_details && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{(c as any).source_details}</div>}
+                    </td>
                     <td>{c.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openOverview(c)}><Eye size={13} /> View</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}>Profile</button>
                       <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
+                      <button className="btn btn-secondary btn-sm" title="Change customer source (old surveys keep their snapshot)"
+                        onClick={() => { setSrcFor(c); setSrcOptId((c as any).source_option_id ?? ''); setSrcDetails((c as any).source_details ?? ''); setSrcReason(''); setSrcErr(null); }}>Source</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(c)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>
                     </div></td>
@@ -268,6 +292,43 @@ const CustomersPage: React.FC = () => {
           )}
         </Modal>
       )}
+      {srcFor && (
+        <Modal title={`Customer Source — ${srcFor.full_name}`} maxWidth={420} onClose={() => setSrcFor(null)}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setSrcFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={srcBusy || !srcOptId} onClick={async () => {
+              setSrcBusy(true); setSrcErr(null);
+              const { error } = await supabase.rpc('set_customer_source', {
+                p_customer_id: srcFor.id, p_option_id: srcOptId,
+                p_details: srcDetails.trim() || null, p_reason: srcReason.trim() || null,
+              });
+              setSrcBusy(false);
+              if (error) { setSrcErr(error.message); return; }
+              setSrcFor(null); load();
+            }}>{srcBusy ? 'Saving…' : 'Save Source'}</button>
+          </>}>
+          <div className="form-grid">
+            {srcErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{srcErr}</div>}
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              This updates the customer's <b>current</b> source. Health-survey snapshots are permanent and stay unchanged; the change is audit-logged.
+            </div>
+            <div>
+              <label>Source</label>
+              <select value={srcOptId} onChange={e => { setSrcOptId(e.target.value); setSrcDetails(''); }}>
+                <option value="">— Select —</option>
+                {sourceOpts.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </div>
+            {sourceOpts.find(o => o.id === srcOptId)?.requires_details && (
+              <div><label>Details <span style={{ color: 'var(--danger)' }}>*</span></label>
+                <input value={srcDetails} onChange={e => setSrcDetails(e.target.value)} /></div>
+            )}
+            <div><label>Reason for change</label>
+              <input value={srcReason} onChange={e => setSrcReason(e.target.value)} placeholder="Optional — shown in the audit log" /></div>
+          </div>
+        </Modal>
+      )}
+
       {phoneFor && (
         <Modal title={`Change Phone — ${phoneFor.full_name}`} maxWidth={420} onClose={() => setPhoneFor(null)}
           footer={<><button className="btn btn-secondary" onClick={() => setPhoneFor(null)}>Cancel</button><button className="btn btn-primary" onClick={submitPhoneChange} disabled={phoneBusy}>{phoneBusy ? 'Saving…' : 'Change Number'}</button></>}>

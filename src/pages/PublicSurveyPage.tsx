@@ -25,12 +25,14 @@ const PublicSurveyPage: React.FC = () => {
   const [link, setLink] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [options, setOptions] = useState<HealthSymptomOption[]>([]);
+  const [sourceOptions, setSourceOptions] = useState<{ id: string; label: string; requires_details: boolean }[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
   const [f, setF] = useState<any>({
     full_name: '', date_of_birth: '', age: '', sex: '', phone: '', email: '', occupation: '',
+    source_option_id: '', source_details: '',
     event_name: '',
     has_medical_condition: null, drinks_alcohol: null, smokes: null, on_treatment: null,
     treatment_list: '', others_text: '',
@@ -42,12 +44,14 @@ const PublicSurveyPage: React.FC = () => {
 
   useEffect(() => {
     (async () => {
-      const [info, opts] = await Promise.all([
+      const [info, opts, srcs] = await Promise.all([
         supabase.rpc('survey_link_info', { p_token: token }),
         supabase.from('health_symptom_options').select('*').eq('is_active', true).order('sort_order'),
+        supabase.rpc('active_customer_source_options'),
       ]);
       setLink(info.data ?? { valid: false, reason: 'This survey link could not be checked.' });
       setOptions((opts.data as HealthSymptomOption[]) ?? []);
+      setSourceOptions((srcs.data as { id: string; label: string; requires_details: boolean }[]) ?? []);
       setLoading(false);
     })();
   }, [token]);
@@ -77,6 +81,10 @@ const PublicSurveyPage: React.FC = () => {
     setErr(null);
     if (!f.full_name.trim()) { setErr('Please enter your name.'); return; }
     if (!f.phone.trim()) { setErr('Please enter your mobile number.'); return; }
+    if (!f.email.trim()) { setErr('Please enter your email address.'); return; }
+    if (!f.source_option_id) { setErr('Please tell us how you heard about us.'); return; }
+    const srcOpt = sourceOptions.find(o => o.id === f.source_option_id);
+    if (srcOpt?.requires_details && !f.source_details.trim()) { setErr(`Please add a few details for "${srcOpt.label}".`); return; }
     if (!f.signature_data) { setErr('Please sign in the signature box.'); return; }
 
     const symptoms = Object.entries(ticks).filter(([, v]) => v.on)
@@ -94,6 +102,7 @@ const PublicSurveyPage: React.FC = () => {
         store_name: link.store_name,
         event_name: f.event_name || link.event_name,
         ...f,
+        source_label: sourceOptions.find(o => o.id === f.source_option_id)?.label ?? null,
         symptoms: Object.entries(ticks).filter(([, v]) => v.on).map(([id, v]) => {
           const o = options.find(x => x.id === id)!;
           return { category: o.category, label: o.label, duration_text: v.duration };
@@ -183,7 +192,18 @@ const PublicSurveyPage: React.FC = () => {
         </div>
         <div className="form-grid-2">
           <div className="form-group"><label>HP No. *</label><input value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} inputMode="tel" /></div>
-          <div className="form-group"><label>Email</label><input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+          <div className="form-group"><label>Email *</label><input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required /></div>
+        </div>
+        <div className="form-group">
+          <label>How did you hear about us? *</label>
+          <select value={f.source_option_id} onChange={e => setF({ ...f, source_option_id: e.target.value, source_details: '' })} required>
+            <option value="">— Please choose —</option>
+            {sourceOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+          {sourceOptions.find(o => o.id === f.source_option_id)?.requires_details && (
+            <input style={{ marginTop: 6 }} placeholder="Please tell us more *" value={f.source_details}
+              onChange={e => setF({ ...f, source_details: e.target.value })} required />
+          )}
         </div>
         <div className="form-grid-2">
           <div className="form-group"><label>Occupation</label><input value={f.occupation} onChange={e => setF({ ...f, occupation: e.target.value })} /></div>

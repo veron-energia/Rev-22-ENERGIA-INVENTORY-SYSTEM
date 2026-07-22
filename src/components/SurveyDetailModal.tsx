@@ -128,6 +128,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
             <Field k="Age" v={s.age} />
             <Field k="Sex" v={s.sex ? (s.sex === 'female' ? 'Female' : 'Male') : '—'} />
             <Field k="Occupation" v={s.occupation} />
+            <Field k="How did you hear about us?" v={(s as any).source_label ? `${(s as any).source_label}${(s as any).source_details ? ` — ${(s as any).source_details}` : ''}` : null} />
             <Field k="Event" v={s.event_name} />
             <Field k="Submitted" v={new Date(s.submitted_at).toLocaleString()} />
           </div>
