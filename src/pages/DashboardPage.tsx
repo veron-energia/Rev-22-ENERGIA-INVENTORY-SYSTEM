@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -44,7 +45,11 @@ const DashboardPage: React.FC = () => {
   // Phase 14 — top customer sources.
   const [topSources, setTopSources] = useState<{ source_label: string; customers_count: number; surveys_count: number }[]>([]);
   // Phase 16 — negative TikTok stock alerts.
+  const navigate = useNavigate();
   const [negStock, setNegStock] = useState<{ store_name: string; kind: string; item_name: string; current_qty: number }[]>([]);
+  // Phase 18 — operations alerts + FOC snapshot.
+  const [alerts, setAlerts] = useState<any>(null);
+  const [focLines, setFocLines] = useState<any[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -65,6 +70,10 @@ const DashboardPage: React.FC = () => {
       const { data: ta } = await supabase.rpc('transfer_receipt_alerts');
       const { data: srcs } = await supabase.rpc('report_customer_sources', { p_from: null, p_to: null });
       const { data: neg } = await supabase.rpc('tiktok_negative_stock_alerts');
+      const { data: al } = await supabase.rpc('dashboard_alerts_summary');
+      setAlerts(al ?? null);
+      const { data: fl } = await supabase.rpc('report_foc_lines', { p_from: null, p_to: null, p_store_id: null });
+      setFocLines((fl as any[]) ?? []);
       setNegStock(((neg as any[]) ?? []).filter(n => Number(n.current_qty) < 0));
       setTopSources((((srcs as any[]) ?? []).filter(r => Number(r.customers_count) > 0 || Number(r.surveys_count) > 0)
         .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
@@ -196,6 +205,41 @@ const DashboardPage: React.FC = () => {
                 {transferAlerts.overdue > 0 && <div style={{ color: 'var(--danger)' }}>Overdue &gt; 7 days: <strong>{transferAlerts.overdue}</strong></div>}
                 {transferAlerts.open_discrepancies > 0 && <div style={{ color: 'var(--danger)' }}>Open discrepancies: <strong>{transferAlerts.open_discrepancies}</strong></div>}
                 <div><a href="/transfers">Go to Transfers →</a></div>
+              </div>
+            </div>
+          )}
+          {alerts && (
+            <div className="card" style={{ padding: 20 }}>
+              <h3 style={{ fontSize: 15, marginBottom: 10 }}>Operations Alerts</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+                {([
+                  ['Transfers awaiting receipt', alerts.transfers?.awaiting_receipt, '/transfers'],
+                  ['Transfers overdue > 7 days', alerts.transfers?.overdue_7d, '/transfers'],
+                  ['Open transfer discrepancies', alerts.transfers?.open_discrepancies, '/transfers'],
+                  ['TikTok imported orders', alerts.tiktok?.imported_orders, '/tiktok-import'],
+                  ['TikTok unmatched SKUs', alerts.tiktok?.unmatched_skus, '/tiktok-import'],
+                  ['TikTok awaiting confirmation', alerts.tiktok?.staged_batches, '/tiktok-import'],
+                  ['Orders awaiting settlement', alerts.tiktok?.orders_awaiting_settlement, '/tiktok-import'],
+                  ['Settlement mismatches', alerts.tiktok?.settlement_mismatches, '/tiktok-import'],
+                  ['Awaiting physical return', alerts.tiktok?.awaiting_physical_return, '/tiktok-import'],
+                  ['Negative stock alerts', alerts.tiktok?.negative_stock, '/tiktok-import'],
+                  ['Customers without source', alerts.surveys?.customers_without_source, '/customers'],
+                ] as [string, number, string][]).map(([label, v, to]) => (
+                  <div key={label} onClick={() => navigate(to)} style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', borderLeft: Number(v) > 0 && !label.includes('imported orders') ? '3px solid var(--warning, #d97706)' : undefined }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{v ?? 0}</div>
+                  </div>
+                ))}
+                <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>FOC value (30 days)</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>S${Number(alerts.foc?.value_30d ?? 0).toFixed(2)}</div>
+                  {focLines.length > 0 && (
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 4 }}>
+                      {Object.entries(focLines.reduce((m: Record<string, number>, l: any) => { m[l.store_name] = (m[l.store_name] ?? 0) + Number(l.foc_amount ?? 0); return m; }, {})).slice(0, 2).map(([st, v]) => <div key={st}>{st}: S${Number(v).toFixed(2)}</div>)}
+                      {Object.entries(focLines.reduce((m: Record<string, number>, l: any) => { const k = l.reason_label ?? l.foc_reason ?? 'Other'; m[k] = (m[k] ?? 0) + 1; return m; }, {})).slice(0, 2).map(([rs, c]) => <div key={rs}>{rs}: {c}×</div>)}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}

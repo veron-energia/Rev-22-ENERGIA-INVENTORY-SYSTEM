@@ -140,6 +140,11 @@ const TikTokImportPage: React.FC = () => {
   const [resolvePr, setResolvePr] = useState<any>(null);
   const [prRestock, setPrRestock] = useState(true); const [prReason, setPrReason] = useState('damaged'); const [prNote, setPrNote] = useState('');
   const [negPrompt, setNegPrompt] = useState<string | null>(null);
+  // Phase 18 — page tabs.
+  type PageTab = 'staged' | 'orders' | 'items' | 'settlements' | 'unmatched' | 'recon' | 'history' | 'returns' | 'corrections';
+  const [pageTab, setPageTab] = useState<PageTab>('staged');
+  const [tabRows, setTabRows] = useState<any[]>([]);
+  const [tabLoading, setTabLoading] = useState(false);
   // Phase 17 — settlement staging view.
   const [settleBatch, setSettleBatch] = useState<any>(null);
   const [settleRows, setSettleRows] = useState<any[]>([]);
@@ -220,6 +225,42 @@ const TikTokImportPage: React.FC = () => {
     alert(`Settlement confirmed: ${res.applied} rows (${res.versioned_updates} versioned updates, ${res.pending} pending order match, ${res.unreconciled} reconciliation warnings), ${res.skipped} skipped.`);
     await load(); await loadSettleRows(settleBatch.id);
   };
+
+  // Per-tab data (fetched on demand).
+  useEffect(() => {
+    const fetchTab = async () => {
+      if (pageTab === 'staged' || pageTab === 'history') { setTabRows([]); return; }
+      setTabLoading(true);
+      let rows: any[] = [];
+      if (pageTab === 'orders') {
+        const { data } = await supabase.from('tiktok_order_state').select('*').order('updated_at', { ascending: false }).limit(300);
+        rows = (data as any[]) ?? [];
+      } else if (pageTab === 'items') {
+        const { data } = await supabase.from('tiktok_order_rows').select('*').eq('confirmed', true).order('confirmed_at', { ascending: false }).limit(300);
+        rows = (data as any[]) ?? [];
+      } else if (pageTab === 'settlements') {
+        const { data } = await supabase.rpc('report_tiktok_settlement', { p_store_id: effectiveStore || null, p_from: null, p_to: null });
+        rows = (data as any[]) ?? [];
+      } else if (pageTab === 'unmatched') {
+        const { data } = await supabase.rpc('report_tiktok_unmatched_skus', { p_store_id: effectiveStore || null });
+        rows = (data as any[]) ?? [];
+      } else if (pageTab === 'recon') {
+        const { data } = await supabase.rpc('report_tiktok_recon_exceptions', { p_store_id: effectiveStore || null });
+        rows = (data as any[]) ?? [];
+      } else if (pageTab === 'returns') {
+        const { data } = await supabase.from('tiktok_physical_returns').select('*').order('created_at', { ascending: false }).limit(300);
+        rows = (data as any[]) ?? [];
+      } else if (pageTab === 'corrections') {
+        const { data } = await supabase.from('tiktok_corrections').select('*').order('created_at', { ascending: false }).limit(300);
+        rows = (data as any[]) ?? [];
+      }
+      const filtered = effectiveStore && ['orders', 'items', 'returns', 'corrections'].includes(pageTab)
+        ? rows.filter(r => r.store_id === effectiveStore) : rows;
+      setTabRows(filtered);
+      setTabLoading(false);
+    };
+    fetchTab();
+  }, [pageTab, effectiveStore]);
 
   // ── File parsing (both areas share it) ────────────────────────────────────
   const readGrids = async (file: File): Promise<{ name: string; grid: string[][] }[]> => {
@@ -337,6 +378,16 @@ const TikTokImportPage: React.FC = () => {
 
       {loading ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
         <>
+          {/* Phase 18 tab bar */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+            {([['staged', 'Staged Imports'], ['orders', 'Orders'], ['items', 'Order Items'], ['settlements', 'Settlements'],
+               ['unmatched', 'Unmatched SKUs'], ['recon', 'Reconciliation'], ['history', 'Import History'],
+               ['returns', 'Physical Returns'], ['corrections', 'Corrections']] as const).map(([v, l]) => (
+              <button key={v} onClick={() => setPageTab(v)} style={{ padding: '7px 12px', background: 'none', border: 'none', fontSize: 12.5, borderBottom: pageTab === v ? '2px solid var(--primary)' : '2px solid transparent', color: pageTab === v ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: pageTab === v ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap' }}>{l}</button>
+            ))}
+          </div>
+
+          {pageTab === 'staged' && <>
           {/* Store + the two upload areas */}
           <div className="card" style={{ padding: 16, marginBottom: 14 }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -390,13 +441,13 @@ const TikTokImportPage: React.FC = () => {
             </div>
           )}
 
-          {/* Batches */}
+          {/* Batches (staged view shows staged only; Import History shows all) */}
           <div className="card" style={{ padding: 16, marginBottom: 14 }}>
-            <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Import Batches</h3>
-            {batches.length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No imports yet.</div> : (
+            <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Staged Import Batches</h3>
+            {batches.filter(b => b.status === 'staged').length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No imports yet.</div> : (
               <table>
                 <thead><tr><th>File</th><th>Kind</th><th>Store</th><th>Uploaded</th><th style={{ textAlign: 'right' }}>Rows</th><th style={{ textAlign: 'right' }}>Deducted</th><th style={{ textAlign: 'right' }}>Returned</th><th>Status</th><th></th></tr></thead>
-                <tbody>{batches.map(b => (
+                <tbody>{batches.filter(b => b.status === 'staged').map(b => (
                   <tr key={b.batch_id}>
                     <td style={{ fontSize: 12.5 }}><strong>{b.file_name}</strong>{b.uploaded_by_name && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{b.uploaded_by_name}</div>}</td>
                     <td style={{ fontSize: 12 }}>{b.file_kind}</td>
@@ -536,6 +587,190 @@ const TikTokImportPage: React.FC = () => {
                   </tr>
                 ))}</tbody>
               </table>
+            </div>
+          )}
+          </>}
+
+          {/* Import History: every batch including corrections */}
+          {pageTab === 'history' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Import History</h3>
+              <table>
+                <thead><tr><th>File</th><th>Kind</th><th>Store</th><th>Uploaded</th><th style={{ textAlign: 'right' }}>Rows</th><th style={{ textAlign: 'right' }}>Deducted</th><th style={{ textAlign: 'right' }}>Returned</th><th>Status</th><th></th></tr></thead>
+                <tbody>{batches.map(b => (
+                  <tr key={b.batch_id}>
+                    <td style={{ fontSize: 12.5 }}><strong>{b.file_name}</strong>{b.uploaded_by_name && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{b.uploaded_by_name}</div>}</td>
+                    <td style={{ fontSize: 12 }}>{b.file_kind}</td>
+                    <td style={{ fontSize: 12 }}>{b.store_name}</td>
+                    <td style={{ fontSize: 12 }}>{new Date(b.uploaded_at).toLocaleString()}</td>
+                    <td style={{ textAlign: 'right' }}>{b.row_count}</td>
+                    <td style={{ textAlign: 'right' }}>{b.units_deducted}</td>
+                    <td style={{ textAlign: 'right' }}>{b.units_returned}</td>
+                    <td>{b.status === 'confirmed' ? <span className="badge badge-success">Confirmed</span> : <span className="badge badge-warning">Staged</span>}</td>
+                    <td>{b.file_kind !== 'correction' && <button className="btn btn-secondary btn-sm" onClick={() => { setPageTab('staged'); b.file_kind === 'settlement' ? loadSettleRows(b.batch_id) : loadBatchRows(b.batch_id); }}><Eye size={12} /> Open</button>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Orders */}
+          {pageTab === 'orders' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Imported Orders</h3>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>Order ID</th><th>Seller SKU</th><th>Last Status</th><th style={{ textAlign: 'right' }}>Net Deducted</th><th>Shipped</th><th>Updated</th></tr></thead>
+                  <tbody>{tabRows.map((r, i) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
+                      <td style={{ fontSize: 12 }}>{r.seller_sku}</td>
+                      <td style={{ fontSize: 12 }}>{r.last_status ?? '—'}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.deducted_qty}</td>
+                      <td>{r.was_shipped ? <span className="badge badge-muted">Shipped</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(r.updated_at).toLocaleString()}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Order Items */}
+          {pageTab === 'items' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Confirmed Order Items (latest 300)</h3>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>Order ID</th><th>SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>Status</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th>Version</th><th>Confirmed</th></tr></thead>
+                  <tbody>{tabRows.map(r => (
+                    <tr key={r.id}>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
+                      <td style={{ fontSize: 12 }}>{r.seller_sku}</td>
+                      <td style={{ fontSize: 12 }}>{r.product_name ?? '—'}</td>
+                      <td style={{ textAlign: 'right' }}>{r.quantity}</td>
+                      <td style={{ fontSize: 12 }}>{r.order_status}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.stock_delta}</td>
+                      <td style={{ fontSize: 11.5 }}>v{r.version_no}{r.previous_row_id ? ' (linked)' : ''}</td>
+                      <td style={{ fontSize: 12 }}>{r.confirmed_at ? new Date(r.confirmed_at).toLocaleString() : '—'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Settlements */}
+          {pageTab === 'settlements' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Settlement Transactions (current versions)</h3>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>Date</th><th>Order/Adj ID</th><th>Type</th><th>Match</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>Reconciled</th></tr></thead>
+                  <tbody>{tabRows.map(r => (
+                    <tr key={r.row_id}>
+                      <td style={{ fontSize: 12 }}>{r.financial_date ? new Date(r.financial_date).toLocaleDateString() : '—'}</td>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_adjustment_id}{r.version_no > 1 ? ` (v${r.version_no})` : ''}</td>
+                      <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.txn_class}</td>
+                      <td>{r.match_status === 'matched' ? <span className="badge badge-success">Matched</span> : <span className="badge badge-warning">Pending</span>}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}</td>
+                      <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
+                      <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
+                      <td>{r.reconciled === false ? <span className="badge badge-danger">⚠ Off</span> : r.reconciled === true ? <span className="badge badge-success">OK</span> : '—'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Unmatched SKUs */}
+          {pageTab === 'unmatched' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Unmatched Seller SKUs</h3>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>Store</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Occurrences</th><th>Last Seen</th><th>Status</th><th></th></tr></thead>
+                  <tbody>{tabRows.map((r, i) => (
+                    <tr key={i}>
+                      <td style={{ fontSize: 12 }}>{r.store_name}</td>
+                      <td style={{ fontSize: 12, fontWeight: 600 }}>{r.seller_sku}</td>
+                      <td style={{ textAlign: 'right' }}>{r.occurrences}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(r.last_seen).toLocaleDateString()}</td>
+                      <td>{r.still_unmapped ? <span className="badge badge-warning">Unmapped</span> : <span className="badge badge-success">Now Mapped</span>}</td>
+                      <td>{r.still_unmapped && <button className="btn btn-secondary btn-sm" onClick={() => { setMapSku({ sku: r.seller_sku }); setMapKind('product'); setMapTarget(''); }}>Map</button>}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Reconciliation exceptions */}
+          {pageTab === 'recon' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 4 }}>Reconciliation</h3>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Orders without settlement, settlements without order, and Settlement ≠ Revenue + Fees differences (±$0.01).</p>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>Kind</th><th>Store</th><th>Order ID</th><th>Detail</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+                  <tbody>{tabRows.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>Fully reconciled — no exceptions</td></tr>
+                    : tabRows.map((r, i) => (
+                    <tr key={i}>
+                      <td><span className={`badge ${r.kind === 'reconciliation_difference' ? 'badge-danger' : 'badge-warning'}`}>{r.kind.replace(/_/g, ' ')}</span></td>
+                      <td style={{ fontSize: 12 }}>{r.store_name}</td>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
+                      <td style={{ fontSize: 12 }}>{r.detail}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.amount != null ? Number(r.amount).toFixed(2) : '—'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Physical Returns (all statuses) */}
+          {pageTab === 'returns' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Physical Returns</h3>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>Order ID</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Expected</th><th>Status</th><th>Reason</th><th>Created</th><th></th></tr></thead>
+                  <tbody>{tabRows.map(pr => (
+                    <tr key={pr.id}>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{pr.order_id}</td>
+                      <td style={{ fontSize: 12 }}>{pr.seller_sku}</td>
+                      <td style={{ textAlign: 'right' }}>{pr.expected_qty}</td>
+                      <td>{pr.status === 'awaiting' ? <span className="badge badge-warning">Awaiting</span>
+                        : pr.status === 'restocked' ? <span className="badge badge-success">Restocked</span>
+                        : <span className="badge badge-muted">No Restock</span>}</td>
+                      <td style={{ fontSize: 12 }}>{pr.resolution_reason ?? '—'}{pr.resolution_note && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{pr.resolution_note}</div>}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(pr.created_at).toLocaleDateString()}</td>
+                      <td>{pr.status === 'awaiting' && <button className="btn btn-secondary btn-sm" onClick={() => { setResolvePr(pr); setPrRestock(true); setPrReason('damaged'); setPrNote(''); }}>Resolve</button>}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Corrections */}
+          {pageTab === 'corrections' && (
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Correction History</h3>
+              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
+                <table>
+                  <thead><tr><th>When</th><th>Kind</th><th style={{ textAlign: 'right' }}>Qty Δ</th><th>Reason</th></tr></thead>
+                  <tbody>{tabRows.map(c => (
+                    <tr key={c.id}>
+                      <td style={{ fontSize: 12 }}>{new Date(c.created_at).toLocaleString()}</td>
+                      <td style={{ fontSize: 12 }}>{c.matched_kind ?? '—'}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600, color: c.qty_delta > 0 ? 'var(--danger)' : 'var(--success)' }}>{c.qty_delta > 0 ? `+${c.qty_delta}` : c.qty_delta}</td>
+                      <td style={{ fontSize: 12 }}>{c.reason ?? '—'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
             </div>
           )}
         </>

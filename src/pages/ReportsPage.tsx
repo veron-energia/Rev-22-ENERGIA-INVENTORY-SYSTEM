@@ -11,7 +11,7 @@ import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticke
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok' | 'r_exchange_inv' | 'r_transfers' | 'r_salesrecon';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -46,6 +46,17 @@ const ReportsPage: React.FC = () => {
   const [repSources, setRepSources] = useState<any[]>([]);
   // Phase 17 — TikTok settlement.
   const [ttSummary, setTtSummary] = useState<any>(null);
+  // Phase 18 — extended reports (fetched when their tab opens).
+  const [ttDaily, setTtDaily] = useState<any[]>([]);
+  const [ttBasis, setTtBasis] = useState<'created' | 'settled'>('created');
+  const [ttByStore, setTtByStore] = useState<any[]>([]);
+  const [ttQty, setTtQty] = useState<any[]>([]);
+  const [ttByStatus, setTtByStatus] = useState<any[]>([]);
+  const [exchInv, setExchInv] = useState<any[]>([]);
+  const [trReceipts, setTrReceipts] = useState<any[]>([]);
+  const [trDisc, setTrDisc] = useState<any[]>([]);
+  const [trOverdue, setTrOverdue] = useState<any[]>([]);
+  const [salesRecon, setSalesRecon] = useState<any[]>([]);
   const [ttRows, setTtRows] = useState<any[]>([]);
   const [focSummary, setFocSummary] = useState<any>(null);
 
@@ -199,6 +210,36 @@ const ReportsPage: React.FC = () => {
 
   const totalRevenue = paid.reduce((s, i) => s + Number(i.total_amount), 0);
 
+  // On-demand loads for the Phase 18 tabs.
+  useEffect(() => {
+    const fetchExtras = async () => {
+      if (tab === 'r_tiktok') {
+        const [d, bs, q, st] = await Promise.all([
+          supabase.rpc('report_tiktok_settlement_daily', { p_store_id: null, p_from: null, p_to: null, p_basis: ttBasis }),
+          supabase.rpc('report_tiktok_settlement_by_store', { p_from: null, p_to: null }),
+          supabase.rpc('report_tiktok_qty_sold', { p_store_id: null, p_from: null, p_to: null }),
+          supabase.rpc('report_tiktok_orders_by_status', { p_store_id: null }),
+        ]);
+        setTtDaily((d.data as any[]) ?? []); setTtByStore((bs.data as any[]) ?? []);
+        setTtQty((q.data as any[]) ?? []); setTtByStatus((st.data as any[]) ?? []);
+      } else if (tab === 'r_exchange_inv') {
+        const { data } = await supabase.rpc('report_exchange_invoices', { p_store_id: null, p_from: null, p_to: null });
+        setExchInv((data as any[]) ?? []);
+      } else if (tab === 'r_transfers') {
+        const [rc, dc, od] = await Promise.all([
+          supabase.rpc('report_transfer_receipts', { p_from: null, p_to: null }),
+          supabase.rpc('report_transfer_discrepancies'),
+          supabase.rpc('report_transfers_overdue', { p_days: 7 }),
+        ]);
+        setTrReceipts((rc.data as any[]) ?? []); setTrDisc((dc.data as any[]) ?? []); setTrOverdue((od.data as any[]) ?? []);
+      } else if (tab === 'r_salesrecon') {
+        const { data } = await supabase.rpc('report_sales_reconciliation', { p_store_id: null, p_from: null, p_to: null });
+        setSalesRecon((data as any[]) ?? []);
+      }
+    };
+    fetchExtras();
+  }, [tab, ttBasis]);
+
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'sales_store', label: 'Sales by Store', icon: <TrendingUp size={15} /> },
     { id: 'top_products', label: 'Top Products', icon: <Package size={15} /> },
@@ -218,7 +259,10 @@ const ReportsPage: React.FC = () => {
     { id: 'r_discounts', label: 'Discounts', icon: <Ticket size={15} /> },
     { id: 'r_foc', label: 'FOC', icon: <Gift size={15} /> },
     { id: 'r_sources', label: 'Sources', icon: <Users size={15} /> },
-    { id: 'r_tiktok', label: 'TikTok Settlement', icon: <TrendingUp size={15} /> },
+    { id: 'r_tiktok', label: 'TikTok', icon: <TrendingUp size={15} /> },
+    { id: 'r_exchange_inv', label: 'Exchange Invoices', icon: <Ticket size={15} /> },
+    { id: 'r_transfers', label: 'Transfers', icon: <Package size={15} /> },
+    { id: 'r_salesrecon', label: 'Sales Reconciliation', icon: <BarChart3 size={15} /> },
   ];
 
   // 5G-2: voucher / promotion / special reports (paid invoices only).
@@ -271,7 +315,7 @@ const ReportsPage: React.FC = () => {
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
       sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
       r_membership: repMembership, r_pricing: repPricing, r_affiliate: repAffiliate,
-      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources, r_tiktok: ttRows,
+      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources, r_tiktok: ttRows, r_exchange_inv: exchInv, r_transfers: trReceipts, r_salesrecon: salesRecon,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
@@ -467,6 +511,142 @@ const ReportsPage: React.FC = () => {
                           <td style={{ textAlign: 'right' }}>{money(Number(r.fee_amount ?? 0))}</td>
                           <td>{r.reconciled === false ? <span className="badge badge-danger">⚠ Off</span> : r.reconciled === true ? <span className="badge badge-success">OK</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
                         </tr>)}</tbody>
+                  </table>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 4px' }}>
+                    <h3 style={{ fontSize: 14, flex: 1 }}>Settlement by Day</h3>
+                    {(['created', 'settled'] as const).map(b => (
+                      <button key={b} className={`btn btn-sm ${ttBasis === b ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTtBasis(b)}>
+                        {b === 'created' ? 'Order-created date' : 'Settled date'}</button>
+                    ))}
+                  </div>
+                  <table>
+                    <thead><tr><th>Day</th><th style={{ textAlign: 'right' }}>Txns</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th></tr></thead>
+                    <tbody>{ttDaily.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No data</td></tr>
+                      : ttDaily.map((r, i) => <tr key={i}>
+                          <td style={{ fontSize: 12 }}>{new Date(r.day).toLocaleDateString('en-GB')}</td>
+                          <td style={{ textAlign: 'right' }}>{r.transactions}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.settlement))}</td>
+                          <td style={{ textAlign: 'right' }}>{money(Number(r.revenue))}</td>
+                          <td style={{ textAlign: 'right' }}>{money(Number(r.fees))}</td>
+                        </tr>)}</tbody>
+                  </table>
+
+                  <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Settlement by Store</h3>
+                  <table>
+                    <thead><tr><th>Store</th><th style={{ textAlign: 'right' }}>Txns</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th style={{ textAlign: 'right' }}>Pending</th><th style={{ textAlign: 'right' }}>⚠ Recon</th></tr></thead>
+                    <tbody>{ttByStore.map((r, i) => <tr key={i}>
+                        <td style={{ fontWeight: 600 }}>{r.store_name}</td>
+                        <td style={{ textAlign: 'right' }}>{r.transactions}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.settlement))}</td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.revenue))}</td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.fees))}</td>
+                        <td style={{ textAlign: 'right' }}>{r.pending_count}</td>
+                        <td style={{ textAlign: 'right', color: Number(r.unreconciled_count) > 0 ? 'var(--danger)' : 'inherit' }}>{r.unreconciled_count}</td>
+                      </tr>)}</tbody>
+                  </table>
+
+                  <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Quantity Sold (net of returns)</h3>
+                  <table>
+                    <thead><tr><th>Dimension</th><th>Item</th><th style={{ textAlign: 'right' }}>Orders</th><th style={{ textAlign: 'right' }}>Net Units</th></tr></thead>
+                    <tbody>{ttQty.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No confirmed TikTok sales</td></tr>
+                      : ttQty.map((r, i) => <tr key={i}>
+                          <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.dimension}</td>
+                          <td style={{ fontWeight: 600, fontSize: 12.5 }}>{r.item_name}</td>
+                          <td style={{ textAlign: 'right' }}>{r.orders}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.net_units}</td>
+                        </tr>)}</tbody>
+                  </table>
+
+                  <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Orders by Status</h3>
+                  <table>
+                    <thead><tr><th>Status</th><th style={{ textAlign: 'right' }}>Order Items</th><th style={{ textAlign: 'right' }}>Net Deducted</th></tr></thead>
+                    <tbody>{ttByStatus.map((r, i) => <tr key={i}>
+                        <td style={{ fontSize: 12.5 }}>{r.order_status}</td>
+                        <td style={{ textAlign: 'right' }}>{r.order_items}</td>
+                        <td style={{ textAlign: 'right' }}>{r.net_deducted}</td>
+                      </tr>)}</tbody>
+                  </table>
+                </>
+              )}
+              {tab === 'r_exchange_inv' && (
+                <table>
+                  <thead><tr><th>Exchange</th><th>Invoice</th><th>Store</th><th>Customer</th><th>Date</th><th style={{ textAlign: 'right' }}>Credit</th><th style={{ textAlign: 'right' }}>Replacement</th><th style={{ textAlign: 'right' }}>Top-up</th><th style={{ textAlign: 'right' }}>Non-refundable</th><th>FOC</th></tr></thead>
+                  <tbody>{exchInv.length === 0 ? <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No exchanges</td></tr>
+                    : exchInv.map((r, i) => <tr key={i}>
+                        <td style={{ fontWeight: 600 }}>{r.exchange_no}</td>
+                        <td style={{ fontSize: 12 }}>{r.invoice_no ?? '—'}</td>
+                        <td style={{ fontSize: 12 }}>{r.store_name}</td>
+                        <td style={{ fontSize: 12 }}>{r.customer_name ?? '—'}</td>
+                        <td style={{ fontSize: 12 }}>{new Date(r.created_at).toLocaleDateString('en-GB')}</td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.returned_credit))}</td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.replacement_total))}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.topup_amount) > 0 ? money(Number(r.topup_amount)) : '—'}</td>
+                        <td style={{ textAlign: 'right', color: Number(r.nonrefundable_amount) > 0 ? 'var(--danger)' : 'inherit' }}>{Number(r.nonrefundable_amount) > 0 ? money(Number(r.nonrefundable_amount)) : '—'}</td>
+                        <td>{r.is_foc ? <span className="badge badge-success">FOC {money(Number(r.foc_amount))}</span> : '—'}</td>
+                      </tr>)}</tbody>
+                </table>
+              )}
+              {tab === 'r_transfers' && (
+                <>
+                  <h3 style={{ fontSize: 14, margin: '0 0 4px' }}>Overdue In Transit (&gt; 7 days)</h3>
+                  <table>
+                    <thead><tr><th>From</th><th>To</th><th>Dispatched</th><th style={{ textAlign: 'right' }}>Days</th><th style={{ textAlign: 'right' }}>Lines</th><th style={{ textAlign: 'right' }}>Units</th></tr></thead>
+                    <tbody>{trOverdue.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>Nothing overdue</td></tr>
+                      : trOverdue.map((r, i) => <tr key={i}>
+                          <td style={{ fontSize: 12.5 }}>{r.source_name}</td><td style={{ fontSize: 12.5 }}>{r.dest_name}</td>
+                          <td style={{ fontSize: 12 }}>{new Date(r.dispatched_at).toLocaleDateString('en-GB')}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--danger)', fontWeight: 700 }}>{r.days_in_transit}</td>
+                          <td style={{ textAlign: 'right' }}>{r.line_count}</td>
+                          <td style={{ textAlign: 'right' }}>{r.units_in_transit}</td>
+                        </tr>)}</tbody>
+                  </table>
+                  <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Receipts</h3>
+                  <table>
+                    <thead><tr><th>From</th><th>To</th><th>Received</th><th>By</th><th style={{ textAlign: 'right' }}>Units</th><th>Discrepancy</th></tr></thead>
+                    <tbody>{trReceipts.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No receipts</td></tr>
+                      : trReceipts.map((r, i) => <tr key={i}>
+                          <td style={{ fontSize: 12.5 }}>{r.source_name}</td><td style={{ fontSize: 12.5 }}>{r.dest_name}</td>
+                          <td style={{ fontSize: 12 }}>{new Date(r.received_at).toLocaleString()}</td>
+                          <td style={{ fontSize: 12 }}>{r.received_by_name ?? '—'}</td>
+                          <td style={{ textAlign: 'right' }}>{r.received_units}</td>
+                          <td>{r.had_discrepancy
+                            ? (r.discrepancy_resolved ? <span className="badge badge-muted">Resolved</span> : <span className="badge badge-danger">Open</span>)
+                            : <span className="badge badge-success">Clean</span>}</td>
+                        </tr>)}</tbody>
+                  </table>
+                  <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Discrepancy Lines</h3>
+                  <table>
+                    <thead><tr><th>Destination</th><th>Product</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Received</th><th style={{ textAlign: 'right' }}>Δ</th><th>Reason</th><th>Resolution</th></tr></thead>
+                    <tbody>{trDisc.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No discrepancies</td></tr>
+                      : trDisc.map((r, i) => <tr key={i}>
+                          <td style={{ fontSize: 12.5 }}>{r.dest_name}</td>
+                          <td style={{ fontSize: 12.5 }}>{r.product_name}</td>
+                          <td style={{ textAlign: 'right' }}>{r.approved_quantity}</td>
+                          <td style={{ textAlign: 'right' }}>{r.received_quantity}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--danger)', fontWeight: 700 }}>{r.discrepancy}</td>
+                          <td style={{ fontSize: 12 }}>{r.discrepancy_reason ?? '—'}</td>
+                          <td style={{ fontSize: 12 }}>{r.resolution ?? <span className="badge badge-danger">Open</span>}</td>
+                        </tr>)}</tbody>
+                  </table>
+                </>
+              )}
+              {tab === 'r_salesrecon' && (
+                <>
+                  <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 8 }}>
+                    Three disjoint channels — normal invoices exclude exchange invoices, and TikTok sales never create invoices — so nothing is double-counted.
+                  </p>
+                  <table>
+                    <thead><tr><th>Channel</th><th style={{ textAlign: 'right' }}>Transactions</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+                    <tbody>{salesRecon.map((r, i) => <tr key={i}>
+                        <td style={{ fontWeight: 600, textTransform: 'capitalize' }}>{String(r.channel).replace(/_/g, ' ')}</td>
+                        <td style={{ textAlign: 'right' }}>{r.transactions}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.amount))}</td>
+                      </tr>)}
+                      <tr><td><strong>Total</strong></td>
+                        <td style={{ textAlign: 'right' }}><strong>{salesRecon.reduce((a, r) => a + Number(r.transactions), 0)}</strong></td>
+                        <td style={{ textAlign: 'right' }}><strong>{money(salesRecon.reduce((a, r) => a + Number(r.amount), 0))}</strong></td></tr>
+                    </tbody>
                   </table>
                 </>
               )}
