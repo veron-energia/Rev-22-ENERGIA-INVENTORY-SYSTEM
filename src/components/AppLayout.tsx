@@ -5,7 +5,7 @@ import { ROLE_LABELS, isManagerOrAbove, isOwnerOrManager, isOwnerOrAdmin, canMan
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
-  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Award, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X } from 'lucide-react';
+  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Award, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X , Upload } from 'lucide-react';
 
 interface NavItem {
   to: string;
@@ -40,6 +40,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   const salesNav: NavItem[] = [
     { to: '/invoices', label: 'Invoices', icon: <FileText size={17} />, show: true },
+    { to: '/tiktok-import', label: 'TikTok Sales Import', icon: <Upload size={17} />, show: true },
     { to: '/exchanges', label: 'Exchanges', icon: <Repeat size={17} />, show: true },
     { to: '/therapy', label: 'Therapy', icon: <Sparkles size={17} />, show: true },
     { to: '/surveys', label: 'Health Surveys', icon: <ClipboardList size={17} />, show: true },
