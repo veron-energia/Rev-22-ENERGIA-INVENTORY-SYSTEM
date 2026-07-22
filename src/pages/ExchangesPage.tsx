@@ -10,6 +10,7 @@ const money = (n: number) => `S$${Number(n).toFixed(2)}`;
 const ExchangesPage: React.FC = () => {
   const { profile } = useAuth();
   const [exchanges, setExchanges] = useState<ProductExchange[]>([]);
+  const [exchangeInvoiceNos, setExchangeInvoiceNos] = useState<Record<string, string>>({});
   const [products, setProducts] = useState<Product[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -24,8 +25,9 @@ const ExchangesPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [ex, pr, st, cu, pm, spp, si, mine, promo] = await Promise.all([
+    const [ex, exinv, pr, st, cu, pm, spp, si, mine, promo] = await Promise.all([
       supabase.from('product_exchanges').select('*').order('created_at', { ascending: false }),
+      supabase.from('invoices').select('id, invoice_no, exchange_id').eq('is_exchange', true),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('customers').select('*').is('deleted_at', null),
@@ -36,6 +38,9 @@ const ExchangesPage: React.FC = () => {
       supabase.from('promotions').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
     ]);
     setExchanges((ex.data as ProductExchange[]) ?? []);
+    const exMap: Record<string, string> = {};
+    for (const r of ((exinv.data as any[]) ?? [])) if (r.exchange_id) exMap[r.exchange_id] = r.invoice_no;
+    setExchangeInvoiceNos(exMap);
     setProducts((pr.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
     setCustomers((cu.data as Customer[]) ?? []);
@@ -232,7 +237,9 @@ const ExchangesPage: React.FC = () => {
               <tbody>
                 {exchanges.map(e => (
                   <tr key={e.id}>
-                    <td><strong>{e.exchange_no}</strong></td>
+                    <td><strong>{e.exchange_no}</strong>
+                      {exchangeInvoiceNos[e.id] && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Invoice {exchangeInvoiceNos[e.id]}</div>}
+                    </td>
                     <td style={{ fontSize: 12.5 }}>{new Date(e.created_at).toLocaleDateString()}</td>
                     <td>{cName(e.customer_id)}</td>
                     <td style={{ fontSize: 12.5 }}>{sName(e.processing_store_id)}</td>
@@ -460,7 +467,7 @@ const ExchangesPage: React.FC = () => {
 
       {/* Detail */}
       {detail && (
-        <Modal title={`Exchange ${detail.exchange_no}`} maxWidth={520} onClose={() => setDetail(null)}
+        <Modal title={`Exchange ${detail.exchange_no}${exchangeInvoiceNos[detail.id] ? ` — Invoice ${exchangeInvoiceNos[detail.id]}` : ''}`} maxWidth={520} onClose={() => setDetail(null)}
           footer={<button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>}>
           <div className="form-grid">
             <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cName(detail.customer_id)} · {sName(detail.processing_store_id)} · {new Date(detail.created_at).toLocaleString()}</div>

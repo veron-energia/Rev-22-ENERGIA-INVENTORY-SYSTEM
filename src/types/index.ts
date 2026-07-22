@@ -336,6 +336,20 @@ export interface Invoice {
   foc_confirmed_at?: string | null;
   foc_confirmed_by?: string | null;
   is_topup?: boolean;
+  // Phase 13 — exchange invoices
+  is_exchange?: boolean;
+  exchange_id?: string | null;
+  exchange_credit_total?: number;
+}
+
+// ── Phase 13: invoice revision history ───────────────────────────────────────
+export interface InvoiceRevision {
+  id: string;
+  invoice_id: string;
+  revision_no: number;
+  edited_by: string | null;
+  edit_reason: string | null;
+  edited_at: string;
 }
 
 export interface InvoiceItem {

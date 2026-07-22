@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import MembershipBadge from '../components/MembershipBadge';
 import { MembershipStatusPanel, MembershipSelector, MemberIdField, FullMembershipStatus } from '../components/MembershipInvoice';
 import { LineOverrideModal, PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
-import type { FocReason } from '../types';
+import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
@@ -88,6 +88,10 @@ const InvoicesPage: React.FC = () => {
   const [focReasons, setFocReasons] = useState<FocReason[]>([]);
   const [cMembershipFoc, setCMembershipFoc] = useState<{ on: boolean; reason_id: string; note: string }>({ on: false, reason_id: '', note: '' });
   const [focBusy, setFocBusy] = useState(false);
+  // Phase 13 — edit mode + exchange detail + revision history
+  const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
+  const [detailExchange, setDetailExchange] = useState<any>(null);
+  const [detailRevisions, setDetailRevisions] = useState<InvoiceRevision[]>([]);
   const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
   const [focQty, setFocQty] = useState(1);
   const [focReasonId, setFocReasonId] = useState('');
@@ -438,18 +442,28 @@ const InvoicesPage: React.FC = () => {
     if (cMembership) allItems.push({ kind: 'membership', plan_id: cMembership.plan_id, member_id: (cMembership.owned_id || cMembership.member_id) || null, quantity: 1,
       ...(cMembershipFoc.on ? { foc_quantity: 1, foc_reason_id: cMembershipFoc.reason_id || null, foc_reason: cMembershipFoc.note || null } : {}) });
     setCSaving(true); setCErr(null);
-    const { data: newInvId, error } = await supabase.rpc('create_invoice', {
-      p_store_id: effectiveStore, p_customer_id: cCustomer, p_affiliate_id: null,
-      p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
-      p_discount_voucher_id: cDiscountVoucher || null,
-      p_service_staff: cServiceStaff,
-    });
+    // Phase 13: the same payload edits an existing unpaid invoice in place —
+    // update_invoice revalidates every rule exactly as create_invoice does.
+    const { data: rpcId, error } = editingInvoiceId
+      ? await supabase.rpc('update_invoice', {
+          p_invoice_id: editingInvoiceId, p_customer_id: cCustomer, p_affiliate_id: null,
+          p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
+          p_discount_voucher_id: cDiscountVoucher || null,
+          p_service_staff: cServiceStaff, p_edit_reason: null,
+        })
+      : await supabase.rpc('create_invoice', {
+          p_store_id: effectiveStore, p_customer_id: cCustomer, p_affiliate_id: null,
+          p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
+          p_discount_voucher_id: cDiscountVoucher || null,
+          p_service_staff: cServiceStaff,
+        });
     setCSaving(false);
     if (error) { setCErr(error.message); return; }
-    // Save Earth discount (applied post-create; snapshots the global default).
-    if (newInvId && saveEarthOn) {
+    const newInvId = editingInvoiceId ?? (rpcId as string | null);
+    // Save Earth (post-create; on edit this also handles switching it off).
+    if (newInvId && (saveEarthOn || editingInvoiceId)) {
       await supabase.rpc('set_invoice_save_earth', {
-        p_invoice_id: newInvId, p_applied: true,
+        p_invoice_id: newInvId, p_applied: saveEarthOn,
         p_label: saveEarthLabel || null, p_amount: saveEarthAmount,
       });
     }
@@ -461,7 +475,64 @@ const InvoicesPage: React.FC = () => {
         await supabase.rpc('audit_create_time_override', { p_item_id: it.id });
       }
     }
-    setCreateOpen(false); resetCreate(); loadAll();
+    setCreateOpen(false); resetCreate(); setEditingInvoiceId(null); loadAll();
+  };
+
+  // Phase 13 — prefill the builder modal from an unpaid invoice and switch it
+  // into edit mode. Store is shown but locked; number/date never change.
+  const openEdit = () => {
+    if (!detail) return;
+    const selByItem: Record<string, Record<string, Record<string, number>>> = {};
+    for (const s0 of detailSelections) {
+      const it = s0.invoice_item_id as string, g = s0.group_id as string;
+      const key = (s0.product_id ?? s0.voucher_id) as string;
+      if (!key) continue;
+      selByItem[it] = selByItem[it] ?? {};
+      selByItem[it][g] = selByItem[it][g] ?? {};
+      selByItem[it][g][key] = (selByItem[it][g][key] ?? 0) + Number(s0.quantity ?? 0);
+    }
+    const lines: LineDraft[] = [];
+    let memb: typeof cMembership = null;
+    let membFoc = { on: false, reason_id: '', note: '' };
+    for (const it of detailItems) {
+      const ovr = it.price_overridden && it.price_mode
+        ? { price_mode_override: it.price_mode as 'member' | 'non_member', override_reason: it.override_reason ?? '' }
+        : {};
+      const foc = Number(it.foc_quantity ?? 0) > 0
+        ? { foc_quantity: Number(it.foc_quantity), foc_reason_id: (it as any).foc_reason_id ?? '', foc_reason: '' }
+        : {};
+      if (it.line_kind === 'membership') {
+        memb = {
+          plan_id: (it as any).membership_plan_id, member_id: it.member_id_snapshot ?? '',
+          fee: Number(it.unit_price), plan_name: it.plan_name_snapshot ?? 'Membership',
+          owned_id: detailOwnedId,
+        };
+        if (Number(it.foc_quantity ?? 0) > 0) membFoc = { on: true, reason_id: (it as any).foc_reason_id ?? '', note: '' };
+      } else if (it.line_kind === 'therapy') {
+        lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+      } else if (it.line_kind === 'voucher') {
+        lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+      } else if (it.line_kind === 'promotion') {
+        lines.push({ kind: 'promotion', product_id: '', voucher_id: '', promotion_id: (it as any).promotion_id ?? '', quantity: it.quantity, line_voucher_id: '', selections: selByItem[it.id] ?? {}, ...ovr, ...foc });
+      } else {
+        lines.push({ kind: 'product', product_id: it.product_id ?? '', voucher_id: '', promotion_id: '', quantity: it.quantity, line_voucher_id: (it as any).line_voucher_id ?? '', selections: {}, ...ovr, ...foc });
+      }
+    }
+    setCStore(detail.store_id);
+    setCCustomer(detail.customer_id);
+    setCLines(lines.length ? lines : [{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
+    setCMembership(memb);
+    setCMembershipFoc(membFoc);
+    setCDiscount(Number((detail as any).manual_discount ?? 0));
+    setCDiscountVoucher((detail as any).discount_voucher_id ?? '');
+    setCServiceStaff(detailServiceStaff);
+    setSaveEarthOn(!!(detail as any).save_earth_applied);
+    setSaveEarthLabel((detail as any).save_earth_label ?? saveEarthDefault.label);
+    setSaveEarthAmount(Number((detail as any).save_earth_amount ?? saveEarthDefault.amount));
+    setEditingInvoiceId(detail.id);
+    setDetail(null);
+    setCErr(null);
+    setCreateOpen(true);
   };
 
   const openDetail = async (inv: Invoice) => {
@@ -494,6 +565,15 @@ const InvoicesPage: React.FC = () => {
     ]);
     setDetailPromoItems((pi.data as any[]) ?? []);
     setDetailSelections((sel.data as any[]) ?? []);
+    // Phase 13 — exchange context + revision history.
+    if ((inv as any).is_exchange) {
+      const { data: exd } = await supabase.rpc('exchange_invoice_details', { p_invoice_id: inv.id });
+      setDetailExchange(exd ?? null);
+    } else setDetailExchange(null);
+    const { data: revs } = await supabase.from('invoice_revisions')
+      .select('id, invoice_id, revision_no, edited_by, edit_reason, edited_at')
+      .eq('invoice_id', inv.id).order('revision_no', { ascending: false });
+    setDetailRevisions((revs as InvoiceRevision[]) ?? []);
     const remaining = inv.total_amount - inv.paid_amount;
     setPayLines([{ payment_method_id: methods[0]?.id ?? '', amount: remaining > 0 ? remaining : 0 }]);
     setPayErr(null);
@@ -669,6 +749,14 @@ const InvoicesPage: React.FC = () => {
       : '';
 
     const totalPaid = detailPayments.reduce((s, p) => s + Number(p.amount), 0);
+    const ex = detailExchange?.found ? detailExchange : null;
+    const exchangeBlock = ex ? `
+      <h2>Exchange Details</h2>
+      <div class="mut">Exchange ${esc(ex.exchange_no ?? '')} · Original invoice <b>${esc(ex.original_invoice_no ?? '')}</b>${ex.reason ? ` · Reason: ${esc(ex.reason)}` : ''}</div>
+      <table><thead><tr><th>Returned Item</th><th class="r">Qty</th><th class="r">Value</th></tr></thead><tbody>
+        ${(ex.returned_items ?? []).map((r: any) => `<tr><td>${esc(r.product ?? '')}</td><td class="r">${r.quantity}</td><td class="r">S$${Number(r.line_total).toFixed(2)}</td></tr>`).join('')}
+        <tr><td colspan="2"><b>Returned value (exchange credit)</b></td><td class="r"><b>S$${Number(ex.returned_total ?? 0).toFixed(2)}</b></td></tr>
+      </tbody></table>` : '';
     const focTotal = Number((detail as any).foc_total ?? 0);
     const focStamp = focTotal > 0
       ? `<div class="mut"><b>${(detail as any).is_full_foc ? 'FREE OF CHARGE' : 'INCLUDES FOC ITEMS'}</b> — FOC value S$${focTotal.toFixed(2)}</div>`
@@ -754,17 +842,20 @@ const InvoicesPage: React.FC = () => {
             <div class="mut">Status: ${esc(detail.status)}</div></div>
         </div>
         ${focStamp}
+        ${ex ? `<div class="mut"><b>EXCHANGE INVOICE</b> — replaces items from ${esc(ex.original_invoice_no ?? '')}</div>` : ''}
         <h2>Bill To</h2>
         <div>${esc(cust?.full_name ?? '—')}</div><div class="mut">${esc(cust?.phone ?? '')}</div>
         <h2>Items</h2>
-        <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>${itemRows}</tbody></table>
+        ${exchangeBlock}
+        <table><thead><tr><th>${ex ? 'Replacement Item' : 'Item'}</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>${itemRows}</tbody></table>
         <table class="totals">
           ${focTotal > 0 ? `<tr><td>Normal value</td><td class="r">S$${(Number(detail.subtotal) + focTotal).toFixed(2)}</td></tr>
           <tr><td>FOC (free of charge)</td><td class="r">−S$${focTotal.toFixed(2)}</td></tr>` : ''}
           <tr><td>Subtotal${focTotal > 0 ? ' (chargeable)' : ''}</td><td class="r">S$${Number(detail.subtotal).toFixed(2)}</td></tr>
-          <tr><td>Discount</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
+          <tr><td>${ex ? 'Exchange credit applied' : 'Discount'}</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
+          ${ex && Number(ex.foc_waived ?? 0) > 0 ? `<tr><td>incl. FOC waived top-up</td><td class="r">−S$${Number(ex.foc_waived).toFixed(2)}</td></tr>` : ''}
           ${gstEnabled && gstRate > 0 ? `<tr><td>GST (${gstRate}%, incl.)</td><td class="r">S$${gstAmount.toFixed(2)}</td></tr>` : ''}
-          <tr class="grand"><td>Total</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
+          <tr class="grand"><td>${ex ? 'Net Top-Up' : 'Total'}</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
         </table>
         ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
         ${therapyBlock}
@@ -874,8 +965,8 @@ const InvoicesPage: React.FC = () => {
 
       {/* Create invoice modal */}
       {createOpen && (
-        <Modal title="New Invoice" maxWidth={640} onClose={() => setCreateOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setCreateOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Creating…' : 'Create Invoice'}</button></>}>
+        <Modal title={editingInvoiceId ? "Edit Invoice" : "New Invoice"} maxWidth={640} onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); }}
+          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); }}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button></>}>
           <div className="form-grid">
             {cErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
             <div className="form-grid-2">
@@ -884,7 +975,7 @@ const InvoicesPage: React.FC = () => {
                 {isStaff ? (
                   <input value={stores.find(s => s.id === (assignedStoreId ?? ''))?.name ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />
                 ) : (
-                  <select value={cStore} onChange={e => { setCStore(e.target.value); setCMembership(null); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
+                  <select value={cStore} disabled={!!editingInvoiceId} title={editingInvoiceId ? "The store cannot be changed on an existing invoice" : undefined} onChange={e => { setCStore(e.target.value); setCMembership(null); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
                     <option value="">— Select store —</option>
                     {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
@@ -1204,6 +1295,14 @@ const InvoicesPage: React.FC = () => {
                   <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>{isOwnerOrManager(profile?.role) ? 'Refund/Cancel' : 'Request Refund'}</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
+              : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
+                  && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
+                  <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+                  <button className="btn btn-secondary" onClick={openEdit}><FileText size={14} /> Edit Invoice</button>
+                  {detail.is_full_foc && Number(detail.total_amount) <= 0
+                    ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
+                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
               : detail.status === 'completed_foc'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
               : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
@@ -1213,6 +1312,27 @@ const InvoicesPage: React.FC = () => {
           }>
           <div className="form-grid">
             {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
+            {detailExchange?.found && (
+              <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', background: 'var(--surface-2)', fontSize: 12.5 }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>Exchange Invoice — {detailExchange.exchange_no}</div>
+                <div style={{ color: 'var(--text-muted)' }}>Original invoice: <b>{detailExchange.original_invoice_no}</b>{detailExchange.reason ? <> · Reason: {detailExchange.reason}</> : null}</div>
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ fontWeight: 600 }}>Returned</div>
+                  {(detailExchange.returned_items ?? []).map((r: any, i: number) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}><span>{r.product} × {r.quantity}</span><span>{money(Number(r.line_total))}</span></div>
+                  ))}
+                  <div style={{ fontWeight: 600, marginTop: 4 }}>Replacement</div>
+                  {(detailExchange.replacement_items ?? []).map((r: any, i: number) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}><span>{r.product} × {r.quantity}</span><span>{money(Number(r.line_total))}</span></div>
+                  ))}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, color: 'var(--success)' }}><span>Exchange credit</span><span>− {money(Number(detailExchange.exchange_credit_applied ?? 0))}</span></div>
+                  {Number(detailExchange.nonrefundable ?? 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}><span>Non-refundable difference</span><span>{money(Number(detailExchange.nonrefundable))}</span></div>}
+                  {Number(detailExchange.foc_waived ?? 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--success)' }}><span>FOC (waived top-up)</span><span>− {money(Number(detailExchange.foc_waived))}</span></div>}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, marginTop: 2 }}><span>Net top-up paid</span><span>{money(Number(detailExchange.net_topup ?? 0))}</span></div>
+                </div>
+                <div style={{ color: 'var(--text-muted)', marginTop: 6 }}>Processed by {detailExchange.processed_by ?? '—'} · {detailExchange.processing_store ?? ''}</div>
+              </div>
+            )}
             {/* Summary */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
@@ -1231,6 +1351,13 @@ const InvoicesPage: React.FC = () => {
               </div>
             </div>
 
+            {detailRevisions.length > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                <b>Edit history:</b> {detailRevisions.map(r =>
+                  `#${r.revision_no} ${new Date(r.edited_at).toLocaleString('en-GB')}${r.edit_reason ? ` — ${r.edit_reason}` : ''}`
+                ).join(' · ')}
+              </div>
+            )}
             {/* Items */}
             <div>
               <label>Items</label>
