@@ -101,6 +101,12 @@ const SurveysPage: React.FC = () => {
     .filter(s => !q || s.full_name.toLowerCase().includes(q)
     || s.phone.toLowerCase().includes(q) || (s.email ?? '').toLowerCase().includes(q)
     || s.survey_no.toLowerCase().includes(q));
+  // Today's submissions lead; everything else follows.
+  const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
+  const grouped = [
+    { label: 'Today', items: shown.filter(s => isToday(s.submitted_at)) },
+    { label: 'Earlier', items: shown.filter(s => !isToday(s.submitted_at)) },
+  ].filter(g => g.items.length > 0);
 
   return (
     <div>
@@ -139,7 +145,10 @@ const SurveysPage: React.FC = () => {
                   {surveys.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Create a QR link and let a customer scan it.</p>}</div>
               : <table>
                   <thead><tr><th>Survey</th><th>Name</th><th>Contact</th><th>Source</th><th>Store / Event</th><th>Submitted</th><th>Review</th><th></th></tr></thead>
-                  <tbody>{shown.map(s => (
+                  <tbody>{grouped.map(g => (
+                    <React.Fragment key={g.label}>
+                      <tr><td colSpan={8} style={{ background: 'var(--surface-2)', fontWeight: 700, fontSize: 12, color: 'var(--text-secondary)', padding: '6px 12px' }}>{g.label} ({g.items.length})</td></tr>
+                      {g.items.map(s => (
                     <tr key={s.id}>
                       <td><strong>{s.survey_no}</strong>
                         {s.pdf_url && <div style={{ fontSize: 10.5, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 3 }}><FileText size={10} /> signed PDF</div>}</td>
@@ -157,6 +166,8 @@ const SurveysPage: React.FC = () => {
                       </td>
                       <td><button className="btn btn-secondary btn-sm" onClick={() => setDetailId(s.id)}><Eye size={12} /> Open</button></td>
                     </tr>
+                      ))}
+                    </React.Fragment>
                   ))}</tbody>
                 </table>}
           </div></div>

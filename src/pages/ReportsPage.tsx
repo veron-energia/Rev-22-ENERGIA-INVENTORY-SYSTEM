@@ -11,7 +11,7 @@ import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticke
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -44,6 +44,9 @@ const ReportsPage: React.FC = () => {
   const [repDiscounts, setRepDiscounts] = useState<any[]>([]);
   const [repFoc, setRepFoc] = useState<any[]>([]);
   const [repSources, setRepSources] = useState<any[]>([]);
+  // Phase 17 — TikTok settlement.
+  const [ttSummary, setTtSummary] = useState<any>(null);
+  const [ttRows, setTtRows] = useState<any[]>([]);
   const [focSummary, setFocSummary] = useState<any>(null);
 
   const load = useCallback(async () => {
@@ -85,7 +88,7 @@ const ReportsPage: React.FC = () => {
     setProfiles((prof.data as any[]) ?? []);
     setServiceStaff((iss.data as any[]) ?? []);
     // Phase 8 report views (via RPC).
-    const [rm, rp, ra, rt, rdc, rfl, rfs, rsrc] = await Promise.all([
+    const [rm, rp, ra, rt, rdc, rfl, rfs, rsrc, tts, ttr] = await Promise.all([
       supabase.rpc('report_memberships'),
       supabase.rpc('report_pricing'),
       supabase.rpc('report_affiliates'),
@@ -96,6 +99,9 @@ const ReportsPage: React.FC = () => {
       supabase.rpc('report_foc_summary', { p_from: null, p_to: null, p_store_id: null }),
       // Phase 14 — customer sources (current vs survey snapshots).
       supabase.rpc('report_customer_sources', { p_from: null, p_to: null }),
+      // Phase 17 — TikTok settlement (main figure: Total Settlement Amount).
+      supabase.rpc('report_tiktok_settlement_summary', { p_store_id: null, p_from: null, p_to: null }),
+      supabase.rpc('report_tiktok_settlement', { p_store_id: null, p_from: null, p_to: null }),
     ]);
     setRepMembership((rm.data as any[]) ?? []);
     setRepPricing((rp.data as any[]) ?? []);
@@ -105,6 +111,8 @@ const ReportsPage: React.FC = () => {
     setRepFoc((rfl.data as any[]) ?? []);
     setFocSummary(rfs.data ?? null);
     setRepSources((rsrc.data as any[]) ?? []);
+    setTtSummary(((tts.data as any[]) ?? [])[0] ?? null);
+    setTtRows((ttr.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -210,6 +218,7 @@ const ReportsPage: React.FC = () => {
     { id: 'r_discounts', label: 'Discounts', icon: <Ticket size={15} /> },
     { id: 'r_foc', label: 'FOC', icon: <Gift size={15} /> },
     { id: 'r_sources', label: 'Sources', icon: <Users size={15} /> },
+    { id: 'r_tiktok', label: 'TikTok Settlement', icon: <TrendingUp size={15} /> },
   ];
 
   // 5G-2: voucher / promotion / special reports (paid invoices only).
@@ -262,7 +271,7 @@ const ReportsPage: React.FC = () => {
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
       sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
       r_membership: repMembership, r_pricing: repPricing, r_affiliate: repAffiliate,
-      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources,
+      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources, r_tiktok: ttRows,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
@@ -409,6 +418,57 @@ const ReportsPage: React.FC = () => {
                         <td>{r.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                       </tr>)}</tbody>
                 </table>
+              )}
+              {tab === 'r_tiktok' && (
+                <>
+                  {ttSummary && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Total Settlement (main)</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_settlement ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Total Revenue</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_revenue ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Total Fees</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_fees ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Adjustments</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_adjustments ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Refunds</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_refunds ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14, borderLeft: Number(ttSummary.pending_count) > 0 ? '3px solid var(--warning, #d97706)' : undefined }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Pending order match</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{ttSummary.pending_count ?? 0}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14, borderLeft: Number(ttSummary.unreconciled_count) > 0 ? '3px solid var(--danger)' : undefined }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Reconciliation warnings</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)', color: Number(ttSummary.unreconciled_count) > 0 ? 'var(--danger)' : 'inherit' }}>{ttSummary.unreconciled_count ?? 0}</div>
+                      </div>
+                    </div>
+                  )}
+                  <table>
+                    <thead><tr><th>Date</th><th>Order/Adj ID</th><th>Type</th><th>Store</th><th>Match</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>Reconciled</th></tr></thead>
+                    <tbody>{ttRows.length === 0 ? <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No settlement data</td></tr>
+                      : ttRows.map((r, i) => <tr key={i}>
+                          <td style={{ fontSize: 12 }}>{r.financial_date ? new Date(r.financial_date).toLocaleDateString('en-GB') : '—'}</td>
+                          <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_adjustment_id}{r.version_no > 1 ? ` (v${r.version_no})` : ''}</td>
+                          <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.txn_class}</td>
+                          <td style={{ fontSize: 12 }}>{r.store_name}</td>
+                          <td>{r.match_status === 'matched' ? <span className="badge badge-success">Matched</span> : <span className="badge badge-warning">Pending</span>}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.settlement_amount ?? 0))}</td>
+                          <td style={{ textAlign: 'right' }}>{money(Number(r.revenue_amount ?? 0))}</td>
+                          <td style={{ textAlign: 'right' }}>{money(Number(r.fee_amount ?? 0))}</td>
+                          <td>{r.reconciled === false ? <span className="badge badge-danger">⚠ Off</span> : r.reconciled === true ? <span className="badge badge-success">OK</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
+                        </tr>)}</tbody>
+                  </table>
+                </>
               )}
               {tab === 'r_foc' && (
                 <>

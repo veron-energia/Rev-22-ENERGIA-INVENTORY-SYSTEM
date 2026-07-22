@@ -77,14 +77,25 @@ const PublicSurveyPage: React.FC = () => {
   const toggle = (id: string) => setTicks(t => ({ ...t, [id]: { on: !t[id]?.on, duration: t[id]?.duration ?? '' } }));
   const setDur = (id: string, d: string) => setTicks(t => ({ ...t, [id]: { on: t[id]?.on ?? true, duration: d } }));
 
+  // When the QR link carries an Event, the source is known — the customer
+  // came through that event. The question is skipped and the submission
+  // auto-uses the Roadshow/Event source with the event name as details.
+  const eventSource = link?.event_name
+    ? sourceOptions.find(o => /event|roadshow/i.test(o.label))
+    : undefined;
+  const effSourceId = eventSource?.id ?? f.source_option_id;
+  const effSourceDetails = eventSource ? String(link.event_name) : f.source_details;
+
   const submit = async () => {
     setErr(null);
     if (!f.full_name.trim()) { setErr('Please enter your name.'); return; }
     if (!f.phone.trim()) { setErr('Please enter your mobile number.'); return; }
     if (!f.email.trim()) { setErr('Please enter your email address.'); return; }
-    if (!f.source_option_id) { setErr('Please tell us how you heard about us.'); return; }
-    const srcOpt = sourceOptions.find(o => o.id === f.source_option_id);
-    if (srcOpt?.requires_details && !f.source_details.trim()) { setErr(`Please add a few details for "${srcOpt.label}".`); return; }
+    if (!eventSource) {
+      if (!f.source_option_id) { setErr('Please tell us how you heard about us.'); return; }
+      const srcOpt = sourceOptions.find(o => o.id === f.source_option_id);
+      if (srcOpt?.requires_details && !f.source_details.trim()) { setErr(`Please add a few details for "${srcOpt.label}".`); return; }
+    }
     if (!f.signature_data) { setErr('Please sign in the signature box.'); return; }
 
     const symptoms = Object.entries(ticks).filter(([, v]) => v.on)
@@ -102,7 +113,8 @@ const PublicSurveyPage: React.FC = () => {
         store_name: link.store_name,
         event_name: f.event_name || link.event_name,
         ...f,
-        source_label: sourceOptions.find(o => o.id === f.source_option_id)?.label ?? null,
+        source_option_id: effSourceId, source_details: effSourceDetails,
+        source_label: sourceOptions.find(o => o.id === effSourceId)?.label ?? null,
         symptoms: Object.entries(ticks).filter(([, v]) => v.on).map(([id, v]) => {
           const o = options.find(x => x.id === id)!;
           return { category: o.category, label: o.label, duration_text: v.duration };
@@ -114,7 +126,7 @@ const PublicSurveyPage: React.FC = () => {
 
     const { data, error } = await supabase.rpc('submit_health_survey', {
       p_token: token,
-      p_payload: { ...f, device_info: navigator.userAgent?.slice(0, 250) ?? null },
+      p_payload: { ...f, source_option_id: effSourceId, source_details: effSourceDetails, device_info: navigator.userAgent?.slice(0, 250) ?? null },
       p_symptoms: symptoms,
       p_pdf_base64: pdf,
     });
@@ -194,17 +206,19 @@ const PublicSurveyPage: React.FC = () => {
           <div className="form-group"><label>HP No. *</label><input value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} inputMode="tel" /></div>
           <div className="form-group"><label>Email *</label><input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required /></div>
         </div>
-        <div className="form-group">
-          <label>How did you hear about us? *</label>
-          <select value={f.source_option_id} onChange={e => setF({ ...f, source_option_id: e.target.value, source_details: '' })} required>
-            <option value="">— Please choose —</option>
-            {sourceOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-          </select>
-          {sourceOptions.find(o => o.id === f.source_option_id)?.requires_details && (
-            <input style={{ marginTop: 6 }} placeholder="Please tell us more *" value={f.source_details}
-              onChange={e => setF({ ...f, source_details: e.target.value })} required />
-          )}
-        </div>
+        {!eventSource && (
+          <div className="form-group">
+            <label>How did you hear about us? *</label>
+            <select value={f.source_option_id} onChange={e => setF({ ...f, source_option_id: e.target.value, source_details: '' })} required>
+              <option value="">— Please choose —</option>
+              {sourceOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+            {sourceOptions.find(o => o.id === f.source_option_id)?.requires_details && (
+              <input style={{ marginTop: 6 }} placeholder="Please tell us more *" value={f.source_details}
+                onChange={e => setF({ ...f, source_details: e.target.value })} required />
+            )}
+          </div>
+        )}
         <div className="form-grid-2">
           <div className="form-group"><label>Occupation</label><input value={f.occupation} onChange={e => setF({ ...f, occupation: e.target.value })} /></div>
           {!link.event_name && <div className="form-group"><label>Event</label><input value={f.event_name} onChange={e => setF({ ...f, event_name: e.target.value })} placeholder="Optional" /></div>}

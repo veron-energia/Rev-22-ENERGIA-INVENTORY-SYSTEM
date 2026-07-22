@@ -46,10 +46,15 @@ const ORDER_HEADERS: Record<string, string[]> = {
 const SETTLEMENT_HEADERS: Record<string, string[]> = {
   order_id: ['order/adjustment id', 'order id', 'order/adjustment  id'],
   adjustment_id: ['adjustment id'],
+  transaction_type: ['type', 'transaction type'],
+  related_order_id: ['related order id', 'associated order id', 'related order  id'],
   settlement_amount: ['total settlement amount', 'settlement amount'],
   fee_amount: ['total fees', 'total fee', 'fees'],
   revenue_amount: ['total revenue', 'revenue'],
+  adjustment_amount: ['adjustment amount', 'total adjustment amount'],
+  refund_amount: ['refund amount', 'total refund amount', 'refund subtotal'],
   currency: ['currency'],
+  order_created_time: ['order created time', 'order create time'],
   settled_time: ['order settled time', 'statement date/time', 'settled time'],
 };
 const ORDER_REQUIRED = ['order_id', 'seller_sku', 'quantity'];
@@ -135,6 +140,10 @@ const TikTokImportPage: React.FC = () => {
   const [resolvePr, setResolvePr] = useState<any>(null);
   const [prRestock, setPrRestock] = useState(true); const [prReason, setPrReason] = useState('damaged'); const [prNote, setPrNote] = useState('');
   const [negPrompt, setNegPrompt] = useState<string | null>(null);
+  // Phase 17 — settlement staging view.
+  const [settleBatch, setSettleBatch] = useState<any>(null);
+  const [settleRows, setSettleRows] = useState<any[]>([]);
+  const [settleSel, setSettleSel] = useState<Record<string, boolean>>({});
   const [negAck, setNegAck] = useState(false); const [negReason, setNegReason] = useState('');
   const [corrDelta, setCorrDelta] = useState(0);
   const [corrReason, setCorrReason] = useState('');
@@ -181,6 +190,35 @@ const TikTokImportPage: React.FC = () => {
     const sel: Record<string, boolean> = {};
     rr.forEach(x => { sel[x.id] = !x.excluded && CONFIRMABLE.has(x.staging_status); });
     setSelected(sel);
+  };
+
+  const SETTLE_CONFIRMABLE = new Set(['New — Matched', 'New — Pending Order', 'Updated — Requires Confirmation']);
+
+  const loadSettleRows = async (batchId: string) => {
+    const [{ data: b }, { data: r }] = await Promise.all([
+      supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
+      supabase.from('tiktok_settlement_rows').select('*').eq('batch_id', batchId).order('row_no'),
+    ]);
+    setSettleBatch(b ?? null);
+    const rr = (r as any[]) ?? [];
+    setSettleRows(rr);
+    const sel: Record<string, boolean> = {};
+    // Only matched rows are pre-selected; pending/unmatched need a deliberate tick.
+    rr.forEach(x => { sel[x.id] = !x.excluded && SETTLE_CONFIRMABLE.has(x.staging_status) && x.match_status === 'matched'; });
+    setSettleSel(sel);
+  };
+
+  const confirmSettleBatch = async () => {
+    if (!settleBatch) return;
+    const ids = settleRows.filter(r => settleSel[r.id]).map(r => r.id);
+    if (ids.length === 0) { setErr('Select at least one settlement row to confirm.'); return; }
+    setBusy('sconfirm'); setErr(null);
+    const { data, error } = await supabase.rpc('confirm_tiktok_settlement_batch', { p_batch_id: settleBatch.id, p_row_ids: ids });
+    setBusy(null);
+    if (error) { setErr(error.message); return; }
+    const res = data as any;
+    alert(`Settlement confirmed: ${res.applied} rows (${res.versioned_updates} versioned updates, ${res.pending} pending order match, ${res.unreconciled} reconciliation warnings), ${res.skipped} skipped.`);
+    await load(); await loadSettleRows(settleBatch.id);
   };
 
   // ── File parsing (both areas share it) ────────────────────────────────────
@@ -230,6 +268,7 @@ const TikTokImportPage: React.FC = () => {
       if (error) throw new Error(error.message);
       await load();
       if (kind === 'order' && data) await loadBatchRows(data as string);
+      if (kind === 'settlement' && data) await loadSettleRows(data as string);
     } catch (e: any) {
       setErr(e.message ?? 'Import failed');
     }
@@ -368,7 +407,7 @@ const TikTokImportPage: React.FC = () => {
                     <td style={{ textAlign: 'right' }}>{b.units_returned}</td>
                     <td>{b.status === 'confirmed' ? <span className="badge badge-success">Confirmed</span> : <span className="badge badge-warning">Staged</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
-                      {b.file_kind === 'order' && <button className="btn btn-secondary btn-sm" onClick={() => loadBatchRows(b.batch_id)}><Eye size={12} /> Open</button>}
+                      {b.file_kind !== 'correction' && <button className="btn btn-secondary btn-sm" onClick={() => b.file_kind === 'settlement' ? loadSettleRows(b.batch_id) : loadBatchRows(b.batch_id)}><Eye size={12} /> Open</button>}
                       {canManage && b.status === 'staged' && (
                         <button className="btn btn-danger btn-sm btn-icon" title="Delete unconfirmed batch"
                           onClick={async () => { if (!confirm('Delete this staged batch? No stock has moved.')) return; const { error } = await supabase.rpc('delete_tiktok_batch', { p_batch_id: b.batch_id }); if (error) setErr(error.message); else { if (activeBatch?.id === b.batch_id) { setActiveBatch(null); setRows([]); } load(); } }}>
@@ -431,12 +470,69 @@ const TikTokImportPage: React.FC = () => {
                           onClick={async () => { const { error } = await supabase.rpc('delete_tiktok_row', { p_row_id: r.id }); if (error) setErr(error.message); else loadBatchRows(activeBatch.id); }}>
                           <Trash2 size={12} /></button>
                       )}
-                      {canManage && r.confirmed && r.matched_kind && (
+                      {canManage && r.confirmed && r.matched_kind && r.staging_status !== 'Already Imported' && (
                         <button className="btn btn-secondary btn-sm btn-icon" title="Correction (Owner/Manager)"
                           onClick={() => { setCorrectRow(r); setCorrDelta(-1); setCorrReason(''); }}>
                           <Wrench size={12} /></button>
                       )}
                     </div></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Settlement staging preview */}
+          {settleBatch && (
+            <div className="card" style={{ padding: 16, marginTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
+                <h3 style={{ fontSize: 14.5, flex: 1 }}>{settleBatch.file_name} — {settleBatch.status === 'staged' ? 'Settlement Preview' : 'Settlement Confirmed (locked)'}</h3>
+                {settleBatch.status === 'staged' && (
+                  <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={confirmSettleBatch}>
+                    <CheckCircle2 size={13} /> {busy === 'sconfirm' ? 'Confirming…' : 'Confirm Selected Rows'}
+                  </button>
+                )}
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Settlement imports never change inventory. Total Settlement Amount is the main figure; updates show the differences and require your confirmation to become a new version.
+              </p>
+              <table>
+                <thead><tr>
+                  {settleBatch.status === 'staged' && <th></th>}
+                  <th>Order/Adj ID</th><th>Type</th><th>Related</th><th>Order Created</th>
+                  <th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th>
+                  <th>Match</th><th>Status</th><th>Reconciled</th>
+                </tr></thead>
+                <tbody>{settleRows.map(r => (
+                  <tr key={r.id} style={{ opacity: r.excluded && !r.confirmed ? 0.45 : 1 }}>
+                    {settleBatch.status === 'staged' && <td><input type="checkbox" checked={!!settleSel[r.id]}
+                      disabled={r.excluded || !SETTLE_CONFIRMABLE.has(r.staging_status)}
+                      onChange={e => setSettleSel(x => ({ ...x, [r.id]: e.target.checked }))} style={{ width: 'auto' }} /></td>}
+                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}
+                      {r.version_no > 1 && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>v{r.version_no}</div>}</td>
+                    <td style={{ fontSize: 12 }}>{r.transaction_type ?? '—'}<div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{r.txn_class}</div></td>
+                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 11.5 }}>{r.related_order_id ?? '—'}</td>
+                    <td style={{ fontSize: 12 }}>{r.order_created_time ? new Date(r.order_created_time).toLocaleDateString() : '—'}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.settlement_amount != null ? Number(r.settlement_amount).toFixed(2) : '—'}</td>
+                    <td style={{ textAlign: 'right', fontSize: 12 }}>{r.revenue_amount != null ? Number(r.revenue_amount).toFixed(2) : '—'}</td>
+                    <td style={{ textAlign: 'right', fontSize: 12 }}>{r.fee_amount != null ? Number(r.fee_amount).toFixed(2) : '—'}</td>
+                    <td>{r.match_status === 'matched'
+                      ? <span className="badge badge-success">Matched</span>
+                      : <span className="badge badge-warning">Pending Order</span>}</td>
+                    <td>
+                      <span className={`badge ${r.staging_status?.startsWith('Updated') ? 'badge-warning' : r.staging_status === 'Invalid Row' ? 'badge-danger' : 'badge-muted'}`}>{r.staging_status}</span>
+                      {r.value_diff && Object.keys(r.value_diff).length > 0 && (
+                        <div style={{ fontSize: 10.5, color: 'var(--text-muted)', maxWidth: 220 }}>
+                          {Object.entries(r.value_diff as Record<string, any>).map(([f, d]) => (
+                            <div key={f}>{f}: {String(d.old ?? '—')} → {String(d.new ?? '—')}</div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td>{r.reconciled === false
+                      ? <span className="badge badge-danger" title="Total Settlement ≠ Revenue + Fees (±$0.01)">⚠ Off</span>
+                      : r.reconciled === true ? <span className="badge badge-success">OK</span>
+                      : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
                   </tr>
                 ))}</tbody>
               </table>

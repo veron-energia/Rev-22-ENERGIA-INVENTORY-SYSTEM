@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion, isManagerOrAbove } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye } from 'lucide-react';
+import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye, Printer } from 'lucide-react';
 
 const money = (n: number) => `S$${Number(n).toFixed(2)}`;
 
@@ -216,6 +216,84 @@ const ExchangesPage: React.FC = () => {
     setDetail(e); setDetailItems([]);
     const { data } = await supabase.from('product_exchange_items').select('*').eq('exchange_id', e.id);
     setDetailItems((data as ProductExchangeItem[]) ?? []);
+  };
+
+  // Print an exchange document in the same style as invoice printing.
+  const printExchange = () => {
+    if (!detail) return;
+    const esc = (x: any) => String(x ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const st: any = stores.find(x => x.id === detail.processing_store_id) ?? {};
+    const cust = customers.find(c => c.id === detail.customer_id);
+    const inv = exchangeInvoiceNos[detail.id];
+    const rowsFor = (dir: 'returned' | 'replacement') => detailItems.filter(i => i.direction === dir)
+      .map(i => `<tr><td>${esc(pName(i.product_id))}</td><td class="r">${i.quantity}</td><td class="r">S$${Number(i.unit_price).toFixed(2)}</td><td class="r">S$${Number(i.line_total).toFixed(2)}</td></tr>`).join('');
+    const headBlock = (st.company_logo_url || st.store_logo_url)
+      ? `<div style="display:flex;gap:16px;align-items:center;margin-bottom:10px">
+          ${st.company_logo_url ? `<img src="${esc(st.company_logo_url)}" style="max-height:48px;max-width:180px;object-fit:contain" />` : ''}
+          ${st.store_logo_url ? `<img src="${esc(st.store_logo_url)}" style="max-height:48px;max-width:180px;object-fit:contain" />` : ''}
+        </div>` : '';
+    const focStamp = (detail as any).is_foc
+      ? `<div class="mut"><b>FREE OF CHARGE EXCHANGE</b> — FOC value S$${Number((detail as any).foc_amount ?? 0).toFixed(2)}${(detail as any).foc_reason ? ` · ${esc((detail as any).foc_reason)}` : ''}</div>` : '';
+    const html = `<!doctype html><html><head><title>${esc(detail.exchange_no)}</title><style>
+      @page { size: A4; margin: 10mm; }
+      body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;}
+      h1{font-size:18px;margin:0;} h2{font-size:12px;margin:12px 0 4px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
+      .mut{color:#666;font-size:10.5px;} .r{text-align:right;}
+      table{width:100%;border-collapse:collapse;margin-top:4px;}
+      th{font-size:10px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:4px 6px;}
+      th.r{text-align:right;} td{padding:4px 6px;border-bottom:1px solid #eee;vertical-align:top;}
+      .totals{margin-top:8px;width:280px;margin-left:auto;} .totals td{border:none;padding:2px 6px;}
+      .grand{font-size:15px;font-weight:bold;border-top:1px solid #999;}
+      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;}
+      .signrow{display:flex;gap:40px;margin-top:36px;} .sign{flex:1;text-align:center;font-size:11px;color:#444;}
+      .signline{border-bottom:1px solid #999;height:34px;margin-bottom:4px;}
+      .terms{margin-top:18px;font-size:10px;color:#666;border-top:1px solid #ddd;padding-top:6px;}
+      </style><script>window.onload=function(){window.print();}</script></head><body>
+      <div>
+        ${headBlock}
+        <div class="head">
+          <div>
+            <h1>${esc(st.company_name ?? st.name ?? 'Energia')}</h1>
+            <div class="mut">${esc(st.address ?? '')}${st.phone ? ` · ${esc(st.phone)}` : ''}</div>
+          </div>
+          <div style="text-align:right">
+            <h1>EXCHANGE</h1>
+            <div><b>${esc(detail.exchange_no)}</b></div>
+            ${inv ? `<div class="mut">Invoice ${esc(inv)}</div>` : ''}
+            <div class="mut">${new Date(detail.created_at).toLocaleString()}</div>
+          </div>
+        </div>
+        <h2>Customer</h2>
+        <div>${esc(cName(detail.customer_id))}${(cust as any)?.phone ? ` · ${esc((cust as any).phone)}` : ''}</div>
+        <div class="mut">Processed at ${esc(sName(detail.processing_store_id))}${detail.reason ? ` · Reason: ${esc(detail.reason)}` : ''}</div>
+        ${focStamp}
+        <h2>Returned Items</h2>
+        <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead>
+        <tbody>${rowsFor('returned') || '<tr><td colspan="4" class="mut">None</td></tr>'}</tbody></table>
+        <h2>Replacement Items</h2>
+        <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead>
+        <tbody>${rowsFor('replacement') || '<tr><td colspan="4" class="mut">None</td></tr>'}</tbody></table>
+        <table class="totals"><tbody>
+          <tr><td>Returned value (credit)</td><td class="r">S$${Number(detail.returned_credit_total).toFixed(2)}</td></tr>
+          <tr><td>Replacement total</td><td class="r">S$${Number(detail.replacement_total).toFixed(2)}</td></tr>
+          ${Number(detail.topup_amount) > 0 ? `<tr class="grand"><td>Top-up paid</td><td class="r">S$${Number(detail.topup_amount).toFixed(2)}</td></tr>` : ''}
+          ${Number(detail.nonrefundable_amount) > 0 ? `<tr class="grand"><td>Unused value (non-refundable)</td><td class="r">S$${Number(detail.nonrefundable_amount).toFixed(2)}</td></tr>` : ''}
+        </tbody></table>
+        <div class="signrow">
+          <div class="sign"><div class="signline"></div>Customer Signature</div>
+          <div class="sign"><div class="signline"></div>Staff Signature</div>
+        </div>
+        <div class="terms">Exchanged goods have been checked and collected. No further exchange is allowed on the returned items.</div>
+      </div>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { alert('Please allow pop-ups to print.'); return; }
+    w.document.write(html); w.document.close();
+    // Audit: record that this exchange was printed.
+    supabase.rpc('write_audit', {
+      p_table: 'product_exchanges', p_record: detail.id, p_action: 'exchange_printed',
+      p_old: null, p_new: { exchange_no: detail.exchange_no },
+    }).then(() => {}, () => {});
   };
 
   return (
@@ -468,7 +546,7 @@ const ExchangesPage: React.FC = () => {
       {/* Detail */}
       {detail && (
         <Modal title={`Exchange ${detail.exchange_no}${exchangeInvoiceNos[detail.id] ? ` — Invoice ${exchangeInvoiceNos[detail.id]}` : ''}`} maxWidth={520} onClose={() => setDetail(null)}
-          footer={<button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>}>
+          footer={<><button className="btn btn-secondary" onClick={printExchange}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>}>
           <div className="form-grid">
             <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cName(detail.customer_id)} · {sName(detail.processing_store_id)} · {new Date(detail.created_at).toLocaleString()}</div>
             <div>
