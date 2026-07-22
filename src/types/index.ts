@@ -310,7 +310,8 @@ export interface StoreProductPrice {
 
 export type InvoiceStatus =
   | 'draft' | 'unpaid' | 'partially_paid' | 'paid'
-  | 'cancellation_requested' | 'cancelled' | 'refund_requested' | 'refunded';
+  | 'cancellation_requested' | 'cancelled' | 'refund_requested' | 'refunded'
+  | 'completed_foc';
 
 export interface Invoice {
   id: string;
@@ -328,6 +329,13 @@ export interface Invoice {
   paid_at: string | null;
   locked_at: string | null;
   deleted_at?: string | null;
+  // Phase 12 — FOC rollups
+  has_foc?: boolean;
+  is_full_foc?: boolean;
+  foc_total?: number;
+  foc_confirmed_at?: string | null;
+  foc_confirmed_by?: string | null;
+  is_topup?: boolean;
 }
 
 export interface InvoiceItem {
@@ -359,6 +367,40 @@ export interface InvoiceItem {
   plan_name_snapshot?: string | null;
   plan_months_snapshot?: number | null;
   member_id_snapshot?: string | null;
+  // Phase 12 — FOC. `quantity` stays the FULL quantity (stock and
+  // entitlements follow it); `line_total` holds the CHARGED value only.
+  foc_quantity?: number;
+  is_foc?: boolean;
+  foc_amount?: number;                 // FOC value BEFORE discounts
+  foc_original_unit_price?: number | null;
+  foc_reason_id?: string | null;
+  foc_reason?: string | null;
+  foc_by?: string | null;
+  foc_at?: string | null;
+}
+
+// ── Phase 12: FOC ────────────────────────────────────────────────────────────
+export interface FocReason {
+  id: string;
+  code: string;
+  label: string;
+  requires_note: boolean;
+  sort_order: number;
+  is_active?: boolean;
+}
+
+export interface FocSummary {
+  from: string;
+  to: string;
+  invoice_count: number;
+  full_foc_invoices: number;
+  mixed_foc_invoices: number;
+  foc_value: number;
+  charged_value: number;
+  normal_value: number;
+  foc_units: number;
+  by_kind: { line_kind: string; foc_value: number; foc_units: number; lines: number }[];
+  by_reason: { reason: string; foc_value: number; lines: number }[];
 }
 
 export interface InvoicePayment {
@@ -391,6 +433,7 @@ export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
   cancelled: 'Cancelled',
   refund_requested: 'Refund Requested',
   refunded: 'Refunded',
+  completed_foc: 'Completed (FOC)',
 };
 
 // ── Phase 4: Controls types ──────────────────────────────────────────────────

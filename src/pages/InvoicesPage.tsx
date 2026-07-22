@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import MembershipBadge from '../components/MembershipBadge';
 import { MembershipStatusPanel, MembershipSelector, MemberIdField, FullMembershipStatus } from '../components/MembershipInvoice';
 import { LineOverrideModal, PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
+import type { FocReason } from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
@@ -16,13 +17,13 @@ import {
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
 const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
-  const cls = s === 'paid' ? 'badge-success' : s === 'partially_paid' ? 'badge-primary'
+  const cls = s === 'completed_foc' ? 'badge-success' : s === 'paid' ? 'badge-success' : s === 'partially_paid' ? 'badge-primary'
     : s === 'unpaid' || s === 'draft' ? 'badge-accent'
     : s === 'cancelled' || s === 'refunded' ? 'badge-muted' : 'badge-danger';
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy'; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; price_mode_override?: '' | 'member' | 'non_member'; override_reason?: string; }
+interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy'; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; price_mode_override?: '' | 'member' | 'non_member'; override_reason?: string; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
 
 const InvoicesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -84,6 +85,14 @@ const InvoicesPage: React.FC = () => {
   const [memberStatus, setMemberStatus] = useState<FullMembershipStatus | null>(null);
   const [cMembership, setCMembership] = useState<{ plan_id: string; member_id: string; fee: number; plan_name: string; owned_id?: string | null } | null>(null);
   const [priceReview, setPriceReview] = useState<PriceReviewResult | null>(null);
+  const [focReasons, setFocReasons] = useState<FocReason[]>([]);
+  const [cMembershipFoc, setCMembershipFoc] = useState<{ on: boolean; reason_id: string; note: string }>({ on: false, reason_id: '', note: '' });
+  const [focBusy, setFocBusy] = useState(false);
+  const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
+  const [focQty, setFocQty] = useState(1);
+  const [focReasonId, setFocReasonId] = useState('');
+  const [focNote, setFocNote] = useState('');
+  const [focErr, setFocErr] = useState<string | null>(null);
   const [overrideItem, setOverrideItem] = useState<InvoiceItem | null>(null);
   const [pendingOverride, setPendingOverride] = useState<{ lineIndex: number; mode: 'member' | 'non_member' } | null>(null);
   const [refundLine, setRefundLine] = useState<InvoiceItem | null>(null);
@@ -96,7 +105,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, utpk, utsp, aset, vsp, psp] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -116,6 +125,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('app_settings').select('save_earth_label, save_earth_amount').maybeSingle(),
       supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
       supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
+      supabase.rpc('active_foc_reasons'),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -138,6 +148,7 @@ const InvoicesPage: React.FC = () => {
     if (se) setSaveEarthDefault({ label: se.save_earth_label ?? 'Save Earth Project', amount: Number(se.save_earth_amount ?? 1) });
     setVoucherStorePrices((vsp.data as any[]) ?? []);
     setPromoStorePrices((psp.data as any[]) ?? []);
+    setFocReasons((focr?.data as FocReason[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -212,14 +223,22 @@ const InvoicesPage: React.FC = () => {
     : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
 
   const membershipFee = cMembership?.fee ?? 0;
+  // Phase 12 — the charged quantity is what the customer actually pays for.
+  const paidQty = (l: LineDraft) => Math.max(0, l.quantity - (l.foc_quantity ?? 0));
+  const focValuePreview = useMemo(() =>
+    cLines.reduce((sum, l) => {
+      const price = lineUnit(l);
+      return sum + (price ? price * (l.foc_quantity ?? 0) : 0);
+    }, 0) + (cMembershipFoc.on ? membershipFee : 0),
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, effMember, memberStatus, cMembership, cMembershipFoc]);
   const createSubtotal = useMemo(() =>
     cLines.reduce((sum, l) => {
       const price = lineUnit(l);
-      return sum + (price ? price * l.quantity : 0);
-    }, 0) + membershipFee,
+      return sum + (price ? price * paidQty(l) : 0);
+    }, 0) + (cMembershipFoc.on ? 0 : membershipFee),
     // B: every input that can change a line's applied price must be here,
     // or totals go stale when the pricing mode flips.
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, effMember, memberStatus, cMembership]);
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, effMember, memberStatus, cMembership, cMembershipFoc]);
 
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
@@ -254,7 +273,7 @@ const InvoicesPage: React.FC = () => {
     cLines.reduce((s, l) => {
       if (l.kind !== 'product' || !l.product_id || !isThirdParty(l.product_id)) return s;
       const u = lineUnit(l);
-      return s + (u ? u * l.quantity : 0);
+      return s + (u ? u * paidQty(l) : 0);
     }, 0), [cLines, activeStore, prices, products, effMember, memberStatus, cMembership]);
 
   // Total top-up across all promotion lines (mirrors promotion_selections_topup).
@@ -302,7 +321,8 @@ const InvoicesPage: React.FC = () => {
       if (l.kind !== 'product' || !l.line_voucher_id) return sum;
       const unit = lineUnit(l);
       if (!unit) return sum;
-      return sum + voucherDiscAmount(vouchers.find(v => v.id === l.line_voucher_id), unit * l.quantity);
+      // Discounts apply to the PAID value only.
+      return sum + voucherDiscAmount(vouchers.find(v => v.id === l.line_voucher_id), unit * paidQty(l));
     }, 0), [cLines, vouchers, activeStore, prices, voucherStorePrices, promoStorePrices, effMember, memberStatus, cMembership]);
 
   // Whole-invoice voucher: base = subtotal − manual − line-voucher discounts (matches SQL).
@@ -343,7 +363,7 @@ const InvoicesPage: React.FC = () => {
   const resetCreate = () => {
     setCStore(isStaff ? (assignedStoreId ?? '') : '');
     setCCustomer('');
-    setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
+    setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0); setCMembershipFoc({ on: false, reason_id: '', note: '' });
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCMembership(null); setMemberStatus(null);
     setSaveEarthOn(false); setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount);
@@ -381,8 +401,13 @@ const InvoicesPage: React.FC = () => {
     const ovr = (l: LineDraft) => l.price_mode_override
       ? { price_mode_override: l.price_mode_override, override_reason: l.override_reason || null }
       : {};
+    // Phase 12 — FOC travels with the line. `quantity` stays the full quantity;
+    // the server derives the charged value from (quantity - foc_quantity).
+    const foc = (l: LineDraft) => (l.foc_quantity ?? 0) > 0
+      ? { foc_quantity: l.foc_quantity, foc_reason_id: l.foc_reason_id || null, foc_reason: l.foc_reason || null }
+      : {};
     const validLines = activeLines.map(l => l.kind === 'voucher'
-      ? { kind: 'voucher', voucher_id: l.voucher_id, quantity: l.quantity, ...ovr(l) }
+      ? { kind: 'voucher', voucher_id: l.voucher_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
       : l.kind === 'promotion'
       ? {
           kind: 'promotion', promotion_id: l.promotion_id, quantity: l.quantity,
@@ -394,11 +419,15 @@ const InvoicesPage: React.FC = () => {
                 ? { product_id: itemId, voucher_id: null, quantity: q }
                 : { product_id: null, voucher_id: itemId, quantity: q })),
           })),
-          ...ovr(l),
+          ...ovr(l), ...foc(l),
         }
       : l.kind === 'therapy'
-      ? { kind: 'therapy', therapy_package_id: l.therapy_package_id, quantity: 1, ...ovr(l) }
-      : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null, ...ovr(l) });
+      ? { kind: 'therapy', therapy_package_id: l.therapy_package_id, quantity: 1, ...ovr(l), ...foc(l) }
+      : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null, ...ovr(l), ...foc(l) });
+    const focMissing = activeLines.find(l => (l.foc_quantity ?? 0) > 0 && !l.foc_reason_id && !(l.foc_reason ?? '').trim());
+    if (focMissing) { setCErr('A FOC reason is required on every FOC line.'); return; }
+    if (cMembershipFoc.on && !cMembershipFoc.reason_id && !cMembershipFoc.note.trim()) {
+      setCErr('A FOC reason is required for the FOC membership.'); return; }
     const allItems: any[] = validLines.filter(Boolean);
     // create_invoice requires at least one product/voucher/promotion/membership
     // to open the invoice. Therapy is added right after. For a therapy-ONLY sale,
@@ -406,7 +435,8 @@ const InvoicesPage: React.FC = () => {
     // require a membership or another line, OR fall back to creating an empty
     // invoice shell is not supported. Guide the user in that rare case.
 
-    if (cMembership) allItems.push({ kind: 'membership', plan_id: cMembership.plan_id, member_id: (cMembership.owned_id || cMembership.member_id) || null, quantity: 1 });
+    if (cMembership) allItems.push({ kind: 'membership', plan_id: cMembership.plan_id, member_id: (cMembership.owned_id || cMembership.member_id) || null, quantity: 1,
+      ...(cMembershipFoc.on ? { foc_quantity: 1, foc_reason_id: cMembershipFoc.reason_id || null, foc_reason: cMembershipFoc.note || null } : {}) });
     setCSaving(true); setCErr(null);
     const { data: newInvId, error } = await supabase.rpc('create_invoice', {
       p_store_id: effectiveStore, p_customer_id: cCustomer, p_affiliate_id: null,
@@ -470,6 +500,45 @@ const InvoicesPage: React.FC = () => {
   };
 
   const payTotal = useMemo(() => payLines.reduce((s, p) => s + (p.amount || 0), 0), [payLines]);
+
+  // Phase 12 — close a fully-FOC invoice with no payment.
+  const handleConfirmFoc = async () => {
+    if (!detail) return;
+    setFocBusy(true); setFocErr(null);
+    const { data, error } = await supabase.rpc('confirm_foc_invoice', { p_invoice_id: detail.id, p_note: null });
+    setFocBusy(false);
+    if (error) { setFocErr(error.message); return; }
+    const res = data as any;
+    if (res && res.review_required) {
+      setFocErr('Prices changed since this invoice was created — reopen it and review before confirming.');
+      await loadAll(); return;
+    }
+    setDetail(null); await loadAll();
+  };
+
+  const handleApplyLineFoc = async () => {
+    if (!focLine) return;
+    if (!focReasonId && !focNote.trim()) { setFocErr('A FOC reason is required.'); return; }
+    setFocBusy(true); setFocErr(null);
+    const { error } = await supabase.rpc('apply_line_foc', {
+      p_invoice_item_id: focLine.id, p_foc_quantity: focQty,
+      p_reason_id: focReasonId || null, p_reason_text: focNote.trim() || null,
+    });
+    setFocBusy(false);
+    if (error) { setFocErr(error.message); return; }
+    setFocLine(null);
+    if (detail) { const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single(); if (invRow) await openDetail(invRow as Invoice); }
+    await loadAll();
+  };
+
+  const handleRemoveLineFoc = async (itemId: string) => {
+    setFocBusy(true); setFocErr(null);
+    const { error } = await supabase.rpc('remove_line_foc', { p_invoice_item_id: itemId, p_reason: null });
+    setFocBusy(false);
+    if (error) { setFocErr(error.message); return; }
+    if (detail) { await openDetail(detail); }
+    await loadAll();
+  };
 
   const handlePay = async () => {
     if (!detail) return;
@@ -576,7 +645,15 @@ const InvoicesPage: React.FC = () => {
       const ov = it.price_overridden ? `<div class="mut"><b>Manual Override</b>${it.override_reason ? ` — ${esc(it.override_reason)}` : ''}</div>` : '';
       const mem = it.line_kind === 'membership'
         ? `<div class="mut">${it.plan_months_snapshot ?? ''} months · Member ID ${esc(it.member_id_snapshot ?? '—')}</div>` : '';
-      return `<tr><td>${esc(lineName(it))}${md}${ov}${mem}${lv}${tu}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r"><b>S$${Number(it.line_total).toFixed(2)}</b></td></tr>` +
+      const focQty = Number((it as any).foc_quantity ?? 0);
+      const focAmt = Number((it as any).foc_amount ?? 0);
+      const fc = focQty > 0
+        ? `<div class="mut"><b>FOC</b> ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`} — value S$${focAmt.toFixed(2)}${(it as any).foc_reason ? ` — ${esc(String((it as any).foc_reason))}` : ''}</div>`
+        : '';
+      const amountCell = focQty === it.quantity && focQty > 0
+        ? `<s>S$${(Number(it.line_total) + focAmt).toFixed(2)}</s> <b>FOC</b>`
+        : `<b>S$${Number(it.line_total).toFixed(2)}</b>`;
+      return `<tr><td>${esc(lineName(it))}${md}${ov}${mem}${lv}${tu}${fc}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r">${amountCell}</td></tr>` +
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
@@ -592,6 +669,10 @@ const InvoicesPage: React.FC = () => {
       : '';
 
     const totalPaid = detailPayments.reduce((s, p) => s + Number(p.amount), 0);
+    const focTotal = Number((detail as any).foc_total ?? 0);
+    const focStamp = focTotal > 0
+      ? `<div class="mut"><b>${(detail as any).is_full_foc ? 'FREE OF CHARGE' : 'INCLUDES FOC ITEMS'}</b> — FOC value S$${focTotal.toFixed(2)}</div>`
+      : '';
     const st: any = store ?? {};
     const storePhone = st.phone ?? '';
     const gstEnabled = !!st.gst_enabled;
@@ -672,12 +753,15 @@ const InvoicesPage: React.FC = () => {
             <div class="mut">Date: ${new Date(detail.created_at).toLocaleDateString()}</div>
             <div class="mut">Status: ${esc(detail.status)}</div></div>
         </div>
+        ${focStamp}
         <h2>Bill To</h2>
         <div>${esc(cust?.full_name ?? '—')}</div><div class="mut">${esc(cust?.phone ?? '')}</div>
         <h2>Items</h2>
         <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>${itemRows}</tbody></table>
         <table class="totals">
-          <tr><td>Subtotal</td><td class="r">S$${Number(detail.subtotal).toFixed(2)}</td></tr>
+          ${focTotal > 0 ? `<tr><td>Normal value</td><td class="r">S$${(Number(detail.subtotal) + focTotal).toFixed(2)}</td></tr>
+          <tr><td>FOC (free of charge)</td><td class="r">−S$${focTotal.toFixed(2)}</td></tr>` : ''}
+          <tr><td>Subtotal${focTotal > 0 ? ' (chargeable)' : ''}</td><td class="r">S$${Number(detail.subtotal).toFixed(2)}</td></tr>
           <tr><td>Discount</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
           ${gstEnabled && gstRate > 0 ? `<tr><td>GST (${gstRate}%, incl.)</td><td class="r">S$${gstAmount.toFixed(2)}</td></tr>` : ''}
           <tr class="grand"><td>Total</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
@@ -915,6 +999,39 @@ const InvoicesPage: React.FC = () => {
                         <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
                         <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setCLines(ls => ls.filter((_, j) => j !== i))} disabled={cLines.length === 1}><X size={13} /></button>
                       </div>
+                      {/* Phase 12 — FOC. Quantity stays full (stock still moves); only the charge drops. */}
+                      {(line.kind !== 'product' || line.product_id) && (line.quantity ?? 0) > 0 && (
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC:</span>
+                          <select
+                            value={String(line.foc_quantity ?? 0)}
+                            onChange={e => { const q = +e.target.value; setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_quantity: q, ...(q === 0 ? { foc_reason_id: '', foc_reason: '' } : {}) } : l)); }}
+                            style={{ width: 108, fontSize: 12.5 }}>
+                            <option value="0">None</option>
+                            {Array.from({ length: line.quantity }, (_, k) => k + 1).map(q => (
+                              <option key={q} value={q}>{q === line.quantity ? `All ${q} free` : `${q} free`}</option>
+                            ))}
+                          </select>
+                          {(line.foc_quantity ?? 0) > 0 && (
+                            <>
+                              <select value={line.foc_reason_id ?? ''}
+                                onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_reason_id: e.target.value } : l))}
+                                style={{ flex: 1, maxWidth: 220, fontSize: 12.5 }}>
+                                <option value="">— Reason (required) —</option>
+                                {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' *' : ''}</option>)}
+                              </select>
+                              <input type="text" placeholder="Note" value={line.foc_reason ?? ''}
+                                onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_reason: e.target.value } : l))}
+                                style={{ flex: 1, maxWidth: 200, fontSize: 12.5 }} />
+                              {price ? (
+                                <span style={{ fontSize: 11.5, color: 'var(--success)' }}>
+                                  free {money(price * (line.foc_quantity ?? 0))}
+                                </span>
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+                      )}
                       {line.kind === 'product' && line.product_id && isThirdParty(line.product_id) && (
                         <div style={{ marginLeft: 118, marginTop: -2, fontSize: 11.5, color: 'var(--text-muted)' }}>
                           3rd-party product — discounts don't apply.
@@ -1045,7 +1162,26 @@ const InvoicesPage: React.FC = () => {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
                 {cMembership && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>incl. membership — {cMembership.plan_name} {money(membershipFee)}</div>}
+                {cMembership && (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'flex-end', marginTop: 4, flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                      <input type="checkbox" checked={cMembershipFoc.on}
+                        onChange={e => setCMembershipFoc(f => ({ ...f, on: e.target.checked, ...(e.target.checked ? {} : { reason_id: '', note: '' }) }))} />
+                      Membership FOC
+                    </label>
+                    {cMembershipFoc.on && (
+                      <>
+                        <select value={cMembershipFoc.reason_id} onChange={e => setCMembershipFoc(f => ({ ...f, reason_id: e.target.value }))} style={{ fontSize: 12, maxWidth: 170 }}>
+                          <option value="">— Reason (required) —</option>
+                          {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' *' : ''}</option>)}
+                        </select>
+                        <input value={cMembershipFoc.note} onChange={e => setCMembershipFoc(f => ({ ...f, note: e.target.value }))} placeholder="Note" style={{ fontSize: 12, maxWidth: 150 }} />
+                      </>
+                    )}
+                  </div>
+                )}
                 <div style={{ textAlign: 'right', fontSize: 13, color: 'var(--text-secondary)' }}>Subtotal: <strong>{money(createSubtotal)}</strong></div>
+                {focValuePreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--success)' }}>FOC given: {money(focValuePreview)}</div>}
                 {topupPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>+ top-up {money(topupPreview)}</div>}
                 {(cDiscount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− manual discount {money(cDiscount)}</div>}
                 {lineVoucherDiscountPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− line vouchers {money(lineVoucherDiscountPreview)}</div>}
@@ -1068,9 +1204,15 @@ const InvoicesPage: React.FC = () => {
                   <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>{isOwnerOrManager(profile?.role) ? 'Refund/Cancel' : 'Request Refund'}</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
-              : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button><button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button></>
+              : detail.status === 'completed_foc'
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
+              : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+                  {detail.is_full_foc && Number(detail.total_amount) <= 0
+                    ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
+                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
           }>
           <div className="form-grid">
+            {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
             {/* Summary */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
@@ -1081,6 +1223,11 @@ const InvoicesPage: React.FC = () => {
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(detail.total_amount)}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Paid {money(detail.paid_amount)}</div>
+                {Number(detail.foc_total ?? 0) > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>
+                    {detail.is_full_foc ? 'Fully FOC' : 'Incl. FOC'} {money(Number(detail.foc_total))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1130,6 +1277,25 @@ const InvoicesPage: React.FC = () => {
                             )}
                             {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
+                            {Number(it.foc_quantity ?? 0) === 0 && detail.status !== 'paid' && detail.status !== 'completed_foc'
+                              && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
+                              <div style={{ fontSize: 11 }}>
+                                <button className="btn btn-secondary btn-sm" style={{ padding: '1px 7px', fontSize: 10.5 }}
+                                  onClick={() => { setFocLine(it); setFocQty(it.quantity); setFocReasonId(''); setFocNote(''); setFocErr(null); }}>
+                                  Make FOC
+                                </button>
+                              </div>
+                            )}
+                            {Number(it.foc_quantity ?? 0) > 0 && (
+                              <div style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>
+                                {it.is_foc ? 'FOC' : `FOC ${it.foc_quantity} of ${it.quantity}`} — free {money(Number(it.foc_amount ?? 0))}
+                                {it.foc_reason ? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}> · {it.foc_reason}</span> : null}
+                                {detail.status !== 'paid' && detail.status !== 'completed_foc' && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
+                                  <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6, padding: '1px 7px', fontSize: 10.5 }}
+                                    disabled={focBusy} onClick={() => handleRemoveLineFoc(it.id)}>Remove FOC</button>
+                                )}
+                              </div>
+                            )}
                           </td>
                           <td style={{ textAlign: 'right' }}>{it.quantity}</td>
                           <td style={{ textAlign: 'right' }}>{money(it.unit_price)}</td>
@@ -1394,6 +1560,42 @@ const InvoicesPage: React.FC = () => {
           onClose={() => setPriceReview(null)}
           onConfirm={() => { setPriceReview(null); handlePay(); }} />
       )}
+      {focLine && (
+        <Modal title="Make line FOC" maxWidth={420} onClose={() => setFocLine(null)}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setFocLine(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleApplyLineFoc} disabled={focBusy}>
+              {focBusy ? 'Applying…' : 'Apply FOC'}
+            </button>
+          </>}>
+          <div className="form-grid">
+            {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              The full quantity still leaves inventory and any entitlement is still created — only the charge is waived.
+            </div>
+            <div>
+              <label>Free quantity (of {focLine.quantity})</label>
+              <select value={String(focQty)} onChange={e => setFocQty(+e.target.value)}>
+                {Array.from({ length: focLine.quantity }, (_, k) => k + 1).map(q => (
+                  <option key={q} value={q}>{q === focLine.quantity ? `All ${q} (full FOC)` : `${q} free`}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
+              <select value={focReasonId} onChange={e => setFocReasonId(e.target.value)}>
+                <option value="">— Select a reason —</option>
+                {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' (note required)' : ''}</option>)}
+              </select>
+            </div>
+            <div>
+              <label>Note</label>
+              <input value={focNote} onChange={e => setFocNote(e.target.value)} placeholder="Optional unless the reason requires it" />
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {overrideItem && detail && (
         <LineOverrideModal item={overrideItem}
           lineName={overrideItem.line_kind === 'voucher' ? (vouchers.find(v => v.id === overrideItem.voucher_id)?.name ?? 'Voucher') : overrideItem.line_kind === 'promotion' ? (promotions.find(p => p.id === (overrideItem as any).promotion_id)?.name ?? 'Promotion') : prodName(overrideItem.product_id ?? '')}

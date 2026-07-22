@@ -7,11 +7,11 @@ import {
   WarehouseInventory, StoreInventory, Warehouse, isManagerOrAbove,
 } from '../types';
 import { NoAccess } from '../components/ui';
-import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award, CreditCard, Sparkles } from 'lucide-react';
+import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award, CreditCard, Sparkles, Gift } from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -42,6 +42,8 @@ const ReportsPage: React.FC = () => {
   const [repAffiliate, setRepAffiliate] = useState<any[]>([]);
   const [repTherapy, setRepTherapy] = useState<any[]>([]);
   const [repDiscounts, setRepDiscounts] = useState<any[]>([]);
+  const [repFoc, setRepFoc] = useState<any[]>([]);
+  const [focSummary, setFocSummary] = useState<any>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,18 +84,23 @@ const ReportsPage: React.FC = () => {
     setProfiles((prof.data as any[]) ?? []);
     setServiceStaff((iss.data as any[]) ?? []);
     // Phase 8 report views (via RPC).
-    const [rm, rp, ra, rt, rdc] = await Promise.all([
+    const [rm, rp, ra, rt, rdc, rfl, rfs] = await Promise.all([
       supabase.rpc('report_memberships'),
       supabase.rpc('report_pricing'),
       supabase.rpc('report_affiliates'),
       supabase.rpc('report_therapy'),
       supabase.rpc('report_discounts'),
+      // Phase 12 — FOC. Defaults to the last 30 days on the server.
+      supabase.rpc('report_foc_lines', { p_from: null, p_to: null, p_store_id: null }),
+      supabase.rpc('report_foc_summary', { p_from: null, p_to: null, p_store_id: null }),
     ]);
     setRepMembership((rm.data as any[]) ?? []);
     setRepPricing((rp.data as any[]) ?? []);
     setRepAffiliate((ra.data as any[]) ?? []);
     setRepTherapy((rt.data as any[]) ?? []);
     setRepDiscounts((rdc.data as any[]) ?? []);
+    setRepFoc((rfl.data as any[]) ?? []);
+    setFocSummary(rfs.data ?? null);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -197,6 +204,7 @@ const ReportsPage: React.FC = () => {
     { id: 'r_affiliate', label: 'Affiliate', icon: <Star size={15} /> },
     { id: 'r_therapy', label: 'Therapy', icon: <Sparkles size={15} /> },
     { id: 'r_discounts', label: 'Discounts', icon: <Ticket size={15} /> },
+    { id: 'r_foc', label: 'FOC', icon: <Gift size={15} /> },
   ];
 
   // 5G-2: voucher / promotion / special reports (paid invoices only).
@@ -249,7 +257,7 @@ const ReportsPage: React.FC = () => {
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
       sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
       r_membership: repMembership, r_pricing: repPricing, r_affiliate: repAffiliate,
-      r_therapy: repTherapy, r_discounts: repDiscounts,
+      r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
@@ -384,6 +392,35 @@ const ReportsPage: React.FC = () => {
                   <tbody>{repTherapy.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No therapy</td></tr>
                     : repTherapy.map((r, i) => <tr key={i}><td>{r.entitlement_no}</td><td><strong>{r.customer_name}</strong></td><td>{r.package_name}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{money(Number(r.price_snapshot))}</td><td>{r.price_mode === 'member' ? 'M' : r.price_mode === 'non_member' ? 'NM' : '—'}</td><td style={{ fontSize: 12 }}>{r.purchase_date ? new Date(r.purchase_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.activation_date ? new Date(r.activation_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.expiry_date ? new Date(r.expiry_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ textTransform: 'capitalize' }}>{String(r.status).replace('_', ' ')}</td><td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.is_legacy ? 'Legacy' : 'Purchased'}</td></tr>)}</tbody>
                 </table>
+              )}
+              {tab === 'r_foc' && (
+                <>
+                  {focSummary && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Normal value</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(focSummary.normal_value ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC value given</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)', color: 'var(--success)' }}>{money(Number(focSummary.foc_value ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Charged value</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(focSummary.charged_value ?? 0))}</div>
+                      </div>
+                      <div className="card" style={{ padding: 14 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC invoices</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{Number(focSummary.full_foc_invoices ?? 0)} full · {Number(focSummary.mixed_foc_invoices ?? 0)} mixed</div>
+                      </div>
+                    </div>
+                  )}
+                  <table>
+                    <thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Kind</th><th>Item</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>FOC Qty</th><th style={{ textAlign: 'right' }}>Normal</th><th style={{ textAlign: 'right' }}>FOC</th><th style={{ textAlign: 'right' }}>Charged</th><th>Reason</th><th>By</th></tr></thead>
+                    <tbody>{repFoc.length === 0 ? <tr><td colSpan={12} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No FOC in this period</td></tr>
+                      : repFoc.map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{r.settled_at ? new Date(r.settled_at).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td><td style={{ fontSize: 12 }}>{r.line_kind}</td><td style={{ fontSize: 12 }}>{r.description}</td><td style={{ textAlign: 'right' }}>{r.quantity}</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{r.foc_quantity}</td><td style={{ textAlign: 'right' }}>{money(Number(r.normal_value))}</td><td style={{ textAlign: 'right', color: 'var(--success)', fontWeight: 700 }}>{money(Number(r.foc_value))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.charged_value))}</td><td style={{ fontSize: 11.5 }}>{r.foc_reason ?? '—'}</td><td style={{ fontSize: 11.5 }}>{r.foc_by_name ?? '—'}</td></tr>)}</tbody>
+                  </table>
+                </>
               )}
               {tab === 'r_discounts' && (
                 <table>
