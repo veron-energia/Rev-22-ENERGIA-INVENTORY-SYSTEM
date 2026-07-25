@@ -6,7 +6,7 @@ import { RefreshCw } from 'lucide-react';
 
 const money = (n: number | null) => n == null ? '—' : `S$${Number(n).toFixed(2)}`;
 
-/** Per-store Member / Non-Member price editor for vouchers and promotions.
+/** Per-store selling price editor for vouchers and promotions.
  *  Owner/Manager only (RPCs enforce it server-side). */
 const StorePriceEditor: React.FC<{
   kind: 'voucher' | 'promotion' | 'therapy';
@@ -34,8 +34,9 @@ const StorePriceEditor: React.FC<{
     stores.forEach(s => {
       const r = rs.find(x => x.store_id === s.id);
       d[s.id] = {
+        // Phase 19: one selling price. The former Member Price is the price.
         m: r?.member_price != null ? String(r.member_price) : '',
-        nm: r?.non_member_price != null ? String(r.non_member_price) : '',
+        nm: r?.member_price != null ? String(r.member_price) : '',
         avail: r ? r.available_at_store !== false : true,
       };
     });
@@ -48,8 +49,8 @@ const StorePriceEditor: React.FC<{
     const d = drafts[storeId];
     setBusyStore(storeId); setErr(null);
     const args: any = kind === 'therapy'
-      ? { p_package_id: targetId, p_store_id: storeId, p_member: d.m === '' ? null : Number(d.m), p_non_member: d.nm === '' ? null : Number(d.nm), p_available: d.avail }
-      : { [`p_${idCol}`]: targetId, p_store_id: storeId, p_member: d.m === '' ? null : Number(d.m), p_non_member: d.nm === '' ? null : Number(d.nm), p_available: d.avail };
+      ? { p_package_id: targetId, p_store_id: storeId, p_member: d.m === '' ? null : Number(d.m), p_non_member: d.m === '' ? null : Number(d.m), p_available: d.avail }
+      : { [`p_${idCol}`]: targetId, p_store_id: storeId, p_member: d.m === '' ? null : Number(d.m), p_non_member: d.m === '' ? null : Number(d.m), p_available: d.avail };
     const { error } = await supabase.rpc(rpc, args);
     setBusyStore(null);
     if (error) { setErr(error.message); return; }
@@ -57,13 +58,12 @@ const StorePriceEditor: React.FC<{
   };
 
   return (
-    <Modal title={`Member / Non-Member Prices — ${targetName}`} maxWidth={560} onClose={onClose}
+    <Modal title={`Store Prices — ${targetName}`} maxWidth={520} onClose={onClose}
       footer={<button className="btn btn-secondary" onClick={onClose}>Done</button>}>
       <div className="form-grid">
         {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          Invoices price this {kind} per store: members pay the Member price, non-members the Non-Member price.
-          A blank price <strong>blocks</strong> that sale type at that store.
+          Set the selling price for this {kind} at each store. A blank price <strong>blocks</strong> the sale at that store.
         </div>
         {loading ? <div style={{ textAlign: 'center', padding: 12 }}><RefreshCw size={16} className="spin" style={{ opacity: 0.4 }} /></div>
           : stores.map(s => {
@@ -74,18 +74,13 @@ const StorePriceEditor: React.FC<{
                 <div style={{ flex: 1, minWidth: 120 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.name}</div>
                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                    Saved: M {money(saved?.member_price ?? null)} · NM {money(saved?.non_member_price ?? null)}{saved && saved.available_at_store === false ? ' · unavailable' : ''}
+                    Saved: {money(saved?.member_price ?? null)}{saved && saved.available_at_store === false ? ' · unavailable' : ''}
                   </div>
                 </div>
-                <div className="form-group" style={{ marginBottom: 0, width: 96 }}>
-                  <label style={{ fontSize: 10.5 }}>Member</label>
+                <div className="form-group" style={{ marginBottom: 0, width: 120 }}>
+                  <label style={{ fontSize: 10.5 }}>Price</label>
                   <input type="number" min={0} step="0.01" value={d.m} placeholder="—"
-                    onChange={e => setDrafts(x => ({ ...x, [s.id]: { ...x[s.id], m: e.target.value } }))} />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0, width: 96 }}>
-                  <label style={{ fontSize: 10.5 }}>Non-Member</label>
-                  <input type="number" min={0} step="0.01" value={d.nm} placeholder="—"
-                    onChange={e => setDrafts(x => ({ ...x, [s.id]: { ...x[s.id], nm: e.target.value } }))} />
+                    onChange={e => setDrafts(x => ({ ...x, [s.id]: { ...x[s.id], m: e.target.value, nm: e.target.value } }))} />
                 </div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer', paddingBottom: 8 }}>
                   <input type="checkbox" checked={d.avail} style={{ width: 'auto' }}

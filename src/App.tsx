@@ -27,7 +27,6 @@ import PublicSurveyPage from './pages/PublicSurveyPage';
 import SurveysPage from './pages/SurveysPage';
 import TikTokImportPage from './pages/TikTokImportPage';
 import AffiliatesPage from './pages/AffiliatesPage';
-import MembershipsPage from './pages/MembershipsPage';
 import InvoicesPage from './pages/InvoicesPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
@@ -99,7 +98,6 @@ const AppRoutes: React.FC = () => {
       <Route path="/surveys" element={<Protected><SurveysPage /></Protected>} />
       <Route path="/tiktok-import" element={<Protected><TikTokImportPage /></Protected>} />
       <Route path="/affiliates" element={<Protected><AffiliatesPage /></Protected>} />
-      <Route path="/memberships" element={<Protected><MembershipsPage /></Protected>} />
       <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
       <Route path="/adjustments" element={<Protected><AdjustmentsPage /></Protected>} />
       <Route path="/audit-log" element={<Protected><AuditLogPage /></Protected>} />

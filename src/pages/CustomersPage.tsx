@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
-import MembershipBadge from '../components/MembershipBadge';
 import { Modal } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 
@@ -244,26 +243,9 @@ const CustomersPage: React.FC = () => {
           {ovLoading || !overview ? <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>Loading…</div> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 }}>
               <section>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>Membership</div>
-                {overview.membership_status?.is_member ? (
-                  <div>
-                    {overview.membership_status.plan_name} · Member ID <strong>{overview.member_id ?? 'missing'}</strong><br />
-                    {overview.membership_status.start_date && <>Start {new Date(overview.membership_status.start_date).toLocaleDateString('en-GB')} → Expiry {overview.membership_status.expiry_date ? new Date(overview.membership_status.expiry_date).toLocaleDateString('en-GB') : '—'}</>}
-                    {overview.membership_status.days_left != null && <> · {overview.membership_status.days_left} days left</>}
-                    {overview.membership_status.warning && <div style={{ color: 'var(--danger)' }}>{overview.membership_status.warning}</div>}
-                  </div>
-                ) : <div style={{ color: 'var(--text-muted)' }}>No active membership</div>}
-              </section>
-              <section>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>Affiliate</div>
                 <div style={{ color: 'var(--text-muted)' }}>{overview.affiliate_state?.eligible ? 'Eligible' : (overview.affiliate_state?.block_reason ?? overview.affiliate_state?.state ?? '—')}</div>
               </section>
-              {overview.memberships?.length > 1 && (
-                <section>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Membership history</div>
-                  {overview.memberships.map((m: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{m.membership_no} · {m.plan ?? '—'} · {m.status}{m.cancelled_at ? ` · cancelled (${m.cancel_reason ?? ''})` : ''}</div>)}
-                </section>
-              )}
               {overview.refunds?.length > 0 && (
                 <section>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>Refunds / cancellations</div>
@@ -346,7 +328,6 @@ const CustomersPage: React.FC = () => {
           footer={<button className="btn btn-secondary" onClick={() => setProfileFor(null)}>Close</button>}>
           {!profileStats ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
             <div className="form-grid">
-            <MembershipBadge customerId={profileFor.id} />
               {canComplete ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>

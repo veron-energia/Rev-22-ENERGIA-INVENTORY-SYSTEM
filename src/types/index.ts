@@ -301,9 +301,8 @@ export interface StoreProductPrice {
   store_id: string;
   product_id: string;
   selling_price: number;
-  member_price: number | null;
-  non_member_price: number | null;
-  eligibility: 'both' | 'member_only' | 'non_member_only';
+  member_price?: number | null;   // legacy column; still holds the single price
+  eligibility: 'available' | 'both';
   is_active: boolean;
   created_at: string;
 }
@@ -356,7 +355,7 @@ export interface InvoiceItem {
   id: string;
   invoice_id: string;
   product_id: string | null;
-  line_kind?: 'product' | 'voucher' | 'promotion' | 'membership' | 'therapy';
+  line_kind?: 'product' | 'voucher' | 'promotion' | 'therapy';
   voucher_id?: string | null;
   promotion_id?: string | null;
   line_voucher_id?: string | null;
@@ -365,22 +364,17 @@ export interface InvoiceItem {
   quantity: number;
   unit_price: number;
   line_total: number;
-  // Phase 4 permanent price snapshots
-  price_mode?: 'member' | 'non_member' | null;
+  // Permanent price snapshots
   price_source?: string | null;
   price_source_id?: string | null;
   store_id_snapshot?: string | null;
-  member_price_snapshot?: number | null;
-  non_member_price_snapshot?: number | null;
   original_price?: number | null;
   price_overridden?: boolean;
   override_reason?: string | null;
   override_by?: string | null;
   override_at?: string | null;
-  membership_plan_id?: string | null;
   plan_name_snapshot?: string | null;
   plan_months_snapshot?: number | null;
-  member_id_snapshot?: string | null;
   // Phase 12 — FOC. `quantity` stays the FULL quantity (stock and
   // entitlements follow it); `line_total` holds the CHARGED value only.
   foc_quantity?: number;
@@ -750,36 +744,10 @@ export interface HealthSurvey {
 
 
 
-// ── Membership system (Phase 2) ──────────────────────────────────────────────
-export interface MembershipPlan {
-  id: string; name: string; duration_months: number; description: string | null;
-  is_active: boolean; is_complimentary: boolean; is_system: boolean;
-  deleted_at: string | null; created_at: string;
-}
-export interface MembershipPlanStorePrice {
-  id: string; plan_id: string; store_id: string; membership_fee: number;
-  available_at_store: boolean; is_active: boolean; deleted_at: string | null;
-}
-export interface CustomerMembership {
-  id: string; membership_no: string; customer_id: string; plan_id: string;
-  store_id: string | null; member_id: string | null;
-  source: 'sale' | 'complimentary' | 'migration' | 'renewal';
-  invoice_id: string | null; invoice_item_id: string | null; fee_snapshot: number;
-  start_date: string | null; expiry_date: string | null;
-  status: 'pending_payment' | 'active' | 'expiring_soon' | 'expired' | 'cancelled' | 'suspended';
-  is_complimentary: boolean; is_renewal: boolean; previous_membership_id: string | null;
-  activated_at: string | null; cancelled_at: string | null; suspended_at: string | null;
-  deleted_at: string | null; created_at: string;
-}
-
 export interface AffiliateRow {
   customer_id: string;
   full_name: string;
   phone: string;
-  member_id: string | null;
-  membership_status: string | null;
-  membership_plan: string | null;
-  membership_expiry: string | null;
   affiliate_state: string;
   block_reason: string | null;
   store_id: string | null;
@@ -808,8 +776,7 @@ export interface UnlimitedTherapyStorePrice {
   id: string;
   package_id: string;
   store_id: string;
-  member_price: number | null;
-  non_member_price: number | null;
+  member_price: number | null;   // the single selling price (legacy column name)
   available_at_store: boolean;
   deleted_at: string | null;
 }

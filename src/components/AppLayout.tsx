@@ -45,7 +45,6 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/therapy', label: 'Therapy', icon: <Sparkles size={17} />, show: true },
     { to: '/surveys', label: 'Health Surveys', icon: <ClipboardList size={17} />, show: true },
     { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: true },
-    { to: '/memberships', label: 'Memberships', icon: <CreditCard size={17} />, show: true },
     { to: '/affiliates', label: 'Affiliates', icon: <UserPlus size={17} />, show: true },
     { to: '/commissions', label: 'Commissions', icon: <Star size={17} />, show: isManagerOrAbove(role) },
     { to: '/staff-commissions', label: 'Staff Commissions', icon: <Award size={17} />, show: isManagerOrAbove(role) },

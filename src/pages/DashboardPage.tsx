@@ -162,12 +162,6 @@ const DashboardPage: React.FC = () => {
 
       {isManagerOrAbove(profile?.role) && summary && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 20 }}>
-          <StatCard icon={<CreditCard size={20} color="var(--primary)" />} label="Membership sales today" value={`S$${Number(summary.membership_sales).toFixed(0)}`} tint="var(--primary-light)" />
-          <StatCard icon={<TrendingUp size={20} color="var(--success)" />} label="Member sales today" value={`S$${Number(summary.member_sales).toFixed(0)}`} tint="var(--success-light)" />
-          <StatCard icon={<TrendingUp size={20} color="var(--text-muted)" />} label="Non-member sales today" value={`S$${Number(summary.non_member_sales).toFixed(0)}`} tint="var(--surface-2)" />
-          <StatCard icon={<Clock size={20} color="var(--accent)" />} label="Expiring memberships (90d)" value={summary.expiring_memberships} tint="var(--accent-light)" />
-          <StatCard icon={<AlertTriangle size={20} color="var(--danger)" />} label="Missing Member IDs" value={summary.missing_member_ids} tint="var(--danger-light)" />
-          <StatCard icon={<AlertTriangle size={20} color="var(--danger)" />} label="Missing membership stores" value={summary.missing_stores} tint="var(--danger-light)" />
           <StatCard icon={<Ban size={20} color="var(--danger)" />} label="Blocked commission" value={`S$${Number(summary.blocked_commission).toFixed(0)}`} tint="var(--danger-light)" />
           <StatCard icon={<Sparkles size={20} color="var(--accent)" />} label="Therapy awaiting activation" value={summary.therapy_awaiting} tint="var(--accent-light)" />
           <StatCard icon={<Clock size={20} color="var(--danger)" />} label="Therapy deadline warnings (30d)" value={summary.therapy_deadline_warn} tint="var(--danger-light)" />

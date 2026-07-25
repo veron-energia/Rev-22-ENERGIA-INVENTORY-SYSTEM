@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, AffiliateRow, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
-import { RefreshCw, Search, UserPlus, Ban, PlayCircle, Store as StoreIcon, CreditCard, AlertTriangle, Users, X } from 'lucide-react';
+import { RefreshCw, Search, UserPlus, Ban, PlayCircle, Store as StoreIcon, Users, X } from 'lucide-react';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -11,13 +11,11 @@ const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '
 const STATE: Record<string, { cls: string; label: string }> = {
   active: { cls: 'badge-success', label: 'Active' },
   suspended_manual: { cls: 'badge-danger', label: 'Suspended' },
-  inactive_membership_expired: { cls: 'badge-warning', label: 'Expired Membership' },
-  inactive_missing_member_id: { cls: 'badge-warning', label: 'Missing Member ID' },
-  inactive_no_membership: { cls: 'badge-muted', label: 'No Active Membership' },
+  inactive: { cls: 'badge-muted', label: 'Inactive' },
   not_activated: { cls: 'badge-muted', label: 'Not Activated' },
 };
 
-type FilterKey = 'all' | 'eligible' | 'active' | 'missing_id' | 'expired' | 'suspended' | 'blocked' | 'missing_store';
+type FilterKey = 'all' | 'eligible' | 'active' | 'inactive' | 'suspended' | 'blocked' | 'missing_store';
 
 const AffiliatesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -78,12 +76,11 @@ const AffiliatesPage: React.FC = () => {
 
   const filtered = useMemo(() => rows.filter(r => {
     const s = q.trim().toLowerCase();
-    if (s && !(r.full_name?.toLowerCase().includes(s) || r.phone?.toLowerCase().includes(s) || (r.member_id ?? '').toLowerCase().includes(s))) return false;
+    if (s && !(r.full_name?.toLowerCase().includes(s) || r.phone?.toLowerCase().includes(s))) return false;
     switch (filter) {
       case 'eligible': return r.affiliate_state === 'active';
       case 'active': return r.affiliate_state === 'active';
-      case 'missing_id': return r.affiliate_state === 'inactive_missing_member_id' || !r.member_id;
-      case 'expired': return r.affiliate_state === 'inactive_membership_expired';
+      case 'inactive': return r.affiliate_state === 'inactive' || r.affiliate_state === 'not_activated';
       case 'suspended': return r.manually_suspended;
       case 'blocked': return Number(r.blocked_commission) > 0;
       case 'missing_store': return r.has_profile && !r.store_id;
@@ -94,8 +91,7 @@ const AffiliatesPage: React.FC = () => {
   const counts = useMemo(() => ({
     all: rows.length,
     eligible: rows.filter(r => r.affiliate_state === 'active').length,
-    missing_id: rows.filter(r => r.affiliate_state === 'inactive_missing_member_id' || !r.member_id).length,
-    expired: rows.filter(r => r.affiliate_state === 'inactive_membership_expired').length,
+    inactive: rows.filter(r => r.affiliate_state === 'inactive' || r.affiliate_state === 'not_activated').length,
     suspended: rows.filter(r => r.manually_suspended).length,
     blocked: rows.filter(r => Number(r.blocked_commission) > 0).length,
     missing_store: rows.filter(r => r.has_profile && !r.store_id).length,
@@ -110,7 +106,7 @@ const AffiliatesPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Affiliates</h2><p>Membership-based affiliate programme. Eligibility follows an active membership and a valid Member ID — there is no registration fee.</p></div>
+        <div><h2>Affiliates</h2><p>Direct-referral affiliate programme. New affiliates are activated by an Owner or Manager.</p></div>
         <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
       </div>
 
@@ -119,14 +115,13 @@ const AffiliatesPage: React.FC = () => {
       <div className="card" style={{ padding: 12, marginBottom: 12 }}>
         <div style={{ position: 'relative', marginBottom: 10 }}>
           <Search size={15} style={{ position: 'absolute', left: 10, top: 10, opacity: 0.4 }} />
-          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search customer, phone or Member ID…" style={{ paddingLeft: 32 }} />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search customer or phone…" style={{ paddingLeft: 32 }} />
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {filterBtn('all', 'All', counts.all)}
-          {filterBtn('eligible', 'Eligible Members', counts.eligible)}
+          {filterBtn('eligible', 'Eligible', counts.eligible)}
           {filterBtn('active', 'Active')}
-          {filterBtn('missing_id', 'Missing Member ID', counts.missing_id)}
-          {filterBtn('expired', 'Expired Membership', counts.expired)}
+          {filterBtn('inactive', 'Inactive', counts.inactive)}
           {filterBtn('suspended', 'Suspended', counts.suspended)}
           {filterBtn('blocked', 'Blocked Commission', counts.blocked)}
           {filterBtn('missing_store', 'Missing Store', counts.missing_store)}
@@ -142,7 +137,7 @@ const AffiliatesPage: React.FC = () => {
           <div style={{ overflowX: 'auto' }}>
             <table className="data-table">
               <thead><tr>
-                <th>Customer</th><th>Member ID</th><th>Membership</th><th>Affiliate</th><th>Store</th>
+                <th>Customer</th><th>Affiliate</th><th>Store</th>
                 <th>Referrals</th><th>Downline</th><th>Lifetime</th><th>Payable</th><th>Blocked</th><th>Last</th><th></th>
               </tr></thead>
               <tbody>
@@ -151,8 +146,6 @@ const AffiliatesPage: React.FC = () => {
                   return (
                     <tr key={r.customer_id}>
                       <td><div style={{ fontWeight: 600 }}>{r.full_name}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.phone}</div></td>
-                      <td>{r.member_id ?? <span style={{ color: 'var(--danger)', fontSize: 12 }}><AlertTriangle size={11} /> missing</span>}</td>
-                      <td style={{ fontSize: 12 }}>{r.membership_plan ?? '—'}<div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{r.membership_status ?? ''}{r.membership_expiry ? ` · ${d(r.membership_expiry)}` : ''}</div></td>
                       <td><span className={`badge ${stt.cls}`}>{stt.label}</span>{r.block_reason && r.affiliate_state !== 'active' && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{r.block_reason}</div>}</td>
                       <td style={{ fontSize: 12 }}>{r.store_name ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                       <td style={{ textAlign: 'center' }}>{r.direct_referrals}</td>
@@ -186,7 +179,7 @@ const AffiliatesPage: React.FC = () => {
           footer={<><button className="btn btn-secondary" onClick={() => setStoreModal(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveStore} disabled={busy === storeModal.customer_id}>Save</button></>}>
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label>Membership store</label>
+            <label>Affiliate store</label>
             <select value={storeSel} onChange={e => setStoreSel(e.target.value)}>
               <option value="">— none —</option>
               {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}

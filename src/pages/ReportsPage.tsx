@@ -11,7 +11,7 @@ import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticke
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_membership' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok' | 'r_exchange_inv' | 'r_transfers' | 'r_salesrecon';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok' | 'r_exchange_inv' | 'r_transfers' | 'r_salesrecon';
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -37,7 +37,6 @@ const ReportsPage: React.FC = () => {
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<any[]>([]);
   const [serviceStaff, setServiceStaff] = useState<any[]>([]);
-  const [repMembership, setRepMembership] = useState<any[]>([]);
   const [repPricing, setRepPricing] = useState<any[]>([]);
   const [repAffiliate, setRepAffiliate] = useState<any[]>([]);
   const [repTherapy, setRepTherapy] = useState<any[]>([]);
@@ -99,8 +98,7 @@ const ReportsPage: React.FC = () => {
     setProfiles((prof.data as any[]) ?? []);
     setServiceStaff((iss.data as any[]) ?? []);
     // Phase 8 report views (via RPC).
-    const [rm, rp, ra, rt, rdc, rfl, rfs, rsrc, tts, ttr] = await Promise.all([
-      supabase.rpc('report_memberships'),
+    const [rp, ra, rt, rdc, rfl, rfs, rsrc, tts, ttr] = await Promise.all([
       supabase.rpc('report_pricing'),
       supabase.rpc('report_affiliates'),
       supabase.rpc('report_therapy'),
@@ -114,7 +112,6 @@ const ReportsPage: React.FC = () => {
       supabase.rpc('report_tiktok_settlement_summary', { p_store_id: null, p_from: null, p_to: null }),
       supabase.rpc('report_tiktok_settlement', { p_store_id: null, p_from: null, p_to: null }),
     ]);
-    setRepMembership((rm.data as any[]) ?? []);
     setRepPricing((rp.data as any[]) ?? []);
     setRepAffiliate((ra.data as any[]) ?? []);
     setRepTherapy((rt.data as any[]) ?? []);
@@ -252,7 +249,6 @@ const ReportsPage: React.FC = () => {
     { id: 'commission', label: 'Commission', icon: <BarChart3 size={15} /> },
     { id: 'customers', label: 'Customers', icon: <Users size={15} /> },
     { id: 'stock', label: 'Stock Balance', icon: <Package size={15} /> },
-    { id: 'r_membership', label: 'Membership', icon: <CreditCard size={15} /> },
     { id: 'r_pricing', label: 'Pricing', icon: <KeyRound size={15} /> },
     { id: 'r_affiliate', label: 'Affiliate', icon: <Star size={15} /> },
     { id: 'r_therapy', label: 'Therapy', icon: <Sparkles size={15} /> },
@@ -314,7 +310,7 @@ const ReportsPage: React.FC = () => {
       top_products: topProducts, customers: custRows, stock: stockExport,
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
       sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
-      r_membership: repMembership, r_pricing: repPricing, r_affiliate: repAffiliate,
+      r_pricing: repPricing, r_affiliate: repAffiliate,
       r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources, r_tiktok: ttRows, r_exchange_inv: exchInv, r_transfers: trReceipts, r_salesrecon: salesRecon,
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
@@ -423,25 +419,18 @@ const ReportsPage: React.FC = () => {
                   </tbody>
                 </table>
               )}
-              {tab === 'r_membership' && (
-                <table>
-                  <thead><tr><th>Membership</th><th>Customer</th><th>Member ID</th><th>Plan</th><th>Store</th><th>Start</th><th>Expiry</th><th>Status</th><th style={{ textAlign: 'right' }}>Days Left</th></tr></thead>
-                  <tbody>{repMembership.length === 0 ? <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No memberships</td></tr>
-                    : repMembership.map((r, i) => <tr key={i}><td>{r.membership_no}</td><td><strong>{r.customer_name}</strong></td><td style={{ color: r.missing_member_id ? 'var(--danger)' : undefined }}>{r.member_id ?? 'missing'}</td><td>{r.plan_name ?? '—'}</td><td style={{ color: r.missing_store ? 'var(--danger)' : undefined }}>{r.store_name ?? 'missing'}</td><td style={{ fontSize: 12 }}>{r.start_date ? new Date(r.start_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.expiry_date ? new Date(r.expiry_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ textTransform: 'capitalize' }}>{r.is_complimentary ? 'complimentary' : r.status}</td><td style={{ textAlign: 'right' }}>{r.days_left ?? '—'}</td></tr>)}</tbody>
-                </table>
-              )}
               {tab === 'r_pricing' && (
                 <table>
-                  <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Customer</th><th>Item</th><th>Kind</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Price</th><th>Mode</th><th>Override</th></tr></thead>
-                  <tbody>{repPricing.length === 0 ? <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No paid lines</td></tr>
-                    : repPricing.slice(0, 500).map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{r.paid_date ? new Date(r.paid_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.store_name}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td><td>{r.item_name}</td><td style={{ fontSize: 12 }}>{r.line_kind}</td><td style={{ textAlign: 'right' }}>{r.quantity}</td><td style={{ textAlign: 'right' }}>{money(Number(r.unit_price))}</td><td>{r.price_mode === 'member' ? 'Member' : r.price_mode === 'non_member' ? 'Non-Member' : '—'}</td><td style={{ fontSize: 11.5, color: r.price_overridden ? 'var(--danger)' : 'var(--text-muted)' }}>{r.price_overridden ? (r.override_reason ?? 'yes') : '—'}</td></tr>)}</tbody>
+                  <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Customer</th><th>Item</th><th>Kind</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Price</th></tr></thead>
+                  <tbody>{repPricing.length === 0 ? <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No paid lines</td></tr>
+                    : repPricing.slice(0, 500).map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{r.paid_date ? new Date(r.paid_date).toLocaleDateString('en-GB') : '—'}</td><td style={{ fontSize: 12 }}>{r.store_name}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td><td>{r.item_name}</td><td style={{ fontSize: 12 }}>{r.line_kind}</td><td style={{ textAlign: 'right' }}>{r.quantity}</td><td style={{ textAlign: 'right' }}>{money(Number(r.unit_price))}</td></tr>)}</tbody>
                 </table>
               )}
               {tab === 'r_affiliate' && (
                 <table>
-                  <thead><tr><th>Customer</th><th>Member ID</th><th>Eligibility</th><th>Store</th><th style={{ textAlign: 'right' }}>Referrals</th><th style={{ textAlign: 'right' }}>Tier 1</th><th style={{ textAlign: 'right' }}>Tier 2</th><th style={{ textAlign: 'right' }}>Earned</th><th style={{ textAlign: 'right' }}>Paid</th><th style={{ textAlign: 'right' }}>Reversed</th><th style={{ textAlign: 'right' }}>Blocked</th></tr></thead>
-                  <tbody>{repAffiliate.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No affiliates</td></tr>
-                    : repAffiliate.map((r, i) => <tr key={i}><td><strong>{r.customer_name}</strong></td><td>{r.member_id ?? '—'}</td><td style={{ fontSize: 12 }}>{r.affiliate_state === 'active' ? 'Eligible' : (r.block_reason ?? r.affiliate_state)}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{r.direct_referrals}</td><td style={{ textAlign: 'right' }}>{money(Number(r.tier1_earned))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.tier2_earned))}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.earned))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.paid))}</td><td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.reversed))}</td><td style={{ textAlign: 'right', color: Number(r.blocked) > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>{money(Number(r.blocked))}</td></tr>)}</tbody>
+                  <thead><tr><th>Customer</th><th>Eligibility</th><th>Store</th><th style={{ textAlign: 'right' }}>Referrals</th><th style={{ textAlign: 'right' }}>Tier 1</th><th style={{ textAlign: 'right' }}>Tier 2</th><th style={{ textAlign: 'right' }}>Earned</th><th style={{ textAlign: 'right' }}>Paid</th><th style={{ textAlign: 'right' }}>Reversed</th><th style={{ textAlign: 'right' }}>Blocked</th></tr></thead>
+                  <tbody>{repAffiliate.length === 0 ? <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No affiliates</td></tr>
+                    : repAffiliate.map((r, i) => <tr key={i}><td><strong>{r.customer_name}</strong></td><td style={{ fontSize: 12 }}>{r.affiliate_state === 'active' ? 'Eligible' : (r.block_reason ?? r.affiliate_state)}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{r.direct_referrals}</td><td style={{ textAlign: 'right' }}>{money(Number(r.tier1_earned))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.tier2_earned))}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.earned))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.paid))}</td><td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.reversed))}</td><td style={{ textAlign: 'right', color: Number(r.blocked) > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>{money(Number(r.blocked))}</td></tr>)}</tbody>
                 </table>
               )}
               {tab === 'r_therapy' && (
