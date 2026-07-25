@@ -333,7 +333,7 @@ const PromotionsPage: React.FC = () => {
                     <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openItems(p)}><Layers size={13} /> Items</button>
-                      <button className="btn btn-secondary btn-sm" title="Member / Non-Member store prices" onClick={() => setMnmFor({ id: p.id, name: p.name })}>M/NM</button>
+                      <button className="btn btn-secondary btn-sm" title="Per-store selling prices" onClick={() => setMnmFor({ id: p.id, name: p.name })}>Prices</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(p)}><Pencil size={13} /></button>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(p)}><Trash2 size={13} /></button>
                     </div></td>

@@ -402,7 +402,6 @@ const CustomersPage: React.FC = () => {
                                   <span>
                                     <span style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{String(it.kind).replace('_', ' ')}</span> · {it.name}
                                     {it.qty > 1 && <span style={{ color: 'var(--text-muted)' }}> ×{it.qty}</span>}
-                                    {it.price_mode && <span style={{ color: 'var(--text-muted)' }}> · {it.price_mode === 'member' ? 'M' : 'NM'}</span>}
                                   </span>
                                   <span style={{ fontWeight: 600 }}>S${Number(it.line_total).toFixed(2)}</span>
                                 </div>

@@ -172,7 +172,7 @@ const TherapyPage: React.FC = () => {
                         <tr key={e.id}>
                           <td style={{ fontWeight: 600 }}>{e.entitlement_no}</td>
                           <td><div>{cName(e.customer_id)}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{cPhone(e.customer_id)}</div></td>
-                          <td>{e.package_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.duration_months} mo · {money(e.price_snapshot)}{e.price_mode ? ` · ${e.price_mode === 'member' ? 'M' : 'NM'}` : ''}</div></td>
+                          <td>{e.package_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.duration_months} mo · {money(e.price_snapshot)}</div></td>
                           <td style={{ fontSize: 12 }}>{d(e.purchase_date)}</td>
                           <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}</td>
                           <td style={{ fontSize: 12 }}>{d(e.activation_date ?? e.scheduled_date)}</td>
@@ -246,7 +246,7 @@ const TherapyPage: React.FC = () => {
                       <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-secondary btn-sm" onClick={() => setPriceFor({ id: p.id, name: p.name })}>M/NM Prices</button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => setPriceFor({ id: p.id, name: p.name })}>Store Prices</button>
                           <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openPkg(p)}><Pencil size={13} /></button>
                         </div>
                       </td>

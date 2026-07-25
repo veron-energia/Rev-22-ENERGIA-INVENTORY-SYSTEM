@@ -80,6 +80,9 @@ const InvoicesPage: React.FC = () => {
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   const [detailExchange, setDetailExchange] = useState<any>(null);
   const [detailRevisions, setDetailRevisions] = useState<InvoiceRevision[]>([]);
+  const [affiliateOptions, setAffiliateOptions] = useState<{ affiliate_id: string; full_name: string; phone: string }[]>([]);
+  const [affiliateBusy, setAffiliateBusy] = useState(false);
+  const [affiliateErr, setAffiliateErr] = useState<string | null>(null);
   const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
   const [focQty, setFocQty] = useState(1);
   const [focReasonId, setFocReasonId] = useState('');
@@ -347,16 +350,6 @@ const InvoicesPage: React.FC = () => {
     setSaveEarthOn(false); setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount);
   };
 
-  const clearOverridesOnContextChange = (cls: LineDraft[]): LineDraft[] => {
-    const hadOverrides = false;
-    if (hadOverrides) {
-      // M: an override reason entered for one customer/store must not silently
-      // carry to another. Warn, then clear the manual modes back to Auto.
-      setCErr('Customer or store changed — manual Member/Non-Member overrides were cleared. Re-apply if still needed.');
-    }
-    return cls;
-  };
-
   const handleCreate = async () => {
     if (isStaff && !assignedStoreId) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
     const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
@@ -490,9 +483,26 @@ const InvoicesPage: React.FC = () => {
     setCreateOpen(true);
   };
 
+  const loadAffiliateOptions = async () => {
+    const { data } = await supabase.rpc('active_affiliates_for_picker');
+    setAffiliateOptions((data as any[]) ?? []);
+  };
+
+  const changeInvoiceAffiliate = async (affiliateId: string | null) => {
+    if (!detail) return;
+    setAffiliateBusy(true); setAffiliateErr(null);
+    const { error } = await supabase.rpc('set_invoice_affiliate', { p_invoice_id: detail.id, p_affiliate_id: affiliateId });
+    setAffiliateBusy(false);
+    if (error) { setAffiliateErr(error.message); return; }
+    const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+    if (invRow) await openDetail(invRow as Invoice);
+    await loadAll();
+  };
+
   const openDetail = async (inv: Invoice) => {
     setDetail(inv);
     setDetailTherapy(null);
+    void loadAffiliateOptions();
     const [items, pays, svc, ther] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
@@ -925,7 +935,7 @@ const InvoicesPage: React.FC = () => {
               </div>
               <div className="form-group">
                 <label>Customer *</label>
-                <select value={cCustomer} onChange={e => { setCCustomer(e.target.value); setCLines(ls => clearOverridesOnContextChange(ls)); }}>
+                <select value={cCustomer} onChange={e => { setCCustomer(e.target.value); setCLines(ls => ls); }}>
                   <option value="">— Select customer —</option>
                   {customers.map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
                 </select>
@@ -1245,6 +1255,31 @@ const InvoicesPage: React.FC = () => {
                 )}
               </div>
             </div>
+
+            {/* Affiliate selector — only while the invoice is unpaid and unlocked. */}
+            {(detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
+              && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0 && (
+              <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Affiliate</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={(detail as any).affiliate_id ?? ''}
+                    disabled={affiliateBusy}
+                    style={{ maxWidth: 260 }}
+                    onChange={e => changeInvoiceAffiliate(e.target.value === '' ? null : e.target.value)}>
+                    <option value="">— No affiliate —</option>
+                    {affiliateOptions.map(a => (
+                      <option key={a.affiliate_id} value={a.affiliate_id}>{a.full_name}{a.phone ? ` · ${a.phone}` : ''}</option>
+                    ))}
+                  </select>
+                  {affiliateBusy && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving…</span>}
+                </div>
+                {affiliateErr && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{affiliateErr}</div>}
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Choose which affiliate is credited for this sale. This can be changed until the invoice is paid.
+                </div>
+              </div>
+            )}
 
             {detailRevisions.length > 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
