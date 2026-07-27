@@ -83,6 +83,9 @@ const InvoicesPage: React.FC = () => {
   const [affiliateOptions, setAffiliateOptions] = useState<{ affiliate_id: string; full_name: string; phone: string }[]>([]);
   const [affiliateBusy, setAffiliateBusy] = useState(false);
   const [affiliateErr, setAffiliateErr] = useState<string | null>(null);
+  const [effAffiliate, setEffAffiliate] = useState<any>(null);
+  const [invLegacy, setInvLegacy] = useState<any[]>([]);
+  const [legacyDiag, setLegacyDiag] = useState<any>(null);
   const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
   const [focQty, setFocQty] = useState(1);
   const [focReasonId, setFocReasonId] = useState('');
@@ -184,18 +187,18 @@ const InvoicesPage: React.FC = () => {
   const therapyPrice = (pkgId: string, _member: boolean = effMember): number | null => {
     const r = therapyPrices.find(x => x.package_id === pkgId && x.store_id === activeStore && x.available_at_store !== false);
     if (!r) return null;
-    return r.member_price ?? null;
+    return r.selling_price ?? r.member_price ?? null;
   };
   const voucherPrice = (id: string, _member: boolean = effMember) => {
     const r = voucherStorePrices.find(x => x.voucher_id === id && x.store_id === activeStore && x.available_at_store !== false);
     if (!r) return null;
-    return r.member_price ?? null;
+    return r.selling_price ?? r.member_price ?? null;
   };
 
   const promoPrice = (id: string, _member: boolean = effMember) => {
     const r = promoStorePrices.find(x => x.promotion_id === id && x.store_id === activeStore && x.available_at_store !== false);
     if (!r) return null;
-    return r.member_price ?? null;
+    return r.selling_price ?? r.member_price ?? null;
   };
 
   const lineMember = (_l: LineDraft): boolean => effMember;
@@ -488,12 +491,37 @@ const InvoicesPage: React.FC = () => {
     setAffiliateOptions((data as any[]) ?? []);
   };
 
+  // The affiliate that will actually be credited: the explicit choice on the
+  // invoice, or the customer's own referrer (Tier 1) when nothing is chosen.
+  const loadEffectiveAffiliate = async (invoiceId: string) => {
+    const { data } = await supabase.rpc('invoice_effective_affiliate', { p_invoice_id: invoiceId });
+    setEffAffiliate(data ?? null);
+  };
+
+  // Legacy therapy this invoice's same-day qualification earned the customer.
+  const loadInvoiceLegacy = async (invoiceId: string, inv?: Invoice) => {
+    const { data } = await supabase.rpc('invoice_legacy_entitlements', { p_invoice_id: invoiceId });
+    setInvLegacy((data as any[]) ?? []);
+    // If nothing was earned, find out why so staff aren't left guessing.
+    const src = inv ?? detail;
+    if ((!data || (data as any[]).length === 0) && src?.customer_id && src?.store_id) {
+      const day = src.paid_at ? new Date(src.paid_at).toISOString().slice(0, 10) : null;
+      const { data: dg } = await supabase.rpc('legacy_qualification_diagnose', {
+        p_customer_id: src.customer_id, p_store_id: src.store_id, p_day: day,
+      });
+      setLegacyDiag(dg ?? null);
+    } else {
+      setLegacyDiag(null);
+    }
+  };
+
   const changeInvoiceAffiliate = async (affiliateId: string | null) => {
     if (!detail) return;
     setAffiliateBusy(true); setAffiliateErr(null);
     const { error } = await supabase.rpc('set_invoice_affiliate', { p_invoice_id: detail.id, p_affiliate_id: affiliateId });
     setAffiliateBusy(false);
     if (error) { setAffiliateErr(error.message); return; }
+    await loadEffectiveAffiliate(detail.id);
     const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
     if (invRow) await openDetail(invRow as Invoice);
     await loadAll();
@@ -503,6 +531,8 @@ const InvoicesPage: React.FC = () => {
     setDetail(inv);
     setDetailTherapy(null);
     void loadAffiliateOptions();
+    void loadEffectiveAffiliate(inv.id);
+    void loadInvoiceLegacy(inv.id, inv);
     const [items, pays, svc, ther] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
@@ -1263,9 +1293,9 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Affiliate</div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <select
-                    value={(detail as any).affiliate_id ?? ''}
+                    value={(detail as any).affiliate_id ?? (effAffiliate?.affiliate_id ?? '')}
                     disabled={affiliateBusy}
-                    style={{ maxWidth: 260 }}
+                    style={{ maxWidth: 280 }}
                     onChange={e => changeInvoiceAffiliate(e.target.value === '' ? null : e.target.value)}>
                     <option value="">— No affiliate —</option>
                     {affiliateOptions.map(a => (
@@ -1275,8 +1305,46 @@ const InvoicesPage: React.FC = () => {
                   {affiliateBusy && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving…</span>}
                 </div>
                 {affiliateErr && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{affiliateErr}</div>}
+                {effAffiliate?.has_affiliate ? (
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>
+                    {effAffiliate.source === 'invoice'
+                      ? <>Chosen for this invoice: <strong>{effAffiliate.full_name}</strong> earns Tier 1.</>
+                      : <>From this customer's referrer: <strong>{effAffiliate.full_name}</strong> earns Tier 1{effAffiliate.tier2_name ? <> and {effAffiliate.tier2_name} earns Tier 2</> : null}.</>}
+                    {effAffiliate.is_registered_affiliate === false && (
+                      <span style={{ color: 'var(--danger)' }}> This person is not a registered affiliate, so no commission will be paid.</span>
+                    )}
+                    {effAffiliate.is_registered_affiliate && effAffiliate.is_active_affiliate === false && (
+                      <span style={{ color: 'var(--danger)' }}> Their affiliate account is not active, so commission will be blocked.</span>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>
+                    This customer has no referrer, so no affiliate is credited unless you choose one.
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  Choose which affiliate is credited for this sale. This can be changed until the invoice is paid.
+                  Choose a different affiliate to credit this sale instead. This can be changed until the invoice is paid.
+                </div>
+              </div>
+            )}
+
+            {invLegacy.length > 0 && (
+              <div style={{ border: '1px solid var(--success)', background: 'var(--success-light)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                  Legacy therapy earned {invLegacy.length > 1 ? `(${invLegacy.length})` : ''}
+                </div>
+                {invLegacy.map(e => (
+                  <div key={e.id} style={{ fontSize: 12, marginBottom: 3 }}>
+                    <strong>{e.entitlement_no}</strong> · {e.package_name}
+                    {e.entitlement_kind === 'voucher' ? ` · ${e.voucher_qty ?? 0} voucher(s)` : e.duration_months ? ` · ${e.duration_months} months` : ''}
+                    {' · '}
+                    {e.status === 'pending_activation'
+                      ? <span>unclaimed — claim by {e.activation_deadline ? new Date(e.activation_deadline).toLocaleDateString('en-GB') : '—'} under Therapy → Legacy Therapy</span>
+                      : <span>{String(e.status).replace('_', ' ')}{e.expiry_date ? ` until ${new Date(e.expiry_date).toLocaleDateString('en-GB')}` : ''}</span>}
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Earned from this customer's same-day paid total at this store.
                 </div>
               </div>
             )}
@@ -1445,10 +1513,24 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
-            {detailTherapy && !detailTherapy.used && detailTherapy.eligible && (
+            {detailTherapy && !detailTherapy.used && detailTherapy.eligible && legacyDiag && (
+              <div className={`alert ${legacyDiag.qualifies ? 'alert-info' : 'alert-warning'}`} style={{ marginBottom: 0 }}>
+                <span>💡</span>
+                <div>
+                  <div>No Legacy therapy from this invoice yet. {legacyDiag.reason}</div>
+                  {legacyDiag.day_charged != null && (
+                    <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>
+                      Same-day paid total at this store: {money(Number(legacyDiag.day_charged))}
+                      {legacyDiag.best_tier_amount ? ` · qualifying tier ${money(Number(legacyDiag.best_tier_amount))}` : ''}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {detailTherapy && !detailTherapy.used && detailTherapy.eligible && !legacyDiag && (
               <div className="alert alert-info" style={{ marginBottom: 0 }}>
                 <span>💡</span>
-                <div>This invoice hasn't been used for therapy qualification yet — it's still eligible.</div>
+                <div>This invoice hasn't been used for therapy qualification yet.</div>
               </div>
             )}
 

@@ -47,7 +47,7 @@ const PriceListPage: React.FC = () => {
     const pr = priceFor(p.id);
     setEditProduct(p);
     setPrice(pr?.selling_price != null ? String(pr.selling_price)
-             : (pr?.member_price != null ? String(pr.member_price) : ''));
+             : (pr?.selling_price != null ? String(pr.selling_price) : ''));
   };
 
   const handleSave = async () => {

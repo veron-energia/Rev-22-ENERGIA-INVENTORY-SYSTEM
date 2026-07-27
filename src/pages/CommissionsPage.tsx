@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Commission, CommissionPayout, Customer, PaymentMethod, isManagerOrAbove, isOwnerOrManager } from '../types';
 import { Modal, NoAccess } from '../components/ui';
 import { exportCsv } from '../lib/csv';
-import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Download } from 'lucide-react';
+import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Download, Settings } from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 const monthKey = (d: string) => (d || '').slice(0, 7); // YYYY-MM
@@ -20,6 +20,13 @@ const CommissionsPage: React.FC = () => {
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'earned' | 'payouts' | 'referrers'>('earned');
+
+  // Editable commission rates.
+  const [rates, setRates] = useState({ t1_own: 15, t1_third: 4.5, t2_own: 5, t2_third: 5 });
+  const [ratesOpen, setRatesOpen] = useState(false);
+  const [ratesDraft, setRatesDraft] = useState({ t1_own: 15, t1_third: 4.5, t2_own: 5, t2_third: 5 });
+  const [ratesBusy, setRatesBusy] = useState(false);
+  const [ratesErr, setRatesErr] = useState<string | null>(null);
 
   // Referrers tab
   const [referrers, setReferrers] = useState<any[]>([]);
@@ -38,16 +45,24 @@ const CommissionsPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [co, po, cu, pm] = await Promise.all([
+    const [co, po, cu, pm, st] = await Promise.all([
       supabase.from('commissions').select('*').order('invoice_paid_date', { ascending: false }),
       supabase.from('commission_payouts').select('*').order('payout_month', { ascending: false }),
       supabase.from('customers').select('id,full_name,phone').is('deleted_at', null),
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true),
+      supabase.from('app_settings').select('commission_tier1_own_rate,commission_tier1_third_rate,commission_tier2_own_rate,commission_tier2_third_rate').eq('id', true).single(),
     ]);
     setCommissions((co.data as Commission[]) ?? []);
     setPayouts((po.data as CommissionPayout[]) ?? []);
     setCustomers((cu.data as Customer[]) ?? []);
     setMethods((pm.data as PaymentMethod[]) ?? []);
+    if (st.data) {
+      const d = st.data as any;
+      setRates({
+        t1_own: Number(d.commission_tier1_own_rate), t1_third: Number(d.commission_tier1_third_rate),
+        t2_own: Number(d.commission_tier2_own_rate), t2_third: Number(d.commission_tier2_third_rate),
+      });
+    }
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -128,11 +143,22 @@ const CommissionsPage: React.FC = () => {
     })));
   };
 
+  const saveRates = async () => {
+    setRatesBusy(true); setRatesErr(null);
+    const { error } = await supabase.rpc('set_commission_rates', {
+      p_tier1_own: ratesDraft.t1_own, p_tier1_third: ratesDraft.t1_third,
+      p_tier2_own: ratesDraft.t2_own, p_tier2_third: ratesDraft.t2_third,
+    });
+    setRatesBusy(false);
+    if (error) { setRatesErr(error.message); return; }
+    setRatesOpen(false); load();
+  };
+
   return (
     <div>
       <div className="page-header">
-        <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns on each paid invoice; Tier 2 earns 5% of Tier 1. Unpaid total: <strong style={{ color: 'var(--primary)' }}>{money(totalEarned)}</strong></p></div>
-        <div style={{ display: 'flex', gap: 10 }}><button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+        <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns on each paid invoice; Tier 2 earns a share of Tier 1. Unpaid total: <strong style={{ color: 'var(--primary)' }}>{money(totalEarned)}</strong></p></div>
+        <div style={{ display: 'flex', gap: 10 }}>{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}<button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
@@ -343,6 +369,37 @@ const CommissionsPage: React.FC = () => {
               </div>
             </div>
           )}
+        </Modal>
+      )}
+
+      {ratesOpen && (
+        <Modal title="Commission Rates" maxWidth={460} onClose={() => setRatesOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setRatesOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={saveRates} disabled={ratesBusy}>{ratesBusy ? 'Saving…' : 'Save'}</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              Set the two-tier referral commission rates. Tier 1 is a percentage of the line value; Tier 2 is a percentage of the Tier 1 amount. Own and Third-party products can differ.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 1 — Own (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={ratesDraft.t1_own || ''} onChange={e => setRatesDraft(d => ({ ...d, t1_own: +e.target.value }))} autoFocus />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 1 — Third-party (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={ratesDraft.t1_third || ''} onChange={e => setRatesDraft(d => ({ ...d, t1_third: +e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 2 — Own (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={ratesDraft.t2_own || ''} onChange={e => setRatesDraft(d => ({ ...d, t2_own: +e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 2 — Third-party (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={ratesDraft.t2_third || ''} onChange={e => setRatesDraft(d => ({ ...d, t2_third: +e.target.value }))} />
+              </div>
+            </div>
+            {ratesErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{ratesErr}</div></div>}
+            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Applies to invoices paid from now on. Already-earned commissions keep the rate they were calculated at.</div></div>
+          </div>
         </Modal>
       )}
     </div>

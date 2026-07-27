@@ -776,7 +776,8 @@ export interface UnlimitedTherapyStorePrice {
   id: string;
   package_id: string;
   store_id: string;
-  member_price: number | null;   // the single selling price (legacy column name)
+  selling_price: number | null;
+  member_price?: number | null;   // legacy alias; no longer populated
   available_at_store: boolean;
   deleted_at: string | null;
 }

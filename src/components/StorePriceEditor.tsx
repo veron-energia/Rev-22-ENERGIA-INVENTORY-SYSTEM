@@ -35,8 +35,8 @@ const StorePriceEditor: React.FC<{
       const r = rs.find(x => x.store_id === s.id);
       d[s.id] = {
         // Phase 19: one selling price. The former Member Price is the price.
-        m: r?.member_price != null ? String(r.member_price) : '',
-        nm: r?.member_price != null ? String(r.member_price) : '',
+        m: r?.selling_price != null ? String(r.selling_price) : '',
+        nm: r?.selling_price != null ? String(r.selling_price) : '',
         avail: r ? r.available_at_store !== false : true,
       };
     });
@@ -74,7 +74,7 @@ const StorePriceEditor: React.FC<{
                 <div style={{ flex: 1, minWidth: 120 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.name}</div>
                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                    Saved: {money(saved?.member_price ?? null)}{saved && saved.available_at_store === false ? ' · unavailable' : ''}
+                    Saved: {money(saved?.selling_price ?? null)}{saved && saved.available_at_store === false ? ' · unavailable' : ''}
                   </div>
                 </div>
                 <div className="form-group" style={{ marginBottom: 0, width: 120 }}>
