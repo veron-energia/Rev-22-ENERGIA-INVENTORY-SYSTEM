@@ -37,6 +37,12 @@ const CustomersPage: React.FC = () => {
   const [profileFor, setProfileFor] = useState<Customer | null>(null);
   const [overviewFor, setOverviewFor] = useState<Customer | null>(null);
   const [overview, setOverview] = useState<any>(null);
+  const [credit, setCredit] = useState<any>(null);
+  const [creditRows, setCreditRows] = useState<any[]>([]);
+  const [creditForm, setCreditForm] = useState<any>(null);
+  const [creditBusy, setCreditBusy] = useState(false);
+  const [creditErr, setCreditErr] = useState<string | null>(null);
+  const [creditStores, setCreditStores] = useState<{ id: string; name: string }[]>([]);
   const [ovLoading, setOvLoading] = useState(false);
   const [profileStats, setProfileStats] = useState<any>(null);
   const [timeline, setTimeline] = useState<any[] | null>(null);
@@ -75,6 +81,44 @@ const CustomersPage: React.FC = () => {
     setOverviewFor(c); setOverview(null); setOvLoading(true);
     const { data } = await supabase.rpc('customer_overview', { p_customer_id: c.id });
     setOverview(data ?? null); setOvLoading(false);
+    void loadCredit(c.id);
+  };
+
+  const loadCredit = async (customerId: string) => {
+    if (creditStores.length === 0) {
+      const { data: st } = await supabase.from('stores').select('id,name').is('deleted_at', null).order('name');
+      setCreditStores((st as any[]) ?? []);
+    }
+    const { data: bal } = await supabase.rpc('customer_credit_balances', { p_customer_id: customerId });
+    setCredit(bal ?? null);
+    const { data: st } = await supabase.rpc('customer_credit_statement',
+      { p_customer_id: customerId, p_from: null, p_to: null });
+    setCreditRows((st as any[]) ?? []);
+  };
+
+  const submitCredit = async () => {
+    if (!creditForm || !overviewFor) return;
+    setCreditBusy(true); setCreditErr(null);
+    let error: any = null;
+    if (creditForm.mode === 'legacy') {
+      ({ error } = await supabase.rpc('add_legacy_credit', {
+        p_customer_id: overviewFor.id, p_category: creditForm.category,
+        p_amount: Number(creditForm.amount), p_original_purchase_date: creditForm.purchase_date || null,
+        p_store_id: creditForm.store_id || null, p_reference_no: creditForm.reference_no || null,
+        p_note: creditForm.note, p_effective_date: creditForm.effective_date || null,
+      }));
+    } else {
+      ({ error } = await supabase.rpc('adjust_customer_credit', {
+        p_customer_id: overviewFor.id, p_category: creditForm.category,
+        p_direction: creditForm.direction, p_amount: Number(creditForm.amount),
+        p_reason: creditForm.reason, p_reference_no: creditForm.reference_no || null,
+        p_effective_date: creditForm.effective_date || null, p_note: creditForm.note || null,
+        p_store_id: creditForm.store_id || null,
+      }));
+    }
+    setCreditBusy(false);
+    if (error) { setCreditErr(error.message); return; }
+    setCreditForm(null); await loadCredit(overviewFor.id);
   };
   const openProfile = async (c: Customer) => {
     setProfileFor(c); setProfileStats(null); setTimeline(null); setExpandedInv({});
@@ -242,6 +286,55 @@ const CustomersPage: React.FC = () => {
           footer={<button className="btn btn-secondary" onClick={() => setOverviewFor(null)}>Close</button>}>
           {ovLoading || !overview ? <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>Loading…</div> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 }}>
+              {credit && (
+                <section>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                    <div style={{ fontWeight: 700 }}>Credit wallet</div>
+                    {isOwnerOrManager(profile?.role) && (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'legacy', category: 'legacy', amount: '', purchase_date: '', store_id: '', reference_no: '', note: '', effective_date: '' }); }}>Opening balance</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'adjust', category: 'paid', direction: 'increase', amount: '', reason: '', reference_no: '', note: '', effective_date: '', store_id: '' }); }}>Adjust</button>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6, alignItems: 'baseline' }}>
+                    <div>
+                      <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-display)' }}>
+                        S${Number(credit.available_total ?? 0).toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>available, all stores</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
+                      {(['paid','bonus','legacy','promotional','exchange'] as const).map(k => (
+                        <div key={k}>
+                          <div style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{k}</div>
+                          <div style={{ fontWeight: 600 }}>S${Number(credit.categories?.[k] ?? 0).toFixed(2)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {creditRows.length > 0 && (
+                    <div style={{ marginTop: 8, maxHeight: 190, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                      <table style={{ fontSize: 11.5 }}>
+                        <thead><tr><th>Date</th><th>Description</th><th>Category</th><th style={{ textAlign: 'right' }}>Added</th><th style={{ textAlign: 'right' }}>Used</th><th style={{ textAlign: 'right' }}>Reversed</th><th style={{ textAlign: 'right' }}>Balance</th></tr></thead>
+                        <tbody>
+                          {creditRows.map(r => (
+                            <tr key={r.entry_seq}>
+                              <td>{r.entry_date ? new Date(r.entry_date).toLocaleDateString('en-GB') : '—'}</td>
+                              <td>{r.description}{r.reference_no ? <div style={{ color: 'var(--text-muted)' }}>{r.reference_no}</div> : null}</td>
+                              <td style={{ textTransform: 'capitalize' }}>{r.category}</td>
+                              <td style={{ textAlign: 'right', color: 'var(--success)' }}>{r.credit_added != null ? Number(r.credit_added).toFixed(2) : ''}</td>
+                              <td style={{ textAlign: 'right' }}>{r.credit_used != null ? Number(r.credit_used).toFixed(2) : ''}</td>
+                              <td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.credit_reversed != null ? Number(r.credit_reversed).toFixed(2) : ''}</td>
+                              <td style={{ textAlign: 'right', fontWeight: 600 }}>{Number(r.wallet_balance).toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+              )}
               <section>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>Affiliate</div>
                 <div style={{ color: 'var(--text-muted)' }}>{overview.affiliate_state?.eligible ? 'Eligible' : (overview.affiliate_state?.block_reason ?? overview.affiliate_state?.state ?? '—')}</div>
@@ -274,6 +367,77 @@ const CustomersPage: React.FC = () => {
           )}
         </Modal>
       )}
+      {creditForm && (
+        <Modal title={creditForm.mode === 'legacy' ? 'Opening credit balance' : 'Adjust credit'} maxWidth={460}
+          onClose={() => setCreditForm(null)}
+          footer={<><button className="btn btn-secondary" onClick={() => setCreditForm(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitCredit} disabled={creditBusy}>{creditBusy ? 'Saving…' : 'Confirm'}</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              {creditForm.mode === 'legacy'
+                ? 'Records an old-client balance. This creates no commission and cannot be edited afterwards.'
+                : 'Posts a correcting entry. Nothing already recorded is altered.'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Category *</label>
+                <select value={creditForm.category} onChange={e => setCreditForm((f: any) => ({ ...f, category: e.target.value }))}>
+                  <option value="paid">Paid</option>
+                  <option value="bonus">Bonus</option>
+                  <option value="legacy">Legacy</option>
+                  {creditForm.mode === 'adjust' && <><option value="promotional">Promotional / FOC</option><option value="exchange">Exchange</option></>}
+                </select>
+              </div>
+              {creditForm.mode === 'adjust' && (
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Direction *</label>
+                  <select value={creditForm.direction} onChange={e => setCreditForm((f: any) => ({ ...f, direction: e.target.value }))}>
+                    <option value="increase">Increase</option>
+                    <option value="decrease">Decrease</option>
+                  </select>
+                </div>
+              )}
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Amount (S$) *</label>
+                <input type="number" min={0} step={0.01} value={creditForm.amount} onChange={e => setCreditForm((f: any) => ({ ...f, amount: e.target.value }))} autoFocus />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Store {creditForm.mode === 'legacy' ? '*' : ''}</label>
+                <select value={creditForm.store_id} onChange={e => setCreditForm((f: any) => ({ ...f, store_id: e.target.value }))}>
+                  <option value="">— Select —</option>
+                  {creditStores.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
+                </select>
+              </div>
+              {creditForm.mode === 'legacy' && (
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Original purchase date *</label>
+                  <input type="date" value={creditForm.purchase_date} onChange={e => setCreditForm((f: any) => ({ ...f, purchase_date: e.target.value }))} />
+                </div>
+              )}
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Effective date</label>
+                <input type="date" value={creditForm.effective_date} onChange={e => setCreditForm((f: any) => ({ ...f, effective_date: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Reference number</label>
+                <input value={creditForm.reference_no} onChange={e => setCreditForm((f: any) => ({ ...f, reference_no: e.target.value }))} placeholder="Optional — must be unique if given" />
+              </div>
+            </div>
+            {creditForm.mode === 'adjust' && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Reason *</label>
+                <input value={creditForm.reason} onChange={e => setCreditForm((f: any) => ({ ...f, reason: e.target.value }))} />
+              </div>
+            )}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Supporting note {creditForm.mode === 'legacy' ? '*' : ''}</label>
+              <textarea rows={2} value={creditForm.note} onChange={e => setCreditForm((f: any) => ({ ...f, note: e.target.value }))} />
+            </div>
+            {creditErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{creditErr}</div></div>}
+          </div>
+        </Modal>
+      )}
+
       {srcFor && (
         <Modal title={`Customer Source — ${srcFor.full_name}`} maxWidth={420} onClose={() => setSrcFor(null)}
           footer={<>

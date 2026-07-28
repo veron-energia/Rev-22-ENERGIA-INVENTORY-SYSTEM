@@ -9,8 +9,7 @@ import {
 import { Modal, ReasonModal } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import {
-  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles,
-} from 'lucide-react';
+  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, Coins } from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -85,7 +84,18 @@ const InvoicesPage: React.FC = () => {
   const [affiliateErr, setAffiliateErr] = useState<string | null>(null);
   const [effAffiliate, setEffAffiliate] = useState<any>(null);
   const [invLegacy, setInvLegacy] = useState<any[]>([]);
+  const [buyOpen, setBuyOpen] = useState(false);
+  const [buyPkgs, setBuyPkgs] = useState<any[]>([]);
+  const [buyBundles, setBuyBundles] = useState<any[]>([]);
+  const [buyVouchers, setBuyVouchers] = useState<any[]>([]);
+  const [buyKind, setBuyKind] = useState<'credit_package' | 'premium_bundle'>('credit_package');
+  const [buyId, setBuyId] = useState('');
+  const [buyCustomer, setBuyCustomer] = useState('');
+  const [buyBasket, setBuyBasket] = useState<Record<string, number>>({});
+  const [buyBusy, setBuyBusy] = useState(false);
+  const [buyErr, setBuyErr] = useState<string | null>(null);
   const [legacyDiag, setLegacyDiag] = useState<any>(null);
+  const [payWallet, setPayWallet] = useState<any>(null);
   const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
   const [focQty, setFocQty] = useState(1);
   const [focReasonId, setFocReasonId] = useState('');
@@ -152,6 +162,45 @@ const InvoicesPage: React.FC = () => {
   const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
   const isStaff = profile?.role === 'staff';
   const activeStore = isStaff ? (assignedStoreId ?? '') : cStore;
+
+  const openBuy = async () => {
+    setBuyErr(null); setBuyId(''); setBuyBasket({}); setBuyCustomer('');
+    setBuyKind('credit_package'); setBuyOpen(true);
+    const store = activeStore;
+    if (!store) return;
+    const { data: cp } = await supabase.rpc('credit_packages_for_store', { p_store_id: store, p_day: null });
+    setBuyPkgs((cp as any[]) ?? []);
+    const { data: pb } = await supabase.rpc('premium_bundles_for_store', { p_store_id: store, p_day: null });
+    setBuyBundles((pb as any[]) ?? []);
+  };
+  useEffect(() => {
+    if (!buyOpen || buyKind !== 'premium_bundle' || !buyId) { return; }
+    (async () => {
+      const { data } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', buyId);
+      const ids = ((data as any[]) ?? []).map(x => x.voucher_id);
+      const { data: vs } = await supabase.rpc('legacy_reward_voucher_options',
+        { p_store_id: activeStore });
+      setBuyVouchers(((vs as any[]) ?? []).filter(v => ids.includes(v.voucher_id)));
+      setBuyBasket({});
+    })();
+  }, [buyOpen, buyKind, buyId, activeStore]);
+  const submitBuy = async () => {
+    setBuyBusy(true); setBuyErr(null);
+    const line: any = { kind: buyKind, id: buyId };
+    if (buyKind === 'premium_bundle') {
+      line.voucher_selection = Object.entries(buyBasket).filter(([, q]) => q > 0)
+        .map(([voucher_id, quantity]) => ({ voucher_id, quantity }));
+    }
+    const { data, error } = await supabase.rpc('create_credit_purchase_invoice', {
+      p_store_id: activeStore, p_customer_id: buyCustomer,
+      p_lines: [line], p_affiliate_id: null, p_discount_total: 0, p_notes: null,
+    });
+    setBuyBusy(false);
+    if (error) { setBuyErr(error.message); return; }
+    setBuyOpen(false); await loadAll();
+    const { data: invRow } = await supabase.from('invoices').select('*').eq('id', data).single();
+    if (invRow) await openDetail(invRow as Invoice);
+  };
   // Phase 19: one selling price. The former Member Price is the single price.
   const effMember = true;
   // Strict mode-aware pricing (Phase 4): NO fallback to legacy selling_price.
@@ -533,6 +582,10 @@ const InvoicesPage: React.FC = () => {
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
     void loadInvoiceLegacy(inv.id, inv);
+    if (inv.customer_id) {
+      supabase.rpc('customer_credit_balances', { p_customer_id: inv.customer_id })
+        .then(({ data }) => setPayWallet(data ?? null));
+    } else { setPayWallet(null); }
     const [items, pays, svc, ther] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
@@ -614,7 +667,9 @@ const InvoicesPage: React.FC = () => {
     if (valid.length === 0) { setPayErr('Add at least one payment.'); return; }
     setPayBusy(true); setPayErr(null);
     const paidStore = detail.store_id, paidCustomer = detail.customer_id;
-    const { data, error } = await supabase.rpc('pay_invoice', { p_invoice_id: detail.id, p_payments: valid });
+    // pay_invoice_with_wallet allocates any wallet credit lot-by-lot first,
+    // then settles the invoice exactly as pay_invoice always did.
+    const { data, error } = await supabase.rpc('pay_invoice_with_wallet', { p_invoice_id: detail.id, p_payments: valid });
     setPayBusy(false);
     if (error) { setPayErr(error.message); return; }
     const res: any = data;
@@ -900,6 +955,7 @@ const InvoicesPage: React.FC = () => {
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canExport && <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button>}
           {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
+          <button className="btn btn-secondary" onClick={openBuy}><Coins size={15} /> Buy Credit</button>
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
         </div>
       </div>
@@ -946,6 +1002,82 @@ const InvoicesPage: React.FC = () => {
       </div>
 
       {/* Create invoice modal */}
+      {buyOpen && (
+        <Modal title="Buy Credit" maxWidth={520} onClose={() => setBuyOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setBuyOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitBuy}
+              disabled={buyBusy || !buyId || !buyCustomer}>{buyBusy ? 'Creating…' : 'Create Invoice'}</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              Creates an invoice for a Credit Package or Premium Bundle. The credit, bonus credit and reward vouchers are issued automatically once the invoice is fully paid. Wallet credit cannot pay for it.
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Customer *</label>
+              <select value={buyCustomer} onChange={e => setBuyCustomer(e.target.value)}>
+                <option value="">— Select a customer —</option>
+                {customers.map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>What are they buying?</label>
+              <select value={buyKind} onChange={e => { setBuyKind(e.target.value as any); setBuyId(''); setBuyBasket({}); }}>
+                <option value="credit_package">Credit Package</option>
+                <option value="premium_bundle">Premium Bundle</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>{buyKind === 'credit_package' ? 'Credit Package' : 'Premium Bundle'} *</label>
+              <select value={buyId} onChange={e => setBuyId(e.target.value)}>
+                <option value="">— Select —</option>
+                {(buyKind === 'credit_package' ? buyPkgs : buyBundles).map((x: any) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name} — pays {money(buyKind === 'credit_package' ? x.customer_price : x.customer_payment_amount)}
+                    {buyKind === 'premium_bundle' ? ` · ${x.free_voucher_qty} vouchers` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {buyKind === 'premium_bundle' && buyId && (() => {
+              const b: any = buyBundles.find((x: any) => x.id === buyId);
+              const need = b ? b.free_voucher_qty : 0;
+              const chosen = Object.values(buyBasket).reduce((a, c) => a + (c || 0), 0);
+              return (
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Choose {need} reward voucher(s) — {chosen}/{need} selected</label>
+                  <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                    {buyVouchers.length === 0 && <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No eligible vouchers available at this store.</div>}
+                    {buyVouchers.map((v: any) => {
+                      const cur = buyBasket[v.voucher_id] ?? 0;
+                      const cap = v.available_qty == null ? need : Math.min(need, v.available_qty);
+                      return (
+                        <div key={v.voucher_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 9px', borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 12.5 }}>{v.name}
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v.available_qty == null ? 'unlimited' : `${v.available_qty} in stock`}</div>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <button className="btn btn-secondary btn-sm" disabled={cur <= 0}
+                              onClick={() => setBuyBasket(bk => ({ ...bk, [v.voucher_id]: Math.max(0, (bk[v.voucher_id] ?? 0) - 10) }))}>−10</button>
+                            <span style={{ minWidth: 30, textAlign: 'center', fontSize: 13 }}>{cur}</span>
+                            <button className="btn btn-secondary btn-sm" disabled={chosen >= need || cur >= cap}
+                              onClick={() => setBuyBasket(bk => ({ ...bk, [v.voucher_id]: Math.min(cap, (bk[v.voucher_id] ?? 0) + 10) }))}>+10</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                    Mix any eligible vouchers up to the required quantity. Stock is checked before the invoice is created.
+                  </div>
+                </div>
+              );
+            })()}
+
+            {buyErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{buyErr}</div></div>}
+          </div>
+        </Modal>
+      )}
+
       {createOpen && (
         <Modal title={editingInvoiceId ? "Edit Invoice" : "New Invoice"} maxWidth={640} onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); }}
           footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); }}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button></>}>
@@ -1544,7 +1676,17 @@ const InvoicesPage: React.FC = () => {
                     <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <select value={pl.payment_method_id} onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: e.target.value } : l))} style={{ flex: 1 }}>
                         <option value="">— Method —</option>
-                        {methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        <optgroup label="Payment methods">
+                          {methods.filter((m: any) => !m.is_wallet_credit).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </optgroup>
+                        <optgroup label="Wallet credit">
+                          {methods.filter((m: any) => m.is_wallet_credit).map((m: any) => {
+                            const bal = Number(payWallet?.categories?.[m.wallet_category] ?? 0);
+                            return <option key={m.id} value={m.id} disabled={bal <= 0}>
+                              {m.name} — {money(bal)} available
+                            </option>;
+                          })}
+                        </optgroup>
                       </select>
                       <input type="number" min={0} step={0.01} value={pl.amount || ''} placeholder="Amount" style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
@@ -1553,6 +1695,15 @@ const InvoicesPage: React.FC = () => {
                   ))}
                 </div>
                 <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setPayLines(ls => [...ls, { payment_method_id: methods[0]?.id ?? '', amount: 0 }])}><Plus size={13} /> Split Payment</button>
+                {payWallet && Number(payWallet.available_total ?? 0) > 0 && (
+                  <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--text-muted)' }}>
+                    Wallet: <strong>{money(Number(payWallet.available_total))}</strong> available —
+                    {' '}{(['paid','bonus','legacy','promotional','exchange'] as const)
+                      .filter(k => Number(payWallet.categories?.[k] ?? 0) > 0)
+                      .map(k => `${k} ${money(Number(payWallet.categories[k]))}`).join(' · ')}
+                    <div>Bonus Credit is always spent first, then the oldest eligible credit. Credit-funded value earns no commission.</div>
+                  </div>
+                )}
 
                 <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Remaining balance</span><strong>{money(detail.total_amount - detail.paid_amount)}</strong></div>

@@ -22,7 +22,7 @@ const PSTATUS: Record<string, { cls: string; label: string }> = {
 const TherapyPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
-  const [tab, setTab] = useState<'purchased' | 'legacy' | 'packages' | 'qualification'>('purchased');
+  const [tab, setTab] = useState<'purchased' | 'legacy' | 'packages' | 'qualification' | 'credit' | 'bundles'>('purchased');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -49,6 +49,73 @@ const TherapyPage: React.FC = () => {
 
   // Same-day qualification rules (Phase 22).
   const [rules, setRules] = useState<any[]>([]);
+  const [creditPkgs, setCreditPkgs] = useState<any[]>([]);
+  const [bundles, setBundles] = useState<any[]>([]);
+  const emptyBundle = { id: null as string | null, name: '', customer_payment_amount: '',
+    paid_credit_amount: '', bonus_credit_amount: '', free_voucher_qty: '',
+    reward_qualifying_amount: '', is_active: true, effective_from: '', effective_to: '',
+    commission_classification: 'third_party', tier1_rate: '', tier2_rate: '',
+    store_ids: [] as string[], voucher_ids: [] as string[] };
+  const [bundleForm, setBundleForm] = useState<typeof emptyBundle | null>(null);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleErr, setBundleErr] = useState<string | null>(null);
+  const saveBundle = async () => {
+    if (!bundleForm) return;
+    setBundleBusy(true); setBundleErr(null);
+    const { error } = await supabase.rpc('upsert_premium_bundle', {
+      p_id: bundleForm.id, p_name: bundleForm.name,
+      p_customer_payment_amount: Number(bundleForm.customer_payment_amount || 0),
+      p_paid_credit_amount: Number(bundleForm.paid_credit_amount || 0),
+      p_bonus_credit_amount: Number(bundleForm.bonus_credit_amount || 0),
+      p_free_voucher_qty: bundleForm.free_voucher_qty === '' ? null : Number(bundleForm.free_voucher_qty),
+      p_reward_qualifying_amount: bundleForm.reward_qualifying_amount === '' ? null : Number(bundleForm.reward_qualifying_amount),
+      p_is_active: bundleForm.is_active,
+      p_effective_from: bundleForm.effective_from || null,
+      p_effective_to: bundleForm.effective_to || null,
+      p_commission_classification: bundleForm.commission_classification,
+      p_staff_commission_enabled: true, p_staff_commission_rate: null,
+      p_tier1_rate: bundleForm.tier1_rate === '' ? null : Number(bundleForm.tier1_rate),
+      p_tier2_rate: bundleForm.tier2_rate === '' ? null : Number(bundleForm.tier2_rate),
+      p_notes: null,
+      p_store_ids: bundleForm.store_ids.length ? bundleForm.store_ids : null,
+      p_voucher_ids: bundleForm.voucher_ids.length ? bundleForm.voucher_ids : null,
+    });
+    setBundleBusy(false);
+    if (error) { setBundleErr(error.message); return; }
+    setBundleForm(null); load();
+  };
+  const [allVouchers, setAllVouchers] = useState<any[]>([]);
+  const emptyPkg = { id: null as string | null, name: '', customer_price: '', paid_credit_amount: '',
+    is_active: true, effective_from: '', effective_to: '', commission_classification: 'own',
+    staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', reward_qualifying_amount: '',
+    store_ids: [] as string[], voucher_ids: [] as string[] };
+  const [pkgForm, setPkgForm] = useState<typeof emptyPkg | null>(null);
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgErr, setPkgErr] = useState<string | null>(null);
+  const saveCreditPkg = async () => {
+    if (!pkgForm) return;
+    setPkgBusy(true); setPkgErr(null);
+    const { error } = await supabase.rpc('upsert_credit_package', {
+      p_id: pkgForm.id, p_name: pkgForm.name,
+      p_customer_price: Number(pkgForm.customer_price || 0),
+      p_paid_credit_amount: Number(pkgForm.paid_credit_amount || 0),
+      p_is_active: pkgForm.is_active,
+      p_effective_from: pkgForm.effective_from || null,
+      p_effective_to: pkgForm.effective_to || null,
+      p_commission_classification: pkgForm.commission_classification,
+      p_staff_commission_enabled: pkgForm.staff_commission_enabled,
+      p_staff_commission_rate: null,
+      p_tier1_rate: pkgForm.tier1_rate === '' ? null : Number(pkgForm.tier1_rate),
+      p_tier2_rate: pkgForm.tier2_rate === '' ? null : Number(pkgForm.tier2_rate),
+      p_reward_qualifying_amount: pkgForm.reward_qualifying_amount === '' ? null : Number(pkgForm.reward_qualifying_amount),
+      p_notes: null,
+      p_store_ids: pkgForm.store_ids.length ? pkgForm.store_ids : null,
+      p_voucher_ids: pkgForm.voucher_ids.length ? pkgForm.voucher_ids : null,
+    });
+    setPkgBusy(false);
+    if (error) { setPkgErr(error.message); return; }
+    setPkgForm(null); load();
+  };
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [backfillRes, setBackfillRes] = useState<any>(null);
   const [setupStatus, setSetupStatus] = useState<any>(null);
@@ -110,6 +177,12 @@ const TherapyPage: React.FC = () => {
     setRules((ru.data as any[]) ?? []);
     const { data: st2 } = await supabase.rpc('legacy_setup_status');
     setSetupStatus(st2 ?? null);
+    const { data: cp } = await supabase.from('credit_packages').select('*').is('deleted_at', null).order('customer_price');
+    setCreditPkgs((cp as any[]) ?? []);
+    const { data: pb } = await supabase.from('premium_bundles').select('*').is('deleted_at', null).order('customer_payment_amount', { ascending: false });
+    setBundles((pb as any[]) ?? []);
+    const { data: vc } = await supabase.from('vouchers').select('id,name,code').is('deleted_at', null).eq('is_active', true).order('name');
+    setAllVouchers((vc as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -219,7 +292,7 @@ const TherapyPage: React.FC = () => {
       {err && <div className="alert alert-danger"><span>⚠</span><div>{err}</div></div>}
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
-        {([['purchased', 'Purchased'], ['legacy', 'Legacy Therapy'], ...(canManage ? [['qualification', 'Qualification'], ['packages', 'Packages']] : [])] as [typeof tab, string][]).map(([v, l]) => (
+        {([['purchased', 'Purchased'], ['legacy', 'Legacy Therapy'], ...(canManage ? [['qualification', 'Qualification'], ['credit', 'Credit Packages'], ['bundles', 'Premium Bundles'], ['packages', 'Packages']] : [])] as [typeof tab, string][]).map(([v, l]) => (
           <button key={v} onClick={() => setTab(v)}
             style={{ padding: '8px 16px', background: 'none', border: 'none', display: 'inline-flex', alignItems: 'center', gap: 6,
               borderBottom: tab === v ? '2px solid var(--primary)' : '2px solid transparent',
@@ -454,6 +527,273 @@ const TherapyPage: React.FC = () => {
             <div><strong>{claimDone.entitlement_no}</strong> is now {String(claimDone.status).replace('_',' ')}.</div>
             {claimDone.activation_date && <div style={{ marginTop: 6 }}>Starts {d(claimDone.activation_date)}{claimDone.expiry_date ? ` and runs until ${d(claimDone.expiry_date)}` : ''}.</div>}
             {claimDone.voucher_qty && <div style={{ marginTop: 6 }}>Issue {claimDone.voucher_qty} voucher(s) to the customer.</div>}
+          </div>
+        </Modal>
+      )}
+
+      {tab === 'bundles' && canManage && (
+        <>
+          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 640 }}>
+              A Premium Bundle is its own catalogue, separate from Promotions. The customer pays once and receives Paid Credit, Bonus Credit and a quantity of free reward vouchers issued immediately at payment. Bundle rewards are vouchers only — there is no Therapy-month choice. Commission uses the third-party rate on external money only.
+            </div>
+            <button className="btn btn-primary" onClick={() => { setBundleForm({ ...emptyBundle }); setBundleErr(null); }}><Plus size={16} /> New Bundle</button>
+          </div>
+          <div className="card">
+            {bundles.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No premium bundles yet.</p></div> : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Name</th><th style={{ textAlign: 'right' }}>Pays</th><th style={{ textAlign: 'right' }}>Paid Credit</th><th style={{ textAlign: 'right' }}>Bonus</th><th style={{ textAlign: 'right' }}>Vouchers</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Active</th><th></th></tr></thead>
+                  <tbody>
+                    {bundles.map(b => (
+                      <tr key={b.id}>
+                        <td style={{ fontWeight: 600 }}>{b.name}</td>
+                        <td style={{ textAlign: 'right' }}>{money(b.customer_payment_amount)}</td>
+                        <td style={{ textAlign: 'right' }}>{money(b.paid_credit_amount)}</td>
+                        <td style={{ textAlign: 'right' }}>{money(b.bonus_credit_amount)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{b.free_voucher_qty}</td>
+                        <td style={{ fontSize: 12 }}>{b.commission_classification === 'third_party' ? 'Third-party' : 'Own'}</td>
+                        <td style={{ textAlign: 'right', fontSize: 12 }}>{b.tier1_rate ?? 'default'} / {b.tier2_rate ?? 'default'}</td>
+                        <td>{b.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                        <td><button className="btn btn-secondary btn-sm btn-icon" onClick={async () => {
+                          const { data: st4 } = await supabase.from('premium_bundle_stores').select('store_id').eq('bundle_id', b.id);
+                          const { data: vs2 } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', b.id);
+                          setBundleErr(null);
+                          setBundleForm({ id: b.id, name: b.name ?? '',
+                            customer_payment_amount: String(b.customer_payment_amount ?? ''),
+                            paid_credit_amount: String(b.paid_credit_amount ?? ''),
+                            bonus_credit_amount: String(b.bonus_credit_amount ?? ''),
+                            free_voucher_qty: String(b.free_voucher_qty ?? ''),
+                            reward_qualifying_amount: b.reward_qualifying_amount != null ? String(b.reward_qualifying_amount) : '',
+                            is_active: b.is_active, effective_from: b.effective_from ?? '', effective_to: b.effective_to ?? '',
+                            commission_classification: b.commission_classification ?? 'third_party',
+                            tier1_rate: b.tier1_rate != null ? String(b.tier1_rate) : '',
+                            tier2_rate: b.tier2_rate != null ? String(b.tier2_rate) : '',
+                            store_ids: ((st4 as any[]) ?? []).map(x => x.store_id),
+                            voucher_ids: ((vs2 as any[]) ?? []).map(x => x.voucher_id) });
+                        }}><Pencil size={13} /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {bundleForm && (
+        <Modal title={bundleForm.id ? 'Edit Premium Bundle' : 'New Premium Bundle'} maxWidth={560} onClose={() => setBundleForm(null)}
+          footer={<><button className="btn btn-secondary" onClick={() => setBundleForm(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveBundle} disabled={bundleBusy}>{bundleBusy ? 'Saving…' : 'Save'}</button></>}>
+          <div className="form-grid">
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Bundle name *</label>
+              <input value={bundleForm.name} onChange={e => setBundleForm(f => f && ({ ...f, name: e.target.value }))} placeholder="Bundle A" autoFocus />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Customer pays (S$) *</label>
+                <input type="number" min={0} step={0.01} value={bundleForm.customer_payment_amount} onChange={e => setBundleForm(f => f && ({ ...f, customer_payment_amount: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Paid Credit (S$)</label>
+                <input type="number" min={0} step={0.01} value={bundleForm.paid_credit_amount} onChange={e => setBundleForm(f => f && ({ ...f, paid_credit_amount: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Bonus Credit (S$)</label>
+                <input type="number" min={0} step={0.01} value={bundleForm.bonus_credit_amount} onChange={e => setBundleForm(f => f && ({ ...f, bonus_credit_amount: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Free vouchers</label>
+                <input type="number" min={0} value={bundleForm.free_voucher_qty} onChange={e => setBundleForm(f => f && ({ ...f, free_voucher_qty: e.target.value }))} placeholder="auto from payment" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Reward threshold (S$)</label>
+                <input type="number" min={0} step={0.01} value={bundleForm.reward_qualifying_amount} onChange={e => setBundleForm(f => f && ({ ...f, reward_qualifying_amount: e.target.value }))} placeholder="994" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Commission classification</label>
+                <select value={bundleForm.commission_classification} onChange={e => setBundleForm(f => f && ({ ...f, commission_classification: e.target.value }))}>
+                  <option value="third_party">Third-party rate</option>
+                  <option value="own">Own product rate</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 1 rate (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={bundleForm.tier1_rate} onChange={e => setBundleForm(f => f && ({ ...f, tier1_rate: e.target.value }))} placeholder="default" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 2 rate (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={bundleForm.tier2_rate} onChange={e => setBundleForm(f => f && ({ ...f, tier2_rate: e.target.value }))} placeholder="default" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Effective from</label>
+                <input type="date" value={bundleForm.effective_from} onChange={e => setBundleForm(f => f && ({ ...f, effective_from: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Effective to</label>
+                <input type="date" value={bundleForm.effective_to} onChange={e => setBundleForm(f => f && ({ ...f, effective_to: e.target.value }))} />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Available at stores</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {stores.map(s3 => (
+                  <label key={s3.id} style={{ display: 'flex', gap: 5, alignItems: 'center', fontSize: 12.5 }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={bundleForm.store_ids.includes(s3.id)}
+                      onChange={e => setBundleForm(f => f && ({ ...f, store_ids: e.target.checked ? [...f.store_ids, s3.id] : f.store_ids.filter(x => x !== s3.id) }))} />
+                    {s3.name}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Leave all unticked to allow every store.</div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Eligible voucher choices *</label>
+              <div style={{ maxHeight: 150, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 8 }}>
+                {allVouchers.map(v => (
+                  <label key={v.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5, padding: '2px 0' }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={bundleForm.voucher_ids.includes(v.id)}
+                      onChange={e => setBundleForm(f => f && ({ ...f, voucher_ids: e.target.checked ? [...f.voucher_ids, v.id] : f.voucher_ids.filter(x => x !== v.id) }))} />
+                    {v.name}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>The customer may mix any of these up to the free quantity.</div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <input type="checkbox" checked={bundleForm.is_active} style={{ width: 'auto' }} onChange={e => setBundleForm(f => f && ({ ...f, is_active: e.target.checked }))} /> Active
+            </label>
+            {bundleErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{bundleErr}</div></div>}
+          </div>
+        </Modal>
+      )}
+
+      {tab === 'credit' && canManage && (
+        <>
+          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 640 }}>
+              A customer pays for a Credit Package and receives Paid Credit that may only be spent on the package's eligible Therapy Vouchers, plus one free reward unit for every whole qualifying amount of credit. The package line itself can never be paid with wallet credit.
+            </div>
+            <button className="btn btn-primary" onClick={() => { setPkgForm({ ...emptyPkg }); setPkgErr(null); }}><Plus size={16} /> New Package</button>
+          </div>
+          <div className="card">
+            {creditPkgs.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No credit packages yet.</p></div> : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Name</th><th style={{ textAlign: 'right' }}>Price</th><th style={{ textAlign: 'right' }}>Credit</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Effective</th><th>Active</th><th></th></tr></thead>
+                  <tbody>
+                    {creditPkgs.map(p2 => (
+                      <tr key={p2.id}>
+                        <td style={{ fontWeight: 600 }}>{p2.name}</td>
+                        <td style={{ textAlign: 'right' }}>{money(p2.customer_price)}</td>
+                        <td style={{ textAlign: 'right' }}>{money(p2.paid_credit_amount)}</td>
+                        <td style={{ fontSize: 12 }}>{p2.commission_classification === 'third_party' ? 'Third-party' : 'Own'}</td>
+                        <td style={{ textAlign: 'right', fontSize: 12 }}>{p2.tier1_rate ?? 'default'} / {p2.tier2_rate ?? 'default'}</td>
+                        <td style={{ fontSize: 12 }}>{d(p2.effective_from)}{p2.effective_to ? ` → ${d(p2.effective_to)}` : ''}</td>
+                        <td>{p2.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                        <td><button className="btn btn-secondary btn-sm btn-icon" onClick={async () => {
+                          const { data: st3 } = await supabase.from('credit_package_stores').select('store_id').eq('package_id', p2.id);
+                          const { data: vs } = await supabase.from('credit_package_vouchers').select('voucher_id').eq('package_id', p2.id);
+                          setPkgErr(null);
+                          setPkgForm({ id: p2.id, name: p2.name ?? '', customer_price: String(p2.customer_price ?? ''),
+                            paid_credit_amount: String(p2.paid_credit_amount ?? ''), is_active: p2.is_active,
+                            effective_from: p2.effective_from ?? '', effective_to: p2.effective_to ?? '',
+                            commission_classification: p2.commission_classification ?? 'own',
+                            staff_commission_enabled: p2.staff_commission_enabled ?? true,
+                            tier1_rate: p2.tier1_rate != null ? String(p2.tier1_rate) : '',
+                            tier2_rate: p2.tier2_rate != null ? String(p2.tier2_rate) : '',
+                            reward_qualifying_amount: p2.reward_qualifying_amount != null ? String(p2.reward_qualifying_amount) : '',
+                            store_ids: ((st3 as any[]) ?? []).map(x => x.store_id),
+                            voucher_ids: ((vs as any[]) ?? []).map(x => x.voucher_id) });
+                        }}><Pencil size={13} /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {pkgForm && (
+        <Modal title={pkgForm.id ? 'Edit Credit Package' : 'New Credit Package'} maxWidth={540} onClose={() => setPkgForm(null)}
+          footer={<><button className="btn btn-secondary" onClick={() => setPkgForm(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveCreditPkg} disabled={pkgBusy}>{pkgBusy ? 'Saving…' : 'Save'}</button></>}>
+          <div className="form-grid">
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Package name *</label>
+              <input value={pkgForm.name} onChange={e => setPkgForm(f => f && ({ ...f, name: e.target.value }))} placeholder="$1,000 Credit Package" autoFocus />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Customer price (S$) *</label>
+                <input type="number" min={0} step={0.01} value={pkgForm.customer_price} onChange={e => setPkgForm(f => f && ({ ...f, customer_price: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Paid Credit received (S$) *</label>
+                <input type="number" min={0} step={0.01} value={pkgForm.paid_credit_amount} onChange={e => setPkgForm(f => f && ({ ...f, paid_credit_amount: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Commission classification</label>
+                <select value={pkgForm.commission_classification} onChange={e => setPkgForm(f => f && ({ ...f, commission_classification: e.target.value }))}>
+                  <option value="own">Own product rate</option>
+                  <option value="third_party">Third-party rate</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Reward threshold (S$)</label>
+                <input type="number" min={0} step={0.01} value={pkgForm.reward_qualifying_amount} onChange={e => setPkgForm(f => f && ({ ...f, reward_qualifying_amount: e.target.value }))} placeholder="defaults to the Legacy tier" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 1 rate (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={pkgForm.tier1_rate} onChange={e => setPkgForm(f => f && ({ ...f, tier1_rate: e.target.value }))} placeholder="default" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Tier 2 rate (%)</label>
+                <input type="number" min={0} max={100} step={0.1} value={pkgForm.tier2_rate} onChange={e => setPkgForm(f => f && ({ ...f, tier2_rate: e.target.value }))} placeholder="default" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Effective from</label>
+                <input type="date" value={pkgForm.effective_from} onChange={e => setPkgForm(f => f && ({ ...f, effective_from: e.target.value }))} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Effective to</label>
+                <input type="date" value={pkgForm.effective_to} onChange={e => setPkgForm(f => f && ({ ...f, effective_to: e.target.value }))} />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Available at stores</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {stores.map(s2 => (
+                  <label key={s2.id} style={{ display: 'flex', gap: 5, alignItems: 'center', fontSize: 12.5 }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={pkgForm.store_ids.includes(s2.id)}
+                      onChange={e => setPkgForm(f => f && ({ ...f, store_ids: e.target.checked ? [...f.store_ids, s2.id] : f.store_ids.filter(x => x !== s2.id) }))} />
+                    {s2.name}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Leave all unticked to allow every store.</div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Eligible voucher choices *</label>
+              <div style={{ maxHeight: 150, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 8 }}>
+                {allVouchers.map(v => (
+                  <label key={v.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5, padding: '2px 0' }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={pkgForm.voucher_ids.includes(v.id)}
+                      onChange={e => setPkgForm(f => f && ({ ...f, voucher_ids: e.target.checked ? [...f.voucher_ids, v.id] : f.voucher_ids.filter(x => x !== v.id) }))} />
+                    {v.name}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>The package's credit can only be spent on these vouchers.</div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <input type="checkbox" checked={pkgForm.is_active} style={{ width: 'auto' }} onChange={e => setPkgForm(f => f && ({ ...f, is_active: e.target.checked }))} /> Active
+            </label>
+            {pkgErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{pkgErr}</div></div>}
           </div>
         </Modal>
       )}
