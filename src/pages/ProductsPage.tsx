@@ -139,6 +139,17 @@ const ProductsPage: React.FC = () => {
   };
   const brandName = (p: Product) => brands.find(b => b.id === p.brand_id)?.name || p.brand || '';
 
+  // Click a column to sort by it; click again to reverse.
+  const [sortBy, setSortBy] = useState<'name' | 'sku' | 'cost' | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const toggleSort = (col: 'name' | 'sku' | 'cost') => {
+    if (sortBy !== col) { setSortBy(col); setSortDir('asc'); }
+    else if (sortDir === 'asc') setSortDir('desc');
+    else { setSortBy(null); setSortDir('asc'); }
+  };
+  const sortArrow = (col: 'name' | 'sku' | 'cost') =>
+    sortBy !== col ? '' : sortDir === 'asc' ? ' ▲' : ' ▼';
+
   const filtered = products.filter(p => {
     const q = search.trim().toLowerCase();
     const matchSearch = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
@@ -146,8 +157,18 @@ const ProductsPage: React.FC = () => {
     const matchImportant = importantFilter !== 'only' || p.is_important;
     return matchSearch && matchType && matchImportant;
   }).sort((a, b) => {
-    if (importantFilter === 'first') return (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
-    return 0;
+    if (importantFilter === 'first') {
+      const imp = (b.is_important ? 1 : 0) - (a.is_important ? 1 : 0);
+      if (imp !== 0) return imp;
+    }
+    if (!sortBy) return 0;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    if (sortBy === 'cost') {
+      return ((Number(a.default_cost_price ?? 0)) - (Number(b.default_cost_price ?? 0))) * dir;
+    }
+    const av = (sortBy === 'name' ? a.name : a.sku) ?? '';
+    const bv = (sortBy === 'name' ? b.name : b.sku) ?? '';
+    return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' }) * dir;
   });
 
   return (
@@ -238,8 +259,12 @@ const ProductsPage: React.FC = () => {
             <table>
               <thead>
                 <tr>
-                  <th>Product</th><th>SKU</th><th>Type</th><th>Category</th>
-                  <th>UoM</th><th>Cost</th><th>Status</th>
+                  <th onClick={() => toggleSort('name')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by product name">Product{sortArrow('name')}</th>
+                  <th onClick={() => toggleSort('sku')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by SKU">SKU{sortArrow('sku')}</th>
+                  <th>Type</th><th>Category</th>
+                  <th>UoM</th>
+                  <th onClick={() => toggleSort('cost')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by cost">Cost{sortArrow('cost')}</th>
+                  <th>Status</th>
                   {canManage && <th></th>}
                 </tr>
               </thead>
@@ -254,7 +279,7 @@ const ProductsPage: React.FC = () => {
                       {brandName(p) && <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{brandName(p)}</div>}
                     </td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{p.sku}</td>
-                    <td><span className={`badge ${p.product_type === 'own' ? 'badge-primary' : 'badge-accent'}`}>{p.product_type === 'own' ? 'Own' : '3rd Party'}</span></td>
+                    <td><span className={`badge ${p.product_type === 'own' ? 'badge-primary' : p.product_type === 'no_commission' ? 'badge-muted' : 'badge-accent'}`}>{p.product_type === 'own' ? 'Own' : p.product_type === 'no_commission' ? 'No commission' : '3rd Party'}</span></td>
                     <td>
                       {(() => {
                         const names = catNames(p.id);
@@ -310,6 +335,7 @@ const ProductsPage: React.FC = () => {
                 <select value={form.product_type} onChange={e => setForm(f => ({ ...f, product_type: e.target.value as ProductType }))}>
                   <option value="own">Own Product</option>
                   <option value="third_party">3rd Party Product</option>
+                  <option value="no_commission">No commission — delivery, services, pass-through</option>
                 </select>
               </div>
               <div className="form-group"><label>Categories <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(multiple)</span></label>

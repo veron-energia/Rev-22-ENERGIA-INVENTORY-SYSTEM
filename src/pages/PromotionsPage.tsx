@@ -7,6 +7,7 @@ import {
   PromotionChoiceGroup, PromotionChoiceOption,
 } from '../types';
 import StorePriceEditor from '../components/StorePriceEditor';
+import { SearchSelect } from '../components/SearchSelect';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Package2, RefreshCw, X, Layers } from 'lucide-react';
 
@@ -17,6 +18,8 @@ const blankPromo = (p?: Promotion) => ({
   fixed_price: p?.fixed_price ?? 0, start_date: p?.start_date ?? '', end_date: p?.end_date ?? '',
   is_active: p?.is_active ?? true, description: p?.description ?? '', terms: p?.terms ?? '',
 });
+
+type ChoiceKind = 'product' | 'voucher' | 'therapy' | 'credit_package';
 
 const PromotionsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -34,6 +37,11 @@ const PromotionsPage: React.FC = () => {
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blankPromo());
   const [saving, setSaving] = useState(false);
+  const [applyPriceEverywhere, setApplyPriceEverywhere] = useState(true);
+  const [dgBase, setDgBase] = useState<'cheapest' | 'highest'>('cheapest');
+  const [ngBase, setNgBase] = useState<'cheapest' | 'highest'>('cheapest');
+  const [therapyPkgs, setTherapyPkgs] = useState<any[]>([]);
+  const [creditPkgs, setCreditPkgs] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   // Builder (items) — for an existing promotion
@@ -56,10 +64,10 @@ const PromotionsPage: React.FC = () => {
   const [dItems, setDItems] = useState<DraftItem[]>([]);
   const [dErr, setDErr] = useState<string | null>(null);
   // Draft choice groups chosen inside the Add Promotion modal.
-  interface DraftGroup { label: string; item_kind: 'product' | 'voucher'; choose_qty: number; option_ids: string[]; }
+  interface DraftGroup { label: string; item_kind: ChoiceKind; choose_qty: number; option_ids: string[]; base_mode: 'cheapest' | 'highest'; }
   const [dGroups, setDGroups] = useState<DraftGroup[]>([]);
   const [dgLabel, setDgLabel] = useState('');
-  const [dgKind, setDgKind] = useState<'product' | 'voucher'>('product');
+  const [dgKind, setDgKind] = useState<ChoiceKind>('product');
   const [dgQty, setDgQty] = useState(1);
   const [dgOptSel, setDgOptSel] = useState<Record<number, string>>({});
   // Promotions that already contain a nested promotion (not nestable, per the 2-level rule).
@@ -68,7 +76,7 @@ const PromotionsPage: React.FC = () => {
   const [groups, setGroups] = useState<PromotionChoiceGroup[]>([]);
   const [options, setOptions] = useState<PromotionChoiceOption[]>([]);
   const [ngLabel, setNgLabel] = useState('');
-  const [ngKind, setNgKind] = useState<'product' | 'voucher'>('product');
+  const [ngKind, setNgKind] = useState<ChoiceKind>('product');
   const [ngQty, setNgQty] = useState(1);
   const [noFor, setNoFor] = useState<string>('');    // group id an option is being added to
   const [noItem, setNoItem] = useState('');          // product/voucher id
@@ -86,6 +94,10 @@ const PromotionsPage: React.FC = () => {
     setRows((p.data as Promotion[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
     setVouchers((vc.data as Voucher[]) ?? []);
+    const { data: tp } = await supabase.from('unlimited_therapy_packages').select('id,name,sku').is('deleted_at', null).eq('is_active', true).order('name');
+    setTherapyPkgs((tp as any[]) ?? []);
+    const { data: cp } = await supabase.from('credit_packages').select('id,name,sku').is('deleted_at', null).eq('is_active', true).order('name');
+    setCreditPkgs((cp as any[]) ?? []);
     setStores((st.data as Store[]) ?? []);
     setPromosWithChildren(new Set(((pi.data as any[]) ?? []).map(x => x.promotion_id)));
     setLoading(false);
@@ -122,7 +134,7 @@ const PromotionsPage: React.FC = () => {
     setDErr(null);
     if (!dgLabel.trim()) { setDErr('Enter a choice-group label.'); return; }
     if (!dgQty || dgQty <= 0) { setDErr('Choose quantity must be greater than zero.'); return; }
-    setDGroups(gs => [...gs, { label: dgLabel.trim(), item_kind: dgKind, choose_qty: dgQty, option_ids: [] }]);
+    setDGroups(gs => [...gs, { label: dgLabel.trim(), item_kind: dgKind, choose_qty: dgQty, option_ids: [], base_mode: dgBase }]);
     setDgLabel(''); setDgKind('product'); setDgQty(1);
   };
 
@@ -146,9 +158,17 @@ const PromotionsPage: React.FC = () => {
       is_active: form.is_active, description: form.description.trim() || null, terms: form.terms.trim() || null,
     };
     const res = editId
-      ? await supabase.from('promotions').update(payload).eq('id', editId)
+      ? await supabase.from('promotions').update(payload).eq('id', editId).select().single()
       : await supabase.from('promotions').insert(payload).select().single();
     if (res.error) { setErr(res.error.message); setSaving(false); return; }
+    // One price, applied to every store.
+    const savedId = (res.data as any)?.id ?? editId;
+    if (applyPriceEverywhere && savedId && form.fixed_price > 0) {
+      const { error: pErr } = await supabase.rpc('set_promotion_price_all_stores', {
+        p_promotion_id: savedId, p_price: form.fixed_price, p_available: true,
+      });
+      if (pErr) { setErr(`Saved, but the store prices could not be set: ${pErr.message}`); setSaving(false); load(); return; }
+    }
     setSaving(false); setModalOpen(false);
     if (!editId && res.data) {
       // Save the draft items chosen in the modal, then open the builder (shows totals).
@@ -168,7 +188,7 @@ const PromotionsPage: React.FC = () => {
       // Save draft choice groups + their options.
       for (const g of dGroups) {
         const gr = await supabase.from('promotion_choice_groups')
-          .insert({ promotion_id: promo.id, label: g.label, item_kind: g.item_kind, choose_qty: g.choose_qty })
+          .insert({ promotion_id: promo.id, label: g.label, item_kind: g.item_kind, choose_qty: g.choose_qty, base_mode: g.base_mode })
           .select().single();
         if (gr.error) { if (!firstErr) firstErr = gr.error.message; continue; }
         for (const optId of g.option_ids) {
@@ -176,6 +196,8 @@ const PromotionsPage: React.FC = () => {
             group_id: (gr.data as any).id,
             product_id: g.item_kind === 'product' ? optId : null,
             voucher_id: g.item_kind === 'voucher' ? optId : null,
+            therapy_package_id: g.item_kind === 'therapy' ? optId : null,
+            credit_package_id: g.item_kind === 'credit_package' ? optId : null,
           });
           if (error && !firstErr) firstErr = error.message;
         }
@@ -219,7 +241,7 @@ const PromotionsPage: React.FC = () => {
     if (!ngLabel.trim()) { setGrpErr('Enter a group label (e.g. "Choose your product").'); return; }
     if (!ngQty || ngQty <= 0) { setGrpErr('Choose quantity must be greater than zero.'); return; }
     const { error } = await supabase.from('promotion_choice_groups').insert({
-      promotion_id: itemsFor.id, label: ngLabel.trim(), item_kind: ngKind, choose_qty: ngQty,
+      promotion_id: itemsFor.id, label: ngLabel.trim(), item_kind: ngKind, choose_qty: ngQty, base_mode: ngBase,
     });
     if (error) { setGrpErr(error.message); return; }
     await loadGroups(itemsFor.id);
@@ -232,6 +254,8 @@ const PromotionsPage: React.FC = () => {
       group_id: g.id,
       product_id: g.item_kind === 'product' ? noItem : null,
       voucher_id: g.item_kind === 'voucher' ? noItem : null,
+      therapy_package_id: g.item_kind === 'therapy' ? noItem : null,
+      credit_package_id: g.item_kind === 'credit_package' ? noItem : null,
     });
     if (error) { setGrpErr(error.message); return; }
     setNoItem('');
@@ -347,7 +371,7 @@ const PromotionsPage: React.FC = () => {
 
       {/* Create/edit promotion */}
       {modalOpen && (
-        <Modal title={editId ? 'Edit Promotion' : 'Add Promotion'} maxWidth={520} onClose={() => setModalOpen(false)}
+        <Modal title={editId ? 'Edit Promotion' : 'Add Promotion'} wide onClose={() => setModalOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : (editId ? 'Save' : 'Save & Add Items')}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
@@ -364,7 +388,18 @@ const PromotionsPage: React.FC = () => {
                   <option value="other">Other</option>
                 </select>
               </div>
-              <div className="form-group"><label>Fixed Price (S$)</label><input type="number" min={0} step={0.01} value={form.fixed_price || ''} onChange={e => setForm(f => ({ ...f, fixed_price: +e.target.value }))} placeholder="e.g. 188" /></div>
+              <div className="form-group">
+                <label>Fixed Price (S$)</label>
+                <input type="number" min={0} step={0.01} value={form.fixed_price || ''} onChange={e => setForm(f => ({ ...f, fixed_price: +e.target.value }))} placeholder="e.g. 188" />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 6, fontWeight: 400 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={applyPriceEverywhere}
+                    onChange={e => setApplyPriceEverywhere(e.target.checked)} />
+                  Use this price at every store
+                </label>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Leave ticked and you never need to open Prices — untick it only to set different prices per store.
+                </div>
+              </div>
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Start Date (optional)</label><input type="date" value={form.start_date} onChange={e => setForm(f => ({ ...f, start_date: e.target.value }))} /></div>
@@ -400,16 +435,14 @@ const PromotionsPage: React.FC = () => {
                     <option value="treatment">Treatment</option>
                   </select>
                   {niType === 'product' && (
-                    <select value={niProduct} onChange={e => setNiProduct(e.target.value)} style={{ flex: 1, minWidth: 150 }}>
-                      <option value="">— Product —</option>
-                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
+                    <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search product name or SKU…"
+                      value={niProduct} onChange={setNiProduct}
+                      options={products.map((p: any) => ({ value: p.id, label: p.name, sublabel: p.sku, search: `${p.name} ${p.sku ?? ''}` }))} />
                   )}
                   {niType === 'voucher' && (
-                    <select value={niVoucher} onChange={e => setNiVoucher(e.target.value)} style={{ flex: 1, minWidth: 150 }}>
-                      <option value="">— Voucher —</option>
-                      {vouchers.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                    </select>
+                    <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search voucher name or code…"
+                      value={niVoucher} onChange={setNiVoucher}
+                      options={vouchers.map((v: any) => ({ value: v.id, label: v.name, sublabel: v.code, search: `${v.name} ${v.code ?? ''}` }))} />
                   )}
                   {niType === 'promotion' && (
                     <select value={niChild} onChange={e => setNiChild(e.target.value)} style={{ flex: 1, minWidth: 150 }}>
@@ -438,35 +471,59 @@ const PromotionsPage: React.FC = () => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <strong style={{ flex: 1, fontSize: 13 }}>{g.label}</strong>
                       <span className="badge badge-primary">choose {g.choose_qty} {g.item_kind}{g.choose_qty > 1 ? 's' : ''}</span>
-                      {g.item_kind === 'product' && <span className="badge badge-muted" title="At sale, any product can be chosen; the cheapest option here sets the base price and pricier picks pay the difference.">base = cheapest option</span>}
+                      {g.item_kind === 'product' && (
+                        <select value={g.base_mode} style={{ width: 150, fontSize: 11.5, padding: '2px 6px' }}
+                          title="Which option sets the base price. Picks above the base pay the difference."
+                          onChange={e => setDGroups(gs => gs.map((x, j) => j === gi ? { ...x, base_mode: e.target.value as any } : x))}>
+                          <option value="cheapest">base = cheapest</option>
+                          <option value="highest">base = highest</option>
+                        </select>
+                      )}
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => setDGroups(gs => gs.filter((_, j) => j !== gi))}><X size={13} /></button>
                     </div>
                     <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       {g.option_ids.map(id => (
                         <span key={id} className="badge badge-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          {g.item_kind === 'product' ? pName(id) : vName(id)}
+                          {g.item_kind === 'product' ? pName(id)
+                            : g.item_kind === 'voucher' ? vName(id)
+                            : g.item_kind === 'therapy' ? (therapyPkgs.find(t => t.id === id)?.name ?? id)
+                            : (creditPkgs.find(c => c.id === id)?.name ?? id)}
                           <X size={11} style={{ cursor: 'pointer' }} onClick={() => setDGroups(gs => gs.map((x, j) => j === gi ? { ...x, option_ids: x.option_ids.filter(o => o !== id) } : x))} />
                         </span>
                       ))}
                       {g.option_ids.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No options yet</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                      <select value={dgOptSel[gi] ?? ''} onChange={e => setDgOptSel(s => ({ ...s, [gi]: e.target.value }))} style={{ flex: 1 }}>
-                        <option value="">— Add {g.item_kind} option —</option>
-                        {(g.item_kind === 'product' ? products.map(p => ({ id: p.id, name: p.name })) : vouchers.map(v => ({ id: v.id, name: v.name })))
-                          .filter(x => !g.option_ids.includes(x.id))
-                          .map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
-                      </select>
+                      <SearchSelect style={{ flex: 1 }} placeholder={`Search ${g.item_kind} by name or SKU…`}
+                        value={dgOptSel[gi] ?? ''}
+                        onChange={v => setDgOptSel(s2 => ({ ...s2, [gi]: v }))}
+                        exclude={g.option_ids}
+                        options={(g.item_kind === 'product'
+                            ? products.map((p: any) => ({ id: p.id, name: p.name, sku: p.sku }))
+                            : g.item_kind === 'voucher'
+                            ? vouchers.map((v: any) => ({ id: v.id, name: v.name, sku: v.code }))
+                            : g.item_kind === 'therapy'
+                            ? therapyPkgs.map((t: any) => ({ id: t.id, name: t.name, sku: t.sku }))
+                            : creditPkgs.map((c: any) => ({ id: c.id, name: c.name, sku: c.sku })))
+                          .map(x => ({ value: x.id, label: x.name, sublabel: x.sku ?? undefined, search: `${x.name} ${x.sku ?? ''}` }))} />
                       <button className="btn btn-secondary btn-sm" onClick={() => addDraftOption(gi)} disabled={!dgOptSel[gi]}><Plus size={13} /> Option</button>
                     </div>
                   </div>
                 ))}
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <input value={dgLabel} onChange={e => setDgLabel(e.target.value)} placeholder='Group label, e.g. "Choose your product"' style={{ flex: 1, minWidth: 170 }} />
-                  <select value={dgKind} onChange={e => setDgKind(e.target.value as 'product' | 'voucher')} style={{ width: 110 }}>
+                  <select value={dgKind} onChange={e => setDgKind(e.target.value as ChoiceKind)} style={{ width: 130 }}>
                     <option value="product">Products</option>
                     <option value="voucher">Vouchers</option>
+                    <option value="therapy">Therapy</option>
+                    <option value="credit_package">Credit packages</option>
                   </select>
+                  {dgKind === 'product' && (
+                    <select value={dgBase} onChange={e => setDgBase(e.target.value as any)} style={{ width: 140 }} title="Which option sets the base price">
+                      <option value="cheapest">base = cheapest</option>
+                      <option value="highest">base = highest</option>
+                    </select>
+                  )}
                   <input type="number" min={1} value={dgQty || ''} onChange={e => setDgQty(+e.target.value)} placeholder="N" style={{ width: 64 }} title="How many the customer chooses" />
                   <button className="btn btn-secondary btn-sm" onClick={addDraftGroup}><Plus size={13} /> Group</button>
                 </div>
@@ -479,7 +536,7 @@ const PromotionsPage: React.FC = () => {
 
       {/* Item builder */}
       {itemsFor && (
-        <Modal title={`Items — ${itemsFor.name}`} maxWidth={640} onClose={() => setItemsFor(null)}
+        <Modal title={`Items — ${itemsFor.name}`} wide onClose={() => setItemsFor(null)}
           footer={<button className="btn btn-secondary" onClick={() => setItemsFor(null)}>Done</button>}>
           <div className="form-grid">
             {/* Pricing preview */}

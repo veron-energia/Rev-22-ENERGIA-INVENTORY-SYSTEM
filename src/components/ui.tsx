@@ -34,14 +34,18 @@ export const Modal: React.FC<{
   children: React.ReactNode;
   footer?: React.ReactNode;
   maxWidth?: number;
-}> = ({ title, onClose, children, footer, maxWidth = 480 }) => (
-  <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-    <div className="modal" style={{ maxWidth }}>
+  /** Fill the working area, leaving only the sidebar visible. */
+  wide?: boolean;
+}> = ({ title, onClose, children, footer, maxWidth = 480, wide = false }) => (
+  <div className={`modal-overlay${wide ? ' wide' : ''}`} onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal" style={wide
+      ? { maxWidth: 'none', width: '100%', height: '100%', maxHeight: 'none', display: 'flex', flexDirection: 'column', overflow: 'hidden' }
+      : { maxWidth }}>
       <div className="modal-header">
         <h3>{title}</h3>
         <button className="btn btn-secondary btn-sm btn-icon" onClick={onClose}>✕</button>
       </div>
-      <div className="modal-body">{children}</div>
+      <div className="modal-body" style={wide ? { flex: 1, overflowY: 'auto' } : undefined}>{children}</div>
       {footer && <div className="modal-footer">{footer}</div>}
     </div>
   </div>

@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
+import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { Modal, ReasonModal } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import {
@@ -31,6 +32,7 @@ const InvoicesPage: React.FC = () => {
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [choiceGroups, setChoiceGroups] = useState<PromotionChoiceGroup[]>([]);
+  const [promoItems, setPromoItems] = useState<any[]>([]);
   const [choiceOptions, setChoiceOptions] = useState<PromotionChoiceOption[]>([]);
   const [storeInv, setStoreInv] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -96,6 +98,20 @@ const InvoicesPage: React.FC = () => {
   const [buyErr, setBuyErr] = useState<string | null>(null);
   const [legacyDiag, setLegacyDiag] = useState<any>(null);
   const [payWallet, setPayWallet] = useState<any>(null);
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [fulfilBusy, setFulfilBusy] = useState(false);
+  const [fulfilErr, setFulfilErr] = useState<string | null>(null);
+  const setFulfilment = async (warehouseId: string | null) => {
+    if (!detail) return;
+    setFulfilBusy(true); setFulfilErr(null);
+    const { error } = await supabase.rpc('set_invoice_fulfilment_warehouse',
+      { p_invoice_id: detail.id, p_warehouse_id: warehouseId });
+    setFulfilBusy(false);
+    if (error) { setFulfilErr(error.message); return; }
+    const { data: inv } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+    if (inv) await openDetail(inv as Invoice);
+    await loadAll();
+  };
   const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
   const [focQty, setFocQty] = useState(1);
   const [focReasonId, setFocReasonId] = useState('');
@@ -108,7 +124,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, co, si, prof, myStore, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -118,6 +134,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('vouchers').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('promotions').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('promotion_choice_groups').select('*'),
+      supabase.from('promotion_items').select('*'),
       supabase.from('promotion_choice_options').select('*'),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
@@ -139,6 +156,7 @@ const InvoicesPage: React.FC = () => {
     setVouchers((vc.data as Voucher[]) ?? []);
     setPromotions((pm2.data as Promotion[]) ?? []);
     setChoiceGroups((cg.data as PromotionChoiceGroup[]) ?? []);
+    setPromoItems((pit.data as any[]) ?? []);
     setChoiceOptions((co.data as PromotionChoiceOption[]) ?? []);
     setStoreInv((si.data as any[]) ?? []);
     const allProfiles = (prof.data as Profile[]) ?? [];
@@ -285,6 +303,21 @@ const InvoicesPage: React.FC = () => {
   const discountVouchers = useMemo(() => vouchers.filter(v => v.voucher_kind !== 'normal' && isDateValid(v)), [vouchers]);
 
   const groupsFor = (promoId: string) => choiceGroups.filter(g => g.promotion_id === promoId);
+  // The promotion's fixed contents. These are always part of the bundle and are
+  // not chosen by the cashier, so they were never rendered — which made the
+  // invoice look as though half the bundle was missing.
+  const includedFor = (promoId: string) => promoItems
+    .filter(i => i.promotion_id === promoId)
+    .map(i => {
+      const label =
+        i.item_type === 'product' ? (products.find(p => p.id === i.product_id)?.name ?? 'Product')
+        : i.item_type === 'voucher' ? (vouchers.find(v => v.id === i.voucher_id)?.name ?? 'Voucher')
+        : i.item_type === 'promotion' ? (promotions.find(p => p.id === i.child_promotion_id)?.name ?? 'Promotion')
+        : i.item_type === 'therapy' ? (therapyPackages.find((t: any) => t.id === i.therapy_package_id)?.name ?? 'Therapy')
+        : i.item_type === 'credit_package' ? 'Credit package'
+        : (i.treatment_name ?? 'Item');
+      return { id: i.id, label, qty: i.quantity, kind: i.item_type };
+    });
   const optionsFor = (groupId: string) => choiceOptions.filter(o => o.group_id === groupId);
   const selSum = (l: LineDraft, gId: string) => Object.values(l.selections[gId] ?? {}).reduce((s, n) => s + (n || 0), 0);
 
@@ -582,6 +615,10 @@ const InvoicesPage: React.FC = () => {
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
     void loadInvoiceLegacy(inv.id, inv);
+    if (warehouses.length === 0) {
+      supabase.from('warehouses').select('id,name').is('deleted_at', null).order('name')
+        .then(({ data }) => setWarehouses((data as any[]) ?? []));
+    }
     if (inv.customer_id) {
       supabase.rpc('customer_credit_balances', { p_customer_id: inv.customer_id })
         .then(({ data }) => setPayWallet(data ?? null));
@@ -1013,10 +1050,7 @@ const InvoicesPage: React.FC = () => {
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>Customer *</label>
-              <select value={buyCustomer} onChange={e => setBuyCustomer(e.target.value)}>
-                <option value="">— Select a customer —</option>
-                {customers.map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
-              </select>
+              <CustomerSearchSelect value={buyCustomer} onChange={setBuyCustomer} />
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>What are they buying?</label>
@@ -1027,15 +1061,12 @@ const InvoicesPage: React.FC = () => {
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>{buyKind === 'credit_package' ? 'Credit Package' : 'Premium Bundle'} *</label>
-              <select value={buyId} onChange={e => setBuyId(e.target.value)}>
-                <option value="">— Select —</option>
-                {(buyKind === 'credit_package' ? buyPkgs : buyBundles).map((x: any) => (
-                  <option key={x.id} value={x.id}>
-                    {x.name} — pays {money(buyKind === 'credit_package' ? x.customer_price : x.customer_payment_amount)}
-                    {buyKind === 'premium_bundle' ? ` · ${x.free_voucher_qty} vouchers` : ''}
-                  </option>
-                ))}
-              </select>
+              <SearchSelect placeholder="Search package or bundle name…"
+                value={buyId} onChange={setBuyId}
+                options={(buyKind === 'credit_package' ? buyPkgs : buyBundles).map((x: any) => ({
+                  value: x.id,
+                  label: `${x.name} — pays ${money(buyKind === 'credit_package' ? x.customer_price : x.customer_payment_amount)}${buyKind === 'premium_bundle' ? ` · ${x.free_voucher_qty} vouchers` : ''}`,
+                  search: x.name }))} />
             </div>
 
             {buyKind === 'premium_bundle' && buyId && (() => {
@@ -1079,7 +1110,7 @@ const InvoicesPage: React.FC = () => {
       )}
 
       {createOpen && (
-        <Modal title={editingInvoiceId ? "Edit Invoice" : "New Invoice"} maxWidth={640} onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); }}
+        <Modal title={editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); }}
           footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); }}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button></>}>
           <div className="form-grid">
             {cErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
@@ -1097,10 +1128,7 @@ const InvoicesPage: React.FC = () => {
               </div>
               <div className="form-group">
                 <label>Customer *</label>
-                <select value={cCustomer} onChange={e => { setCCustomer(e.target.value); setCLines(ls => ls); }}>
-                  <option value="">— Select customer —</option>
-                  {customers.map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
-                </select>
+                <CustomerSearchSelect value={cCustomer} onChange={v => { setCCustomer(v); setCLines(ls => ls); }} />
               </div>
             </div>
             {cCustomer && (() => {
@@ -1153,25 +1181,36 @@ const InvoicesPage: React.FC = () => {
                           {therapyPackages.length > 0 && <option value="therapy">Therapy</option>}
                         </select>
                         {line.kind === 'product' ? (
-                          <select value={line.product_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: e.target.value } : l))} style={{ flex: 1 }}>
-                            <option value="">— Product —</option>
-                            {storeProducts.map(p => { const a = productAvail(p.id); return <option key={p.id} value={p.id}>{p.name} — {a.label}{a.needsOverride ? ' *' : ''}</option>; })}
-                          </select>
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
+                            value={line.product_id}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: v } : l))}
+                            options={storeProducts.map(p => { const a = productAvail(p.id); return {
+                              value: p.id, label: `${p.name} — ${a.label}${a.needsOverride ? ' *' : ''}`,
+                              sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}` }; })} />
                         ) : line.kind === 'voucher' ? (
-                          <select value={line.voucher_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, voucher_id: e.target.value } : l))} style={{ flex: 1 }}>
-                            <option value="">— Voucher —</option>
-                            {sellableVouchers.map(v => <option key={v.id} value={v.id}>{v.name}{voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}</option>)}
-                          </select>
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search voucher name or code…"
+                            value={line.voucher_id}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, voucher_id: v } : l))}
+                            options={sellableVouchers.map(v => ({
+                              value: v.id,
+                              label: `${v.name}${voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}`,
+                              sublabel: (v as any).code, search: `${v.name} ${(v as any).code ?? ''}` }))} />
                         ) : line.kind === 'therapy' ? (
-                          <select value={line.therapy_package_id ?? ''} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, therapy_package_id: e.target.value } : l))} style={{ flex: 1 }}>
-                            <option value="">— Therapy Package —</option>
-                            {therapyPackages.map(p => { const pr = therapyPrice(p.id); return <option key={p.id} value={p.id}>{p.name} ({p.duration_months}mo){pr != null ? ` — ${money(pr)}` : ' — no price for this store'}</option>; })}
-                          </select>
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search therapy package…"
+                            value={line.therapy_package_id ?? ''}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, therapy_package_id: v } : l))}
+                            options={therapyPackages.map(p => { const pr = therapyPrice(p.id); return {
+                              value: p.id,
+                              label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`,
+                              search: p.name }; })} />
                         ) : (
-                          <select value={line.promotion_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, promotion_id: e.target.value } : l))} style={{ flex: 1 }}>
-                            <option value="">— Promotion —</option>
-                            {promotions.map(p => <option key={p.id} value={p.id}>{p.name}{promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}</option>)}
-                          </select>
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search promotion name or code…"
+                            value={line.promotion_id}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, promotion_id: v } : l))}
+                            options={promotions.map(p => ({
+                              value: p.id,
+                              label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}`,
+                              sublabel: (p as any).code, search: `${p.name} ${(p as any).code ?? ''}` }))} />
                         )}
                         <input type="number" min={1} value={line.quantity || ''} placeholder="Qty" style={{ width: 70 }}
                           onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, quantity: +e.target.value } : l))} />
@@ -1228,6 +1267,29 @@ const InvoicesPage: React.FC = () => {
                             ))}
                           </select>
                           {line.line_voucher_id && price ? <span style={{ fontSize: 11.5, color: 'var(--success)' }}>− {money(voucherDiscAmount(vouchers.find(v => v.id === line.line_voucher_id), price * line.quantity))}</span> : null}
+                        </div>
+                      )}
+                      {line.kind === 'promotion' && line.promotion_id && includedFor(line.promotion_id).length > 0 && (
+                        <div style={{ marginLeft: 28, marginTop: 6, marginBottom: 6, border: '1px solid var(--border)',
+                                      borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+                          <div style={{ padding: '6px 10px', background: 'var(--bg)', fontSize: 12, fontWeight: 700 }}>
+                            Included in this bundle ({includedFor(line.promotion_id).length})
+                          </div>
+                          {includedFor(line.promotion_id).map(it => (
+                            <div key={it.id} style={{ display: 'flex', justifyContent: 'space-between',
+                                                      padding: '5px 10px', fontSize: 12.5, borderTop: '1px solid var(--border)' }}>
+                              <span>
+                                {it.kind === 'voucher' ? '🎟 ' : it.kind === 'therapy' ? '✨ ' : it.kind === 'credit_package' ? '💳 ' : '📦 '}
+                                {it.label}
+                              </span>
+                              <span style={{ color: 'var(--text-muted)' }}>
+                                × {it.qty * line.quantity}
+                              </span>
+                            </div>
+                          ))}
+                          <div style={{ padding: '5px 10px', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
+                            Always included — no choice needed. The bundle price already covers these.
+                          </div>
                         </div>
                       )}
                       {line.kind === 'promotion' && line.promotion_id && groupsFor(line.promotion_id).map(g => {
@@ -1356,7 +1418,7 @@ const InvoicesPage: React.FC = () => {
 
       {/* Invoice detail + payment modal */}
       {detail && (
-        <Modal title={`Invoice ${detail.invoice_no}`} maxWidth={560} onClose={() => setDetail(null)}
+        <Modal title={`Invoice ${detail.invoice_no}`} wide onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
@@ -1457,6 +1519,23 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   Choose a different affiliate to credit this sale instead. This can be changed until the invoice is paid.
                 </div>
+              </div>
+            )}
+
+            {isOwnerOrManager(profile?.role) && ['draft','unpaid','partially_paid'].includes(detail.status) && (
+              <div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Fulfil from</div>
+                <select value={(detail as any).fulfil_warehouse_id ?? ''} disabled={fulfilBusy} style={{ maxWidth: 280 }}
+                  onChange={e => setFulfilment(e.target.value === '' ? null : e.target.value)}>
+                  <option value="">This store's stock</option>
+                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name} (warehouse)</option>)}
+                </select>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Choosing a warehouse takes the goods out of warehouse stock instead of this store's.
+                  The invoice still belongs to the store for pricing, commission and reporting.
+                  Owner/Manager only.
+                </div>
+                {fulfilErr && <div className="alert alert-danger" style={{ marginTop: 6, marginBottom: 0 }}><span>⚠</span><div>{fulfilErr}</div></div>}
               </div>
             )}
 

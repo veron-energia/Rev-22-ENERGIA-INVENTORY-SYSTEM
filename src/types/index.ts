@@ -1,7 +1,7 @@
 // Database types — mirror the Supabase schema (Phase 1 subset + forward decls)
 
 export type UserRole = 'owner' | 'admin' | 'manager' | 'inventory_manager' | 'staff';
-export type ProductType = 'own' | 'third_party';
+export type ProductType = 'own' | 'third_party' | 'no_commission';
 export type LocationType = 'warehouse' | 'store';
 
 export interface Profile {
@@ -601,7 +601,8 @@ export interface PromotionChoiceGroup {
   id: string;
   promotion_id: string;
   label: string;
-  item_kind: 'product' | 'voucher';
+  item_kind: 'product' | 'voucher' | 'therapy' | 'credit_package';
+  base_mode?: 'cheapest' | 'highest';
   choose_qty: number;
   created_at: string;
 }
@@ -763,6 +764,7 @@ export interface AffiliateRow {
 }
 
 export interface UnlimitedTherapyPackage {
+  sku?: string | null;
   id: string;
   name: string;
   duration_months: number;

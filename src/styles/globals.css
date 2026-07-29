@@ -133,6 +133,13 @@ tbody tr:hover { background: var(--surface-2); }
   position: fixed; inset: 0; background: rgba(20,28,24,0.45);
   display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;
 }
+/* Near-fullscreen dialogs (invoice create / view) fill the working area and
+   leave the 240px sidebar visible and usable. */
+.modal-overlay.wide { left: 240px; padding: 16px; }
+.modal-overlay.wide > .modal { max-height: none; }
+@media (max-width: 900px) {
+  .modal-overlay.wide { left: 0; padding: 10px; }
+}
 .modal {
   background: var(--surface); border-radius: var(--radius); width: 100%; max-width: 480px;
   max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-md);

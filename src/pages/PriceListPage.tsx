@@ -15,6 +15,7 @@ const PriceListPage: React.FC = () => {
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [priceFilter, setPriceFilter] = useState<'all' | 'priced' | 'unpriced'>('all');
 
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [price, setPrice] = useState<string>('');
@@ -67,7 +68,15 @@ const PriceListPage: React.FC = () => {
     loadPrices(selectedStore);
   };
 
-  const filtered = products.filter(p => { const q = search.toLowerCase(); return !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q); });
+  const priceOf = (productId: string) => prices.find((x: any) => x.product_id === productId);
+  const filtered = products.filter(p => {
+    const q = search.toLowerCase();
+    const matchText = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+    if (!matchText) return false;
+    if (priceFilter === 'priced') return !!priceOf(p.id);
+    if (priceFilter === 'unpriced') return !priceOf(p.id);
+    return true;
+  });
   const pricedCount = prices.length;
 
   return (
@@ -88,10 +97,23 @@ const PriceListPage: React.FC = () => {
       {selectedStore && (
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
-            <div style={{ maxWidth: 360, flex: 1 }}>
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+              <div style={{ maxWidth: 320, flex: '1 1 240px' }}>
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {([['all', 'All'], ['priced', 'With price'], ['unpriced', 'No price']] as const).map(([v, l]) => (
+                  <button key={v} className={`btn btn-sm ${priceFilter === v ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setPriceFilter(v)}>
+                    {l}{v === 'unpriced' && products.length - pricedCount > 0 ? ` (${products.length - pricedCount})` : ''}
+                  </button>
+                ))}
+              </div>
             </div>
-            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{pricedCount} of {products.length} products priced</span>
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {pricedCount} of {products.length} products priced
+              {priceFilter !== 'all' ? ` · showing ${filtered.length}` : ''}
+            </span>
           </div>
 
           <div className="card">

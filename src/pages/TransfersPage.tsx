@@ -6,6 +6,7 @@ import {
   TransferRequest, TransferRequestLine, ApprovalStatus, APPROVAL_STATUS_LABELS,
   isOwnerOrManager, Profile,
 } from '../types';
+import { SearchSelect } from '../components/SearchSelect';
 import { Modal } from '../components/ui';
 import { Plus, RefreshCw, ArrowLeftRight, Check, X, Trash2, ChevronDown, ChevronUp, Pencil, History, Truck, PackageCheck, AlertTriangle } from 'lucide-react';
 
@@ -464,13 +465,17 @@ const TransfersPage: React.FC = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {lines.map((line, i) => (
                   <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <select value={line.product_id} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: e.target.value } : l))} style={{ flex: 1 }}>
-                      <option value="">— Product —</option>
-                      {(isStaff && assignedStoreId
-                        ? products.filter(p => storePrices.some(sp => sp.store_id === assignedStoreId && sp.product_id === p.id))
-                        : products
-                      ).map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
-                    </select>
+                    <div style={{ flex: 1 }}>
+                      <SearchSelect
+                        options={(isStaff && assignedStoreId
+                          ? products.filter(p => storePrices.some(sp => sp.store_id === assignedStoreId && sp.product_id === p.id))
+                          : products
+                        ).map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
+                        value={line.product_id}
+                        exclude={lines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
+                        onChange={v => setLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: v } : l))}
+                        placeholder="Search product name or SKU…" />
+                    </div>
                     <input type="number" min={1} value={line.quantity || ''} placeholder="Qty" style={{ width: 90 }}
                       onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, quantity: +e.target.value } : l))} />
                     <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setLines(ls => ls.filter((_, j) => j !== i))} disabled={lines.length === 1}><X size={13} /></button>
@@ -554,10 +559,14 @@ const TransfersPage: React.FC = () => {
               <label>Items</label>
               {editLines.map((l, i) => (
                 <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  <select value={l.product_id} onChange={e => setEditLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: e.target.value } : x))} style={{ flex: 1 }}>
-                    <option value="">— Product —</option>
-                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
+                  <div style={{ flex: 1 }}>
+                    <SearchSelect
+                      options={products.map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
+                      value={l.product_id}
+                      exclude={editLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
+                      onChange={v => setEditLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
+                      placeholder="Search product name or SKU…" />
+                  </div>
                   <input type="number" min={1} value={l.quantity || ''} onChange={e => setEditLines(ls => ls.map((x, j) => j === i ? { ...x, quantity: +e.target.value } : x))} style={{ width: 90 }} placeholder="Qty" />
                   <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setEditLines(ls => ls.filter((_, j) => j !== i))}><X size={13} /></button>
                 </div>

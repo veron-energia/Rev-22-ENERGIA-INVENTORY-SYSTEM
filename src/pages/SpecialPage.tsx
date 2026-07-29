@@ -7,7 +7,7 @@ import {
 } from '../types';
 import { Modal, NoAccess } from '../components/ui';
 import { exportCsv } from '../lib/csv';
-import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer} from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 // Local (Singapore) date — never via toISOString, which shifts to UTC.
@@ -39,6 +39,8 @@ const SpecialPage: React.FC = () => {
   if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage special products and rentals." />;
 
   const [tab, setTab] = useState<'catalog' | 'sales' | 'rentals'>('catalog');
+
+
   const [rows, setRows] = useState<SpecialProduct[]>([]);
   const [stock, setStock] = useState<SpecialProductStock[]>([]);
   const [sales, setSales] = useState<SpecialSale[]>([]);
@@ -47,6 +49,7 @@ const SpecialPage: React.FC = () => {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [loading, setLoading] = useState(true);
+
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,6 +82,58 @@ const SpecialPage: React.FC = () => {
   const latePreview = (r: Rental) => {
     const days = Math.max(0, Math.round((new Date(todayStr()).getTime() - new Date(r.expected_return_date).getTime()) / 86400000));
     return { days, total: days * r.late_fee_per_day * r.quantity };
+  };
+
+  // Special sales and rentals are their own transactions with their own numbers,
+  // so they get a printable receipt rather than being forced through an invoice.
+  const printReceipt = (kind: 'sale' | 'rental', row: any) => {
+    const prod = rows.find((p: any) => p.id === row.special_product_id);
+    const cust = customers.find((c: any) => c.id === row.customer_id);
+    const wh = warehouses.find((w: any) => w.id === row.warehouse_id);
+    const esc = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const m = (n: any) => `S$${Number(n ?? 0).toFixed(2)}`;
+    const d = (v: any) => v ? new Date(v).toLocaleDateString('en-GB') : '—';
+
+    const lines = kind === 'sale'
+      ? [['Item', esc(prod?.name)], ['SKU', esc(prod?.sku)], ['Quantity', esc(row.quantity)],
+         ['Unit price', m(row.unit_price)], ['Total', m(row.total_amount)]]
+      : [['Item', esc(prod?.name)], ['SKU', esc(prod?.sku)], ['Quantity', esc(row.quantity)],
+         ['Rate', `${esc(row.rate_type)} — ${m(row.rate_amount)} × ${esc(row.periods)}`],
+         ['Rental fee', m(row.rental_fee)],
+         ['From', d(row.start_date)], ['Due back', d(row.expected_return_date)],
+         ['Returned', d(row.returned_at)],
+         ...(Number(row.late_fee_total) > 0
+           ? [['Late days', esc(row.late_days)], ['Late fee', m(row.late_fee_total)]] : []),
+         ['Total paid', m(Number(row.rental_fee ?? 0) + Number(row.late_fee_total ?? 0))]];
+
+    const w = window.open('', '_blank', 'width=720,height=900');
+    if (!w) return;
+    w.document.write(`<!doctype html><html><head><title>${kind === 'sale' ? 'Sale' : 'Rental'} ${esc(row.sale_no ?? row.rental_no)}</title>
+      <style>
+        body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;margin:32px;color:#1a201c}
+        h1{font-size:20px;margin:0 0 2px} .sub{color:#667;font-size:12px;margin-bottom:18px}
+        .no{font-size:15px;font-weight:700;margin-bottom:14px}
+        table{width:100%;border-collapse:collapse;font-size:13px}
+        td{padding:7px 0;border-bottom:1px solid #e6e9e7}
+        td.k{color:#667;width:180px} td.v{text-align:right;font-weight:600}
+        .who{margin:16px 0;font-size:13px}
+        .foot{margin-top:26px;font-size:11px;color:#889}
+      </style></head><body>
+      <h1>Energia</h1>
+      <div class="sub">${kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental'}</div>
+      <div class="no">${esc(row.sale_no ?? row.rental_no)}</div>
+      <div class="who">
+        <div><strong>Customer:</strong> ${esc(cust?.full_name ?? '—')}${cust?.phone ? ` (${esc(cust.phone)})` : ''}</div>
+        <div><strong>Warehouse:</strong> ${esc(wh?.name ?? '—')}</div>
+        <div><strong>Date:</strong> ${d(row.created_at)}</div>
+        <div><strong>Status:</strong> ${esc(row.status)}</div>
+      </div>
+      <table>${lines.map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join('')}</table>
+      ${row.notes ? `<div class="foot"><strong>Notes:</strong> ${esc(row.notes)}</div>` : ''}
+      <div class="foot">Printed ${new Date().toLocaleString('en-GB')}</div>
+      <script>window.onload=function(){window.print();}<\/script>
+      </body></html>`);
+    w.document.close();
   };
 
   // ── Catalog modal ──
@@ -304,7 +359,10 @@ const SpecialPage: React.FC = () => {
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(s.total_amount))}</td>
                   <td style={{ fontSize: 12 }}>{pmName(s.payment_method_id)}</td>
                   <td>{s.status === 'paid' ? <span className="badge badge-success">Paid</span> : <span className="badge badge-muted">Cancelled{s.stock_returned ? ' · stock back' : ''}</span>}</td>
-                  <td>{s.status === 'paid' && <button className="btn btn-danger btn-sm" onClick={() => cancelSale(s)}>Cancel</button>}</td>
+                  <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('sale', s)} title="Print this sale"><Printer size={13} /> Print</button>
+                    {s.status === 'paid' && <button className="btn btn-danger btn-sm" onClick={() => cancelSale(s)}>Cancel</button>}
+                  </div></td>
                 </tr>))}
               </tbody>
             </table>
@@ -335,6 +393,7 @@ const SpecialPage: React.FC = () => {
                       <button className="btn btn-danger btn-sm" onClick={() => doCancelRental(r)}>Cancel</button>
                     </>}
                     {r.status === 'active' && <button className="btn btn-primary btn-sm" onClick={() => openReturn(r)}>Return</button>}
+                    <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('rental', r)} title="Print this rental"><Printer size={13} /> Print</button>
                   </div></td>
                 </tr>);
               })}

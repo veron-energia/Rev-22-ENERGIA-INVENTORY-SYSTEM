@@ -5,6 +5,7 @@ import {
   Product, Store, Warehouse, LocationType, AdjustmentRequest, Profile,
   APPROVAL_STATUS_LABELS, canManageWarehouseStock,
 } from '../types';
+import { SearchSelect } from '../components/SearchSelect';
 import { Modal } from '../components/ui';
 import { Plus, RefreshCw, SlidersHorizontal, X } from 'lucide-react';
 
@@ -22,8 +23,6 @@ const AdjustmentsPage: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [locType, setLocType] = useState<LocationType>('store');
   const [locId, setLocId] = useState('');
-  const [productId, setProductId] = useState('');
-  const [newQty, setNewQty] = useState(0);
   const [reason, setReason] = useState('');
   const [reference, setReference] = useState('');
   const [saving, setSaving] = useState(false);
@@ -55,20 +54,43 @@ const AdjustmentsPage: React.FC = () => {
     return `🏭 ${warehouses.find(w => w.id === p.location_id)?.name ?? '—'}`;
   };
 
+  // Several products can be corrected in one go; each line carries its own
+  // corrected total.
+  const [adjLines, setAdjLines] = useState<{ product_id: string; new_qty: number }[]>([{ product_id: '', new_qty: 0 }]);
+
   const locOptions = locType === 'store' ? stores : warehouses;
 
   const submit = async () => {
     if (!locId) { setErr('Select a location.'); return; }
-    if (!productId) { setErr('Select a product.'); return; }
+    const valid = adjLines.filter(l => l.product_id);
+    if (valid.length === 0) { setErr('Select at least one product.'); return; }
+    const ids = valid.map(l => l.product_id);
+    if (new Set(ids).size !== ids.length) { setErr('The same product is listed more than once.'); return; }
+    if (valid.some(l => l.new_qty < 0)) { setErr('A corrected total cannot be negative.'); return; }
     if (!reason.trim()) { setErr('A reason is required.'); return; }
+
     setSaving(true); setErr(null);
-    const { error } = await supabase.rpc('request_inventory_adjustment', {
-      p_location_type: locType, p_location_id: locId, p_product_id: productId,
-      p_new_qty: newQty, p_reason: reason.trim(), p_reference: reference.trim() || null,
-    });
+    const done: string[] = [];
+    for (const line of valid) {
+      const { error } = await supabase.rpc('request_inventory_adjustment', {
+        p_location_type: locType, p_location_id: locId, p_product_id: line.product_id,
+        p_new_qty: line.new_qty, p_reason: reason.trim(), p_reference: reference.trim() || null,
+      });
+      if (error) {
+        setSaving(false);
+        const name = products.find(p => p.id === line.product_id)?.name ?? 'A product';
+        setErr(done.length > 0
+          ? `${name}: ${error.message} — ${done.length} request(s) were already submitted.`
+          : `${name}: ${error.message}`);
+        load();
+        return;
+      }
+      done.push(line.product_id);
+    }
     setSaving(false);
-    if (error) { setErr(error.message); return; }
-    setOpen(false); setLocId(''); setProductId(''); setNewQty(0); setReason(''); setReference('');
+    setOpen(false); setLocId('');
+    setAdjLines([{ product_id: '', new_qty: 0 }]);
+    setReason(''); setReference('');
     load();
   };
 
@@ -83,7 +105,7 @@ const AdjustmentsPage: React.FC = () => {
         <div><h2>Inventory Adjustments</h2><p>Request a stock correction. Owner or Manager approval applies the change.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          <button className="btn btn-primary" onClick={() => { setErr(null); setOpen(true); }}><Plus size={16} /> New Adjustment</button>
+          <button className="btn btn-primary" onClick={() => { setErr(null); (() => { setErr(null); setAdjLines([{ product_id: '', new_qty: 0 }]); setOpen(true); })(); }}><Plus size={16} /> New Adjustment</button>
         </div>
       </div>
 
@@ -137,18 +159,29 @@ const AdjustmentsPage: React.FC = () => {
               </div>
             </div>
             <div className="form-group">
-              <label>Product</label>
-              <select value={productId} onChange={e => setProductId(e.target.value)}>
-                <option value="">— Select product —</option>
-                {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
-              </select>
+              <label>Products</label>
+              {adjLines.map((l, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <SearchSelect
+                      options={products.map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
+                      value={l.product_id}
+                      exclude={adjLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
+                      onChange={v => setAdjLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
+                      placeholder="Search product name or SKU…" />
+                  </div>
+                  <input type="number" min={0} value={l.new_qty || ''} placeholder="New total" style={{ width: 110 }}
+                    onChange={e => setAdjLines(ls => ls.map((x, j) => j === i ? { ...x, new_qty: +e.target.value } : x))} />
+                  <button className="btn btn-secondary btn-sm btn-icon" disabled={adjLines.length === 1}
+                    onClick={() => setAdjLines(ls => ls.filter((_, j) => j !== i))} title="Remove">×</button>
+                </div>
+              ))}
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
+                onClick={() => setAdjLines(ls => [...ls, { product_id: '', new_qty: 0 }])}>+ Add another product</button>
             </div>
-            <div className="form-grid-2">
-              <div className="form-group"><label>New Quantity (corrected total)</label><input type="number" min={0} value={newQty || ''} onChange={e => setNewQty(+e.target.value)} placeholder="0" /></div>
-              <div className="form-group"><label>Reference</label><input value={reference} onChange={e => setReference(e.target.value)} placeholder="Optional" /></div>
-            </div>
+            <div className="form-group"><label>Reference</label><input value={reference} onChange={e => setReference(e.target.value)} placeholder="Optional" /></div>
             <div className="form-group"><label>Reason *</label><textarea rows={2} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Stock count correction after audit" /></div>
-            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Enter the <strong>corrected total</strong>, not the difference. The system calculates the change and applies it after approval.</div></div>
+            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Enter the <strong>corrected total</strong> for each product, not the difference. The system works out the change and applies it after approval. The reason and reference apply to every line, and each product becomes its own approval request.</div></div>
           </div>
         </Modal>
       )}

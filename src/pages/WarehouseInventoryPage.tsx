@@ -5,6 +5,7 @@ import {
   Warehouse, WarehouseInventory, Product,
   canManageWarehouseStock, isOwnerOrManager, isManagerOrAbove,
 } from '../types';
+import { SearchSelect } from '../components/SearchSelect';
 import { Modal, NoAccess, RoleGate } from '../components/ui';
 import { Plus, PackagePlus, RefreshCw, Warehouse as WarehouseIcon, AlertTriangle, SlidersHorizontal } from 'lucide-react';
 
@@ -31,7 +32,8 @@ const WarehouseInventoryPage: React.FC = () => {
 
   // Stock-in modal
   const [stockInOpen, setStockInOpen] = useState(false);
-  const [siForm, setSiForm] = useState({ product_id: '', quantity: 0, reason: '', note: '', reference: '' });
+  const [siForm, setSiForm] = useState({ reason: '', note: '', reference: '' });
+  const [siLines, setSiLines] = useState<{ product_id: string; quantity: number }[]>([{ product_id: '', quantity: 0 }]);
   const [siSaving, setSiSaving] = useState(false);
   const [siErr, setSiErr] = useState<string | null>(null);
 
@@ -71,22 +73,35 @@ const WarehouseInventoryPage: React.FC = () => {
   });
 
   const handleStockIn = async () => {
-    if (!siForm.product_id) { setSiErr('Select a product.'); return; }
-    if (siForm.quantity <= 0) { setSiErr('Quantity must be greater than zero.'); return; }
+    const valid = siLines.filter(l => l.product_id && l.quantity > 0);
+    if (valid.length === 0) { setSiErr('Add at least one product with a quantity.'); return; }
+    if (siLines.some(l => l.product_id && l.quantity <= 0)) {
+      setSiErr('Every selected product needs a quantity greater than zero.'); return; }
+    const ids = valid.map(l => l.product_id);
+    if (new Set(ids).size !== ids.length) { setSiErr('The same product is listed more than once.'); return; }
     if (!siForm.reason.trim()) { setSiErr('A reason is required.'); return; }
+
     setSiSaving(true); setSiErr(null);
-    const { error } = await supabase.rpc('warehouse_stock_in', {
-      p_warehouse_id: selectedWh,
-      p_product_id: siForm.product_id,
-      p_quantity: siForm.quantity,
-      p_reason: siForm.reason.trim(),
-      p_note: siForm.note.trim() || null,
-      p_reference: siForm.reference.trim() || null,
-    });
+    for (const line of valid) {
+      const { error } = await supabase.rpc('warehouse_stock_in', {
+        p_warehouse_id: selectedWh,
+        p_product_id: line.product_id,
+        p_quantity: line.quantity,
+        p_reason: siForm.reason.trim(),
+        p_note: siForm.note.trim() || null,
+        p_reference: siForm.reference.trim() || null,
+      });
+      if (error) {
+        setSiSaving(false);
+        setSiErr(`${products.find(p => p.id === line.product_id)?.name ?? 'A product'}: ${error.message}`);
+        loadInventory(selectedWh);
+        return;
+      }
+    }
     setSiSaving(false);
-    if (error) { setSiErr(error.message); return; }
     setStockInOpen(false);
-    setSiForm({ product_id: '', quantity: 0, reason: '', note: '', reference: '' });
+    setSiForm({ reason: '', note: '', reference: '' });
+    setSiLines([{ product_id: '', quantity: 0 }]);
     loadInventory(selectedWh);
   };
 
@@ -116,7 +131,7 @@ const WarehouseInventoryPage: React.FC = () => {
         <div><h2>Warehouse Inventory</h2><p>Stock balances per warehouse. Add stock manually and set low-stock thresholds.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={() => loadInventory(selectedWh)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {canStockIn && <button className="btn btn-primary" onClick={() => { setSiForm({ product_id: '', quantity: 0, reason: '', note: '', reference: '' }); setSiErr(null); setStockInOpen(true); }} disabled={!selectedWh}><PackagePlus size={16} /> Stock In</button>}
+          {canStockIn && <button className="btn btn-primary" onClick={() => { setSiForm({ reason: '', note: '', reference: '' }); setSiErr(null); setSiLines([{ product_id: '', quantity: 0 }]); setStockInOpen(true); }} disabled={!selectedWh}><PackagePlus size={16} /> Stock In</button>}
         </div>
       </div>
 
@@ -174,13 +189,29 @@ const WarehouseInventoryPage: React.FC = () => {
           <div className="form-grid">
             {siErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{siErr}</div></div>}
             <div className="form-group">
-              <label>Product *</label>
-              <select value={siForm.product_id} onChange={e => setSiForm(f => ({ ...f, product_id: e.target.value }))}>
-                <option value="">— Select product —</option>
-                {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
-              </select>
+              <label>Products *</label>
+              {siLines.map((l, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <SearchSelect
+                      options={products.map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
+                      value={l.product_id}
+                      exclude={siLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
+                      onChange={v => setSiLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
+                      placeholder="Search product name or SKU…" />
+                  </div>
+                  <input type="number" min={1} value={l.quantity || ''} placeholder="Qty" style={{ width: 90 }}
+                    onChange={e => setSiLines(ls => ls.map((x, j) => j === i ? { ...x, quantity: +e.target.value } : x))} />
+                  <button className="btn btn-secondary btn-sm btn-icon" disabled={siLines.length === 1}
+                    onClick={() => setSiLines(ls => ls.filter((_, j) => j !== i))} title="Remove">×</button>
+                </div>
+              ))}
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
+                onClick={() => setSiLines(ls => [...ls, { product_id: '', quantity: 0 }])}>+ Add another product</button>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
+                The reason, reference and note below apply to every line.
+              </div>
             </div>
-            <div className="form-group"><label>Quantity *</label><input type="number" min={1} value={siForm.quantity || ''} onChange={e => setSiForm(f => ({ ...f, quantity: +e.target.value }))} placeholder="0" /></div>
             <div className="form-group"><label>Reason *</label><input value={siForm.reason} onChange={e => setSiForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. New delivery from supplier" /></div>
             <div className="form-grid-2">
               <div className="form-group"><label>Reference No.</label><input value={siForm.reference} onChange={e => setSiForm(f => ({ ...f, reference: e.target.value }))} placeholder="Optional" /></div>

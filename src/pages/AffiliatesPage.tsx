@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { CustomerSearchSelect } from '../components/SearchSelect';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, AffiliateRow, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
-import { RefreshCw, Search, UserPlus, Ban, PlayCircle, Store as StoreIcon, Users, X } from 'lucide-react';
+import { Plus, RefreshCw, Search, UserPlus, Ban, PlayCircle, Store as StoreIcon, Users, X } from 'lucide-react';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -20,6 +21,22 @@ type FilterKey = 'all' | 'eligible' | 'active' | 'inactive' | 'suspended' | 'blo
 const AffiliatesPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
+  // Any customer can be made an affiliate — they do not have to be a referrer
+  // already. Owner/Manager only, which activate_affiliate also enforces.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addCustomer, setAddCustomer] = useState('');
+  const [addStore, setAddStore] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
+  const [addErr, setAddErr] = useState<string | null>(null);
+  const submitAdd = async () => {
+    if (!addCustomer) { setAddErr('Choose a customer.'); return; }
+    setAddBusy(true); setAddErr(null);
+    const { error } = await supabase.rpc('activate_affiliate',
+      { p_customer_id: addCustomer, p_store_id: addStore || null });
+    setAddBusy(false);
+    if (error) { setAddErr(error.message); return; }
+    setAddOpen(false); setAddCustomer(''); setAddStore(''); load();
+  };
   const [rows, setRows] = useState<AffiliateRow[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,7 +124,10 @@ const AffiliatesPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Affiliates</h2><p>Direct-referral affiliate programme. New affiliates are activated by an Owner or Manager.</p></div>
-        <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
+          {canManage && <button className="btn btn-primary" onClick={() => { setAddErr(null); setAddCustomer(''); setAddStore(''); setAddOpen(true); }}><Plus size={16} /> Activate Affiliate</button>}
+        </div>
       </div>
 
       {err && <div className="alert alert-danger"><span>⚠</span><div>{err}</div></div>}
@@ -200,6 +220,30 @@ const AffiliatesPage: React.FC = () => {
               ))}
             </div>
           )}
+        </Modal>
+      )}
+
+      {addOpen && (
+        <Modal title="Activate Affiliate" maxWidth={460} onClose={() => setAddOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setAddOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitAdd} disabled={addBusy || !addCustomer}>{addBusy ? 'Activating…' : 'Activate'}</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              Any customer can become an affiliate — they do not need to have referred anyone yet. Only an Owner or Manager can do this.
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Customer *</label>
+              <CustomerSearchSelect value={addCustomer} onChange={setAddCustomer} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Home store</label>
+              <select value={addStore} onChange={e => setAddStore(e.target.value)}>
+                <option value="">— No specific store —</option>
+                {stores.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
+              </select>
+            </div>
+            {addErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{addErr}</div></div>}
+          </div>
         </Modal>
       )}
     </div>

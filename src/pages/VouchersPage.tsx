@@ -30,6 +30,7 @@ const VouchersPage: React.FC = () => {
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blank());
   const [saving, setSaving] = useState(false);
+  const [applyPriceEverywhere, setApplyPriceEverywhere] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   const [stockFor, setStockFor] = useState<Voucher | null>(null);
@@ -70,9 +71,17 @@ const VouchersPage: React.FC = () => {
       is_active: form.is_active, description: form.description.trim() || null, terms: form.terms.trim() || null,
     };
     const res = editId
-      ? await supabase.from('vouchers').update(payload).eq('id', editId)
-      : await supabase.from('vouchers').insert(payload);
+      ? await supabase.from('vouchers').update(payload).eq('id', editId).select().single()
+      : await supabase.from('vouchers').insert(payload).select().single();
     if (res.error) { setErr(res.error.message); setSaving(false); return; }
+    // The price is entered once here and applied to every store, so it never has
+    // to be typed again in the Prices dialog. Per-store overrides stay possible.
+    if (applyPriceEverywhere && res.data && form.selling_price > 0) {
+      const { error: pErr } = await supabase.rpc('set_voucher_price_all_stores', {
+        p_voucher_id: (res.data as any).id, p_price: form.selling_price, p_available: true,
+      });
+      if (pErr) { setErr(`Saved, but the store prices could not be set: ${pErr.message}`); setSaving(false); load(); return; }
+    }
     setSaving(false); setModalOpen(false); load();
   };
 
@@ -179,7 +188,18 @@ const VouchersPage: React.FC = () => {
                   <option value="percentage_discount">Percentage Discount</option>
                 </select>
               </div>
-              <div className="form-group"><label>Selling Price (S$)</label><input type="number" min={0} step={0.01} value={form.selling_price || ''} onChange={e => setForm(f => ({ ...f, selling_price: +e.target.value }))} placeholder="0.00" /></div>
+              <div className="form-group">
+                <label>Selling Price (S$)</label>
+                <input type="number" min={0} step={0.01} value={form.selling_price || ''} onChange={e => setForm(f => ({ ...f, selling_price: +e.target.value }))} placeholder="0.00" />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 6, fontWeight: 400 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={applyPriceEverywhere}
+                    onChange={e => setApplyPriceEverywhere(e.target.checked)} />
+                  Use this price at every store
+                </label>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Leave ticked and you never need to open Prices — untick it only to set different prices per store.
+                </div>
+              </div>
             </div>
 
             {form.voucher_kind === 'fixed_discount' && (

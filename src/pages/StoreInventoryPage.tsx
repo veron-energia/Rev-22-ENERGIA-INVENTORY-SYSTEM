@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { SearchSelect } from '../components/SearchSelect';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, StoreInventory, Product, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
-import { RefreshCw, Store as StoreIcon, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { RefreshCw, Store as StoreIcon, AlertTriangle, SlidersHorizontal, MinusCircle } from 'lucide-react';
 
 interface Row { product: Product; inv: StoreInventory | null; }
 
@@ -14,6 +15,38 @@ const StoreInventoryPage: React.FC = () => {
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStore, setSelectedStore] = useState<string>('');
   const [products, setProducts] = useState<Product[]>([]);
+  // Recording a use is a real consumption (demo, sample, tester), not a
+  // counting correction — so staff can do it themselves, unlike an adjustment.
+  const [useOpen, setUseOpen] = useState(false);
+  const [useLines, setUseLines] = useState<{ product_id: string; quantity: number }[]>([{ product_id: '', quantity: 0 }]);
+  const [useReason, setUseReason] = useState('');
+  const [useNote, setUseNote] = useState('');
+  const [useBusy, setUseBusy] = useState(false);
+  const [useErr, setUseErr] = useState<string | null>(null);
+  const submitUse = async () => {
+    const valid = useLines.filter(l => l.product_id && l.quantity > 0);
+    if (valid.length === 0) { setUseErr('Add at least one product with a quantity.'); return; }
+    const ids = valid.map(l => l.product_id);
+    if (new Set(ids).size !== ids.length) { setUseErr('The same product is listed more than once.'); return; }
+    if (!useReason.trim()) { setUseErr('A reason is required.'); return; }
+    setUseBusy(true); setUseErr(null);
+    for (const line of valid) {
+      const { error } = await supabase.rpc('record_stock_use', {
+        p_location_type: 'store', p_location_id: selectedStore,
+        p_product_id: line.product_id, p_quantity: line.quantity,
+        p_reason: useReason.trim(), p_note: useNote.trim() || null,
+      });
+      if (error) {
+        setUseBusy(false);
+        setUseErr(`${products.find(p => p.id === line.product_id)?.name ?? 'A product'}: ${error.message}`);
+        loadInventory(selectedStore);
+        return;
+      }
+    }
+    setUseBusy(false); setUseOpen(false);
+    setUseLines([{ product_id: '', quantity: 0 }]); setUseReason(''); setUseNote('');
+    loadInventory(selectedStore);
+  };
   const [inventory, setInventory] = useState<StoreInventory[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -75,7 +108,13 @@ const StoreInventoryPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Store Inventory</h2><p>Stock balances per store. Stores receive stock via approved transfers from a warehouse.</p></div>
-        <button className="btn btn-secondary" onClick={() => loadInventory(selectedStore)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-secondary" onClick={() => loadInventory(selectedStore)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="btn btn-primary" disabled={!selectedStore}
+            onClick={() => { setUseErr(null); setUseLines([{ product_id: '', quantity: 0 }]); setUseReason(''); setUseNote(''); setUseOpen(true); }}>
+            <MinusCircle size={16} /> Record Use
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -129,6 +168,50 @@ const StoreInventoryPage: React.FC = () => {
             <label>Alert when stock is at or below</label>
             <input type="number" min={0} value={thresholdVal} onChange={e => setThresholdVal(+e.target.value)} autoFocus />
             <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>Set to 0 to disable the alert for this product in this store.</span>
+          </div>
+        </Modal>
+      )}
+
+      {useOpen && (
+        <Modal title="Record stock used in the store" maxWidth={520} onClose={() => setUseOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setUseOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitUse} disabled={useBusy}>{useBusy ? 'Recording…' : 'Record Use'}</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              For stock genuinely consumed here — demo units, testers, samples, internal use.
+              The stock reduces immediately and is logged against you. Use an Adjustment instead
+              if you are correcting a miscount.
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Products *</label>
+              {useLines.map((l, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <SearchSelect
+                      options={products.map((p: any) => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
+                      value={l.product_id}
+                      exclude={useLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
+                      onChange={v => setUseLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
+                      placeholder="Search product name or SKU…" />
+                  </div>
+                  <input type="number" min={1} value={l.quantity || ''} placeholder="Qty" style={{ width: 90 }}
+                    onChange={e => setUseLines(ls => ls.map((x, j) => j === i ? { ...x, quantity: +e.target.value } : x))} />
+                  <button className="btn btn-secondary btn-sm btn-icon" disabled={useLines.length === 1}
+                    onClick={() => setUseLines(ls => ls.filter((_, j) => j !== i))} title="Remove">×</button>
+                </div>
+              ))}
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
+                onClick={() => setUseLines(ls => [...ls, { product_id: '', quantity: 0 }])}>+ Add another product</button>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Reason *</label>
+              <input value={useReason} onChange={e => setUseReason(e.target.value)} placeholder="e.g. Demo unit opened for a customer" />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Note</label>
+              <textarea rows={2} value={useNote} onChange={e => setUseNote(e.target.value)} placeholder="Optional" />
+            </div>
+            {useErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{useErr}</div></div>}
           </div>
         </Modal>
       )}

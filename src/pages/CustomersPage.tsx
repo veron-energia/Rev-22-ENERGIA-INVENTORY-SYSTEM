@@ -17,6 +17,10 @@ const CustomersPage: React.FC = () => {
   const { profile } = useAuth();
   const canComplete = isOwnerOrManager(profile?.role);   // complete profile view: Owner/Manager only
   const [rows, setRows] = useState<Customer[]>([]);
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [phoneHistory, setPhoneHistory] = useState<{ customer_id: string; phone: string; reason: string | null; created_at: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -65,17 +69,32 @@ const CustomersPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Searching and paging happen in the database. The customer table is far
+    // too large to hold in the browser, so only one page is ever fetched.
     const [cust, ph, srcs] = await Promise.all([
-      supabase.from('customers').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+      supabase.rpc('search_customers', {
+        p_query: debouncedSearch.trim() || null,
+        p_source: sourceFilter || null,
+        p_limit: PAGE_SIZE,
+        p_offset: page * PAGE_SIZE,
+      }),
       supabase.from('customer_phone_history').select('customer_id,phone,reason,created_at'),
       supabase.rpc('active_customer_source_options'),
     ]);
-    setRows((cust.data as Customer[]) ?? []);
+    const list = (cust.data as any[]) ?? [];
+    setRows(list as Customer[]);
+    setTotalCount(list.length > 0 ? Number(list[0].total_count) : 0);
     setPhoneHistory((ph.data as any[]) ?? []);
     setSourceOpts((srcs.data as any[]) ?? []);
     setLoading(false);
-  }, []);
+  }, [debouncedSearch, sourceFilter, page]);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(search); setPage(0); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  useEffect(() => { setPage(0); }, [sourceFilter]);
 
   const openOverview = async (c: Customer) => {
     setOverviewFor(c); setOverview(null); setOvLoading(true);
@@ -171,17 +190,8 @@ const CustomersPage: React.FC = () => {
     return m;
   }, [phoneHistory]);
 
-  const filtered = rows.filter(c => {
-    if (sourceFilter === '__none' && (c as any).source_option_id) return false;
-    if (sourceFilter && sourceFilter !== '__none' && (c as any).source_option_id !== sourceFilter) return false;
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
-    const hist = histByPhone.get(c.id) ?? [];
-    return c.full_name.toLowerCase().includes(q)
-      || c.phone.toLowerCase().includes(q)
-      || hist.some(p => p.toLowerCase().includes(q))
-      || (c.email ?? '').toLowerCase().includes(q);
-  });
+  // The database has already applied the search and the source filter.
+  const filtered = rows;
 
   return (
     <div>
@@ -193,10 +203,12 @@ const CustomersPage: React.FC = () => {
         </div>
       </div>
 
-      <div style={{ marginBottom: 14, position: 'relative', maxWidth: 360 }}>
-        <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, phone (incl. old), or email…" style={{ paddingLeft: 34 }} />
-        <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={{ maxWidth: 190, marginLeft: 8 }} title="Filter by customer source">
+      <div style={{ marginBottom: 14, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: '1 1 320px', maxWidth: 380 }}>
+          <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, customer ID, phone (incl. old), or email…" style={{ paddingLeft: 34, width: '100%' }} />
+        </div>
+        <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={{ maxWidth: 190 }} title="Filter by customer source">
           <option value="">All sources</option>
           {sourceOpts.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
           <option value="__none">No source recorded</option>
@@ -206,7 +218,7 @@ const CustomersPage: React.FC = () => {
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : filtered.length === 0 ? <div className="empty-state"><Users size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No customers yet</p></div>
+          : filtered.length === 0 ? <div className="empty-state"><Users size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>{debouncedSearch || sourceFilter ? 'No customers match this search' : 'No customers yet'}</p></div>
           : (
             <table>
               <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Source</th><th>Status</th><th></th></tr></thead>
@@ -236,6 +248,25 @@ const CustomersPage: React.FC = () => {
             </table>
           )}
         </div>
+        {!loading && totalCount > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        padding: '10px 12px', borderTop: '1px solid var(--border)', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, totalCount)} of {totalCount.toLocaleString()}
+              {debouncedSearch ? ' matching' : ''} customer{totalCount === 1 ? '' : 's'}
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button className="btn btn-secondary btn-sm" disabled={page === 0}
+                onClick={() => setPage(p => Math.max(0, p - 1))}>Previous</button>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                Page {page + 1} of {Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}
+              </span>
+              <button className="btn btn-secondary btn-sm"
+                disabled={(page + 1) * PAGE_SIZE >= totalCount}
+                onClick={() => setPage(p => p + 1)}>Next</button>
+            </div>
+          </div>
+        )}
       </div>
 
       {modalOpen && (

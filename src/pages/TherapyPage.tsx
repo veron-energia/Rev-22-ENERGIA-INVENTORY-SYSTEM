@@ -40,7 +40,7 @@ const TherapyPage: React.FC = () => {
   const [actReason, setActReason] = useState('');
   // package modal
   const [pkgModal, setPkgModal] = useState<UnlimitedTherapyPackage | null | 'new'>(null);
-  const [pkgName, setPkgName] = useState(''); const [pkgMonths, setPkgMonths] = useState(12);
+  const [pkgName, setPkgName] = useState(''); const [pkgSku, setPkgSku] = useState(''); const [pkgMonths, setPkgMonths] = useState(12);
   const [pkgDesc, setPkgDesc] = useState(''); const [pkgActive, setPkgActive] = useState(true);
   const [priceFor, setPriceFor] = useState<{ id: string; name: string } | null>(null);
   const [reschedEnt, setReschedEnt] = useState<PurchasedTherapyEntitlement | null>(null);
@@ -51,7 +51,7 @@ const TherapyPage: React.FC = () => {
   const [rules, setRules] = useState<any[]>([]);
   const [creditPkgs, setCreditPkgs] = useState<any[]>([]);
   const [bundles, setBundles] = useState<any[]>([]);
-  const emptyBundle = { id: null as string | null, name: '', customer_payment_amount: '',
+  const emptyBundle = { id: null as string | null, name: '', sku: '', customer_payment_amount: '',
     paid_credit_amount: '', bonus_credit_amount: '', free_voucher_qty: '',
     reward_qualifying_amount: '', is_active: true, effective_from: '', effective_to: '',
     commission_classification: 'third_party', tier1_rate: '', tier2_rate: '',
@@ -62,7 +62,7 @@ const TherapyPage: React.FC = () => {
   const saveBundle = async () => {
     if (!bundleForm) return;
     setBundleBusy(true); setBundleErr(null);
-    const { error } = await supabase.rpc('upsert_premium_bundle', {
+    const { data, error } = await supabase.rpc('upsert_premium_bundle', {
       p_id: bundleForm.id, p_name: bundleForm.name,
       p_customer_payment_amount: Number(bundleForm.customer_payment_amount || 0),
       p_paid_credit_amount: Number(bundleForm.paid_credit_amount || 0),
@@ -82,10 +82,15 @@ const TherapyPage: React.FC = () => {
     });
     setBundleBusy(false);
     if (error) { setBundleErr(error.message); return; }
+    if (data) {
+      const { error: sErr } = await supabase.rpc('set_catalogue_sku',
+        { p_kind: 'premium_bundle', p_id: data, p_sku: bundleForm.sku || null });
+      if (sErr) { setBundleErr(sErr.message); return; }
+    }
     setBundleForm(null); load();
   };
   const [allVouchers, setAllVouchers] = useState<any[]>([]);
-  const emptyPkg = { id: null as string | null, name: '', customer_price: '', paid_credit_amount: '',
+  const emptyPkg = { id: null as string | null, name: '', sku: '', customer_price: '', paid_credit_amount: '',
     is_active: true, effective_from: '', effective_to: '', commission_classification: 'own',
     staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', reward_qualifying_amount: '',
     store_ids: [] as string[], voucher_ids: [] as string[] };
@@ -95,7 +100,7 @@ const TherapyPage: React.FC = () => {
   const saveCreditPkg = async () => {
     if (!pkgForm) return;
     setPkgBusy(true); setPkgErr(null);
-    const { error } = await supabase.rpc('upsert_credit_package', {
+    const { data, error } = await supabase.rpc('upsert_credit_package', {
       p_id: pkgForm.id, p_name: pkgForm.name,
       p_customer_price: Number(pkgForm.customer_price || 0),
       p_paid_credit_amount: Number(pkgForm.paid_credit_amount || 0),
@@ -114,6 +119,11 @@ const TherapyPage: React.FC = () => {
     });
     setPkgBusy(false);
     if (error) { setPkgErr(error.message); return; }
+    if (data) {
+      const { error: sErr } = await supabase.rpc('set_catalogue_sku',
+        { p_kind: 'credit_package', p_id: data, p_sku: pkgForm.sku || null });
+      if (sErr) { setPkgErr(sErr.message); return; }
+    }
     setPkgForm(null); load();
   };
   const [backfillBusy, setBackfillBusy] = useState(false);
@@ -261,6 +271,7 @@ const TherapyPage: React.FC = () => {
   };
 
   const openPkg = (p: UnlimitedTherapyPackage | 'new') => {
+    setPkgSku(p === 'new' ? '' : ((p as any).sku ?? ''));
     setPkgModal(p);
     if (p === 'new') { setPkgName(''); setPkgMonths(12); setPkgDesc(''); setPkgActive(true); }
     else { setPkgName(p.name); setPkgMonths(p.duration_months); setPkgDesc(p.description ?? ''); setPkgActive(p.is_active); }
@@ -271,8 +282,15 @@ const TherapyPage: React.FC = () => {
       p_id: pkgModal === 'new' ? null : (pkgModal as UnlimitedTherapyPackage).id,
       p_name: pkgName, p_duration_months: pkgMonths, p_description: pkgDesc || null, p_is_active: pkgActive,
     });
+    if (error) { setBusy(null); setErr(error.message); return; }
+    // The SKU is stored separately so the upsert signature stays stable.
+    const pkgId = pkgModal === 'new' ? null : (pkgModal as UnlimitedTherapyPackage).id;
+    if (pkgId) {
+      const { error: sErr } = await supabase.rpc('set_catalogue_sku',
+        { p_kind: 'therapy', p_id: pkgId, p_sku: pkgSku || null });
+      if (sErr) { setBusy(null); setErr(sErr.message); return; }
+    }
     setBusy(null);
-    if (error) { setErr(error.message); return; }
     setPkgModal(null); load();
   };
 
@@ -391,11 +409,12 @@ const TherapyPage: React.FC = () => {
           <div className="card">
             {packages.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No packages yet.</p></div> : (
               <table>
-                <thead><tr><th>Name</th><th>Duration</th><th>Description</th><th>Active</th><th></th></tr></thead>
+                <thead><tr><th>Name</th><th>SKU</th><th>Duration</th><th>Description</th><th>Active</th><th></th></tr></thead>
                 <tbody>
                   {packages.map(p => (
                     <tr key={p.id}>
                       <td style={{ fontWeight: 600 }}>{p.name}</td>
+                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{(p as any).sku ?? '—'}</td>
                       <td>{p.duration_months} months</td>
                       <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{p.description ?? '—'}</td>
                       <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
@@ -543,11 +562,12 @@ const TherapyPage: React.FC = () => {
             {bundles.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No premium bundles yet.</p></div> : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Name</th><th style={{ textAlign: 'right' }}>Pays</th><th style={{ textAlign: 'right' }}>Paid Credit</th><th style={{ textAlign: 'right' }}>Bonus</th><th style={{ textAlign: 'right' }}>Vouchers</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Active</th><th></th></tr></thead>
+                  <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Pays</th><th style={{ textAlign: 'right' }}>Paid Credit</th><th style={{ textAlign: 'right' }}>Bonus</th><th style={{ textAlign: 'right' }}>Vouchers</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Active</th><th></th></tr></thead>
                   <tbody>
                     {bundles.map(b => (
                       <tr key={b.id}>
                         <td style={{ fontWeight: 600 }}>{b.name}</td>
+                        <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{b.sku ?? '—'}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.customer_payment_amount)}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.paid_credit_amount)}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.bonus_credit_amount)}</td>
@@ -559,7 +579,7 @@ const TherapyPage: React.FC = () => {
                           const { data: st4 } = await supabase.from('premium_bundle_stores').select('store_id').eq('bundle_id', b.id);
                           const { data: vs2 } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', b.id);
                           setBundleErr(null);
-                          setBundleForm({ id: b.id, name: b.name ?? '',
+                          setBundleForm({ id: b.id, name: b.name ?? '', sku: b.sku ?? '',
                             customer_payment_amount: String(b.customer_payment_amount ?? ''),
                             paid_credit_amount: String(b.paid_credit_amount ?? ''),
                             bonus_credit_amount: String(b.bonus_credit_amount ?? ''),
@@ -590,6 +610,10 @@ const TherapyPage: React.FC = () => {
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>Bundle name *</label>
               <input value={bundleForm.name} onChange={e => setBundleForm(f => f && ({ ...f, name: e.target.value }))} placeholder="Bundle A" autoFocus />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>SKU</label>
+              <input value={bundleForm.sku} onChange={e => setBundleForm(f => f && ({ ...f, sku: e.target.value }))} placeholder="e.g. PB-15000" />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -682,11 +706,12 @@ const TherapyPage: React.FC = () => {
             {creditPkgs.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No credit packages yet.</p></div> : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Name</th><th style={{ textAlign: 'right' }}>Price</th><th style={{ textAlign: 'right' }}>Credit</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Effective</th><th>Active</th><th></th></tr></thead>
+                  <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Price</th><th style={{ textAlign: 'right' }}>Credit</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Effective</th><th>Active</th><th></th></tr></thead>
                   <tbody>
                     {creditPkgs.map(p2 => (
                       <tr key={p2.id}>
                         <td style={{ fontWeight: 600 }}>{p2.name}</td>
+                        <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{p2.sku ?? '—'}</td>
                         <td style={{ textAlign: 'right' }}>{money(p2.customer_price)}</td>
                         <td style={{ textAlign: 'right' }}>{money(p2.paid_credit_amount)}</td>
                         <td style={{ fontSize: 12 }}>{p2.commission_classification === 'third_party' ? 'Third-party' : 'Own'}</td>
@@ -697,7 +722,7 @@ const TherapyPage: React.FC = () => {
                           const { data: st3 } = await supabase.from('credit_package_stores').select('store_id').eq('package_id', p2.id);
                           const { data: vs } = await supabase.from('credit_package_vouchers').select('voucher_id').eq('package_id', p2.id);
                           setPkgErr(null);
-                          setPkgForm({ id: p2.id, name: p2.name ?? '', customer_price: String(p2.customer_price ?? ''),
+                          setPkgForm({ id: p2.id, name: p2.name ?? '', sku: p2.sku ?? '', customer_price: String(p2.customer_price ?? ''),
                             paid_credit_amount: String(p2.paid_credit_amount ?? ''), is_active: p2.is_active,
                             effective_from: p2.effective_from ?? '', effective_to: p2.effective_to ?? '',
                             commission_classification: p2.commission_classification ?? 'own',
@@ -726,6 +751,10 @@ const TherapyPage: React.FC = () => {
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>Package name *</label>
               <input value={pkgForm.name} onChange={e => setPkgForm(f => f && ({ ...f, name: e.target.value }))} placeholder="$1,000 Credit Package" autoFocus />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>SKU</label>
+              <input value={pkgForm.sku} onChange={e => setPkgForm(f => f && ({ ...f, sku: e.target.value }))} placeholder="e.g. CP-1000" />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -988,6 +1017,7 @@ const TherapyPage: React.FC = () => {
             <button className="btn btn-primary" onClick={savePkg} disabled={busy === 'pkg'}>Save</button></>}>
           <div className="form-grid">
             <div className="form-group" style={{ marginBottom: 0 }}><label>Name *</label><input value={pkgName} onChange={e => setPkgName(e.target.value)} placeholder="e.g. Unlimited Therapy – 1 Year" /></div>
+            <div className="form-group" style={{ marginBottom: 0 }}><label>SKU</label><input value={pkgSku} onChange={e => setPkgSku(e.target.value)} placeholder="e.g. TH-12M" /></div>
             <div className="form-group" style={{ marginBottom: 0 }}><label>Duration (calendar months) *</label><input type="number" min={1} value={pkgMonths} onChange={e => setPkgMonths(+e.target.value)} /></div>
             <div className="form-group" style={{ marginBottom: 0 }}><label>Description</label><input value={pkgDesc} onChange={e => setPkgDesc(e.target.value)} /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
