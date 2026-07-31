@@ -23,8 +23,10 @@ type ChoiceKind = 'product' | 'voucher' | 'therapy' | 'credit_package';
 
 const PromotionsPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage promotions." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [rows, setRows] = useState<Promotion[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
@@ -57,6 +59,8 @@ const PromotionsPage: React.FC = () => {
   const [niVoucher, setNiVoucher] = useState('');
   const [niChild, setNiChild] = useState('');
   const [niTreatment, setNiTreatment] = useState('');
+  const [niTherapy, setNiTherapy] = useState('');
+  const [niCredit, setNiCredit] = useState('');
   const [niQty, setNiQty] = useState(1);
 
   // Draft items chosen inside the Add Promotion modal (saved after the promotion is created).
@@ -113,20 +117,25 @@ const PromotionsPage: React.FC = () => {
     if (niType === 'voucher' && !niVoucher) { setDErr('Select a voucher.'); return; }
     if (niType === 'promotion' && !niChild) { setDErr('Select a promotion.'); return; }
     if (niType === 'treatment' && !niTreatment.trim()) { setDErr('Enter a treatment name.'); return; }
+    if (niType === 'therapy' && !niTherapy) { setDErr('Select a therapy package.'); return; }
+    if (niType === 'credit_package' && !niCredit) { setDErr('Select a credit package.'); return; }
     if (!niQty || niQty <= 0) { setDErr('Quantity must be greater than zero.'); return; }
     setDItems(ds => [...ds, {
       item_type: niType, product_id: niProduct, voucher_id: niVoucher,
       child_promotion_id: niChild, treatment_name: niTreatment.trim(), quantity: niQty,
+      therapy_package_id: niTherapy, credit_package_id: niCredit,
     }]);
     resetNewItem();
   };
 
-  const draftLabel = (d: { item_type: PromotionItemType; product_id: string; voucher_id: string; child_promotion_id: string; treatment_name: string }) => {
+  const draftLabel = (d: { item_type: PromotionItemType; product_id: string; voucher_id: string; child_promotion_id: string; treatment_name: string; therapy_package_id?: string; credit_package_id?: string }) => {
     switch (d.item_type) {
       case 'product': return `📦 ${pName(d.product_id)}`;
       case 'voucher': return `🎟 ${vName(d.voucher_id)}`;
       case 'promotion': return `🧩 ${promoName(d.child_promotion_id)} (nested)`;
       case 'treatment': return `💆 ${d.treatment_name}`;
+      case 'therapy': return `✨ ${therapyPkgs.find((t: any) => t.id === (d as any).therapy_package_id)?.name ?? 'Therapy'}`;
+      case 'credit_package': return `💳 ${creditPkgs.find((c: any) => c.id === (d as any).credit_package_id)?.name ?? 'Credit package'}`;
     }
   };
 
@@ -181,6 +190,8 @@ const PromotionsPage: React.FC = () => {
           p_voucher_id: d.item_type === 'voucher' ? d.voucher_id : null,
           p_child_promotion_id: d.item_type === 'promotion' ? d.child_promotion_id : null,
           p_treatment_name: d.item_type === 'treatment' ? d.treatment_name : null,
+          p_therapy_package_id: d.item_type === 'therapy' ? (d as any).therapy_package_id : null,
+          p_credit_package_id: d.item_type === 'credit_package' ? (d as any).credit_package_id : null,
           p_quantity: d.quantity, p_notes: null,
         });
         if (error && !firstErr) firstErr = error.message;
@@ -270,7 +281,10 @@ const PromotionsPage: React.FC = () => {
     await supabase.from('promotion_choice_options').delete().eq('id', id);
     if (itemsFor) await loadGroups(itemsFor.id);
   };
-  const resetNewItem = () => { setNiType('product'); setNiProduct(''); setNiVoucher(''); setNiChild(''); setNiTreatment(''); setNiQty(1); };
+  const resetNewItem = () => {
+    setNiType('product'); setNiProduct(''); setNiVoucher(''); setNiChild('');
+    setNiTreatment(''); setNiTherapy(''); setNiCredit(''); setNiQty(1);
+  };
 
   // Recompute original total when items or store change.
   useEffect(() => {
@@ -290,6 +304,8 @@ const PromotionsPage: React.FC = () => {
       p_voucher_id: niType === 'voucher' ? niVoucher || null : null,
       p_child_promotion_id: niType === 'promotion' ? niChild || null : null,
       p_treatment_name: niType === 'treatment' ? niTreatment.trim() || null : null,
+      p_therapy_package_id: niType === 'therapy' ? niTherapy || null : null,
+      p_credit_package_id: niType === 'credit_package' ? niCredit || null : null,
       p_quantity: niQty, p_notes: null,
     });
     setItemBusy(false);
@@ -316,6 +332,8 @@ const PromotionsPage: React.FC = () => {
       case 'voucher': return `🎟 ${vName(it.voucher_id)}`;
       case 'promotion': return `🧩 ${promoName(it.child_promotion_id)} (nested)`;
       case 'treatment': return `💆 ${it.treatment_name}`;
+      case 'therapy': return `✨ ${therapyPkgs.find((t: any) => t.id === (it as any).therapy_package_id)?.name ?? 'Therapy'}`;
+      case 'credit_package': return `💳 ${creditPkgs.find((c: any) => c.id === (it as any).credit_package_id)?.name ?? 'Credit package'}`;
     }
   };
   // Only leaf promotions (no nested promotions) may be nested inside another.
@@ -324,6 +342,9 @@ const PromotionsPage: React.FC = () => {
 
   const savings = origTotal != null && itemsFor ? origTotal - itemsFor.fixed_price : null;
   const filtered = rows.filter(p => { const q = search.toLowerCase(); return !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q); });
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage promotions." />;
+
 
   return (
     <div>
@@ -432,6 +453,8 @@ const PromotionsPage: React.FC = () => {
                     <option value="product">Product</option>
                     <option value="voucher">Voucher</option>
                     <option value="promotion">Promotion</option>
+                    <option value="therapy">Therapy</option>
+                    <option value="credit_package">Credit package</option>
                     <option value="treatment">Treatment</option>
                   </select>
                   {niType === 'product' && (
@@ -443,6 +466,16 @@ const PromotionsPage: React.FC = () => {
                     <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search voucher name or code…"
                       value={niVoucher} onChange={setNiVoucher}
                       options={vouchers.map((v: any) => ({ value: v.id, label: v.name, sublabel: v.code, search: `${v.name} ${v.code ?? ''}` }))} />
+                  )}
+                  {niType === 'therapy' && (
+                    <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search therapy package or SKU…"
+                      value={niTherapy} onChange={setNiTherapy}
+                      options={therapyPkgs.map((x: any) => ({ value: x.id, label: x.name, sublabel: x.sku, search: `${x.name} ${x.sku ?? ''}` }))} />
+                  )}
+                  {niType === 'credit_package' && (
+                    <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search credit package or SKU…"
+                      value={niCredit} onChange={setNiCredit}
+                      options={creditPkgs.map((x: any) => ({ value: x.id, label: x.name, sublabel: x.sku, search: `${x.name} ${x.sku ?? ''}` }))} />
                   )}
                   {niType === 'promotion' && (
                     <select value={niChild} onChange={e => setNiChild(e.target.value)} style={{ flex: 1, minWidth: 150 }}>
@@ -634,19 +667,29 @@ const PromotionsPage: React.FC = () => {
                   <option value="product">Product</option>
                   <option value="voucher">Voucher</option>
                   <option value="promotion">Promotion</option>
+                  <option value="therapy">Therapy</option>
+                  <option value="credit_package">Credit package</option>
                   <option value="treatment">Treatment</option>
                 </select>
                 {niType === 'product' && (
-                  <select value={niProduct} onChange={e => setNiProduct(e.target.value)} style={{ flex: 1, minWidth: 160 }}>
-                    <option value="">— Product —</option>
-                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
+                  <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search product name or SKU…"
+                    value={niProduct} onChange={setNiProduct}
+                    options={products.map((p: any) => ({ value: p.id, label: p.name, sublabel: p.sku, search: `${p.name} ${p.sku ?? ''}` }))} />
                 )}
                 {niType === 'voucher' && (
-                  <select value={niVoucher} onChange={e => setNiVoucher(e.target.value)} style={{ flex: 1, minWidth: 160 }}>
-                    <option value="">— Voucher —</option>
-                    {vouchers.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                  </select>
+                  <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search voucher name or code…"
+                    value={niVoucher} onChange={setNiVoucher}
+                    options={vouchers.map((v: any) => ({ value: v.id, label: v.name, sublabel: v.code, search: `${v.name} ${v.code ?? ''}` }))} />
+                )}
+                {niType === 'therapy' && (
+                  <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search therapy package or SKU…"
+                    value={niTherapy} onChange={setNiTherapy}
+                    options={therapyPkgs.map((x: any) => ({ value: x.id, label: x.name, sublabel: x.sku, search: `${x.name} ${x.sku ?? ''}` }))} />
+                )}
+                {niType === 'credit_package' && (
+                  <SearchSelect style={{ flex: 1, minWidth: 180 }} placeholder="Search credit package or SKU…"
+                    value={niCredit} onChange={setNiCredit}
+                    options={creditPkgs.map((x: any) => ({ value: x.id, label: x.name, sublabel: x.sku, search: `${x.name} ${x.sku ?? ''}` }))} />
                 )}
                 {niType === 'promotion' && (
                   <select value={niChild} onChange={e => setNiChild(e.target.value)} style={{ flex: 1, minWidth: 160 }}>

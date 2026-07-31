@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, Customer, UnlimitedTherapyPackage, UnlimitedTherapyStorePrice, PurchasedTherapyEntitlement, isOwnerOrManager } from '../types';
 import { Modal, DateModal, ReasonModal } from '../components/ui';
@@ -51,7 +51,7 @@ const TherapyPage: React.FC = () => {
   const [rules, setRules] = useState<any[]>([]);
   const [creditPkgs, setCreditPkgs] = useState<any[]>([]);
   const [bundles, setBundles] = useState<any[]>([]);
-  const emptyBundle = { id: null as string | null, name: '', sku: '', customer_payment_amount: '',
+  const emptyBundle = { id: null as string | null, name: '', sku: '', grants_reward: false, customer_payment_amount: '',
     paid_credit_amount: '', bonus_credit_amount: '', free_voucher_qty: '',
     reward_qualifying_amount: '', is_active: true, effective_from: '', effective_to: '',
     commission_classification: 'third_party', tier1_rate: '', tier2_rate: '',
@@ -86,11 +86,14 @@ const TherapyPage: React.FC = () => {
       const { error: sErr } = await supabase.rpc('set_catalogue_sku',
         { p_kind: 'premium_bundle', p_id: data, p_sku: bundleForm.sku || null });
       if (sErr) { setBundleErr(sErr.message); return; }
+      const { error: rErr } = await supabase.rpc('set_catalogue_reward',
+        { p_kind: 'premium_bundle', p_id: data, p_grants: bundleForm.grants_reward });
+      if (rErr) { setBundleErr(rErr.message); return; }
     }
     setBundleForm(null); load();
   };
   const [allVouchers, setAllVouchers] = useState<any[]>([]);
-  const emptyPkg = { id: null as string | null, name: '', sku: '', customer_price: '', paid_credit_amount: '',
+  const emptyPkg = { id: null as string | null, name: '', sku: '', grants_reward: false, customer_price: '', paid_credit_amount: '',
     is_active: true, effective_from: '', effective_to: '', commission_classification: 'own',
     staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', reward_qualifying_amount: '',
     store_ids: [] as string[], voucher_ids: [] as string[] };
@@ -123,6 +126,9 @@ const TherapyPage: React.FC = () => {
       const { error: sErr } = await supabase.rpc('set_catalogue_sku',
         { p_kind: 'credit_package', p_id: data, p_sku: pkgForm.sku || null });
       if (sErr) { setPkgErr(sErr.message); return; }
+      const { error: rErr } = await supabase.rpc('set_catalogue_reward',
+        { p_kind: 'credit_package', p_id: data, p_grants: pkgForm.grants_reward });
+      if (rErr) { setPkgErr(rErr.message); return; }
     }
     setPkgForm(null); load();
   };
@@ -183,7 +189,15 @@ const TherapyPage: React.FC = () => {
     setLegacy((le.data as any[]) ?? []);
     setPackages((pk.data as UnlimitedTherapyPackage[]) ?? []);
     setStores((st.data as Store[]) ?? []);
-    setCustomers((cu.data as Customer[]) ?? []);
+    const baseCustomers = (cu.data as Customer[]) ?? [];
+    setCustomers(baseCustomers);
+    // The customer table is capped at 1000 rows per request, so records
+    // belonging to customers outside that set would show no name. Fetch the
+    // ones actually referenced here.
+    void (async () => {
+      const extra = await fetchCustomersByIds([...((pe.data as any[]) ?? []).map(x => x.customer_id), ...((le.data as any[]) ?? []).map(x => x.customer_id)]);
+      setCustomers(cur => mergeCustomers(cur, extra));
+    })();
     setRules((ru.data as any[]) ?? []);
     const { data: st2 } = await supabase.rpc('legacy_setup_status');
     setSetupStatus(st2 ?? null);
@@ -562,12 +576,13 @@ const TherapyPage: React.FC = () => {
             {bundles.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No premium bundles yet.</p></div> : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Pays</th><th style={{ textAlign: 'right' }}>Paid Credit</th><th style={{ textAlign: 'right' }}>Bonus</th><th style={{ textAlign: 'right' }}>Vouchers</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Active</th><th></th></tr></thead>
+                  <thead><tr><th>Name</th><th>SKU</th><th>Reward</th><th style={{ textAlign: 'right' }}>Pays</th><th style={{ textAlign: 'right' }}>Paid Credit</th><th style={{ textAlign: 'right' }}>Bonus</th><th style={{ textAlign: 'right' }}>Vouchers</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Active</th><th></th></tr></thead>
                   <tbody>
                     {bundles.map(b => (
                       <tr key={b.id}>
                         <td style={{ fontWeight: 600 }}>{b.name}</td>
                         <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{b.sku ?? '—'}</td>
+                        <td>{b.grants_reward ? <span className="badge badge-accent">{b.free_voucher_qty} vouchers</span> : <span className="badge badge-muted">None</span>}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.customer_payment_amount)}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.paid_credit_amount)}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.bonus_credit_amount)}</td>
@@ -579,7 +594,7 @@ const TherapyPage: React.FC = () => {
                           const { data: st4 } = await supabase.from('premium_bundle_stores').select('store_id').eq('bundle_id', b.id);
                           const { data: vs2 } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', b.id);
                           setBundleErr(null);
-                          setBundleForm({ id: b.id, name: b.name ?? '', sku: b.sku ?? '',
+                          setBundleForm({ id: b.id, name: b.name ?? '', sku: b.sku ?? '', grants_reward: !!b.grants_reward,
                             customer_payment_amount: String(b.customer_payment_amount ?? ''),
                             paid_credit_amount: String(b.paid_credit_amount ?? ''),
                             bonus_credit_amount: String(b.bonus_credit_amount ?? ''),
@@ -686,6 +701,15 @@ const TherapyPage: React.FC = () => {
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>The customer may mix any of these up to the free quantity.</div>
             </div>
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                <input type="checkbox" checked={bundleForm.grants_reward} style={{ width: 'auto' }}
+                  onChange={e => setBundleForm(f => f && ({ ...f, grants_reward: e.target.checked }))} /> Also grant free reward vouchers
+              </label>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                Off by default: the customer receives the Paid and Bonus Credit only, and no voucher selection is needed at the till.
+              </div>
+            </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
               <input type="checkbox" checked={bundleForm.is_active} style={{ width: 'auto' }} onChange={e => setBundleForm(f => f && ({ ...f, is_active: e.target.checked }))} /> Active
             </label>
@@ -706,12 +730,13 @@ const TherapyPage: React.FC = () => {
             {creditPkgs.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No credit packages yet.</p></div> : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Price</th><th style={{ textAlign: 'right' }}>Credit</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Effective</th><th>Active</th><th></th></tr></thead>
+                  <thead><tr><th>Name</th><th>SKU</th><th>Reward</th><th style={{ textAlign: 'right' }}>Price</th><th style={{ textAlign: 'right' }}>Credit</th><th>Commission</th><th style={{ textAlign: 'right' }}>Tier 1 / 2</th><th>Effective</th><th>Active</th><th></th></tr></thead>
                   <tbody>
                     {creditPkgs.map(p2 => (
                       <tr key={p2.id}>
                         <td style={{ fontWeight: 600 }}>{p2.name}</td>
                         <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{p2.sku ?? '—'}</td>
+                        <td>{p2.grants_reward ? <span className="badge badge-accent">Yes</span> : <span className="badge badge-muted">None</span>}</td>
                         <td style={{ textAlign: 'right' }}>{money(p2.customer_price)}</td>
                         <td style={{ textAlign: 'right' }}>{money(p2.paid_credit_amount)}</td>
                         <td style={{ fontSize: 12 }}>{p2.commission_classification === 'third_party' ? 'Third-party' : 'Own'}</td>
@@ -722,7 +747,7 @@ const TherapyPage: React.FC = () => {
                           const { data: st3 } = await supabase.from('credit_package_stores').select('store_id').eq('package_id', p2.id);
                           const { data: vs } = await supabase.from('credit_package_vouchers').select('voucher_id').eq('package_id', p2.id);
                           setPkgErr(null);
-                          setPkgForm({ id: p2.id, name: p2.name ?? '', sku: p2.sku ?? '', customer_price: String(p2.customer_price ?? ''),
+                          setPkgForm({ id: p2.id, name: p2.name ?? '', sku: p2.sku ?? '', grants_reward: !!p2.grants_reward, customer_price: String(p2.customer_price ?? ''),
                             paid_credit_amount: String(p2.paid_credit_amount ?? ''), is_active: p2.is_active,
                             effective_from: p2.effective_from ?? '', effective_to: p2.effective_to ?? '',
                             commission_classification: p2.commission_classification ?? 'own',
@@ -818,6 +843,15 @@ const TherapyPage: React.FC = () => {
                 ))}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>The package's credit can only be spent on these vouchers.</div>
+            </div>
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                <input type="checkbox" checked={pkgForm.grants_reward} style={{ width: 'auto' }}
+                  onChange={e => setPkgForm(f => f && ({ ...f, grants_reward: e.target.checked }))} /> Also grant a qualification reward
+              </label>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                Off by default: the customer receives the credit only. Tick this to also grant one free Legacy reward unit per whole reward threshold.
+              </div>
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
               <input type="checkbox" checked={pkgForm.is_active} style={{ width: 'auto' }} onChange={e => setPkgForm(f => f && ({ ...f, is_active: e.target.checked }))} /> Active

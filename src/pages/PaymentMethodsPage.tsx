@@ -7,8 +7,10 @@ import { Plus, Pencil, Trash2, CreditCard, RefreshCw } from 'lucide-react';
 
 const PaymentMethodsPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage payment methods." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [rows, setRows] = useState<PaymentMethod[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -45,6 +47,9 @@ const PaymentMethodsPage: React.FC = () => {
     await supabase.from('payment_methods').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', m.id);
     load();
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage payment methods." />;
+
 
   return (
     <div>

@@ -9,8 +9,10 @@ const ROLES: UserRole[] = ['owner', 'admin', 'manager', 'inventory_manager', 'st
 
 const UsersPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage users and roles." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [rows, setRows] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [editUser, setEditUser] = useState<Profile | null>(null);
@@ -63,6 +65,9 @@ const UsersPage: React.FC = () => {
     setEditUser(null);
     load();
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage users and roles." />;
+
 
   return (
     <div>

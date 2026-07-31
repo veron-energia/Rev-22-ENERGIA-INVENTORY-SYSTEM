@@ -15,8 +15,10 @@ type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_pro
 
 const ReportsPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isManagerOrAbove(profile?.role)) return <NoAccess message="Only Owners, Admins, and Managers can view reports." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isManagerOrAbove(profile?.role);
   const [tab, setTab] = useState<Tab>('sales_store');
   const [loading, setLoading] = useState(true);
 
@@ -315,6 +317,9 @@ const ReportsPage: React.FC = () => {
     };
     exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view reports." />;
+
 
   return (
     <div>

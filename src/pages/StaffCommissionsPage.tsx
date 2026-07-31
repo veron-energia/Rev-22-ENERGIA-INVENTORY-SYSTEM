@@ -11,7 +11,10 @@ const monthKey = (d: string) => new Date(d).toLocaleDateString(undefined, { year
 
 const StaffCommissionsPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isManagerOrAbove(profile?.role)) return <NoAccess message="Only Owners, Admins, and Managers can view staff commissions." />;
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isManagerOrAbove(profile?.role);
   const canPay = isOwnerOrManager(profile?.role);
 
   const [tab, setTab] = useState<'earned' | 'payouts'>('earned');
@@ -94,6 +97,9 @@ const StaffCommissionsPage: React.FC = () => {
       method: mName(p.payment_method_id), reference: p.reference ?? '', paid_at: new Date(p.paid_at).toLocaleDateString(),
     })));
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view staff commissions." />;
+
 
   return (
     <div>

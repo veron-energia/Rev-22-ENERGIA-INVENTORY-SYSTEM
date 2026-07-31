@@ -18,8 +18,10 @@ const ACTION_CLS: Record<string, string> = {
 
 const AuditLogPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isManagerOrAbove(profile?.role)) return <NoAccess message="Only Owners, Admins, and Managers can view the audit log." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isManagerOrAbove(profile?.role);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +51,9 @@ const AuditLogPage: React.FC = () => {
     const q = search.toLowerCase();
     return !q || l.action.toLowerCase().includes(q) || l.table_name.toLowerCase().includes(q) || uName(l.changed_by).toLowerCase().includes(q);
   });
+
+  if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view the audit log." />;
+
 
   return (
     <div>

@@ -18,8 +18,10 @@ const blank = (v?: Voucher) => ({
 
 const VouchersPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage vouchers." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [rows, setRows] = useState<Voucher[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [mnmFor, setMnmFor] = useState<{ id: string; name: string } | null>(null);
@@ -116,6 +118,9 @@ const VouchersPage: React.FC = () => {
     const cls = k === 'normal' ? 'badge-primary' : k === 'fixed_discount' ? 'badge-accent' : 'badge-success';
     return <span className={`badge ${cls}`}>{VOUCHER_KIND_LABELS[k]}</span>;
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage vouchers." />;
+
 
   return (
     <div>

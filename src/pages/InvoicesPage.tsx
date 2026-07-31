@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { PRINT_CSS } from '../lib/printDoc';
 import { supabase } from '../lib/supabase';
 import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import type { FocReason, InvoiceRevision } from '../types';
@@ -33,6 +34,30 @@ const InvoicesPage: React.FC = () => {
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [choiceGroups, setChoiceGroups] = useState<PromotionChoiceGroup[]>([]);
   const [promoItems, setPromoItems] = useState<any[]>([]);
+  // The customers array is capped at 1000 rows by Supabase, so an invoice for
+  // a customer outside that set had no name to show. Names for the customers
+  // actually referenced are fetched by id instead, which is correct at any
+  // table size.
+  const [customerById, setCustomerById] = useState<Record<string, any>>({});
+  const ensureCustomers = useCallback(async (ids: (string | null | undefined)[]) => {
+    const wanted = Array.from(new Set(ids.filter(Boolean) as string[]));
+    if (wanted.length === 0) return;
+    setCustomerById(prev => {
+      const missing = wanted.filter(id => !prev[id]);
+      if (missing.length === 0) return prev;
+      (async () => {
+        const found: Record<string, any> = {};
+        for (let i = 0; i < missing.length; i += 200) {
+          const { data } = await supabase.from('customers')
+            .select('id, full_name, phone, email, referred_by')
+            .in('id', missing.slice(i, i + 200));
+          for (const c of (data as any[]) ?? []) found[c.id] = c;
+        }
+        if (Object.keys(found).length > 0) setCustomerById(cur => ({ ...cur, ...found }));
+      })();
+      return prev;
+    });
+  }, []);
   const [choiceOptions, setChoiceOptions] = useState<PromotionChoiceOption[]>([]);
   const [storeInv, setStoreInv] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -49,6 +74,7 @@ const InvoicesPage: React.FC = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [cStore, setCStore] = useState('');
   const [cCustomer, setCCustomer] = useState('');
+  useEffect(() => { if (cCustomer) void ensureCustomers([cCustomer]); }, [cCustomer, ensureCustomers]);
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
   const [cDiscountVoucher, setCDiscountVoucher] = useState('');
   const [cDiscount, setCDiscount] = useState(0);
@@ -91,6 +117,9 @@ const InvoicesPage: React.FC = () => {
   const [buyBundles, setBuyBundles] = useState<any[]>([]);
   const [buyVouchers, setBuyVouchers] = useState<any[]>([]);
   const [buyKind, setBuyKind] = useState<'credit_package' | 'premium_bundle'>('credit_package');
+  // Buy Credit used to borrow the New Invoice form's store, which is empty
+  // until that form is opened — so the package list silently came back empty.
+  const [buyStore, setBuyStore] = useState('');
   const [buyId, setBuyId] = useState('');
   const [buyCustomer, setBuyCustomer] = useState('');
   const [buyBasket, setBuyBasket] = useState<Record<string, number>>({});
@@ -151,6 +180,9 @@ const InvoicesPage: React.FC = () => {
     setStores((st.data as Store[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
     setCustomers((cu.data as Customer[]) ?? []);
+    // Names for every customer on the loaded invoices, regardless of where
+    // they fall alphabetically.
+    void ensureCustomers(((inv.data as Invoice[]) ?? []).map(i => i.customer_id));
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setPrices((pp.data as StoreProductPrice[]) ?? []);
     setVouchers((vc.data as Voucher[]) ?? []);
@@ -175,7 +207,9 @@ const InvoicesPage: React.FC = () => {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   const storeName = (id: string) => stores.find(s => s.id === id)?.name ?? '—';
-  const custName = (id: string) => customers.find(c => c.id === id)?.full_name ?? '—';
+  const customerOf = (id: string | null | undefined) =>
+    (id ? customerById[id] : null) ?? customers.find(c => c.id === id) ?? null;
+  const custName = (id: string) => customerOf(id)?.full_name ?? '—';
   const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
   const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
   const isStaff = profile?.role === 'staff';
@@ -184,7 +218,8 @@ const InvoicesPage: React.FC = () => {
   const openBuy = async () => {
     setBuyErr(null); setBuyId(''); setBuyBasket({}); setBuyCustomer('');
     setBuyKind('credit_package'); setBuyOpen(true);
-    const store = activeStore;
+    const store = activeStore || stores[0]?.id || '';
+    setBuyStore(store);
     if (!store) return;
     const { data: cp } = await supabase.rpc('credit_packages_for_store', { p_store_id: store, p_day: null });
     setBuyPkgs((cp as any[]) ?? []);
@@ -197,11 +232,22 @@ const InvoicesPage: React.FC = () => {
       const { data } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', buyId);
       const ids = ((data as any[]) ?? []).map(x => x.voucher_id);
       const { data: vs } = await supabase.rpc('legacy_reward_voucher_options',
-        { p_store_id: activeStore });
+        { p_store_id: buyStore });
       setBuyVouchers(((vs as any[]) ?? []).filter(v => ids.includes(v.voucher_id)));
       setBuyBasket({});
     })();
   }, [buyOpen, buyKind, buyId, activeStore]);
+  useEffect(() => {
+    if (!buyOpen || !buyStore) return;
+    (async () => {
+      const { data: cp } = await supabase.rpc('credit_packages_for_store', { p_store_id: buyStore, p_day: null });
+      setBuyPkgs((cp as any[]) ?? []);
+      const { data: pb } = await supabase.rpc('premium_bundles_for_store', { p_store_id: buyStore, p_day: null });
+      setBuyBundles((pb as any[]) ?? []);
+      setBuyId(''); setBuyBasket({});
+    })();
+  }, [buyOpen, buyStore]);
+
   const submitBuy = async () => {
     setBuyBusy(true); setBuyErr(null);
     const line: any = { kind: buyKind, id: buyId };
@@ -210,7 +256,7 @@ const InvoicesPage: React.FC = () => {
         .map(([voucher_id, quantity]) => ({ voucher_id, quantity }));
     }
     const { data, error } = await supabase.rpc('create_credit_purchase_invoice', {
-      p_store_id: activeStore, p_customer_id: buyCustomer,
+      p_store_id: buyStore, p_customer_id: buyCustomer,
       p_lines: [line], p_affiliate_id: null, p_discount_total: 0, p_notes: null,
     });
     setBuyBusy(false);
@@ -615,6 +661,7 @@ const InvoicesPage: React.FC = () => {
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
     void loadInvoiceLegacy(inv.id, inv);
+    void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
       supabase.from('warehouses').select('id,name').is('deleted_at', null).order('name')
         .then(({ data }) => setWarehouses((data as any[]) ?? []));
@@ -763,7 +810,7 @@ const InvoicesPage: React.FC = () => {
       invoice_no: i.invoice_no,
       date: new Date(i.created_at).toLocaleDateString(),
       store: stores.find(s => s.id === i.store_id)?.name ?? '',
-      customer: customers.find(cu => cu.id === i.customer_id)?.full_name ?? '',
+      customer: customerOf(i.customer_id)?.full_name ?? '',
       subtotal: Number(i.subtotal).toFixed(2),
       discount: Number(i.discount_total).toFixed(2),
       total: Number(i.total_amount).toFixed(2),
@@ -774,7 +821,11 @@ const InvoicesPage: React.FC = () => {
   const printInvoice = () => {
     if (!detail) return;
     const store = stores.find(s => s.id === detail.store_id);
-    const cust = customers.find(cu => cu.id === detail.customer_id);
+    const cust = customerOf(detail.customer_id);
+    // The staff member who raised the invoice signs the office copy.
+    const issuedByName = (detail as any).created_by
+      ? (profiles.find((u: any) => u.id === (detail as any).created_by)?.full_name ?? '')
+      : '';
     const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
@@ -851,19 +902,14 @@ const InvoicesPage: React.FC = () => {
           ${st.store_logo_url ? `<img src="${esc(st.store_logo_url)}" style="max-height:48px;max-width:180px;object-fit:contain" />` : ''}
         </div>` : '';
 
-    // "How to Pay" — QR images + PayNow UEN + Bank Account together in one row.
-    const qrs = [
-      [st.qr_paynow_url, 'PayNow'], [st.qr_grabpay_url, 'GrabPay'], [st.qr_atome_url, 'Atome'],
-    ].filter(([u]) => !!u) as [string, string][];
+    // Payment details as text only. The QR codes were dropped so two copies fit
+    // an A4 sheet, and they are printed at the foot rather than mid-document.
     const payDetailBits = [
-      st.paynow_uen ? `PayNow UEN: ${esc(st.paynow_uen)}` : '',
+      st.paynow_uen ? `PayNow: ${esc(st.paynow_uen)}` : '',
       st.bank_account ? `Bank: ${esc(st.bank_account)}` : '',
     ].filter(Boolean);
-    const payRow = (qrs.length || payDetailBits.length)
-      ? `<div class="payrow">
-          ${qrs.map(([u, label]) => `<div class="qr"><img src="${esc(u)}" /><div class="mut">${label}</div></div>`).join('')}
-          ${payDetailBits.length ? `<div class="paydetail">${payDetailBits.map(b => `<div>${b}</div>`).join('')}</div>` : ''}
-        </div>`
+    const payRow = payDetailBits.length
+      ? `<div class="paydetail">${payDetailBits.join(' &nbsp;·&nbsp; ')}</div>`
       : '';
 
     const footerBits = [
@@ -903,11 +949,12 @@ const InvoicesPage: React.FC = () => {
       </div>` : '';
 
     // One invoice copy — rendered twice (customer + store) on a single A4 page.
-    const copyHtml = `
+    const copyHtml = (copyLabel: string) => `
       <div class="copy">
         ${logosTop}
         <div class="head">
-          <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div></div>
+          <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div>
+            <div class="copytag">${copyLabel}</div></div>
           <div style="text-align:right"><h1>${esc(detail.invoice_no)}</h1>
             <div class="mut">${esc(store?.name ?? '')}</div>
             ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
@@ -934,42 +981,23 @@ const InvoicesPage: React.FC = () => {
         ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
         ${therapyBlock}
         ${authorisedBlock}
-        ${payRow ? `<h2>How to Pay</h2>${payRow}` : ''}
         <div class="signrow">
           <div class="sign"><div class="signline"></div>Customer Signature</div>
+          <div class="sign"><div class="signline"></div>Issued By${issuedByName ? ` — ${esc(issuedByName)}` : ''}</div>
         </div>
         <div class="terms">Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.</div>
+        ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
         ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
       </div>`;
 
     const html = `<!doctype html><html><head><title>${esc(detail.invoice_no)}</title><style>
-      @page { size: A4; margin: 10mm; }
-      body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;}
-      h1{font-size:18px;margin:0;} h2{font-size:12px;margin:12px 0 4px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
-      .mut{color:#666;font-size:10.5px;} .r{text-align:right;}
-      table{width:100%;border-collapse:collapse;margin-top:4px;}
-      th{font-size:10px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:4px 6px;}
-      th.r{text-align:right;} td{padding:4px 6px;border-bottom:1px solid #eee;vertical-align:top;}
-      tr.sub td{border-bottom:none;padding:1px 6px 1px 18px;font-size:11px;color:#555;}
-      .ther{border:1px solid #ddd;border-radius:4px;padding:6px 8px;margin-top:4px;}
-      .entb{margin-top:6px;padding-top:6px;border-top:1px solid #eee;}
-      .entb:first-of-type{border-top:none;padding-top:0;margin-top:4px;}
-      .bentbl{margin-top:3px;} .bentbl th{font-size:9px;padding:2px 4px;border-bottom:1px solid #ccc;}
-      .bentbl td{font-size:10.5px;padding:2px 4px;border-bottom:1px solid #f2f2f2;}
-      .totals{margin-top:8px;width:260px;margin-left:auto;} .totals td{border:none;padding:2px 6px;}
-      .paytbl td{border:none;padding:2px 6px;}
-      .grand{font-size:15px;font-weight:bold;border-top:1px solid #999;}
-      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;}
-      .payrow{display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin-top:6px;}
-      .payrow .qr{text-align:center;} .payrow .qr img{width:92px;height:92px;object-fit:contain;}
-      .payrow .paydetail{font-size:11px;line-height:1.7;color:#333;}
-      .signrow{margin-top:30px;} .sign{width:250px;font-size:11px;color:#333;}
-      .signline{border-bottom:1px solid #333;height:34px;margin-bottom:4px;}
-      .terms{margin-top:14px;padding-top:8px;border-top:1px solid #ccc;font-size:11px;color:#333;}
-      .footer{margin-top:8px;padding-top:6px;border-top:1px solid #ccc;font-size:10px;color:#444;line-height:1.6;text-align:center;}
-      .copy{padding:2mm 0;box-sizing:border-box;}
+      /* Shared with the Special Products / Rentals receipts so the two cannot
+         drift apart — see src/lib/printDoc.ts */
+      ${PRINT_CSS}
     </style></head><body>
-      ${copyHtml}
+      ${copyHtml('CUSTOMER COPY')}
+      <div class="cut"><span>✂  CUT HERE</span></div>
+      ${copyHtml('OFFICE COPY')}
       <script>window.onload=function(){window.print();}</script>
     </body></html>`;
     const w = window.open('', '_blank');
@@ -1043,10 +1071,20 @@ const InvoicesPage: React.FC = () => {
         <Modal title="Buy Credit" maxWidth={520} onClose={() => setBuyOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setBuyOpen(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={submitBuy}
-              disabled={buyBusy || !buyId || !buyCustomer}>{buyBusy ? 'Creating…' : 'Create Invoice'}</button></>}>
+              disabled={buyBusy || !buyId || !buyCustomer || !buyStore}>{buyBusy ? 'Creating…' : 'Create Invoice'}</button></>}>
           <div className="form-grid">
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
               Creates an invoice for a Credit Package or Premium Bundle. The credit, bonus credit and reward vouchers are issued automatically once the invoice is fully paid. Wallet credit cannot pay for it.
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Store *</label>
+              <select value={buyStore} onChange={e => setBuyStore(e.target.value)} disabled={isStaff}>
+                <option value="">— Select store —</option>
+                {stores.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
+              </select>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                Only packages and bundles available at this store are listed.
+              </div>
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>Customer *</label>
@@ -1132,8 +1170,8 @@ const InvoicesPage: React.FC = () => {
               </div>
             </div>
             {cCustomer && (() => {
-              const cust = customers.find(c => c.id === cCustomer);
-              const referrer = cust?.referred_by ? customers.find(c => c.id === cust.referred_by) : null;
+              const cust = customerOf(cCustomer);
+              const referrer = cust?.referred_by ? customerOf(cust.referred_by) : null;
               return (
                 <div className="alert alert-info" style={{ marginBottom: 0 }}>
                   <span>ℹ️</span>

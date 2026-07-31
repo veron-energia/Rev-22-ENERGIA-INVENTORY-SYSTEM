@@ -15,8 +15,10 @@ const TYPE_META: Record<string, { label: string; icon: React.ReactNode; cls: str
 
 const ApprovalsPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can review approvals." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [requests, setRequests] = useState<AdjustmentRequest[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
@@ -74,6 +76,9 @@ const ApprovalsPage: React.FC = () => {
     if (error) { alert(error.message); return; }
     setRejectFor(null); setRejectNote(''); load();
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can review approvals." />;
+
 
   return (
     <div>

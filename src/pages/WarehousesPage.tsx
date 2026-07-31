@@ -9,7 +9,10 @@ import { Plus, Pencil, Trash2, Warehouse, RefreshCw } from 'lucide-react';
 const WarehousesPage: React.FC = () => {
   const { profile } = useAuth();
   // Read allowed for manager+, write for owner/manager
-  if (!isManagerOrAbove(profile?.role)) return <NoAccess />;
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isManagerOrAbove(profile?.role);
   const canManage = isOwnerOrManager(profile?.role);
 
   const [rows, setRows] = useState<WarehouseT[]>([]);
@@ -49,6 +52,9 @@ const WarehousesPage: React.FC = () => {
     await supabase.from('warehouses').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', w.id);
     load();
   };
+
+  if (!hasAccess) return <NoAccess />;
+
 
   return (
     <div>

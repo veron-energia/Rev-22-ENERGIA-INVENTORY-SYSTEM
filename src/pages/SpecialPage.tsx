@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -36,8 +37,10 @@ const addPeriods = (start: string, rateType: SpecialRateType, periods: number): 
 
 const SpecialPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage special products and rentals." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [tab, setTab] = useState<'catalog' | 'sales' | 'rentals'>('catalog');
 
 
@@ -48,12 +51,15 @@ const SpecialPage: React.FC = () => {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  // Branding for printing. Rentals and special sales belong to a warehouse,
+  // so the letterhead is taken from the store.
+  const [brandStores, setBrandStores] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [sp, st, sa, re, wh, cu, pm] = await Promise.all([
+    const [sp, st, sa, re, wh, cu, pm, sto] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('special_product_stock').select('*'),
       supabase.from('special_sales').select('*').order('created_at', { ascending: false }),
@@ -61,6 +67,7 @@ const SpecialPage: React.FC = () => {
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('customers').select('id,full_name,phone').is('deleted_at', null).order('full_name'),
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
+      supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
     ]);
     setRows((sp.data as SpecialProduct[]) ?? []);
     setStock((st.data as SpecialProductStock[]) ?? []);
@@ -69,6 +76,7 @@ const SpecialPage: React.FC = () => {
     setWarehouses((wh.data as Warehouse[]) ?? []);
     setCustomers((cu.data as Customer[]) ?? []);
     setMethods((pm.data as PaymentMethod[]) ?? []);
+    setBrandStores((sto.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -90,50 +98,58 @@ const SpecialPage: React.FC = () => {
     const prod = rows.find((p: any) => p.id === row.special_product_id);
     const cust = customers.find((c: any) => c.id === row.customer_id);
     const wh = warehouses.find((w: any) => w.id === row.warehouse_id);
-    const esc = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-    const m = (n: any) => `S$${Number(n ?? 0).toFixed(2)}`;
+    const methodName = (id: any) => methods.find(m => m.id === id)?.name ?? '';
     const d = (v: any) => v ? new Date(v).toLocaleDateString('en-GB') : '—';
 
-    const lines = kind === 'sale'
-      ? [['Item', esc(prod?.name)], ['SKU', esc(prod?.sku)], ['Quantity', esc(row.quantity)],
-         ['Unit price', m(row.unit_price)], ['Total', m(row.total_amount)]]
-      : [['Item', esc(prod?.name)], ['SKU', esc(prod?.sku)], ['Quantity', esc(row.quantity)],
-         ['Rate', `${esc(row.rate_type)} — ${m(row.rate_amount)} × ${esc(row.periods)}`],
-         ['Rental fee', m(row.rental_fee)],
-         ['From', d(row.start_date)], ['Due back', d(row.expected_return_date)],
-         ['Returned', d(row.returned_at)],
-         ...(Number(row.late_fee_total) > 0
-           ? [['Late days', esc(row.late_days)], ['Late fee', m(row.late_fee_total)]] : []),
-         ['Total paid', m(Number(row.rental_fee ?? 0) + Number(row.late_fee_total ?? 0))]];
+    const fee = Number(kind === 'sale' ? row.total_amount : row.rental_fee) || 0;
+    const late = Number(row.late_fee_total ?? 0);
 
-    const w = window.open('', '_blank', 'width=720,height=900');
-    if (!w) return;
-    w.document.write(`<!doctype html><html><head><title>${kind === 'sale' ? 'Sale' : 'Rental'} ${esc(row.sale_no ?? row.rental_no)}</title>
-      <style>
-        body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;margin:32px;color:#1a201c}
-        h1{font-size:20px;margin:0 0 2px} .sub{color:#667;font-size:12px;margin-bottom:18px}
-        .no{font-size:15px;font-weight:700;margin-bottom:14px}
-        table{width:100%;border-collapse:collapse;font-size:13px}
-        td{padding:7px 0;border-bottom:1px solid #e6e9e7}
-        td.k{color:#667;width:180px} td.v{text-align:right;font-weight:600}
-        .who{margin:16px 0;font-size:13px}
-        .foot{margin-top:26px;font-size:11px;color:#889}
-      </style></head><body>
-      <h1>Energia</h1>
-      <div class="sub">${kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental'}</div>
-      <div class="no">${esc(row.sale_no ?? row.rental_no)}</div>
-      <div class="who">
-        <div><strong>Customer:</strong> ${esc(cust?.full_name ?? '—')}${cust?.phone ? ` (${esc(cust.phone)})` : ''}</div>
-        <div><strong>Warehouse:</strong> ${esc(wh?.name ?? '—')}</div>
-        <div><strong>Date:</strong> ${d(row.created_at)}</div>
-        <div><strong>Status:</strong> ${esc(row.status)}</div>
-      </div>
-      <table>${lines.map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join('')}</table>
-      ${row.notes ? `<div class="foot"><strong>Notes:</strong> ${esc(row.notes)}</div>` : ''}
-      <div class="foot">Printed ${new Date().toLocaleString('en-GB')}</div>
-      <script>window.onload=function(){window.print();}<\/script>
-      </body></html>`);
-    w.document.close();
+    const lines: PrintLine[] = kind === 'sale'
+      ? [{ name: prod?.name ?? 'Special product', qty: row.quantity,
+           unit: Number(row.unit_price ?? 0), total: fee,
+           subLines: prod?.sku ? [`SKU ${prod.sku}`] : [] }]
+      : [{ name: prod?.name ?? 'Special product', qty: row.quantity,
+           unit: Number(row.rate_amount ?? 0), total: fee,
+           subLines: [
+             ...(prod?.sku ? [`SKU ${prod.sku}`] : []),
+             `${row.periods} × ${row.rate_type}`,
+             `From ${d(row.start_date)} — due back ${d(row.expected_return_date)}`,
+             ...(row.returned_at ? [`Returned ${d(row.returned_at)}${row.return_condition ? ` · ${row.return_condition}` : ''}`] : []),
+           ] },
+         ...(late > 0 ? [{
+           name: `Late fee — ${row.late_days} day(s)`,
+           qty: row.late_days, unit: Number(row.late_fee_per_day ?? 0), total: late,
+         }] : [])];
+
+    const totals: PrintTotal[] = [
+      { label: kind === 'sale' ? 'Subtotal' : 'Rental fee', value: pmoney(fee) },
+      ...(late > 0 ? [{ label: 'Late fee', value: pmoney(late) }] : []),
+      ...(Number(row.foc_amount ?? 0) > 0 ? [{ label: 'FOC', value: `−${pmoney(row.foc_amount)}` }] : []),
+      { label: 'Total', value: pmoney(fee + late - Number(row.foc_amount ?? 0)), grand: true },
+    ];
+
+    const payments: [string, string][] = [];
+    if (row.payment_method_id) payments.push([methodName(row.payment_method_id), pmoney(fee)]);
+    if (late > 0 && row.late_payment_method_id) payments.push([`${methodName(row.late_payment_method_id)} (late fee)`, pmoney(late)]);
+
+    printA5Document({
+      docNo: row.sale_no ?? row.rental_no,
+      docTitle: kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental',
+      branding: brandStores[0] ?? {},
+      headerLines: [
+        `Date: ${d(row.created_at)}`,
+        `Status: ${pesc(String(row.status ?? '').replace(/_/g, ' '))}`,
+        ...(wh?.name ? [`Warehouse: ${pesc(wh.name)}`] : []),
+      ],
+      billToName: cust?.full_name ?? '—',
+      billToLines: [cust?.phone ?? ''].filter(Boolean) as string[],
+      itemHeading: kind === 'sale' ? 'Item' : 'Rented Item',
+      lines, totals, payments,
+      extraBlocks: row.notes ? [`<h2>Notes</h2><div class="mut">${pesc(row.notes)}</div>`] : [],
+      termsText: kind === 'rental'
+        ? 'Rented goods remain the property of Rev 22 Pte Ltd. Late returns incur the daily late fee shown above. Goods have been checked on collection.'
+        : undefined,
+    });
   };
 
   // ── Catalog modal ──
@@ -302,6 +318,9 @@ const SpecialPage: React.FC = () => {
       stock: stockOf(p.id).reduce((t, x) => t + x.current_qty, 0), active: p.is_active ? 'yes' : 'no',
     })));
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage special products and rentals." />;
+
 
   return (
     <div>

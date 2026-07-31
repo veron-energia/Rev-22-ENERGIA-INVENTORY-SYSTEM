@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Commission, CommissionPayout, Customer, PaymentMethod, isManagerOrAbove, isOwnerOrManager } from '../types';
 import { Modal, NoAccess } from '../components/ui';
@@ -11,7 +11,10 @@ const monthKey = (d: string) => (d || '').slice(0, 7); // YYYY-MM
 
 const CommissionsPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isManagerOrAbove(profile?.role)) return <NoAccess message="Only Owners, Admins, and Managers can view commissions." />;
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isManagerOrAbove(profile?.role);
   const canPay = isOwnerOrManager(profile?.role);
 
   const [commissions, setCommissions] = useState<Commission[]>([]);
@@ -54,7 +57,15 @@ const CommissionsPage: React.FC = () => {
     ]);
     setCommissions((co.data as Commission[]) ?? []);
     setPayouts((po.data as CommissionPayout[]) ?? []);
-    setCustomers((cu.data as Customer[]) ?? []);
+    const baseCustomers = (cu.data as Customer[]) ?? [];
+    setCustomers(baseCustomers);
+    // The customer table is capped at 1000 rows per request, so records
+    // belonging to customers outside that set would show no name. Fetch the
+    // ones actually referenced here.
+    void (async () => {
+      const extra = await fetchCustomersByIds([...((co.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id]), ...((po.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id])]);
+      setCustomers(cur => mergeCustomers(cur, extra));
+    })();
     setMethods((pm.data as PaymentMethod[]) ?? []);
     if (st.data) {
       const d = st.data as any;
@@ -153,6 +164,9 @@ const CommissionsPage: React.FC = () => {
     if (error) { setRatesErr(error.message); return; }
     setRatesOpen(false); load();
   };
+
+  if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view commissions." />;
+
 
   return (
     <div>

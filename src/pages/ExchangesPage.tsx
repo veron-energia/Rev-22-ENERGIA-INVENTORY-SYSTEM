@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion, isManagerOrAbove } from '../types';
 import { Modal, NoAccess } from '../components/ui';
@@ -43,7 +43,15 @@ const ExchangesPage: React.FC = () => {
     setExchangeInvoiceNos(exMap);
     setProducts((pr.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
-    setCustomers((cu.data as Customer[]) ?? []);
+    const baseCustomers = (cu.data as Customer[]) ?? [];
+    setCustomers(baseCustomers);
+    // The customer table is capped at 1000 rows per request, so records
+    // belonging to customers outside that set would show no name. Fetch the
+    // ones actually referenced here.
+    void (async () => {
+      const extra = await fetchCustomersByIds(((ex.data as any[]) ?? []).map(x => x.customer_id));
+      setCustomers(cur => mergeCustomers(cur, extra));
+    })();
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setPrices((spp.data as any[]) ?? []);
     setStoreInv((si.data as any[]) ?? []);

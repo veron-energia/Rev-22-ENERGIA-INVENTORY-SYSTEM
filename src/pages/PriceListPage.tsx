@@ -7,8 +7,10 @@ import { RefreshCw, Tag, Store as StoreIcon, Pencil } from 'lucide-react';
 
 const PriceListPage: React.FC = () => {
   const { profile } = useAuth();
-  if (!isOwnerOrManager(profile?.role)) return <NoAccess message="Only Owners and Managers can manage store price lists." />;
-
+  // Access is checked AFTER the hooks below. Returning early here would call
+  // no hooks on the first render and every hook on the next, which React
+  // treats as a fatal error and blanks the whole app.
+  const hasAccess = isOwnerOrManager(profile?.role);
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStore, setSelectedStore] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
@@ -78,6 +80,9 @@ const PriceListPage: React.FC = () => {
     return true;
   });
   const pricedCount = prices.length;
+
+  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage store price lists." />;
+
 
   return (
     <div>

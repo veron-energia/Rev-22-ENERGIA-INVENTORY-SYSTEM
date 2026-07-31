@@ -562,7 +562,7 @@ export const VOUCHER_KIND_LABELS: Record<VoucherKind, string> = {
 
 // ── Phase 5D: Promotion types ────────────────────────────────────────────────
 export type PromotionType = 'bundle' | 'treatment' | 'other';
-export type PromotionItemType = 'product' | 'voucher' | 'promotion' | 'treatment';
+export type PromotionItemType = 'product' | 'voucher' | 'promotion' | 'treatment' | 'therapy' | 'credit_package';
 
 export interface Promotion {
   id: string;
