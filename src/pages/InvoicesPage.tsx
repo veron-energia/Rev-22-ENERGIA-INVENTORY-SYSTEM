@@ -1537,16 +1537,17 @@ const InvoicesPage: React.FC = () => {
               <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Affiliate</div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select
+                  <SearchSelect style={{ maxWidth: 300, flex: 1 }}
+                    placeholder="Search affiliate name, phone or email…"
                     value={(detail as any).affiliate_id ?? (effAffiliate?.affiliate_id ?? '')}
                     disabled={affiliateBusy}
-                    style={{ maxWidth: 280 }}
-                    onChange={e => changeInvoiceAffiliate(e.target.value === '' ? null : e.target.value)}>
-                    <option value="">— No affiliate —</option>
-                    {affiliateOptions.map(a => (
-                      <option key={a.affiliate_id} value={a.affiliate_id}>{a.full_name}{a.phone ? ` · ${a.phone}` : ''}</option>
-                    ))}
-                  </select>
+                    onChange={v => changeInvoiceAffiliate(v === '' ? null : v)}
+                    options={affiliateOptions.map((a: any) => ({
+                      value: a.affiliate_id,
+                      label: a.full_name,
+                      sublabel: [a.phone, a.email].filter(Boolean).join(' · ') || undefined,
+                      search: `${a.full_name} ${a.phone ?? ''} ${a.email ?? ''}`,
+                    }))} />
                   {affiliateBusy && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving…</span>}
                 </div>
                 {affiliateErr && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{affiliateErr}</div>}

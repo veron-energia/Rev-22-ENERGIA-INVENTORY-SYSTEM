@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { Store, Product, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import { RefreshCw, Upload, FileSpreadsheet, Trash2, CheckCircle2, Eye, Wrench } from 'lucide-react';
+import { SearchSelect } from '../components/SearchSelect';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 15 — TikTok Sales Import.
@@ -915,11 +916,16 @@ const TikTokImportPage: React.FC = () => {
                 <option value="promotion">Promotion</option>
               </select></div>
             <div><label>{mapKind === 'product' ? 'Product' : mapKind === 'voucher' ? 'Voucher' : 'Promotion'}</label>
-              <select value={mapTarget} onChange={e => setMapTarget(e.target.value)}>
-                <option value="">— Select —</option>
-                {(mapKind === 'product' ? products : mapKind === 'voucher' ? vouchers : promotions).map((x: any) =>
-                  <option key={x.id} value={x.id}>{x.name}{x.sku ? ` (${x.sku})` : ''}</option>)}
-              </select></div>
+              <SearchSelect
+                value={mapTarget} onChange={setMapTarget}
+                placeholder={`Search ${mapKind} name or ${mapKind === 'product' ? 'SKU' : 'code'}…`}
+                options={(mapKind === 'product' ? products : mapKind === 'voucher' ? vouchers : promotions)
+                  .map((x: any) => ({
+                    value: x.id,
+                    label: x.name,
+                    sublabel: x.sku ?? x.code ?? undefined,
+                    search: `${x.name} ${x.sku ?? ''} ${x.code ?? ''}`,
+                  }))} /></div>
           </div>
         </Modal>
       )}

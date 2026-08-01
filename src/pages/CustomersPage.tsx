@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
+import { CustomerSearchSelect } from '../components/SearchSelect';
 
 const blank = (c?: Customer) => ({
   full_name: c?.full_name ?? '', phone: c?.phone ?? '', email: c?.email ?? '',
@@ -332,10 +333,11 @@ const CustomersPage: React.FC = () => {
             <div className="form-group"><label>Notes</label><textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional" /></div>
             <div className="form-group">
               <label>Referred by (optional)</label>
-              <select value={form.referred_by} onChange={e => setForm(f => ({ ...f, referred_by: e.target.value }))}>
-                <option value="">— No referrer —</option>
-                {rows.filter(c => c.id !== editId).map(c => <option key={c.id} value={c.id}>{c.full_name} ({c.phone})</option>)}
-              </select>
+              <CustomerSearchSelect
+                value={form.referred_by}
+                onChange={v => setForm(f => ({ ...f, referred_by: v }))}
+                placeholder="Search name, phone or email…"
+                excludeId={editId ?? undefined} />
               <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>The customer who introduced this customer. Drives Tier 1 / Tier 2 commission.</span>
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>

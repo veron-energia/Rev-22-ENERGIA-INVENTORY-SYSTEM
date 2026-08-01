@@ -5,6 +5,7 @@ import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductE
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye, Printer } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
+import { SearchSelect } from '../components/SearchSelect';
 
 const money = (n: number) => `S$${Number(n).toFixed(2)}`;
 
@@ -453,13 +454,17 @@ const ExchangesPage: React.FC = () => {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {repl.map((r, i) => (
                       <div key={i} style={{ display: 'flex', gap: 6 }}>
-                        <select value={r.product_id} style={{ flex: 1 }}
-                          onChange={e => setRepl(rs => rs.map((x, j) => j === i ? { ...x, product_id: e.target.value } : x))}>
-                          <option value="">— Product —</option>
-                          {(mode === 'component' ? products : replCandidates).filter(p => priceAt(effectiveStore, p.id) != null).map(p => (
-                            <option key={p.id} value={p.id}>{p.name} — {money(priceAt(effectiveStore, p.id) ?? 0)} (stock {stockAt(effectiveStore, p.id)})</option>
-                          ))}
-                        </select>
+                        <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
+                          value={r.product_id}
+                          onChange={v => setRepl(rs => rs.map((x, j) => j === i ? { ...x, product_id: v } : x))}
+                          options={(mode === 'component' ? products : replCandidates)
+                            .filter(p => priceAt(effectiveStore, p.id) != null)
+                            .map((p: any) => ({
+                              value: p.id,
+                              label: `${p.name} — ${money(priceAt(effectiveStore, p.id) ?? 0)} (stock ${stockAt(effectiveStore, p.id)})`,
+                              sublabel: p.sku,
+                              search: `${p.name} ${p.sku ?? ''}`,
+                            }))} />
                         <input type="number" min={1} value={r.quantity} style={{ width: 70 }}
                           onChange={e => setRepl(rs => rs.map((x, j) => j === i ? { ...x, quantity: +e.target.value } : x))} />
                         <button className="btn btn-secondary btn-sm btn-icon" type="button" onClick={() => setRepl(rs => rs.filter((_, j) => j !== i))}><Trash2 size={13} /></button>

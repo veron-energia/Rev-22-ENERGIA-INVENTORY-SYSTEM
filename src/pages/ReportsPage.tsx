@@ -8,6 +8,9 @@ import {
 } from '../types';
 import { NoAccess } from '../components/ui';
 import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award, CreditCard, Sparkles, Gift } from 'lucide-react';
+import { SearchSelect } from '../components/SearchSelect';
+import { MiniBarChart } from '../components/MiniBarChart';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -20,6 +23,10 @@ const ReportsPage: React.FC = () => {
   // treats as a fatal error and blanks the whole app.
   const hasAccess = isManagerOrAbove(profile?.role);
   const [tab, setTab] = useState<Tab>('sales_store');
+  // Period filter for the sales-based reports. Catalogue and stock reports
+  // describe the present, so they ignore it.
+  const [dFrom, setDFrom] = useState('');
+  const [dTo, setDTo] = useState('');
   const [loading, setLoading] = useState(true);
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -127,7 +134,18 @@ const ReportsPage: React.FC = () => {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const paid = invoices.filter(i => i.status === 'paid');
+  // Every sales-based report derives from `paid`, so applying the period here
+  // filters them all consistently.
+  const paid = invoices.filter(i => {
+    if (i.status !== 'paid') return false;
+    if (!dFrom && !dTo) return true;
+    const when = (i as any).paid_at ?? i.created_at;
+    if (!when) return false;
+    const d = new Date(when);
+    if (dFrom && d < new Date(dFrom + 'T00:00:00')) return false;
+    if (dTo && d > new Date(dTo + 'T23:59:59')) return false;
+    return true;
+  });
   const pName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
 
   // Sales by store
@@ -239,6 +257,19 @@ const ReportsPage: React.FC = () => {
     fetchExtras();
   }, [tab, ttBasis]);
 
+  // Grouping shown as a sublabel in the picker, so 21 reports are findable.
+  const REPORT_GROUP: Record<string, string> = {
+    sales_store: 'Sales', top_products: 'Sales', sales_creator: 'Sales',
+    sales_service_staff: 'Sales', sales_affiliate: 'Sales', r_tiktok: 'Sales',
+    r_salesrecon: 'Sales',
+    vouchers: 'Products & Offers', promotions: 'Products & Offers',
+    specials: 'Products & Offers', r_therapy: 'Products & Offers',
+    r_pricing: 'Products & Offers',
+    stock: 'Stock', r_transfers: 'Stock', r_exchange_inv: 'Stock',
+    commission: 'People', r_affiliate: 'People', customers: 'People', r_sources: 'People',
+    r_discounts: 'Finance', r_foc: 'Finance',
+  };
+
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'sales_store', label: 'Sales by Store', icon: <TrendingUp size={15} /> },
     { id: 'top_products', label: 'Top Products', icon: <Package size={15} /> },
@@ -300,7 +331,7 @@ const ReportsPage: React.FC = () => {
     };
   }).filter(r => r.units_sold > 0 || r.rentals > 0).sort((a, b) => (b.sales_revenue + b.rental_fees) - (a.sales_revenue + a.rental_fees));
 
-  const doExport = () => {
+  const reportDump = (): Record<string, any[]> => {
     const stockExport = [
       ...warehouses.map(w => { const rws = whInv.filter(i => i.warehouse_id === w.id && i.current_qty > 0);
         return { location: w.name, type: 'Warehouse', products_stocked: rws.length, total_units: rws.reduce((s, i) => s + i.current_qty, 0) }; }),
@@ -315,8 +346,10 @@ const ReportsPage: React.FC = () => {
       r_pricing: repPricing, r_affiliate: repAffiliate,
       r_therapy: repTherapy, r_discounts: repDiscounts, r_foc: repFoc, r_sources: repSources, r_tiktok: ttRows, r_exchange_inv: exchInv, r_transfers: trReceipts, r_salesrecon: salesRecon,
     };
-    exportCsv(`report-${tab}.csv`, (dump[tab] ?? []) as any[]);
+    return dump;
   };
+  const currentReportRows = (): any[] => (reportDump()[tab] ?? []) as any[];
+  const doExport = () => exportCsv(`report-${tab}.csv`, currentReportRows());
 
   if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view reports." />;
 
@@ -325,14 +358,104 @@ const ReportsPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Reports</h2><p>Overview across sales, stock, referrers, and customers. Total paid revenue: <strong style={{ color: 'var(--primary)' }}>{money(totalRevenue)}</strong></p></div>
-        <div style={{ display: 'flex', gap: 10 }}><button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={currentReportRows()}
+            filename={`report-${tab}`}
+            sheetName={(TABS.find(t => t.id === tab)?.label ?? 'Report').slice(0, 31)}
+            label="Export Excel"
+            columns={Object.keys(currentReportRows()[0] ?? {}).map(k => ({
+              header: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              value: (r: any) => r[k],
+            }))} />
+          <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-        {TABS.map(t => (
-          <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.icon} {t.label}</button>
-        ))}
+      <div className="card" style={{ padding: 12, marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 280px', maxWidth: 360 }}>
+            <label style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Report</label>
+            <SearchSelect
+              value={tab}
+              onChange={v => v && setTab(v as Tab)}
+              placeholder="Search reports…"
+              options={TABS.map(t => ({
+                value: t.id,
+                label: t.label,
+                sublabel: REPORT_GROUP[t.id] ?? undefined,
+                search: `${t.label} ${REPORT_GROUP[t.id] ?? ''}`,
+              }))} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Period</label>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input type="date" value={dFrom} max={dTo || undefined} onChange={e => setDFrom(e.target.value)} style={{ width: 150 }} />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>to</span>
+              <input type="date" value={dTo} min={dFrom || undefined} onChange={e => setDTo(e.target.value)} style={{ width: 150 }} />
+            </div>
+          </div>
+          <div style={{ alignSelf: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {([['Today', 0], ['7 days', 6], ['30 days', 29], ['This year', -1]] as [string, number][]).map(([lbl, days]) => (
+                <button key={lbl} className="btn btn-secondary btn-sm" onClick={() => {
+                  const now = new Date(); const end = now.toISOString().slice(0, 10);
+                  if (days === -1) { setDFrom(`${now.getFullYear()}-01-01`); setDTo(end); }
+                  else { const st = new Date(now); st.setDate(st.getDate() - days);
+                         setDFrom(st.toISOString().slice(0, 10)); setDTo(end); }
+                }}>{lbl}</button>
+              ))}
+              <button className="btn btn-secondary btn-sm" onClick={() => { setDFrom(''); setDTo(''); }}>All time</button>
+            </div>
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 8 }}>
+          {dFrom || dTo
+            ? `Showing paid invoices ${dFrom ? `from ${new Date(dFrom).toLocaleDateString('en-GB')}` : ''}${dTo ? ` to ${new Date(dTo).toLocaleDateString('en-GB')}` : ''}. Catalogue and stock reports always show the current position.`
+            : 'Showing all time. Pick a period to narrow the sales-based reports.'}
+        </div>
       </div>
+
+      {(() => {
+        // Headline figures for the period, so the answer is visible before the table.
+        const revenue = paid.reduce((a, i) => a + Number(i.total_amount ?? 0), 0);
+        const invCount = paid.length;
+        const avg = invCount > 0 ? revenue / invCount : 0;
+        const customersServed = new Set(paid.map(i => i.customer_id).filter(Boolean)).size;
+        const cards: [string, string][] = [
+          ['Revenue', `S$${revenue.toFixed(2)}`],
+          ['Paid invoices', String(invCount)],
+          ['Average invoice', `S$${avg.toFixed(2)}`],
+          ['Customers served', String(customersServed)],
+        ];
+        const salesReport = !['stock', 'r_pricing', 'r_transfers'].includes(tab);
+        if (!salesReport) return null;
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 14 }}>
+            {cards.map(([k, v]) => (
+              <div key={k} className="card" style={{ padding: '12px 14px' }}>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{k}</div>
+                <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {(() => {
+        // One comparison chart, for the reports where ranking is the point.
+        const chartFor: Record<string, { title: string; data: { label: string; value: number; sub?: string }[]; fmt?: (n: number) => string }> = {
+          sales_store: { title: 'Revenue by store', data: salesByStore.map(r => ({ label: r.name, value: r.total, sub: `${r.count} invoice(s)` })), fmt: (n) => `S$${n.toFixed(2)}` },
+          top_products: { title: 'Top products by quantity sold', data: topProducts.map((r: any) => ({ label: r.name, value: r.qty, sub: `S$${Number(r.revenue ?? 0).toFixed(2)}` })) },
+          sales_affiliate: { title: 'Sales value by referrer', data: salesByReferrer.map(r => ({ label: r.name, value: r.total, sub: `${r.count} invoice(s)` })), fmt: (n) => `S$${n.toFixed(2)}` },
+        };
+        const c = chartFor[tab];
+        if (!c) return null;
+        return (
+          <div className="card" style={{ marginBottom: 14 }}>
+            <MiniBarChart title={c.title} data={c.data} format={c.fmt} limit={10} />
+          </div>
+        );
+      })()}
 
       <div className="card">
         <div className="table-wrap">

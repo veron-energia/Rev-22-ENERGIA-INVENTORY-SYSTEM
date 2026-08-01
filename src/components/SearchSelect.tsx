@@ -117,7 +117,9 @@ export const CustomerSearchSelect: React.FC<{
   onChange: (id: string) => void;
   placeholder?: string;
   disabled?: boolean;
-}> = ({ value, onChange, placeholder = 'Search name, ID, phone or email…', disabled = false }) => {
+  /** Hide this customer — e.g. so someone cannot be their own referrer. */
+  excludeId?: string;
+}> = ({ value, onChange, placeholder = 'Search name, ID, phone or email…', disabled = false, excludeId }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [rows, setRows] = useState<any[]>([]);
@@ -154,11 +156,11 @@ export const CustomerSearchSelect: React.FC<{
         q = q.or(`full_name.ilike.${like},phone.ilike.${like},email.ilike.${like},notes.ilike.${like}`);
       }
       const { data } = await q;
-      setRows((data as any[]) ?? []);
+      setRows(((data as any[]) ?? []).filter(c => c.id !== excludeId));
       setBusy(false);
     }, 220);
     return () => clearTimeout(handle);
-  }, [query, open]);
+  }, [query, open, excludeId]);
 
   const label = selected
     ? `${selected.full_name}${selected.phone ? ` (${selected.phone})` : ''}`

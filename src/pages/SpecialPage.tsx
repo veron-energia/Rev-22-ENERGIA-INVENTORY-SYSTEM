@@ -10,6 +10,7 @@ import { Modal, NoAccess } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer} from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
+import { CustomerSearchSelect } from '../components/SearchSelect';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 // Local (Singapore) date — never via toISOString, which shifts to UTC.
@@ -529,10 +530,8 @@ const SpecialPage: React.FC = () => {
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Customer</label>
-                <select value={sCustomer} onChange={e => setSCustomer(e.target.value)}>
-                  <option value="">— Walk-in —</option>
-                  {customers.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-                </select>
+                <CustomerSearchSelect value={sCustomer} onChange={setSCustomer}
+                  placeholder="Search name, phone or email — or leave blank for walk-in" />
               </div>
               <div className="form-group"><label>Quantity</label><input type="number" min={1} value={sQty || ''} onChange={e => setSQty(+e.target.value)} /></div>
             </div>
@@ -566,10 +565,8 @@ const SpecialPage: React.FC = () => {
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Customer *</label>
-                <select value={rCustomer} onChange={e => setRCustomer(e.target.value)}>
-                  <option value="">— Select —</option>
-                  {customers.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-                </select>
+                <CustomerSearchSelect value={rCustomer} onChange={setRCustomer}
+                  placeholder="Search name, phone or email…" />
               </div>
               <div className="form-group"><label>Quantity</label><input type="number" min={1} value={rQty || ''} onChange={e => setRQty(+e.target.value)} /></div>
             </div>
