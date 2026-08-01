@@ -5,6 +5,7 @@ import { StaffCommission, StaffCommissionPayout, Profile, PaymentMethod, isOwner
 import { Modal, NoAccess } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import { RefreshCw, Coins, Wallet, Settings, Download } from 'lucide-react';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 const monthKey = (d: string) => new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
@@ -106,6 +107,19 @@ const StaffCommissionsPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Staff Commissions</h2><p>Service staff earn an equal share of {rate}% of each paid invoice they served. Unpaid total: <strong>{money(unpaidTotal)}</strong></p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={tab === 'earned' ? earnedGroups : payouts}
+            filename={`staff-commissions-${tab}`} sheetName="Staff Commissions"
+            dateOf={tab === 'payouts' ? ((p: any) => p.created_at) : undefined}
+            dateLabel="Payout date"
+            columns={tab === 'earned' ? [
+              { header: 'Staff', value: (g: any) => g.staff_name ?? '' },
+              { header: 'Total', value: (g: any) => Number(g.total ?? 0) },
+            ] : [
+              { header: 'Date', value: (p: any) => new Date(p.created_at).toLocaleDateString('en-GB') },
+              { header: 'Staff', value: (p: any) => p.staff_name ?? '' },
+              { header: 'Amount', value: (p: any) => Number(p.amount ?? 0) },
+            ]} />
           {canPay && <button className="btn btn-secondary" onClick={() => { setRateDraft(rate); setRateOpen(true); }}><Settings size={15} /> Rate</button>}
           <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button>
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>

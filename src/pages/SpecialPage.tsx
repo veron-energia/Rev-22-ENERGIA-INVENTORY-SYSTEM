@@ -9,6 +9,7 @@ import {
 import { Modal, NoAccess } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer} from 'lucide-react';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 // Local (Singapore) date — never via toISOString, which shifts to UTC.
@@ -326,7 +327,37 @@ const SpecialPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Special Products & Rentals</h2><p>Warehouse-only special products — sold directly or rented (fee upfront, late fee at return). No commission applies.</p></div>
-        <div style={{ display: 'flex', gap: 10 }}><button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={tab === 'sales' ? sales : tab === 'rentals' ? rentals : rows}
+            filename={`special-${tab}`} sheetName="Special"
+            dateOf={tab === 'catalog' ? undefined : ((r: any) => r.created_at)}
+            dateLabel={tab === 'rentals' ? 'Rental date' : 'Sale date'}
+            columns={tab === 'sales' ? [
+              { header: 'Sale No', value: (x: any) => x.sale_no },
+              { header: 'Date', value: (x: any) => new Date(x.created_at).toLocaleDateString('en-GB') },
+              { header: 'Product', value: (x: any) => rows.find(p => p.id === x.special_product_id)?.name ?? '' },
+              { header: 'Customer', value: (x: any) => customers.find(c => c.id === x.customer_id)?.full_name ?? '' },
+              { header: 'Qty', value: (x: any) => Number(x.quantity ?? 0) },
+              { header: 'Total', value: (x: any) => Number(x.total_amount ?? 0) },
+              { header: 'Status', value: (x: any) => x.status },
+            ] : tab === 'rentals' ? [
+              { header: 'Rental No', value: (x: any) => x.rental_no },
+              { header: 'Date', value: (x: any) => new Date(x.created_at).toLocaleDateString('en-GB') },
+              { header: 'Product', value: (x: any) => rows.find(p => p.id === x.special_product_id)?.name ?? '' },
+              { header: 'Customer', value: (x: any) => customers.find(c => c.id === x.customer_id)?.full_name ?? '' },
+              { header: 'Period', value: (x: any) => `${x.periods} x ${x.rate_type}` },
+              { header: 'Fee', value: (x: any) => Number(x.rental_fee ?? 0) },
+              { header: 'Late fee', value: (x: any) => Number(x.late_fee_total ?? 0) },
+              { header: 'Due back', value: (x: any) => x.expected_return_date ? new Date(x.expected_return_date).toLocaleDateString('en-GB') : '' },
+              { header: 'Status', value: (x: any) => x.status },
+            ] : [
+              { header: 'Product', value: (p: any) => p.name },
+              { header: 'SKU', value: (p: any) => p.sku ?? '' },
+              { header: 'Sale price', value: (p: any) => Number(p.sale_price ?? 0) },
+              { header: 'Day rate', value: (p: any) => Number(p.rate_day ?? 0) },
+              { header: 'Late fee/day', value: (p: any) => Number(p.late_fee_per_day ?? 0) },
+            ]} /><button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>

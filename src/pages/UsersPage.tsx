@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Profile, UserRole, ROLE_LABELS, isOwnerOrManager } from '../types';
@@ -74,6 +75,14 @@ const UsersPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Users &amp; Roles</h2><p>Manage who can access the system and what they're allowed to do.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={rows} filename="users" sheetName="Users"
+            columns={[
+              { header: 'Name', value: (u: any) => u.full_name ?? '' },
+              { header: 'Email', value: (u: any) => u.email ?? '' },
+              { header: 'Role', value: (u: any) => u.role ?? '' },
+              { header: 'Status', value: (u: any) => u.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={() => setHelpOpen(true)}><UserPlus size={16} /> Add User</button>
         </div>

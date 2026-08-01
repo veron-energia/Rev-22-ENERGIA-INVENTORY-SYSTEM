@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, AffiliateRow, isOwnerOrManager } from '../types';
@@ -125,6 +126,15 @@ const AffiliatesPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Affiliates</h2><p>Direct-referral affiliate programme. New affiliates are activated by an Owner or Manager.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="affiliates" sheetName="Affiliates"
+            columns={[
+              { header: 'Affiliate', value: (r: any) => r.full_name ?? '' },
+              { header: 'Phone', value: (r: any) => r.phone ?? '' },
+              { header: 'Status', value: (r: any) => r.status ?? '' },
+              { header: 'Store', value: (r: any) => r.store_name ?? '' },
+              { header: 'Eligible', value: (r: any) => r.eligible ? 'Yes' : 'No' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
           {canManage && <button className="btn btn-primary" onClick={() => { setAddErr(null); setAddCustomer(''); setAddStore(''); setAddOpen(true); }}><Plus size={16} /> Activate Affiliate</button>}
         </div>

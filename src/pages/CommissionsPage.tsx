@@ -5,6 +5,7 @@ import { Commission, CommissionPayout, Customer, PaymentMethod, isManagerOrAbove
 import { Modal, NoAccess } from '../components/ui';
 import { exportCsv } from '../lib/csv';
 import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Download, Settings } from 'lucide-react';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 const monthKey = (d: string) => (d || '').slice(0, 7); // YYYY-MM
@@ -172,7 +173,27 @@ const CommissionsPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns on each paid invoice; Tier 2 earns a share of Tier 1. Unpaid total: <strong style={{ color: 'var(--primary)' }}>{money(totalEarned)}</strong></p></div>
-        <div style={{ display: 'flex', gap: 10 }}>{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}<button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={tab === 'earned' ? earnedGroups : tab === 'payouts' ? payouts : referrers}
+            filename={`commissions-${tab}`} sheetName="Commissions"
+            dateOf={tab === 'payouts' ? ((p: any) => p.created_at) : undefined}
+            dateLabel="Payout date"
+            columns={tab === 'earned' ? [
+              { header: 'Referrer', value: (g: any) => g.referrer_name ?? '' },
+              { header: 'Tier 1', value: (g: any) => Number(g.tier1_total ?? 0) },
+              { header: 'Tier 2', value: (g: any) => Number(g.tier2_total ?? 0) },
+              { header: 'Total', value: (g: any) => Number(g.total ?? 0) },
+            ] : tab === 'payouts' ? [
+              { header: 'Date', value: (p: any) => new Date(p.created_at).toLocaleDateString('en-GB') },
+              { header: 'Referrer', value: (p: any) => p.referrer_name ?? '' },
+              { header: 'Amount', value: (p: any) => Number(p.amount ?? 0) },
+              { header: 'Reference', value: (p: any) => p.reference ?? '' },
+            ] : [
+              { header: 'Referrer', value: (r: any) => r.full_name ?? '' },
+              { header: 'Phone', value: (r: any) => r.phone ?? '' },
+              { header: 'Referrals', value: (r: any) => Number(r.referral_count ?? 0) },
+            ]} />{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}<button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>

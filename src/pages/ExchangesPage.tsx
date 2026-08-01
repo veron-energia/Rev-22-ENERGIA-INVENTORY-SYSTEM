@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion, isManagerOrAbove } from '../types';
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye, Printer } from 'lucide-react';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 const money = (n: number) => `S$${Number(n).toFixed(2)}`;
 
@@ -309,6 +310,16 @@ const ExchangesPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Exchanges</h2><p>Product-to-product exchanges within 5 days of purchase. Returned stock comes back to the processing store; replacements are deducted from it.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={exchanges} filename="exchanges" sheetName="Exchanges"
+            dateOf={(r: any) => r.created_at} dateLabel="Exchange date"
+            columns={[
+              { header: 'Date', value: (e: any) => new Date(e.created_at).toLocaleDateString('en-GB') },
+              { header: 'Exchange No', value: (e: any) => e.exchange_no ?? '' },
+              { header: 'Customer', value: (e: any) => cName(e.customer_id) },
+              { header: 'Status', value: (e: any) => e.status ?? '' },
+              { header: 'Returned credit', value: (e: any) => Number(e.returned_credit_total ?? 0) },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openWizard}><Plus size={16} /> New Exchange</button>
         </div>

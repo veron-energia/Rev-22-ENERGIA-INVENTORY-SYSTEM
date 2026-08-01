@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import type { FocReason, InvoiceRevision } from '../types';
@@ -1020,6 +1021,18 @@ const InvoicesPage: React.FC = () => {
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canExport && <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button>}
           {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
+          <ExcelExportButton
+            rows={filtered} filename="invoices" sheetName="Invoices"
+            dateOf={(i: any) => i.created_at} dateLabel="Invoice date"
+            columns={[
+              { header: 'Invoice', value: (i: any) => i.invoice_no },
+              { header: 'Date', value: (i: any) => new Date(i.created_at).toLocaleDateString('en-GB') },
+              { header: 'Store', value: (i: any) => storeName(i.store_id) },
+              { header: 'Customer', value: (i: any) => custName(i.customer_id) },
+              { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
+              { header: 'Paid', value: (i: any) => Number(i.paid_amount ?? 0) },
+              { header: 'Status', value: (i: any) => INVOICE_STATUS_LABELS[i.status as InvoiceStatus] ?? i.status },
+            ]} />
           <button className="btn btn-secondary" onClick={openBuy}><Coins size={15} /> Buy Credit</button>
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
         </div>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { SearchSelect } from '../components/SearchSelect';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, StoreInventory, Product, isOwnerOrManager } from '../types';
@@ -50,6 +51,7 @@ const StoreInventoryPage: React.FC = () => {
   const [inventory, setInventory] = useState<StoreInventory[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [stockFilter, setStockFilter] = useState<'all' | 'in' | 'out' | 'low'>('all');
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [thresholdRow, setThresholdRow] = useState<Row | null>(null);
   const [thresholdVal, setThresholdVal] = useState(0);
@@ -80,6 +82,11 @@ const StoreInventoryPage: React.FC = () => {
   const rows: Row[] = products.map(p => ({
     product: p, inv: inventory.find(i => i.product_id === p.id) ?? null,
   })).filter(r => {
+    const qty = r.inv?.current_qty ?? 0;
+    const thr = r.inv?.low_stock_threshold ?? 0;
+    if (stockFilter === 'in' && qty <= 0) return false;
+    if (stockFilter === 'out' && qty > 0) return false;
+    if (stockFilter === 'low' && !(qty > 0 && thr > 0 && qty <= thr)) return false;
     const q = search.toLowerCase();
     return !q || r.product.name.toLowerCase().includes(q) || r.product.sku.toLowerCase().includes(q);
   });
@@ -109,6 +116,17 @@ const StoreInventoryPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Store Inventory</h2><p>Stock balances per store. Stores receive stock via approved transfers from a warehouse.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={rows} filename="store-stock"
+            sheetName="Store Stock"
+            columns={[
+              { header: 'Product', value: (r: any) => r.product.name },
+              { header: 'SKU', value: (r: any) => r.product.sku },
+              { header: 'Store', value: () => stores.find(s2 => s2.id === selectedStore)?.name ?? '' },
+              { header: 'Stock', value: (r: any) => Number(r.inv?.current_qty ?? 0) },
+              { header: 'Threshold', value: (r: any) => r.inv?.low_stock_threshold ?? '' },
+              { header: 'Status', value: (r: any) => stockStatus(r).label },
+            ]} />
           <button className="btn btn-secondary" onClick={() => loadInventory(selectedStore)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" disabled={!selectedStore}
             onClick={() => { setUseErr(null); setUseLines([{ product_id: '', quantity: 0 }]); setUseReason(''); setUseNote(''); setUseOpen(true); }}>
@@ -131,6 +149,12 @@ const StoreInventoryPage: React.FC = () => {
           {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read store stock: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
           <div style={{ marginBottom: 14, maxWidth: 360 }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />
+            <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+              {([['all', 'All'], ['in', 'With stock'], ['out', 'No stock'], ['low', 'Low stock']] as const).map(([v, l]) => (
+                <button key={v} className={`btn btn-sm ${stockFilter === v ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setStockFilter(v)}>{l}</button>
+              ))}
+            </div>
           </div>
           <div className="card">
             <div className="table-wrap">

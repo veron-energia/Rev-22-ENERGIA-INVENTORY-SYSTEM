@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, Product, StoreProductPrice, isOwnerOrManager } from '../types';
@@ -88,6 +89,17 @@ const PriceListPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Store Price List</h2><p>Set each product's selling price per store. A price is required before stock can be transferred in or sold.</p></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="store-prices" sheetName="Store Prices"
+            columns={[
+              { header: 'Product', value: (p: any) => p.name },
+              { header: 'SKU', value: (p: any) => p.sku },
+              { header: 'Type', value: (p: any) => p.product_type },
+              { header: 'Selling price', value: (p: any) => { const pr = priceOf(p.id); return pr ? Number(pr.selling_price) : ''; } },
+              { header: 'Priced', value: (p: any) => priceOf(p.id) ? 'Yes' : 'No' },
+            ]} />
+        </div>
         <button className="btn btn-secondary" onClick={() => loadPrices(selectedStore)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
       </div>
 

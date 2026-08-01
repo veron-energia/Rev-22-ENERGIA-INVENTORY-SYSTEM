@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Product, ProductType, Brand, Category, Supplier, isManagerOrAbove, isOwnerOrManager } from '../types';
@@ -179,6 +180,18 @@ const ProductsPage: React.FC = () => {
           <p>Product master data only — stock is tracked separately in warehouse &amp; store inventory.</p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="products" sheetName="Products"
+            columns={[
+              { header: 'Product', value: (p: any) => p.name },
+              { header: 'SKU', value: (p: any) => p.sku },
+              { header: 'Type', value: (p: any) => p.product_type === 'own' ? 'Own' : p.product_type === 'no_commission' ? 'No commission' : '3rd Party' },
+              { header: 'Brand', value: (p: any) => p.brand_name ?? '' },
+              { header: 'UoM', value: (p: any) => p.uom ?? '' },
+              { header: 'Cost', value: (p: any) => Number(p.default_cost_price ?? 0) },
+              { header: 'Important', value: (p: any) => p.is_important ? 'Yes' : 'No' },
+              { header: 'Status', value: (p: any) => p.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {tab === 'products' && (
             <RoleGate allow={isManagerOrAbove}>

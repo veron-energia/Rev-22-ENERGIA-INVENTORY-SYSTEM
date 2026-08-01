@@ -9,6 +9,7 @@ import {
 import { SearchSelect } from '../components/SearchSelect';
 import { Modal } from '../components/ui';
 import { Plus, RefreshCw, ArrowLeftRight, Check, X, Trash2, ChevronDown, ChevronUp, Pencil, History, Truck, PackageCheck, AlertTriangle } from 'lucide-react';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 // Phase 11 discrepancy resolution options
 const RESOLUTION_OPTIONS: { value: string; label: string }[] = [
@@ -331,6 +332,16 @@ const TransfersPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Stock Transfers</h2><p>Request transfers between warehouses and stores. Approval dispatches the stock (In Transit); the destination confirms receipt to add it in.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={requests} filename="transfers" sheetName="Transfers"
+            dateOf={(r: any) => r.created_at} dateLabel="Requested"
+            columns={[
+              { header: 'Date', value: (r: any) => new Date(r.created_at).toLocaleDateString('en-GB') },
+              { header: 'Transfer No', value: (r: any) => r.request_no ?? '' },
+              { header: 'From', value: (r: any) => r.from_name ?? '' },
+              { header: 'To', value: (r: any) => r.to_name ?? '' },
+              { header: 'Status', value: (r: any) => r.status ?? '' },
+            ]} />
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Transfer</button>
         </div>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import {
   StockMovement, Product, Warehouse, Store, Profile,
@@ -64,6 +65,20 @@ const StockMovementsPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Stock Movement History</h2><p>Every stock change, newest first. Permanent and read-only.</p></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="stock-history" sheetName="Stock History"
+            dateOf={(r: any) => r.created_at} dateLabel="Movement date"
+            columns={[
+              { header: 'Date', value: (m: any) => new Date(m.created_at).toLocaleString('en-GB') },
+              { header: 'Type', value: (m: any) => m.movement_type },
+              { header: 'Product', value: (m: any) => pName(m.product_id) },
+              { header: 'SKU', value: (m: any) => pSku(m.product_id) },
+              { header: 'Quantity', value: (m: any) => Number(m.quantity ?? 0) },
+              { header: 'Reason', value: (m: any) => m.reason ?? '' },
+              { header: 'Reference', value: (m: any) => m.reference ?? '' },
+            ]} />
+        </div>
         <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
       </div>
 

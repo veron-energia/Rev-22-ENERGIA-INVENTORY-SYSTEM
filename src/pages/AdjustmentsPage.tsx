@@ -8,6 +8,7 @@ import {
 import { SearchSelect } from '../components/SearchSelect';
 import { Modal } from '../components/ui';
 import { Plus, RefreshCw, SlidersHorizontal, X } from 'lucide-react';
+import { ExcelExportButton } from '../components/ExcelExport';
 
 const AdjustmentsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -104,6 +105,17 @@ const AdjustmentsPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Inventory Adjustments</h2><p>Request a stock correction. Owner or Manager approval applies the change.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={requests} filename="adjustments" sheetName="Adjustments"
+            dateOf={(r: any) => r.created_at} dateLabel="Requested"
+            columns={[
+              { header: 'Date', value: (r: any) => new Date(r.created_at).toLocaleDateString('en-GB') },
+              { header: 'Location', value: (r: any) => r.location_name ?? '' },
+              { header: 'Product', value: (r: any) => r.product_name ?? '' },
+              { header: 'Change', value: (r: any) => Number(r.delta ?? 0) },
+              { header: 'Reason', value: (r: any) => r.reason ?? '' },
+              { header: 'Status', value: (r: any) => r.status ?? '' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={() => { setErr(null); (() => { setErr(null); setAdjLines([{ product_id: '', new_qty: 0 }]); setOpen(true); })(); }}><Plus size={16} /> New Adjustment</button>
         </div>

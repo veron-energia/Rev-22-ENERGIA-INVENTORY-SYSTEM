@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store as StoreT, Profile, UserStoreAssignment, isOwnerOrManager, isOwnerOrAdmin, ROLE_LABELS } from '../types';
@@ -102,6 +103,15 @@ const StoresPage: React.FC = () => {
           <p>{seesAll ? 'All store locations. Assign managers, inventory managers, and staff to each store.' : 'Stores you are assigned to.'}</p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={rows} filename="stores" sheetName="Stores"
+            columns={[
+              { header: 'Store', value: (s2: any) => s2.name },
+              { header: 'Code', value: (s2: any) => s2.code ?? '' },
+              { header: 'Address', value: (s2: any) => s2.address ?? '' },
+              { header: 'Phone', value: (s2: any) => s2.phone ?? '' },
+              { header: 'Status', value: (s2: any) => s2.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <RoleGate allow={isOwnerOrManager}>
             <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Store</button>

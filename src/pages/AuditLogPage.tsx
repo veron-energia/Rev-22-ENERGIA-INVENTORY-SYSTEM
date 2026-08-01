@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { AuditLog, Profile, isManagerOrAbove } from '../types';
@@ -59,6 +60,18 @@ const AuditLogPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Audit Log</h2><p>Every important action, newest first. Read-only.</p></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="audit-log" sheetName="Audit Log"
+            dateOf={(r: any) => r.created_at} dateLabel="Logged"
+            columns={[
+              { header: 'When', value: (l: any) => new Date(l.created_at).toLocaleString('en-GB') },
+              { header: 'Action', value: (l: any) => l.action },
+              { header: 'Table', value: (l: any) => l.table_name ?? '' },
+              { header: 'Category', value: (l: any) => l.category ?? '' },
+              { header: 'Reason', value: (l: any) => l.reason ?? '' },
+            ]} />
+        </div>
         <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
       </div>
 

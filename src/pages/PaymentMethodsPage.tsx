@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { PaymentMethod, isOwnerOrManager } from '../types';
@@ -56,6 +57,13 @@ const PaymentMethodsPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Payment Methods</h2><p>Methods available when recording invoice payments. Invoices can split across multiple methods.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={rows} filename="payment-methods" sheetName="Payment Methods"
+            columns={[
+              { header: 'Method', value: (m: any) => m.name },
+              { header: 'Wallet', value: (m: any) => m.is_wallet_credit ? 'Wallet credit' : 'Normal' },
+              { header: 'Status', value: (m: any) => m.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Method</button>
         </div>

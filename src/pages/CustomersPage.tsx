@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
@@ -193,11 +194,43 @@ const CustomersPage: React.FC = () => {
   // The database has already applied the search and the source filter.
   const filtered = rows;
 
+  // The list is server-paginated, so the on-screen rows are only one page.
+  // Export re-runs the same search without the page limit.
+  const fetchAllForExport = async () => {
+    const out: any[] = [];
+    const PAGE = 1000;
+    for (let offset = 0; ; offset += PAGE) {
+      const { data } = await supabase.rpc('search_customers', {
+        p_query: debouncedSearch.trim() || null,
+        p_source: sourceFilter || null,
+        p_limit: PAGE, p_offset: offset,
+      });
+      const batch = (data as any[]) ?? [];
+      out.push(...batch);
+      if (batch.length < PAGE) break;
+    }
+    return out;
+  };
+
+
   return (
     <div>
       <div className="page-header">
         <div><h2>Customers</h2><p>Customer database. Phone numbers are unique across all stores.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="customers" sheetName="Customers"
+            dateOf={(c: any) => c.created_at} dateLabel="Created"
+            fetchAll={fetchAllForExport}
+            columns={[
+              { header: 'Name', value: (c: any) => c.full_name },
+              { header: 'Phone', value: (c: any) => c.phone ?? '' },
+              { header: 'Email', value: (c: any) => c.email ?? '' },
+              { header: 'Customer ID', value: (c: any) => (String(c.notes ?? '').match(/CUST-\d+/i) || [''])[0] },
+              { header: 'Source', value: (c: any) => c.source_label ?? '' },
+              { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
+              { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Customer</button>
         </div>

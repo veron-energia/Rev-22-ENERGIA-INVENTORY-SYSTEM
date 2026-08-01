@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Voucher, VoucherKind, VoucherStoreStock, Store, VOUCHER_KIND_LABELS, isOwnerOrManager } from '../types';
@@ -127,6 +128,19 @@ const VouchersPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Vouchers</h2><p>Sellable vouchers and discount vouchers. Limited vouchers track stock per store.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="vouchers" sheetName="Vouchers"
+            dateOf={(r: any) => r.created_at} dateLabel="Created"
+            columns={[
+              { header: 'Name', value: (v: any) => v.name },
+              { header: 'Code', value: (v: any) => v.code },
+              { header: 'Type', value: (v: any) => v.voucher_kind },
+              { header: 'Qty type', value: (v: any) => v.qty_type },
+              { header: 'Selling price', value: (v: any) => Number(v.selling_price ?? 0) },
+              { header: 'Valid from', value: (v: any) => v.valid_from ? new Date(v.valid_from).toLocaleDateString('en-GB') : '' },
+              { header: 'Valid until', value: (v: any) => v.valid_until ? new Date(v.valid_until).toLocaleDateString('en-GB') : 'No expiry' },
+              { header: 'Status', value: (v: any) => v.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Voucher</button>
         </div>

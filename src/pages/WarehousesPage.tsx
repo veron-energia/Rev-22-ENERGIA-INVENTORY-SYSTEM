@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Warehouse as WarehouseT, isOwnerOrManager } from '../types';
@@ -61,6 +62,13 @@ const WarehousesPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Warehouses</h2><p>Stock enters the system at a warehouse, then transfers out to stores.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={rows} filename="warehouses" sheetName="Warehouses"
+            columns={[
+              { header: 'Warehouse', value: (w: any) => w.name },
+              { header: 'Code', value: (w: any) => w.code ?? '' },
+              { header: 'Status', value: (w: any) => w.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <RoleGate allow={isOwnerOrManager}>
             <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Warehouse</button>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -351,6 +352,18 @@ const PromotionsPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Promotions & Bundles</h2><p>Build bundles from products, vouchers, treatments, and other promotions (nested up to 2 levels).</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <ExcelExportButton
+            rows={filtered} filename="promotions" sheetName="Promotions"
+            dateOf={(r: any) => r.created_at} dateLabel="Created"
+            columns={[
+              { header: 'Name', value: (p: any) => p.name },
+              { header: 'Code', value: (p: any) => p.code ?? '' },
+              { header: 'Type', value: (p: any) => p.promo_type },
+              { header: 'Fixed price', value: (p: any) => Number(p.fixed_price ?? 0) },
+              { header: 'Start', value: (p: any) => p.start_date ? new Date(p.start_date).toLocaleDateString('en-GB') : '' },
+              { header: 'End', value: (p: any) => p.end_date ? new Date(p.end_date).toLocaleDateString('en-GB') : '' },
+              { header: 'Status', value: (p: any) => p.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Promotion</button>
         </div>
