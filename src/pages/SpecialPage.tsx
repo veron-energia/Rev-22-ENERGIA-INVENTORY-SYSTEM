@@ -7,7 +7,6 @@ import {
   SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, RENTAL_STATUS_LABELS, isOwnerOrManager,
 } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { exportCsv } from '../lib/csv';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer} from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { CustomerSearchSelect } from '../components/SearchSelect';
@@ -299,27 +298,6 @@ const SpecialPage: React.FC = () => {
     return <span className={`badge ${cls}`}>{RENTAL_STATUS_LABELS[s]}</span>;
   };
 
-  const doExport = () => {
-    if (tab === 'sales') exportCsv('special-sales.csv', sales.map(x => ({
-      sale_no: x.sale_no, date: new Date(x.created_at).toLocaleDateString(), product: spName(x.special_product_id),
-      warehouse: whName(x.warehouse_id), customer: cuName(x.customer_id), qty: x.quantity,
-      total: Number(x.total_amount).toFixed(2), method: pmName(x.payment_method_id), status: x.status,
-    })));
-    else if (tab === 'rentals') exportCsv('rentals.csv', rentals.map(x => ({
-      rental_no: x.rental_no, product: spName(x.special_product_id), customer: cuName(x.customer_id),
-      qty: x.quantity, rate: `${x.periods} x ${x.rate_type}`, fee: Number(x.rental_fee).toFixed(2),
-      start: x.start_date, expected_return: x.expected_return_date,
-      status: isOverdue(x) ? 'overdue' : x.status, condition: x.return_condition ?? '',
-      late_days: x.late_days, late_fee: Number(x.late_fee_total).toFixed(2),
-    })));
-    else exportCsv('special-products.csv', rows.map(p => ({
-      name: p.name, sku: p.sku, sale_price: Number(p.sale_price).toFixed(2),
-      rate_day: Number(p.rate_day).toFixed(2), rate_week: Number(p.rate_week).toFixed(2),
-      rate_month: Number(p.rate_month).toFixed(2), rate_year: Number(p.rate_year).toFixed(2),
-      late_fee_per_day: Number(p.late_fee_per_day).toFixed(2),
-      stock: stockOf(p.id).reduce((t, x) => t + x.current_qty, 0), active: p.is_active ? 'yes' : 'no',
-    })));
-  };
 
   if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage special products and rentals." />;
 
@@ -358,7 +336,7 @@ const SpecialPage: React.FC = () => {
               { header: 'Sale price', value: (p: any) => Number(p.sale_price ?? 0) },
               { header: 'Day rate', value: (p: any) => Number(p.rate_day ?? 0) },
               { header: 'Late fee/day', value: (p: any) => Number(p.late_fee_per_day ?? 0) },
-            ]} /><button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+            ]} /><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
@@ -455,7 +433,7 @@ const SpecialPage: React.FC = () => {
 
       {/* Catalog add/edit */}
       {modalOpen && (
-        <Modal title={editId ? 'Edit Special Product' : 'Add Special Product'} maxWidth={520} onClose={() => setModalOpen(false)}
+        <Modal title={editId ? 'Edit Special Product' : 'Add Special Product'} wide onClose={() => setModalOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
@@ -488,7 +466,7 @@ const SpecialPage: React.FC = () => {
 
       {/* Stock modal */}
       {stockFor && (
-        <Modal title={`Stock — ${stockFor.name}`} maxWidth={420} onClose={() => setStockFor(null)}
+        <Modal title={`Stock — ${stockFor.name}`} wide onClose={() => setStockFor(null)}
           footer={<><button className="btn btn-secondary" onClick={() => setStockFor(null)}>Close</button><button className="btn btn-primary" onClick={addStock} disabled={stockBusy || !stockWh || stockQtyIn <= 0}>{stockBusy ? 'Adding…' : 'Add Stock'}</button></>}>
           <div className="form-grid">
             <div className="form-grid-2">
@@ -513,7 +491,7 @@ const SpecialPage: React.FC = () => {
 
       {/* New sale */}
       {saleOpen && (
-        <Modal title="New Special Sale" maxWidth={480} onClose={() => setSaleOpen(false)}
+        <Modal title="New Special Sale" wide onClose={() => setSaleOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setSaleOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submitSale} disabled={sBusy}>{sBusy ? 'Selling…' : 'Complete Sale'}</button></>}>
           <div className="form-grid">
             {sErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{sErr}</div></div>}
@@ -548,7 +526,7 @@ const SpecialPage: React.FC = () => {
 
       {/* New rental */}
       {rentOpen && (
-        <Modal title="New Rental" maxWidth={520} onClose={() => setRentOpen(false)}
+        <Modal title="New Rental" wide onClose={() => setRentOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setRentOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submitRent} disabled={rBusy}>{rBusy ? 'Creating…' : 'Create Rental (Draft)'}</button></>}>
           <div className="form-grid">
             {rErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{rErr}</div></div>}

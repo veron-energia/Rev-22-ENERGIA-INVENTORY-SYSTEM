@@ -3,7 +3,6 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { StaffCommission, StaffCommissionPayout, Profile, PaymentMethod, isOwnerOrManager, isManagerOrAbove } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { exportCsv } from '../lib/csv';
 import { RefreshCw, Coins, Wallet, Settings, Download } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 
@@ -89,15 +88,6 @@ const StaffCommissionsPage: React.FC = () => {
     setRateOpen(false); load();
   };
 
-  const doExport = () => {
-    if (tab === 'earned') exportCsv('staff-commission-unpaid.csv', earnedGroups.map(g => ({
-      month: monthKey(`${g.month}-01`), staff: sName(g.staff_id), invoices: g.count, unpaid: g.total.toFixed(2),
-    })));
-    else exportCsv('staff-commission-payouts.csv', payouts.map(p => ({
-      month: monthKey(p.payout_month), staff: sName(p.staff_id), total: Number(p.total_amount).toFixed(2),
-      method: mName(p.payment_method_id), reference: p.reference ?? '', paid_at: new Date(p.paid_at).toLocaleDateString(),
-    })));
-  };
 
   if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view staff commissions." />;
 
@@ -121,7 +111,6 @@ const StaffCommissionsPage: React.FC = () => {
               { header: 'Amount', value: (p: any) => Number(p.amount ?? 0) },
             ]} />
           {canPay && <button className="btn btn-secondary" onClick={() => { setRateDraft(rate); setRateOpen(true); }}><Settings size={15} /> Rate</button>}
-          <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button>
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
         </div>
       </div>

@@ -3,7 +3,6 @@ import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Commission, CommissionPayout, Customer, PaymentMethod, isManagerOrAbove, isOwnerOrManager } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { exportCsv } from '../lib/csv';
 import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Download, Settings } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 
@@ -139,21 +138,6 @@ const CommissionsPage: React.FC = () => {
     setPayFor(null); load();
   };
 
-  const doExport = () => {
-    if (tab === 'earned') exportCsv('commission-unpaid.csv', earnedGroups.map(g => ({
-      month: g.month, referrer: cName(g.referrer), tier1: g.t1.toFixed(2), tier2: g.t2.toFixed(2), total: (g.t1 + g.t2).toFixed(2),
-    })));
-    else if (tab === 'payouts') exportCsv('commission-payouts.csv', payouts.map(p => ({
-      month: monthKey(p.payout_month), referrer: cName(p.referrer_customer_id),
-      tier1: Number(p.total_tier1).toFixed(2), tier2: Number(p.total_tier2).toFixed(2),
-      total: Number(p.total_amount).toFixed(2), method: mName(p.payment_method_id),
-      reference: p.reference ?? '', paid_at: new Date(p.paid_at).toLocaleDateString(),
-    })));
-    else exportCsv('referrers.csv', referrers.map(r => ({
-      referrer: r.full_name, phone: r.phone ?? '', direct: r.direct_referrals, downline: r.total_downline,
-      lifetime_earned: Number(r.lifetime_earned).toFixed(2), unpaid: Number(r.unpaid_earned).toFixed(2),
-    })));
-  };
 
   const saveRates = async () => {
     setRatesBusy(true); setRatesErr(null);
@@ -193,7 +177,7 @@ const CommissionsPage: React.FC = () => {
               { header: 'Referrer', value: (r: any) => r.full_name ?? '' },
               { header: 'Phone', value: (r: any) => r.phone ?? '' },
               { header: 'Referrals', value: (r: any) => Number(r.referral_count ?? 0) },
-            ]} />{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}<button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+            ]} />{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}<button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>

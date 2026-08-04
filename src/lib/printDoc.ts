@@ -57,8 +57,6 @@ export interface PrintDocOptions {
   payments?: [string, string][];
   /** Free-form blocks inserted after the payment table. */
   extraBlocks?: string[];
-  /** Name printed under the second signature line. */
-  issuedByName?: string | null;
   termsText?: string;
   /** Column heading for the first table column. */
   itemHeading?: string;
@@ -170,7 +168,7 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       ${(o.extraBlocks ?? []).join('')}
       <div class="signrow">
         <div class="sign"><div class="signline"></div>Customer Signature</div>
-        <div class="sign"><div class="signline"></div>Issued By${o.issuedByName ? ` — ${esc(o.issuedByName)}` : ''}</div>
+        <div class="sign"><div class="signline"></div>Authorized By</div>
       </div>
       <div class="terms">${esc(o.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.')}</div>
       ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}

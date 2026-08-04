@@ -10,7 +10,6 @@ import {
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { Modal, ReasonModal } from '../components/ui';
-import { exportCsv } from '../lib/csv';
 import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, Coins } from 'lucide-react';
 
@@ -806,27 +805,10 @@ const InvoicesPage: React.FC = () => {
 
   const filtered = invoices.filter(i => statusFilter === 'all' || i.status === statusFilter);
 
-  const doExport = () => exportCsv(`invoices-${new Date().toISOString().slice(0,10)}.csv`,
-    filtered.map(i => ({
-      invoice_no: i.invoice_no,
-      date: new Date(i.created_at).toLocaleDateString(),
-      store: stores.find(s => s.id === i.store_id)?.name ?? '',
-      customer: customerOf(i.customer_id)?.full_name ?? '',
-      subtotal: Number(i.subtotal).toFixed(2),
-      discount: Number(i.discount_total).toFixed(2),
-      total: Number(i.total_amount).toFixed(2),
-      paid: Number(i.paid_amount).toFixed(2),
-      status: i.status,
-    })));
-
   const printInvoice = () => {
     if (!detail) return;
     const store = stores.find(s => s.id === detail.store_id);
     const cust = customerOf(detail.customer_id);
-    // The staff member who raised the invoice signs the office copy.
-    const issuedByName = (detail as any).created_by
-      ? (profiles.find((u: any) => u.id === (detail as any).created_by)?.full_name ?? '')
-      : '';
     const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
@@ -984,7 +966,7 @@ const InvoicesPage: React.FC = () => {
         ${authorisedBlock}
         <div class="signrow">
           <div class="sign"><div class="signline"></div>Customer Signature</div>
-          <div class="sign"><div class="signline"></div>Issued By${issuedByName ? ` — ${esc(issuedByName)}` : ''}</div>
+          <div class="sign"><div class="signline"></div>Authorized By</div>
         </div>
         <div class="terms">Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.</div>
         ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
@@ -1019,9 +1001,8 @@ const InvoicesPage: React.FC = () => {
         <div><h2>Invoices</h2><p>Create invoices for a store. Stock is deducted only when an invoice is fully paid.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {canExport && <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button>}
           {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
-          <ExcelExportButton
+          {canExport && <ExcelExportButton
             rows={filtered} filename="invoices" sheetName="Invoices"
             dateOf={(i: any) => i.created_at} dateLabel="Invoice date"
             columns={[
@@ -1032,7 +1013,7 @@ const InvoicesPage: React.FC = () => {
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
               { header: 'Paid', value: (i: any) => Number(i.paid_amount ?? 0) },
               { header: 'Status', value: (i: any) => INVOICE_STATUS_LABELS[i.status as InvoiceStatus] ?? i.status },
-            ]} />
+            ]} />}
           <button className="btn btn-secondary" onClick={openBuy}><Coins size={15} /> Buy Credit</button>
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
         </div>

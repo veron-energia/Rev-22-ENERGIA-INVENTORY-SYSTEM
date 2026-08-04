@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { exportCsv } from '../lib/csv';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, Store, Product, Commission, Customer,
@@ -349,7 +348,6 @@ const ReportsPage: React.FC = () => {
     return dump;
   };
   const currentReportRows = (): any[] => (reportDump()[tab] ?? []) as any[];
-  const doExport = () => exportCsv(`report-${tab}.csv`, currentReportRows());
 
   if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view reports." />;
 
@@ -367,8 +365,7 @@ const ReportsPage: React.FC = () => {
             columns={Object.keys(currentReportRows()[0] ?? {}).map(k => ({
               header: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
               value: (r: any) => r[k],
-            }))} />
-          <button className="btn btn-secondary" onClick={doExport}><Download size={15} /> Export CSV</button><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+            }))} /><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
       <div className="card" style={{ padding: 12, marginBottom: 14 }}>
