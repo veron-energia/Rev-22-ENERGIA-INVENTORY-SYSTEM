@@ -239,6 +239,13 @@ const PublicSurveyPage: React.FC = () => {
         <div>
           <label>Do you have the following symptoms or conditions? (Please tick)</label>
           <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8 }}>Tick any that apply, then note how long you've had it.</div>
+          {options.length === 0 && !loading && (
+            <div className="alert alert-warning" style={{ marginBottom: 10 }}>
+              <span>⚠</span>
+              <div>The symptom checklist could not be loaded, so it is not shown below.
+                Please describe any symptoms in "Others" instead, and let us know so we can fix it.</div>
+            </div>
+          )}
           {CATS.filter(c => byCat[c]?.length).map(cat => (
             <div key={cat} style={{ marginBottom: 14 }}>
               <div style={{ fontWeight: 700, fontSize: 13, borderBottom: '1px solid var(--border)', paddingBottom: 4, marginBottom: 6 }}>{cat}</div>
