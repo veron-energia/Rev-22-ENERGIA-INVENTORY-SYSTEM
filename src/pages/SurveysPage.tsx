@@ -311,6 +311,32 @@ const SurveysPage: React.FC = () => {
         </Modal>
       )}
 
+      {tab === 'links' && (
+        <div className="card"><div className="table-wrap">
+          {links.length === 0 ? <div className="empty-state"><QrCode size={32} style={{ opacity: 0.3 }} />
+              <p style={{ fontWeight: 600, marginTop: 8 }}>No QR links yet</p>
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Create one per store or event.</p></div>
+            : <table>
+                <thead><tr><th>Store</th><th>Event</th><th>Link</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+                <tbody>{links.map(l => (
+                  <tr key={l.id}>
+                    <td><strong>{sName(l.store_id)}</strong></td>
+                    <td style={{ fontSize: 12.5 }}>{l.event_name || '—'}</td>
+                    <td style={{ fontSize: 11.5, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{urlFor(l.token)}</td>
+                    <td style={{ fontSize: 12.5 }}>{l.expires_at ? new Date(l.expires_at).toLocaleDateString() : '—'}</td>
+                    <td>{l.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setQrFor(l)}><QrCode size={12} /> QR</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => copy(l.token)}><Copy size={12} /> Copy</button>
+                        {canManage && <button className="btn btn-secondary btn-sm" onClick={() => toggleActive(l)}>{l.is_active ? 'Deactivate' : 'Activate'}</button>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>}
+        </div></div>
+      )}
       {detailId && <SurveyDetailModal surveyId={detailId} onClose={() => setDetailId(null)} onSaved={load} />}
       {sourcesOpen && <SourceOptionsModal onClose={() => setSourcesOpen(false)} />}
 
