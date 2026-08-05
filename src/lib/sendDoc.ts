@@ -131,105 +131,117 @@ export function sendViaEmail(
 }
 
 // ---------------------------------------------------------------------
-// Sending the actual PDF
+// Sending the actual file
 // ---------------------------------------------------------------------
-import { supabase } from './supabase';
 import { documentPdfBlob, downloadDocumentPdf, PdfDoc } from './invoicePdf';
+import { documentImageBlob } from './invoiceImage';
 
-const BUCKET = 'invoice-pdfs';
-/** Signed links last a year — a customer may open theirs months later. */
-const LINK_SECONDS = 60 * 60 * 24 * 365;
+export type DocFormat = 'pdf' | 'image';
 
-/**
- * Renders the customer copy, uploads it and returns a link the customer can
- * open. The file is a real A5 PDF of a few tens of kilobytes, so it opens
- * instantly on a phone.
- */
-export async function uploadDocumentPdf(
-  storeId: string | null | undefined, docKind: string, docNo: string, pdf: PdfDoc,
-): Promise<{ url: string; path: string }> {
-  const blob = documentPdfBlob(pdf);
-  const safeNo = docNo.replace(/[^A-Za-z0-9._-]/g, '-');
-  // Upserting on a stable path means re-sending replaces the file rather than
-  // littering storage with near-identical copies.
-  const path = `${storeId ?? 'no-store'}/${docKind}/${safeNo}.pdf`;
-
-  const { error: upErr } = await supabase.storage.from(BUCKET)
-    .upload(path, blob, { contentType: 'application/pdf', upsert: true });
-  if (upErr) throw new Error(`Could not upload the PDF: ${upErr.message}`);
-
-  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, LINK_SECONDS);
-  if (error || !data?.signedUrl) throw new Error('The PDF was uploaded but no link could be created.');
-  return { url: data.signedUrl, path };
+/** True when this device can attach a real file to a share. */
+export function canShareFiles(): boolean {
+  try {
+    const nav: any = navigator;
+    if (!nav?.canShare || !nav?.share) return false;
+    const probe = new File(['x'], 'probe.pdf', { type: 'application/pdf' });
+    return !!nav.canShare({ files: [probe] });
+  } catch { return false; }
 }
 
-/** A short covering note; the PDF itself carries the detail. */
-export function pdfCoveringMessage(kindLabel: string, docNo: string, customerName: string | null | undefined, url: string): string {
-  return [
-    customerName ? `Hi ${customerName},` : 'Hi,',
+async function buildFile(pdf: PdfDoc, format: DocFormat, docNo: string): Promise<File> {
+  const safe = docNo.replace(/[^A-Za-z0-9._-]/g, '-');
+  if (format === 'image') {
+    const blob = await documentImageBlob(pdf);
+    return new File([blob], `${safe}.png`, { type: 'image/png' });
+  }
+  return new File([documentPdfBlob(pdf)], `${safe}.pdf`, { type: 'application/pdf' });
+}
+
+export interface ShareDocArgs {
+  /** The document content, shared with the PDF and image renderers. */
+  pdf: PdfDoc;
+  format: DocFormat;
+  kindLabel: string;
+  docNo: string;
+  customerName?: string | null;
+  /** Only used by the desktop fallback, to open the right chat. */
+  phone?: string | null;
+  email?: string | null;
+  channelHint?: 'whatsapp' | 'email';
+}
+
+/**
+ * Share the invoice itself.
+ *
+ * On a phone this opens the native share sheet with the PDF or image already
+ * attached — choosing WhatsApp sends the actual document, not a link. Desktop
+ * browsers do not support sharing files, so there the file is downloaded and
+ * WhatsApp Web or the mail client is opened for the staff member to attach it;
+ * the return value says which happened so the UI can explain.
+ */
+export async function shareDocumentFile(
+  a: ShareDocArgs,
+): Promise<{ ok: boolean; shared: boolean; reason?: string }> {
+  let file: File;
+  try {
+    file = await buildFile(a.pdf, a.format, a.docNo);
+  } catch (e: any) {
+    return { ok: false, shared: false, reason: e?.message ?? 'Could not prepare the document.' };
+  }
+
+  const text = [
+    a.customerName ? `Hi ${a.customerName},` : 'Hi,',
     '',
-    `Here is your ${kindLabel.toLowerCase()} ${docNo} from Energia:`,
-    url,
+    `Here is your ${a.kindLabel.toLowerCase()} ${a.docNo} from Energia.`,
     '',
     'Thank you for shopping with Energia.',
   ].join('\n');
-}
 
-export interface SendPdfArgs {
-  channel: 'whatsapp' | 'email';
-  phone?: string | null;
-  email?: string | null;
-  storeId?: string | null;
-  docKind: 'invoice' | 'special_sale' | 'rental';
-  kindLabel: string;
-  docNo: string;
-  docId?: string | null;
-  customerId?: string | null;
-  customerName?: string | null;
-  pdf: PdfDoc;
-}
-
-/**
- * Build the PDF, upload it, then hand off to WhatsApp or the mail client with
- * the link in the message. Returns a reason instead of throwing so the caller
- * can show it inline.
- */
-export async function sendDocumentPdf(a: SendPdfArgs): Promise<{ ok: boolean; reason?: string }> {
-  const target = a.channel === 'whatsapp' ? whatsappNumber(a.phone) : emailAddress(a.email);
-  if (!target) {
-    return { ok: false, reason: a.channel === 'whatsapp'
-      ? 'This customer has no usable mobile number.'
-      : 'This customer has no valid email address.' };
+  const nav: any = navigator;
+  if (canShareFiles()) {
+    try {
+      await nav.share({ files: [file], title: `${a.kindLabel} ${a.docNo}`, text });
+      return { ok: true, shared: true };
+    } catch (e: any) {
+      // The user dismissing the share sheet is not an error worth reporting.
+      if (e?.name === 'AbortError') return { ok: true, shared: true };
+      return { ok: false, shared: false, reason: e?.message ?? 'Sharing was not completed.' };
+    }
   }
 
-  let url: string, path: string;
-  try {
-    ({ url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf));
-  } catch (e: any) {
-    return { ok: false, reason: e?.message ?? 'Could not prepare the PDF.' };
-  }
+  // Desktop fallback: save the file, then open the chat or mail draft so the
+  // staff member can attach what was just downloaded.
+  const url = URL.createObjectURL(file);
+  const link = document.createElement('a');
+  link.href = url; link.download = file.name;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 
-  const message = pdfCoveringMessage(a.kindLabel, a.docNo, a.customerName, url);
-
-  if (a.channel === 'whatsapp') {
-    window.open(`https://wa.me/${target}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+  if (a.channelHint === 'email') {
+    const addr = emailAddress(a.email);
+    if (addr) {
+      window.location.href = `mailto:${encodeURIComponent(addr)}`
+        + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
+        + `&body=${encodeURIComponent(text)}`;
+    }
   } else {
-    window.location.href = `mailto:${encodeURIComponent(target)}`
-      + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
-      + `&body=${encodeURIComponent(message)}`;
+    const num = whatsappNumber(a.phone);
+    if (num) window.open(`https://wa.me/${num}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
   }
-
-  // Best effort: a failed audit write must not look like a failed send.
-  void supabase.rpc('record_document_send', {
-    p_doc_kind: a.docKind, p_doc_no: a.docNo, p_channel: a.channel,
-    p_doc_id: a.docId ?? null, p_customer_id: a.customerId ?? null,
-    p_sent_to: target, p_pdf_path: path,
-  });
-
-  return { ok: true };
+  return { ok: true, shared: false };
 }
 
-/** Save the customer copy locally, for attaching by hand if preferred. */
-export function saveDocumentPdf(pdf: PdfDoc, docNo: string): void {
-  downloadDocumentPdf(pdf, `${docNo.replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`);
+/** Save the customer copy locally. */
+export async function saveDocumentFile(pdf: PdfDoc, format: DocFormat, docNo: string): Promise<void> {
+  const safe = docNo.replace(/[^A-Za-z0-9._-]/g, '-');
+  if (format === 'image') {
+    const blob = await documentImageBlob(pdf);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${safe}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    return;
+  }
+  downloadDocumentPdf(pdf, `${safe}.pdf`);
 }

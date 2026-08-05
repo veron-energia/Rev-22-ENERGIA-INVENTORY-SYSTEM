@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { sendDocumentPdf, whatsappNumber, emailAddress } from '../lib/sendDoc';
+import { shareDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
 import { supabase } from '../lib/supabase';
@@ -166,19 +166,20 @@ const SpecialPage: React.FC = () => {
 
   const sendReceiptPdf = async (channel: 'whatsapp' | 'email', kind: 'sale' | 'rental', row: any) => {
     const cust = customers.find((c: any) => c.id === row.customer_id);
-    const key = `${channel}-${row.id}`;
-    setSendBusy(key); setErr(null);
-    const r = await sendDocumentPdf({
-      channel, phone: cust?.phone, email: cust?.email,
-      storeId: brandStores[0]?.id ?? null,
-      docKind: kind === 'sale' ? 'special_sale' : 'rental',
+    const format: DocFormat = channel === 'whatsapp' ? 'image' : 'pdf';
+    setSendBusy(`${channel}-${row.id}`); setErr(null);
+    const r = await shareDocumentFile({
+      pdf: buildReceiptPdf(kind, row), format,
       kindLabel: kind === 'sale' ? 'Sale' : 'Rental',
-      docNo: row.sale_no ?? row.rental_no, docId: row.id,
-      customerId: row.customer_id, customerName: cust?.full_name,
-      pdf: buildReceiptPdf(kind, row),
+      docNo: row.sale_no ?? row.rental_no,
+      customerName: cust?.full_name, phone: cust?.phone, email: cust?.email,
+      channelHint: channel,
     });
     setSendBusy(null);
-    if (!r.ok) setErr(r.reason ?? 'Could not send.');
+    if (!r.ok) { setErr(r.reason ?? 'Could not send.'); return; }
+    if (!r.shared) {
+      setErr(`The ${format === 'image' ? 'image' : 'PDF'} has been downloaded — attach it in the window that just opened. Desktop browsers cannot attach files automatically.`);
+    }
   };
 
   const printReceipt = (kind: 'sale' | 'rental', row: any) => {

@@ -125,9 +125,12 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
       doc.text(n, M + 2, ny); ny += 3;
       black(); doc.setFontSize(8);
     }
-    y = ny + 1.6;
+    // Separator sits below the row just drawn; the next baseline then starts
+    // clear of it, otherwise the line strikes through the following text.
+    const sepY = ny - 1.2;
     doc.setDrawColor(230, 230, 230); doc.setLineWidth(0.15);
-    doc.line(M, y - 1, RIGHT, y - 1);
+    doc.line(M, sepY, RIGHT, sepY);
+    y = sepY + 4.6;
   }
 
   // ---- Totals -------------------------------------------------------

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
-import { sendDocumentPdf, saveDocumentPdf, whatsappNumber, emailAddress } from '../lib/sendDoc';
+import { shareDocumentFile, saveDocumentFile, canShareFiles, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
@@ -662,7 +662,7 @@ const InvoicesPage: React.FC = () => {
     setDetailTherapy(null);
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
-    setSendErr(null);
+    setSendErr(null); setSendNote(null);
     void loadInvoiceLegacy(inv.id, inv);
     void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
@@ -870,21 +870,28 @@ const InvoicesPage: React.FC = () => {
     };
   };
 
-  const sendPdf = async (channel: 'whatsapp' | 'email') => {
+  // Sends the invoice itself. On a phone the native share sheet opens with the
+  // file already attached; on desktop the file downloads and the chat opens for
+  // it to be attached, because desktop browsers cannot share files.
+  const [sendNote, setSendNote] = useState<string | null>(null);
+  const sendPdf = async (channel: 'whatsapp' | 'email', format: DocFormat = 'pdf') => {
     const pdf = buildPdfDoc();
     if (!detail || !pdf) return;
     const cust = customerOf(detail.customer_id);
-    setSendBusy(channel); setSendErr(null);
-    const r = await sendDocumentPdf({
-      channel, phone: cust?.phone, email: cust?.email,
-      storeId: detail.store_id, docKind: 'invoice', kindLabel: 'Invoice',
-      docNo: detail.invoice_no, docId: detail.id,
-      customerId: detail.customer_id, customerName: cust?.full_name, pdf,
+    setSendBusy(channel); setSendErr(null); setSendNote(null);
+    const r = await shareDocumentFile({
+      pdf, format, kindLabel: 'Invoice', docNo: detail.invoice_no,
+      customerName: cust?.full_name, phone: cust?.phone, email: cust?.email,
+      channelHint: channel,
     });
     setSendBusy(null);
-    setSendErr(r.ok ? null : r.reason ?? 'Could not send.');
+    if (!r.ok) { setSendErr(r.reason ?? 'Could not send.'); return; }
+    setSendNote(r.shared
+      ? null
+      : `The ${format === 'image' ? 'image' : 'PDF'} has been downloaded. Attach it in the window that just opened — desktop browsers cannot attach files automatically.`);
   };
-  const savePdf = () => { const d = buildPdfDoc(); if (d && detail) saveDocumentPdf(d, detail.invoice_no); };
+  const savePdf = () => { const d = buildPdfDoc(); if (d && detail) void saveDocumentFile(d, 'pdf', detail.invoice_no); };
+  const saveImg = () => { const d = buildPdfDoc(); if (d && detail) void saveDocumentFile(d, 'image', detail.invoice_no); };
 
   const printInvoice = () => {
     if (!detail) return;
@@ -1541,13 +1548,14 @@ const InvoicesPage: React.FC = () => {
             detail.status === 'paid'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp', 'image')}
                   disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                <button className="btn btn-secondary" onClick={() => sendPdf('email', 'pdf')}
                   disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
@@ -1557,13 +1565,14 @@ const InvoicesPage: React.FC = () => {
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp', 'image')}
                   disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                <button className="btn btn-secondary" onClick={() => sendPdf('email', 'pdf')}
                   disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
@@ -1573,13 +1582,14 @@ const InvoicesPage: React.FC = () => {
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp', 'image')}
                   disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                <button className="btn btn-secondary" onClick={() => sendPdf('email', 'pdf')}
                   disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
@@ -1593,13 +1603,14 @@ const InvoicesPage: React.FC = () => {
               : detail.status === 'completed_foc'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp', 'image')}
                   disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                <button className="btn btn-secondary" onClick={() => sendPdf('email', 'pdf')}
                   disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
@@ -1607,13 +1618,14 @@ const InvoicesPage: React.FC = () => {
                   <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
               : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp', 'image')}
                   disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                <button className="btn btn-secondary" onClick={() => sendPdf('email', 'pdf')}
                   disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
@@ -1707,6 +1719,7 @@ const InvoicesPage: React.FC = () => {
             )}
 
             {sendErr && <div className="alert alert-danger"><span>⚠</span><div>{sendErr}</div></div>}
+            {sendNote && <div className="alert alert-info"><span>ℹ</span><div>{sendNote}</div></div>}
 
             {isOwnerOrManager(profile?.role) && ['draft','unpaid','partially_paid'].includes(detail.status) && (
               <div>
