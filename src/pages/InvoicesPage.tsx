@@ -809,6 +809,11 @@ const InvoicesPage: React.FC = () => {
     if (!detail) return;
     const store = stores.find(s => s.id === detail.store_id);
     const cust = customerOf(detail.customer_id);
+    // The staff signature is printed, not signed by hand. Use whoever raised the
+    // invoice; fall back to the person printing it if that is not recorded.
+    const signedByName =
+      (profiles.find(u => u.id === (detail as any).created_by)?.full_name)
+      ?? profile?.full_name ?? '';
     const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
@@ -888,8 +893,8 @@ const InvoicesPage: React.FC = () => {
     // Payment details as text only. The QR codes were dropped so two copies fit
     // an A4 sheet, and they are printed at the foot rather than mid-document.
     const payDetailBits = [
-      st.paynow_uen ? `PayNow: ${esc(st.paynow_uen)}` : '',
-      st.bank_account ? `Bank: ${esc(st.bank_account)}` : '',
+      st.paynow_uen ? `CIMB UEN: ${esc(st.paynow_uen)}` : '',
+      st.bank_account ? `CIMB corporate account: ${esc(st.bank_account)}` : '',
     ].filter(Boolean);
     const payRow = payDetailBits.length
       ? `<div class="paydetail">${payDetailBits.join(' &nbsp;·&nbsp; ')}</div>`
@@ -965,8 +970,10 @@ const InvoicesPage: React.FC = () => {
         ${therapyBlock}
         ${authorisedBlock}
         <div class="signrow">
+          <div class="sign">
+            <div class="signline signed">${esc(signedByName)}</div>Staff Signature
+          </div>
           <div class="sign"><div class="signline"></div>Customer Signature</div>
-          <div class="sign"><div class="signline"></div>Authorized By</div>
         </div>
         <div class="terms">Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.</div>
         ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
@@ -978,9 +985,11 @@ const InvoicesPage: React.FC = () => {
          drift apart — see src/lib/printDoc.ts */
       ${PRINT_CSS}
     </style></head><body>
-      ${copyHtml('CUSTOMER COPY')}
-      <div class="cut"><span>✂  CUT HERE</span></div>
-      ${copyHtml('OFFICE COPY')}
+      <div class="sheet">
+        ${copyHtml('CUSTOMER COPY')}
+        <div class="cut"><span>✂  CUT HERE</span></div>
+        ${copyHtml('OFFICE COPY')}
+      </div>
       <script>window.onload=function(){window.print();}</script>
     </body></html>`;
     const w = window.open('', '_blank');

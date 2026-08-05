@@ -57,6 +57,8 @@ export interface PrintDocOptions {
   payments?: [string, string][];
   /** Free-form blocks inserted after the payment table. */
   extraBlocks?: string[];
+  /** Printed on the staff signature line — no hand signing required. */
+  signedByName?: string | null;
   termsText?: string;
   /** Column heading for the first table column. */
   itemHeading?: string;
@@ -64,9 +66,10 @@ export interface PrintDocOptions {
 
 /** The stylesheet. Identical for every document type. */
 export const PRINT_CSS = `
-  /* Two A5 copies on one A4 portrait sheet: cut along the dashed line, the
-     customer keeps the top half and the shop files the bottom half. */
-  @page { size: A4 portrait; margin: 0; }
+  /* Two A5 copies on ONE A4 LANDSCAPE sheet, side by side: cut down the dashed
+     line, the customer keeps the left half and the shop files the right half.
+     A4 landscape is 297mm x 210mm, so each half is 148.5mm x 210mm. */
+  @page { size: A4 landscape; margin: 0; }
   body{font-family:Arial,Helvetica,sans-serif;font-size:9px;color:#111;margin:0;}
   h1{font-size:13px;margin:0;} h2{font-size:8px;margin:5px 0 2px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
   .mut{color:#666;font-size:7.5px;} .r{text-align:right;}
@@ -90,15 +93,25 @@ export const PRINT_CSS = `
   .signrow{margin-top:8px;display:flex;gap:14px;}
   .sign{flex:1;font-size:7.5px;color:#333;}
   .signline{border-bottom:1px solid #333;height:18px;margin-bottom:2px;}
+  /* A printed staff name sits on the line instead of a handwritten signature. */
+  .signline.signed{display:flex;align-items:flex-end;padding-bottom:1px;
+                   font-size:9px;font-weight:600;font-style:italic;color:#111;}
   .terms{margin-top:5px;padding-top:3px;border-top:1px solid #ccc;font-size:7px;color:#333;}
   .footer{margin-top:3px;padding-top:2px;border-top:1px solid #ccc;font-size:6.5px;color:#444;line-height:1.4;text-align:center;}
   .logos{display:flex;gap:10px;align-items:center;margin-bottom:3px;}
-  /* Each copy is exactly half an A4 page. */
-  .copy{height:148.5mm;padding:5mm 7mm;box-sizing:border-box;overflow:hidden;}
-  .cut{border-top:1px dashed #999;position:relative;height:0;}
-  .cut span{position:absolute;top:-5px;left:50%;transform:translateX(-50%);background:#fff;
-            padding:0 6px;font-size:6.5px;color:#999;letter-spacing:0.08em;}
-  @media print { .cut{page-break-inside:avoid;} }
+  /* The sheet holds the two copies as columns. */
+  .sheet{display:flex;width:297mm;height:210mm;box-sizing:border-box;}
+  /* Each copy is exactly half an A4 landscape sheet. */
+  .copy{width:148.5mm;height:210mm;padding:6mm 6mm;box-sizing:border-box;overflow:hidden;
+        display:flex;flex-direction:column;}
+  /* A vertical cut line down the middle. */
+  .cut{width:0;border-left:1px dashed #999;position:relative;flex:0 0 auto;}
+  .cut span{position:absolute;top:50%;left:0;transform:translate(-50%,-50%) rotate(90deg);
+            background:#fff;padding:0 6px;font-size:6.5px;color:#999;
+            letter-spacing:0.08em;white-space:nowrap;}
+  /* Push the signatures and footer to the bottom of the taller half-page. */
+  .copy .signrow{margin-top:auto;}
+  @media print { .sheet{page-break-inside:avoid;page-break-after:avoid;} }
 `;
 
 /** Build one copy of the document. */
@@ -112,8 +125,8 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       </div>` : '';
 
   const payDetailBits = [
-    b.paynow_uen ? `PayNow: ${esc(b.paynow_uen)}` : '',
-    b.bank_account ? `Bank: ${esc(b.bank_account)}` : '',
+    b.paynow_uen ? `CIMB UEN: ${esc(b.paynow_uen)}` : '',
+    b.bank_account ? `CIMB corporate account: ${esc(b.bank_account)}` : '',
   ].filter(Boolean);
   const payRow = payDetailBits.length
     ? `<div class="paydetail">${payDetailBits.join(' &nbsp;·&nbsp; ')}</div>` : '';
@@ -167,8 +180,10 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       ${payTable}
       ${(o.extraBlocks ?? []).join('')}
       <div class="signrow">
+        <div class="sign">
+          <div class="signline signed">${esc(o.signedByName ?? '')}</div>Staff Signature
+        </div>
         <div class="sign"><div class="signline"></div>Customer Signature</div>
-        <div class="sign"><div class="signline"></div>Authorized By</div>
       </div>
       <div class="terms">${esc(o.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.')}</div>
       ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
@@ -180,9 +195,11 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
 export function printA5Document(o: PrintDocOptions): boolean {
   const html = `<!doctype html><html><head><title>${esc(o.docNo)}</title>
     <style>${PRINT_CSS}</style></head><body>
-    ${buildCopy(o, 'CUSTOMER COPY')}
-    <div class="cut"><span>✂  CUT HERE</span></div>
-    ${buildCopy(o, 'OFFICE COPY')}
+    <div class="sheet">
+      ${buildCopy(o, 'CUSTOMER COPY')}
+      <div class="cut"><span>✂  CUT HERE</span></div>
+      ${buildCopy(o, 'OFFICE COPY')}
+    </div>
     <script>window.onload=function(){window.print();}</script>
   </body></html>`;
   const w = window.open('', '_blank');

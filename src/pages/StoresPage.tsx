@@ -174,9 +174,9 @@ const StoresPage: React.FC = () => {
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Co. Reg No.</label><input value={form.co_reg_no} onChange={e => setForm(f => ({ ...f, co_reg_no: e.target.value }))} placeholder="201104431Z" /></div>
-              <div className="form-group"><label>PayNow UEN</label><input value={form.paynow_uen} onChange={e => setForm(f => ({ ...f, paynow_uen: e.target.value }))} placeholder="201104431Z" /></div>
+              <div className="form-group"><label>CIMB UEN</label><input value={form.paynow_uen} onChange={e => setForm(f => ({ ...f, paynow_uen: e.target.value }))} placeholder="201104431Z" /></div>
             </div>
-            <div className="form-group"><label>Bank Account</label><input value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} placeholder="Rev 22 Pte Ltd UOB 348 309 0275" /></div>
+            <div className="form-group"><label>CIMB corporate account</label><input value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} placeholder="Rev 22 Pte Ltd UOB 348 309 0275" /></div>
 
             <div className="form-grid-2">
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>

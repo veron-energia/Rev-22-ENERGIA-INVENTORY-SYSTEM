@@ -55,12 +55,13 @@ const SpecialPage: React.FC = () => {
   // Branding for printing. Rentals and special sales belong to a warehouse,
   // so the letterhead is taken from the store.
   const [brandStores, setBrandStores] = useState<any[]>([]);
+  const [staffProfiles, setStaffProfiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [sp, st, sa, re, wh, cu, pm, sto] = await Promise.all([
+    const [sp, st, sa, re, wh, cu, pm, sto, prof] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('special_product_stock').select('*'),
       supabase.from('special_sales').select('*').order('created_at', { ascending: false }),
@@ -69,6 +70,7 @@ const SpecialPage: React.FC = () => {
       supabase.from('customers').select('id,full_name,phone').is('deleted_at', null).order('full_name'),
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
+      supabase.from('profiles').select('id,full_name').is('deleted_at', null),
     ]);
     setRows((sp.data as SpecialProduct[]) ?? []);
     setStock((st.data as SpecialProductStock[]) ?? []);
@@ -78,6 +80,7 @@ const SpecialPage: React.FC = () => {
     setCustomers((cu.data as Customer[]) ?? []);
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setBrandStores((sto.data as any[]) ?? []);
+    setStaffProfiles((prof.data as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -133,7 +136,13 @@ const SpecialPage: React.FC = () => {
     if (row.payment_method_id) payments.push([methodName(row.payment_method_id), pmoney(fee)]);
     if (late > 0 && row.late_payment_method_id) payments.push([`${methodName(row.late_payment_method_id)} (late fee)`, pmoney(late)]);
 
+    // Printed staff signature: whoever recorded the sale or rental, else the
+    // person printing it.
+    const signedByName =
+      staffProfiles.find((u: any) => u.id === (row.sold_by ?? row.created_by))?.full_name
+      ?? profile?.full_name ?? '';
     printA5Document({
+      signedByName,
       docNo: row.sale_no ?? row.rental_no,
       docTitle: kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental',
       branding: brandStores[0] ?? {},
