@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { shareDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
+import { sendViaWhatsAppLink, sendViaEmailAttachment, whatsappNumber, emailAddress } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
 import { supabase } from '../lib/supabase';
@@ -115,7 +115,9 @@ const SpecialPage: React.FC = () => {
       docNo: row.sale_no ?? row.rental_no,
       date: d(row.created_at),
       status: String(row.status ?? '').replace(/_/g, ' '),
-      storeName: b.name ?? null, storeAddress: b.address ?? null, storePhone: b.phone ?? null,
+      storeName: b.name ?? null, storeAddress: b.address ?? null,
+      storePhone: [b.phone, b.whatsapp_phone ? `WhatsApp ${b.whatsapp_phone}` : '']
+        .filter(Boolean).join(' · ') || null,
       customerName: cust?.full_name ?? '—',
       customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
       lines: [
@@ -154,6 +156,7 @@ const SpecialPage: React.FC = () => {
       ].filter(Boolean),
       staffName: staffProfiles.find((u: any) => u.id === (row.sold_by ?? row.created_by))?.full_name
         ?? profile?.full_name ?? '',
+      policyText: b.policy_text ?? null,
       termsText: kind === 'rental'
         ? 'Rented goods remain the property of Rev 22 Pte Ltd. Late returns incur the daily late fee shown above.'
         : undefined,
@@ -166,20 +169,21 @@ const SpecialPage: React.FC = () => {
 
   const sendReceiptPdf = async (channel: 'whatsapp' | 'email', kind: 'sale' | 'rental', row: any) => {
     const cust = customers.find((c: any) => c.id === row.customer_id);
-    const format: DocFormat = channel === 'whatsapp' ? 'image' : 'pdf';
     setSendBusy(`${channel}-${row.id}`); setErr(null);
-    const r = await shareDocumentFile({
-      pdf: buildReceiptPdf(kind, row), format,
+    const args = {
+      pdf: buildReceiptPdf(kind, row),
       kindLabel: kind === 'sale' ? 'Sale' : 'Rental',
-      docNo: row.sale_no ?? row.rental_no,
-      customerName: cust?.full_name, phone: cust?.phone, email: cust?.email,
-      channelHint: channel,
-    });
+      docNo: row.sale_no ?? row.rental_no, docId: row.id,
+      docKind: (kind === 'sale' ? 'special_sale' : 'rental') as 'special_sale' | 'rental',
+      storeId: brandStores[0]?.id ?? null,
+      customerId: row.customer_id, customerName: cust?.full_name,
+      phone: cust?.phone, email: cust?.email,
+    };
+    const r = channel === 'whatsapp'
+      ? await sendViaWhatsAppLink(args)
+      : await sendViaEmailAttachment(args);
     setSendBusy(null);
-    if (!r.ok) { setErr(r.reason ?? 'Could not send.'); return; }
-    if (!r.shared) {
-      setErr(`The ${format === 'image' ? 'image' : 'PDF'} has been downloaded — attach it in the window that just opened. Desktop browsers cannot attach files automatically.`);
-    }
+    if (!r.ok) setErr(r.reason ?? 'Could not send.');
   };
 
   const printReceipt = (kind: 'sale' | 'rental', row: any) => {
@@ -227,6 +231,7 @@ const SpecialPage: React.FC = () => {
       ?? profile?.full_name ?? '';
     printA5Document({
       signedByName,
+      policyText: (brandStores[0] as any)?.policy_text ?? null,
       docNo: row.sale_no ?? row.rental_no,
       docTitle: kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental',
       branding: brandStores[0] ?? {},

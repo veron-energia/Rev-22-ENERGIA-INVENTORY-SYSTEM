@@ -16,7 +16,7 @@ const StoresPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' });
+  const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', whatsapp_phone: '', policy_text: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' });
   const [saving, setSaving] = useState(false);
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -35,9 +35,9 @@ const StoresPage: React.FC = () => {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => { setForm({ name: '', code: '', address: '', phone: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' }); setEditId(null); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm({ name: '', code: '', address: '', phone: '', whatsapp_phone: '', policy_text: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' }); setEditId(null); setErr(null); setModalOpen(true); };
   const openEdit = (s: StoreT) => { setForm({
-      name: s.name, code: s.code, address: s.address ?? '', phone: s.phone ?? '', is_active: s.is_active,
+      name: s.name, code: s.code, address: s.address ?? '', phone: s.phone ?? '', whatsapp_phone: (s as any).whatsapp_phone ?? '', policy_text: (s as any).policy_text ?? '', is_active: s.is_active,
       email: s.email ?? '', website: s.website ?? '', co_reg_no: s.co_reg_no ?? '',
       paynow_uen: s.paynow_uen ?? '', bank_account: s.bank_account ?? '',
       gst_enabled: s.gst_enabled ?? false, gst_rate: Number(s.gst_rate ?? 9),
@@ -51,7 +51,7 @@ const StoresPage: React.FC = () => {
     if (!form.phone.trim()) { setErr('Phone number is required (used on printed invoices).'); return; }
     setSaving(true); setErr(null);
     const payload = {
-      name: form.name.trim(), code: form.code.trim(), address: form.address.trim() || null, phone: form.phone.trim() || null, is_active: form.is_active,
+      name: form.name.trim(), code: form.code.trim(), address: form.address.trim() || null, phone: form.phone.trim() || null, whatsapp_phone: form.whatsapp_phone.trim() || null, policy_text: form.policy_text.trim() || null, is_active: form.is_active,
       email: form.email.trim() || null, website: form.website.trim() || null, co_reg_no: form.co_reg_no.trim() || null,
       paynow_uen: form.paynow_uen.trim() || null, bank_account: form.bank_account.trim() || null,
       gst_enabled: form.gst_enabled, gst_rate: form.gst_rate || 0,
@@ -110,6 +110,7 @@ const StoresPage: React.FC = () => {
               { header: 'Code', value: (s2: any) => s2.code ?? '' },
               { header: 'Address', value: (s2: any) => s2.address ?? '' },
               { header: 'Phone', value: (s2: any) => s2.phone ?? '' },
+              { header: 'WhatsApp', value: (s2: any) => s2.whatsapp_phone ?? '' },
               { header: 'Status', value: (s2: any) => s2.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
@@ -165,6 +166,22 @@ const StoresPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group"><label>Address *</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Used on printed invoices" /></div>
               <div className="form-group"><label>Phone *</label><input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="e.g. 6337 2768" /></div>
+              <div className="form-group"><label>WhatsApp Phone</label>
+                <input value={form.whatsapp_phone} onChange={e => setForm(f => ({ ...f, whatsapp_phone: e.target.value }))} placeholder="e.g. 9123 4567" />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Printed on invoices as "Shop WhatsApp", in addition to the phone above.
+                </div>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Cancellation / Exchange / Refund policy</label>
+              <textarea rows={4} value={form.policy_text}
+                onChange={e => setForm(f => ({ ...f, policy_text: e.target.value }))}
+                placeholder="Printed at the foot of every invoice. Leave blank to print nothing." />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                Your own wording — this is a business and legal statement, so nothing is assumed on your behalf.
+              </div>
             </div>
 
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: 4 }}>Invoice details (per store)</div>

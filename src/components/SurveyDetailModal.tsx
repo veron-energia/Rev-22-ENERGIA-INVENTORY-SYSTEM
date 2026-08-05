@@ -31,6 +31,12 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   const [rec, setRec] = useState('');
   const [notes, setNotes] = useState<any[]>([]);
   const [noteBusy, setNoteBusy] = useState(false);
+  const [allOptions, setAllOptions] = useState<any[]>([]);
+  useEffect(() => {
+    supabase.from('health_symptom_options').select('*').eq('is_active', true)
+      .order('category').order('sort_order')
+      .then(({ data: o }) => setAllOptions((o as any[]) ?? []));
+  }, []);
   const [noteSaved, setNoteSaved] = useState(false);
 
   // `initial` seeds the consultant fields on first load only, so an
@@ -55,6 +61,11 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   useEffect(() => { load(true); }, [load]);
   const reload = useCallback(() => { load(false); }, [load]);
 
+  // Clearing after a save means the next consultation starts from a blank slate
+  // rather than the previous visit's wording, which is what makes the timeline
+  // a history rather than a single overwritten note.
+  const clearConsultFields = () => { setGoals(''); setCond(''); setRec(''); };
+
   const save = async () => {
     setBusy(true); setErr(null);
     const { error } = await supabase.rpc('review_health_survey', {
@@ -64,9 +75,28 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       p_condition: cond || null,
       p_recommendation: rec || null,
     });
+    if (error) { setBusy(false); setErr(error.message); return; }
+
+    // Saving a review also adds a timestamped entry to the timeline, so the
+    // consultation is recorded even when the consultant does not press
+    // "Submit as Note" separately.
+    if (goals.trim() || cond.trim() || rec.trim() || acidity) {
+      const { error: nErr } = await supabase.rpc('add_consultant_note', {
+        p_survey_id: surveyId,
+        p_customer_id: (data?.survey?.customer_id) ?? null,
+        p_acidity: acidity || null,
+        p_health_goals: goals || null,
+        p_condition: cond || null,
+        p_recommendation: rec || null,
+        p_attachments: [],
+      });
+      if (nErr) { setBusy(false); setErr(`Saved, but the note could not be recorded: ${nErr.message}`); return; }
+    }
+
     setBusy(false);
-    if (error) { setErr(error.message); return; }
     setSaved(true); setTimeout(() => setSaved(false), 2000);
+    clearConsultFields();
+    load(false);
     onSaved();
   };
 
@@ -86,6 +116,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
     setNoteBusy(false);
     if (error) { setErr(error.message); return; }
     setNoteSaved(true); setTimeout(() => setNoteSaved(false), 2000);
+    clearConsultFields();
     load(false);
   };
 
@@ -102,7 +133,43 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   };
 
   const s = data?.survey;
+  // Owner/Manager can correct a submission — roadshow forms are filled in a
+  // hurry on a phone and often carry typos.
+  const [editing, setEditing] = useState(false);
+  const [ed, setEd] = useState<any>({});
+  const [edBusy, setEdBusy] = useState(false);
+  const openEdit = () => {
+    setEd({
+      first_name: s?.first_name ?? '', last_name: s?.last_name ?? '',
+      phone: s?.phone ?? '', email: s?.email ?? '',
+      date_of_birth: s?.date_of_birth ? String(s.date_of_birth).slice(0, 10) : '',
+      sex: s?.sex ?? '', occupation: s?.occupation ?? '', others_text: s?.others_text ?? '',
+    });
+    setEditing(true);
+  };
+  const saveEdit = async () => {
+    if (!ed.first_name?.trim()) { setErr('A first name is required.'); return; }
+    setEdBusy(true); setErr(null);
+    const { error } = await supabase.rpc('update_survey_particulars', {
+      p_survey_id: surveyId,
+      p_first_name: ed.first_name.trim(), p_last_name: ed.last_name?.trim() || null,
+      p_phone: ed.phone?.trim() || null, p_email: ed.email?.trim() || null,
+      p_date_of_birth: ed.date_of_birth || null, p_sex: ed.sex || null,
+      p_occupation: ed.occupation?.trim() || null, p_others_text: ed.others_text?.trim() || null,
+    });
+    setEdBusy(false);
+    if (error) { setErr(error.message); return; }
+    setEditing(false); load(false); onSaved();
+  };
+
   const syms: any[] = data?.symptoms ?? [];
+  // Show EVERY symptom on the form, ticked only where declared, so a
+  // consultant can see at a glance what was asked and not just what was said.
+  const declared = new Map<string, string>(
+    syms.map((x: any) => [String(x.label), x.duration_text ?? '']));
+  const byCategory = allOptions.reduce((acc: Record<string, any[]>, o: any) => {
+    (acc[o.category] ??= []).push(o); return acc;
+  }, {});
 
   const Field: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
     <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 600 }}>{v || '—'}</div></div>
@@ -120,7 +187,73 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
         <div className="form-grid">
           {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
 
-          {/* Customer-declared (read-only record) */}
+          {/* Customer-declared particulars — correctable by an Owner or Manager */}
+          {!readOnly && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              {editing
+                ? <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+                    <button className="btn btn-primary btn-sm" onClick={saveEdit} disabled={edBusy}>
+                      {edBusy ? 'Saving…' : 'Save details'}</button>
+                  </div>
+                : <button className="btn btn-secondary btn-sm" onClick={openEdit}>Edit details</button>}
+            </div>
+          )}
+
+          {editing ? (
+            <div className="form-grid">
+              <div className="form-grid-2">
+                <div className="form-group" style={{ marginBottom: 0 }}><label>First Name *</label>
+                  <input value={ed.first_name} onChange={e => setEd({ ...ed, first_name: e.target.value })} /></div>
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Last Name</label>
+                  <input value={ed.last_name} onChange={e => setEd({ ...ed, last_name: e.target.value })} /></div>
+              </div>
+              <div className="form-grid-2">
+                <div className="form-group" style={{ marginBottom: 0 }}><label>HP No.</label>
+                  <input value={ed.phone} onChange={e => setEd({ ...ed, phone: e.target.value })} /></div>
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Email</label>
+                  <input value={ed.email} onChange={e => setEd({ ...ed, email: e.target.value })} /></div>
+              </div>
+              <div className="form-grid-2">
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Date of Birth</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {(() => {
+                      const [yy = '', mm = '', dd = ''] = String(ed.date_of_birth || '').split('-');
+                      const set = (y: string, m: string, dday: string) =>
+                        setEd({ ...ed, date_of_birth: y && m && dday ? `${y}-${m.padStart(2,'0')}-${dday.padStart(2,'0')}` : '' });
+                      return <>
+                        <select value={dd ? String(Number(dd)) : ''} onChange={e => set(yy, mm, e.target.value)} style={{ flex: '0 0 76px' }}>
+                          <option value="">Day</option>
+                          {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(x => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                        <select value={mm ? String(Number(mm)) : ''} onChange={e => set(yy, e.target.value, dd)} style={{ flex: 1 }}>
+                          <option value="">Month</option>
+                          {['January','February','March','April','May','June','July','August','September','October','November','December']
+                            .map((mn, i) => <option key={mn} value={String(i + 1)}>{mn}</option>)}
+                        </select>
+                        <select value={yy} onChange={e => set(e.target.value, mm, dd)} style={{ flex: '0 0 90px' }}>
+                          <option value="">Year</option>
+                          {Array.from({ length: 100 }, (_, i) => String(new Date().getFullYear() - i)).map(x => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                      </>;
+                    })()}
+                  </div>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Sex</label>
+                  <select value={ed.sex} onChange={e => setEd({ ...ed, sex: e.target.value })}>
+                    <option value="">— Not specified —</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                  </select></div>
+              </div>
+              <div className="form-grid-2">
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Occupation</label>
+                  <input value={ed.occupation} onChange={e => setEd({ ...ed, occupation: e.target.value })} /></div>
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Others (symptoms)</label>
+                  <input value={ed.others_text} onChange={e => setEd({ ...ed, others_text: e.target.value })} /></div>
+              </div>
+            </div>
+          ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
             <Field k="HP No." v={s.phone} />
             <Field k="Email" v={s.email} />
@@ -132,6 +265,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
             <Field k="Event" v={s.event_name} />
             <Field k="Submitted" v={new Date(s.submitted_at).toLocaleString()} />
           </div>
+          )}
 
           <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Declarations</div>
@@ -145,16 +279,33 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
           </div>
 
           <div>
-            <label>Symptoms declared ({syms.length})</label>
-            {syms.length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>None indicated.</div> : (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-                {syms.map((x, i) => (
-                  <span key={i} className="badge badge-muted" style={{ fontSize: 11 }}>
-                    {x.label}{x.duration_text ? ` · ${x.duration_text}` : ''}
-                  </span>
-                ))}
-              </div>
-            )}
+            <label>Symptoms &amp; conditions ({syms.length} of {allOptions.length} declared)</label>
+            {allOptions.length === 0
+              ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>The symptom checklist could not be loaded.</div>
+              : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginTop: 6 }}>
+                  {Object.entries(byCategory).map(([cat, opts]) => (
+                    <div key={cat}>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>{cat}</div>
+                      {(opts as any[]).map(o => {
+                        const on = declared.has(o.label);
+                        const dur = declared.get(o.label);
+                        return (
+                          <div key={o.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline',
+                                                   fontSize: 12, padding: '1.5px 0',
+                                                   color: on ? 'var(--text)' : 'var(--text-muted)' }}>
+                            <span style={{ width: 13, flex: '0 0 13px', fontWeight: 700,
+                                           color: on ? 'var(--primary)' : 'var(--border)' }}>
+                              {on ? '☑' : '☐'}
+                            </span>
+                            <span style={{ fontWeight: on ? 600 : 400 }}>
+                              {o.label}{on && dur ? ` · ${dur}` : ''}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>}
             {s.others_text && <div style={{ fontSize: 12.5, marginTop: 6 }}>Others: <strong>{s.others_text}</strong></div>}
           </div>
 

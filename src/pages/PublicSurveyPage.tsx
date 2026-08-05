@@ -28,10 +28,13 @@ const PublicSurveyPage: React.FC = () => {
   const [sourceOptions, setSourceOptions] = useState<{ id: string; label: string; requires_details: boolean }[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Day / month / year are chosen separately: a native date picker is awkward
+  // on a phone for a date of birth decades in the past.
+  const [dobD, setDobD] = useState(''); const [dobM, setDobM] = useState(''); const [dobY, setDobY] = useState('');
   const [done, setDone] = useState<string | null>(null);
 
   const [f, setF] = useState<any>({
-    full_name: '', date_of_birth: '', age: '', sex: '', phone: '', email: '', occupation: '',
+    first_name: '', last_name: '', full_name: '', date_of_birth: '', age: '', sex: '', phone: '', email: '', occupation: '',
     source_option_id: '', source_details: '',
     event_name: '',
     has_medical_condition: null, drinks_alcohol: null, smokes: null, on_treatment: null,
@@ -57,6 +60,14 @@ const PublicSurveyPage: React.FC = () => {
   }, [token]);
 
   // Age follows date of birth, but stays editable.
+  useEffect(() => {
+    if (dobD && dobM && dobY) {
+      setF((prev: any) => ({ ...prev, date_of_birth: `${dobY}-${dobM.padStart(2, '0')}-${dobD.padStart(2, '0')}` }));
+    } else if (!dobD && !dobM && !dobY) {
+      setF((prev: any) => ({ ...prev, date_of_birth: '' }));
+    }
+  }, [dobD, dobM, dobY]);
+
   useEffect(() => {
     if (!f.date_of_birth) return;
     const d = new Date(f.date_of_birth);
@@ -88,7 +99,11 @@ const PublicSurveyPage: React.FC = () => {
 
   const submit = async () => {
     setErr(null);
-    if (!f.full_name.trim()) { setErr('Please enter your name.'); return; }
+    if (!f.first_name.trim()) { setErr('Please enter your first name.'); return; }
+    // full_name is still submitted so existing reads keep working; the
+    // database trigger keeps the two forms in agreement either way.
+    const fullName = [f.first_name.trim(), f.last_name.trim()].filter(Boolean).join(' ');
+    if (dobD && dobM && dobY && !f.date_of_birth) { setErr('That date of birth is not valid.'); return; }
     if (!f.phone.trim()) { setErr('Please enter your mobile number.'); return; }
     if (!f.email.trim()) { setErr('Please enter your email address.'); return; }
     if (!eventSource) {
@@ -126,7 +141,7 @@ const PublicSurveyPage: React.FC = () => {
 
     const { data, error } = await supabase.rpc('submit_health_survey', {
       p_token: token,
-      p_payload: { ...f, source_option_id: effSourceId, source_details: effSourceDetails, device_info: navigator.userAgent?.slice(0, 250) ?? null },
+      p_payload: { ...f, full_name: fullName, source_option_id: effSourceId, source_details: effSourceDetails, device_info: navigator.userAgent?.slice(0, 250) ?? null },
       p_symptoms: symptoms,
       p_pdf_base64: pdf,
     });
@@ -187,9 +202,33 @@ const PublicSurveyPage: React.FC = () => {
 
       <div className="form-grid">
         {/* Identity */}
-        <div className="form-group"><label>Name *</label><input value={f.full_name} onChange={e => setF({ ...f, full_name: e.target.value })} /></div>
         <div className="form-grid-2">
-          <div className="form-group"><label>Date of Birth</label><input type="date" value={f.date_of_birth} onChange={e => setF({ ...f, date_of_birth: e.target.value })} /></div>
+          <div className="form-group"><label>First Name *</label>
+            <input value={f.first_name} onChange={e => setF({ ...f, first_name: e.target.value })} /></div>
+          <div className="form-group"><label>Last Name</label>
+            <input value={f.last_name} onChange={e => setF({ ...f, last_name: e.target.value })} /></div>
+        </div>
+        <div className="form-grid-2">
+          <div className="form-group"><label>Date of Birth</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <select value={dobD} onChange={e => setDobD(e.target.value)} style={{ flex: '0 0 78px' }}>
+                <option value="">Day</option>
+                {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(d =>
+                  <option key={d} value={d}>{d}</option>)}
+              </select>
+              <select value={dobM} onChange={e => setDobM(e.target.value)} style={{ flex: 1 }}>
+                <option value="">Month</option>
+                {['January','February','March','April','May','June','July',
+                  'August','September','October','November','December'].map((mn, i) =>
+                  <option key={mn} value={String(i + 1)}>{mn}</option>)}
+              </select>
+              <select value={dobY} onChange={e => setDobY(e.target.value)} style={{ flex: '0 0 92px' }}>
+                <option value="">Year</option>
+                {Array.from({ length: 100 }, (_, i) => String(new Date().getFullYear() - i)).map(y =>
+                  <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+          </div>
           <div className="form-group"><label>Age</label><input type="number" min={0} value={f.age} onChange={e => setF({ ...f, age: e.target.value })} /></div>
         </div>
         <div className="form-group">

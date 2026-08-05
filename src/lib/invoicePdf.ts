@@ -22,6 +22,8 @@ export interface PdfLine {
 }
 
 export interface PdfDoc {
+  /** Cancellation / exchange / refund wording, set per store. */
+  policyText?: string | null;
   kindLabel: string;           // "Tax Invoice", "Special Product Sale", …
   docNo: string;
   date: string;
@@ -55,21 +57,21 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   const black = () => doc.setTextColor(17, 17, 17);
 
   // ---- Header -------------------------------------------------------
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(15); black();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); black();
   doc.text('Energia', M, y + 4);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); grey();
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); grey();
   doc.text('Wellness & Retail', M, y + 8);
 
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); black();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14); black();
   doc.text(d.docNo, RIGHT, y + 4, { align: 'right' });
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); grey();
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); grey();
   let hy = y + 8;
   for (const t of [d.kindLabel, d.storeName, d.storeAddress, d.storePhone ? `Tel: ${d.storePhone}` : '',
                    `Date: ${d.date}`, d.status ? `Status: ${d.status}` : '']) {
     if (!t) continue;
     // Long addresses wrap rather than running off the page.
     for (const ln of doc.splitTextToSize(String(t), 80)) {
-      doc.text(ln, RIGHT, hy, { align: 'right' }); hy += 3.1;
+      doc.text(ln, RIGHT, hy, { align: 'right' }); hy += 3.9;
     }
   }
 
@@ -79,18 +81,18 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   y += 5;
 
   // ---- Customer -----------------------------------------------------
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); grey();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
   doc.text('BILL TO', M, y); y += 4;
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); black();
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11.5); black();
   doc.text(d.customerName, M, y); y += 3.6;
   if (d.customerContact) {
-    doc.setFontSize(7); grey(); doc.text(d.customerContact, M, y); y += 3.6;
+    doc.setFontSize(9); grey(); doc.text(d.customerContact, M, y); y += 3.6;
   }
   y += 2;
 
   // ---- Items --------------------------------------------------------
   const cQty = RIGHT - 46, cUnit = RIGHT - 24, cTot = RIGHT;
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); grey();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
   doc.text('ITEM', M, y);
   doc.text('QTY', cQty, y, { align: 'right' });
   doc.text('UNIT', cUnit, y, { align: 'right' });
@@ -100,16 +102,16 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   doc.line(M, y, RIGHT, y);
   y += 3.6;
 
-  black(); doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+  black(); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
   for (const l of d.lines) {
     const nameLines = doc.splitTextToSize(l.name, cQty - M - 3);
-    const rowH = nameLines.length * 3.4 + (l.notes?.length ?? 0) * 3 + 1.6;
+    const rowH = nameLines.length * 4.2 + (l.notes?.length ?? 0) * 3 + 1.6;
 
     // Keep the signature block on the page: stop listing and summarise.
-    if (y + rowH > A5_H - 62) {
-      grey(); doc.setFontSize(7);
+    if (y + rowH > A5_H - 70) {
+      grey(); doc.setFontSize(9);
       doc.text('…continued — see the full invoice in store', M, y);
-      y += 4; black(); doc.setFontSize(8);
+      y += 4; black(); doc.setFontSize(10);
       break;
     }
 
@@ -119,32 +121,32 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
     doc.setFont('helvetica', 'bold');
     doc.text(money(l.total), cTot, y, { align: 'right' });
     doc.setFont('helvetica', 'normal');
-    let ny = y + nameLines.length * 3.4;
+    let ny = y + nameLines.length * 4.2;
     for (const n of l.notes ?? []) {
-      grey(); doc.setFontSize(6.5);
-      doc.text(n, M + 2, ny); ny += 3;
-      black(); doc.setFontSize(8);
+      grey(); doc.setFontSize(8);
+      doc.text(n, M + 2, ny); ny += 3.4;
+      black(); doc.setFontSize(10);
     }
     // Separator sits below the row just drawn; the next baseline then starts
     // clear of it, otherwise the line strikes through the following text.
     const sepY = ny - 1.2;
     doc.setDrawColor(230, 230, 230); doc.setLineWidth(0.15);
     doc.line(M, sepY, RIGHT, sepY);
-    y = sepY + 4.6;
+    y = sepY + 5.4;
   }
 
   // ---- Totals -------------------------------------------------------
   y += 2;
-  doc.setFontSize(8);
+  doc.setFontSize(10);
   for (const [label, value] of d.totals) {
     grey(); doc.text(label, cUnit, y, { align: 'right' });
     black(); doc.text(value, cTot, y, { align: 'right' });
-    y += 4;
+    y += 4.8;
   }
   if (d.grandTotal) {
     doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.3);
     doc.line(cUnit - 22, y - 2.6, RIGHT, y - 2.6);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); black();
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); black();
     doc.text(d.grandTotal[0], cUnit, y + 1.4, { align: 'right' });
     doc.text(d.grandTotal[1], cTot, y + 1.4, { align: 'right' });
     doc.setFont('helvetica', 'normal');
@@ -154,25 +156,25 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   // ---- Payments -----------------------------------------------------
   if (d.payments?.length) {
     y += 2;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(7); grey();
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
     doc.text('PAYMENT METHODS', M, y); y += 4;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); black();
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); black();
     for (const [k, v] of d.payments) {
-      doc.text(k, M, y); doc.text(v, cTot, y, { align: 'right' }); y += 3.8;
+      doc.text(k, M, y); doc.text(v, cTot, y, { align: 'right' }); y += 4.6;
     }
   }
 
   // ---- Signatures, pinned near the foot -----------------------------
-  const sigY = A5_H - 48;
+  const sigY = A5_H - 56;
   y = Math.max(y + 4, sigY);
   const colW = (RIGHT - M - 6) / 2;
-  doc.setFontSize(8.5); black(); doc.setFont('helvetica', 'bolditalic');
+  doc.setFontSize(11); black(); doc.setFont('helvetica', 'bolditalic');
   if (d.staffName) doc.text(d.staffName, M, y);
   doc.setFont('helvetica', 'normal');
   doc.setDrawColor(51, 51, 51); doc.setLineWidth(0.25);
   doc.line(M, y + 1.6, M + colW, y + 1.6);
   doc.line(M + colW + 6, y + 1.6, RIGHT, y + 1.6);
-  doc.setFontSize(6.5); doc.setTextColor(51, 51, 51);
+  doc.setFontSize(8.5); doc.setTextColor(51, 51, 51);
   doc.text('Staff Signature', M, y + 5);
   doc.text('Customer Signature', M + colW + 6, y + 5);
   y += 9;
@@ -180,14 +182,23 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   // ---- Terms, payment details, footer -------------------------------
   doc.setDrawColor(200, 200, 200); doc.setLineWidth(0.15);
   doc.line(M, y, RIGHT, y); y += 3.4;
-  doc.setFontSize(6); doc.setTextColor(51, 51, 51);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(17, 17, 17);
   for (const ln of doc.splitTextToSize(
-    d.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.',
-    RIGHT - M)) { doc.text(ln, M, y); y += 2.6; }
+    (d.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.').toUpperCase(),
+    RIGHT - M)) { doc.text(ln, M, y); y += 3.2; }
+  doc.setFont('helvetica', 'normal');
+
+  if (d.policyText) {
+    y += 1.2;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(17, 17, 17);
+    doc.text('CANCELLATION / EXCHANGE / REFUND POLICY', M, y); y += 2.4;
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(51, 51, 51);
+    for (const ln of doc.splitTextToSize(d.policyText, RIGHT - M)) { doc.text(ln, M, y); y += 2.9; }
+  }
 
   if (d.payDetails?.length) {
     y += 1.4;
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.2); black();
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); black();
     doc.text('How to pay', M, y);
     doc.setFont('helvetica', 'normal'); doc.setTextColor(51, 51, 51);
     let px = M + 15;
@@ -201,9 +212,9 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
 
   if (d.footerBits?.length) {
     doc.setDrawColor(200, 200, 200); doc.line(M, y, RIGHT, y); y += 2.8;
-    doc.setFontSize(5.6); grey();
+    doc.setFontSize(7.5); grey();
     for (const ln of doc.splitTextToSize(d.footerBits.join('  |  '), RIGHT - M)) {
-      doc.text(ln, A5_W / 2, y, { align: 'center' }); y += 2.4;
+      doc.text(ln, A5_W / 2, y, { align: 'center' }); y += 3;
     }
   }
 

@@ -131,117 +131,198 @@ export function sendViaEmail(
 }
 
 // ---------------------------------------------------------------------
-// Sending the actual file
+// Sending
+//
+// WhatsApp receives a LINK to the customer copy: WhatsApp cannot be handed a
+// file from a browser, and a link opens instantly on a phone.
+//
+// Email receives the PDF as a REAL ATTACHMENT, sent by the send-invoice-email
+// Edge Function. Only a server can attach a file to an email; the browser
+// generates the PDF and the function delivers it.
 // ---------------------------------------------------------------------
+import { supabase } from './supabase';
 import { documentPdfBlob, downloadDocumentPdf, PdfDoc } from './invoicePdf';
 import { documentImageBlob } from './invoiceImage';
 
 export type DocFormat = 'pdf' | 'image';
 
-/** True when this device can attach a real file to a share. */
-export function canShareFiles(): boolean {
-  try {
-    const nav: any = navigator;
-    if (!nav?.canShare || !nav?.share) return false;
-    const probe = new File(['x'], 'probe.pdf', { type: 'application/pdf' });
-    return !!nav.canShare({ files: [probe] });
-  } catch { return false; }
-}
+const BUCKET = 'invoice-pdfs';
+/** Signed links last a year: a customer may open theirs months later. */
+const LINK_SECONDS = 60 * 60 * 24 * 365;
 
-async function buildFile(pdf: PdfDoc, format: DocFormat, docNo: string): Promise<File> {
-  const safe = docNo.replace(/[^A-Za-z0-9._-]/g, '-');
-  if (format === 'image') {
-    const blob = await documentImageBlob(pdf);
-    return new File([blob], `${safe}.png`, { type: 'image/png' });
+const safeName = (docNo: string) => docNo.replace(/[^A-Za-z0-9._-]/g, '-');
+
+/** base64 without the data: prefix, which is what the email API expects. */
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
-  return new File([documentPdfBlob(pdf)], `${safe}.pdf`, { type: 'application/pdf' });
+  return btoa(binary);
 }
 
-export interface ShareDocArgs {
-  /** The document content, shared with the PDF and image renderers. */
+/** Upload the customer copy and return a link the customer can open. */
+export async function uploadDocumentPdf(
+  storeId: string | null | undefined, docKind: string, docNo: string, pdf: PdfDoc,
+): Promise<{ url: string; path: string }> {
+  const blob = documentPdfBlob(pdf);
+  // A stable path means re-sending replaces the file rather than accumulating
+  // near-identical copies.
+  const path = `${storeId ?? 'no-store'}/${docKind}/${safeName(docNo)}.pdf`;
+  const { error: upErr } = await supabase.storage.from(BUCKET)
+    .upload(path, blob, { contentType: 'application/pdf', upsert: true });
+  if (upErr) throw new Error(`Could not upload the PDF: ${upErr.message}`);
+
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, LINK_SECONDS);
+  if (error || !data?.signedUrl) throw new Error('The PDF was uploaded but no link could be created.');
+  return { url: data.signedUrl, path };
+}
+
+export interface SendArgs {
   pdf: PdfDoc;
-  format: DocFormat;
   kindLabel: string;
   docNo: string;
+  docId?: string | null;
+  docKind: 'invoice' | 'special_sale' | 'rental';
+  storeId?: string | null;
+  customerId?: string | null;
   customerName?: string | null;
-  /** Only used by the desktop fallback, to open the right chat. */
   phone?: string | null;
   email?: string | null;
-  channelHint?: 'whatsapp' | 'email';
 }
 
-/**
- * Share the invoice itself.
- *
- * On a phone this opens the native share sheet with the PDF or image already
- * attached — choosing WhatsApp sends the actual document, not a link. Desktop
- * browsers do not support sharing files, so there the file is downloaded and
- * WhatsApp Web or the mail client is opened for the staff member to attach it;
- * the return value says which happened so the UI can explain.
- */
-export async function shareDocumentFile(
-  a: ShareDocArgs,
-): Promise<{ ok: boolean; shared: boolean; reason?: string }> {
-  let file: File;
+const logSend = (a: SendArgs, channel: string, to: string, path: string | null,
+                 status: 'sent' | 'failed', err?: string) => {
+  // Best effort: a failed audit write must not look like a failed send.
+  void supabase.rpc('record_document_send', {
+    p_doc_kind: a.docKind, p_doc_no: a.docNo, p_channel: channel,
+    p_doc_id: a.docId ?? null, p_customer_id: a.customerId ?? null,
+    p_sent_to: to, p_pdf_path: path, p_status: status, p_error: err ?? null,
+  });
+};
+
+/** WhatsApp: upload the PDF, then open the chat with a link to it. */
+export async function sendViaWhatsAppLink(a: SendArgs): Promise<{ ok: boolean; reason?: string }> {
+  const num = whatsappNumber(a.phone);
+  if (!num) return { ok: false, reason: 'This customer has no usable mobile number.' };
+
+  let url: string, path: string;
   try {
-    file = await buildFile(a.pdf, a.format, a.docNo);
+    ({ url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf));
   } catch (e: any) {
-    return { ok: false, shared: false, reason: e?.message ?? 'Could not prepare the document.' };
+    logSend(a, 'whatsapp', num, null, 'failed', e?.message);
+    return { ok: false, reason: e?.message ?? 'Could not prepare the PDF.' };
   }
 
-  const text = [
-    a.customerName ? `Hi ${a.customerName},` : 'Hi,',
-    '',
-    `Here is your ${a.kindLabel.toLowerCase()} ${a.docNo} from Energia.`,
-    '',
+  const message = [
+    a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
+    `Here is your ${a.kindLabel.toLowerCase()} ${a.docNo} from Energia:`,
+    url, '',
     'Thank you for shopping with Energia.',
   ].join('\n');
 
-  const nav: any = navigator;
-  if (canShareFiles()) {
-    try {
-      await nav.share({ files: [file], title: `${a.kindLabel} ${a.docNo}`, text });
-      return { ok: true, shared: true };
-    } catch (e: any) {
-      // The user dismissing the share sheet is not an error worth reporting.
-      if (e?.name === 'AbortError') return { ok: true, shared: true };
-      return { ok: false, shared: false, reason: e?.message ?? 'Sharing was not completed.' };
-    }
+  window.open(`https://wa.me/${num}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+  logSend(a, 'whatsapp', num, path, 'sent');
+  return { ok: true };
+}
+
+/** Email: send the PDF as a real attachment via the Edge Function. */
+export async function sendViaEmailAttachment(
+  a: SendArgs,
+): Promise<{ ok: boolean; reason?: string; fellBackToLink?: boolean }> {
+  const addr = emailAddress(a.email);
+  if (!addr) return { ok: false, reason: 'This customer has no valid email address.' };
+
+  let base64: string;
+  try {
+    base64 = await blobToBase64(documentPdfBlob(a.pdf));
+  } catch (e: any) {
+    return { ok: false, reason: e?.message ?? 'Could not prepare the PDF.' };
   }
 
-  // Desktop fallback: save the file, then open the chat or mail draft so the
-  // staff member can attach what was just downloaded.
-  const url = URL.createObjectURL(file);
-  const link = document.createElement('a');
-  link.href = url; link.download = file.name;
-  document.body.appendChild(link); link.click(); link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  let data: any = null, error: any = null;
+  try {
+    ({ data, error } = await supabase.functions.invoke('send-invoice-email', {
+      body: {
+        to: addr,
+        subject: `${a.kindLabel} ${a.docNo} — Energia`,
+        customerName: a.customerName ?? null,
+        docNo: a.docNo, kindLabel: a.kindLabel,
+        filename: `${safeName(a.docNo)}.pdf`,
+        pdfBase64: base64,
+      },
+    }));
+  } catch (e: any) {
+    error = e;
+  }
 
-  if (a.channelHint === 'email') {
-    const addr = emailAddress(a.email);
-    if (addr) {
+  const status = error?.context?.status ?? error?.status;
+  const raw = String(error?.message ?? '');
+
+  // A 404 on the function URL, or the CORS/network failure that a 404 causes,
+  // both mean the same thing: the function is not deployed. The browser
+  // reports this as an opaque CORS error, which tells the shop nothing.
+  const notDeployed =
+    status === 404 ||
+    /failed to (fetch|send)|networkerror|load failed|cors/i.test(raw);
+
+  if (notDeployed) {
+    // Rather than leaving the customer without their invoice, fall back to the
+    // link — the same PDF, delivered a different way — and say so plainly.
+    try {
+      const { url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf);
+      const body = [
+        a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
+        `Here is your ${a.kindLabel.toLowerCase()} ${a.docNo} from Energia:`,
+        url, '',
+        'Thank you for shopping with Energia.',
+      ].join('\n');
       window.location.href = `mailto:${encodeURIComponent(addr)}`
         + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
-        + `&body=${encodeURIComponent(text)}`;
+        + `&body=${encodeURIComponent(body)}`;
+      logSend(a, 'email', addr, path, 'sent', 'link fallback — email function not deployed');
+      return {
+        ok: true, fellBackToLink: true,
+        reason: 'The email service is not set up yet, so your mail client has opened with a '
+              + 'link to the PDF instead. To attach the PDF automatically, deploy the '
+              + 'send-invoice-email function and set RESEND_API_KEY and INVOICE_FROM.',
+      };
+    } catch (e: any) {
+      logSend(a, 'email', addr, null, 'failed', 'function not deployed; link fallback failed');
+      return {
+        ok: false,
+        reason: 'The email service is not set up yet. Deploy the send-invoice-email function '
+              + '(supabase functions deploy send-invoice-email) and set RESEND_API_KEY and '
+              + 'INVOICE_FROM, then try again.',
+      };
     }
-  } else {
-    const num = whatsappNumber(a.phone);
-    if (num) window.open(`https://wa.me/${num}?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
   }
-  return { ok: true, shared: false };
+
+  // The function replied, so show whatever it or the provider actually said —
+  // "domain not verified" is far more useful than a generic failure.
+  const reason = data?.error ?? (error ? (error?.context?.error ?? error.message) : null);
+  if (error || reason) {
+    logSend(a, 'email', addr, null, 'failed', String(reason ?? 'unknown'));
+    return { ok: false, reason: String(reason ?? 'The email could not be sent.') };
+  }
+
+  logSend(a, 'email', addr, null, 'sent');
+  return { ok: true };
 }
 
 /** Save the customer copy locally. */
 export async function saveDocumentFile(pdf: PdfDoc, format: DocFormat, docNo: string): Promise<void> {
-  const safe = docNo.replace(/[^A-Za-z0-9._-]/g, '-');
   if (format === 'image') {
     const blob = await documentImageBlob(pdf);
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${safe}.png`;
-    document.body.appendChild(a); a.click(); a.remove();
+    const el = document.createElement('a');
+    el.href = url; el.download = `${safeName(docNo)}.png`;
+    document.body.appendChild(el); el.click(); el.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
     return;
   }
-  downloadDocumentPdf(pdf, `${safe}.pdf`);
+  downloadDocumentPdf(pdf, `${safeName(docNo)}.pdf`);
 }

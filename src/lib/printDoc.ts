@@ -59,6 +59,8 @@ export interface PrintDocOptions {
   extraBlocks?: string[];
   /** Printed on the staff signature line — no hand signing required. */
   signedByName?: string | null;
+  /** Cancellation / exchange / refund wording, set per store. */
+  policyText?: string | null;
   termsText?: string;
   /** Column heading for the first table column. */
   itemHeading?: string;
@@ -70,34 +72,36 @@ export const PRINT_CSS = `
      line, the customer keeps the left half and the shop files the right half.
      A4 landscape is 297mm x 210mm, so each half is 148.5mm x 210mm. */
   @page { size: A4 landscape; margin: 0; }
-  body{font-family:Arial,Helvetica,sans-serif;font-size:9px;color:#111;margin:0;}
-  h1{font-size:13px;margin:0;} h2{font-size:8px;margin:5px 0 2px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
-  .mut{color:#666;font-size:7.5px;} .r{text-align:right;}
+  body{font-family:Arial,Helvetica,sans-serif;font-size:11.5px;color:#111;margin:0;}
+  h1{font-size:16px;margin:0;} h2{font-size:10px;margin:5px 0 2px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
+  .mut{color:#666;font-size:9.5px;} .r{text-align:right;}
   table{width:100%;border-collapse:collapse;margin-top:2px;}
-  th{font-size:7px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:2px 3px;}
-  th.r{text-align:right;} td{padding:2px 3px;border-bottom:1px solid #eee;vertical-align:top;}
-  tr.sub td{border-bottom:none;padding:0 3px 0 12px;font-size:7.5px;color:#555;}
+  th{font-size:9px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:2px 3px;}
+  th.r{text-align:right;} td{padding:3px 3px;border-bottom:1px solid #eee;vertical-align:top;}
+  tr.sub td{border-bottom:none;padding:0 3px 0 12px;font-size:9.5px;color:#555;}
   .ther{border:1px solid #ddd;border-radius:3px;padding:3px 4px;margin-top:2px;}
   .entb{margin-top:3px;padding-top:3px;border-top:1px solid #eee;}
   .entb:first-of-type{border-top:none;padding-top:0;margin-top:2px;}
-  .bentbl{margin-top:2px;} .bentbl th{font-size:6.5px;padding:1px 2px;border-bottom:1px solid #ccc;}
-  .bentbl td{font-size:7.5px;padding:1px 2px;border-bottom:1px solid #f2f2f2;}
+  .bentbl{margin-top:2px;} .bentbl th{font-size:8.5px;padding:1px 2px;border-bottom:1px solid #ccc;}
+  .bentbl td{font-size:9.5px;padding:1px 2px;border-bottom:1px solid #f2f2f2;}
   .totals{margin-top:3px;width:170px;margin-left:auto;} .totals td{border:none;padding:1px 3px;}
   .paytbl td{border:none;padding:1px 3px;}
-  .grand{font-size:11px;font-weight:bold;border-top:1px solid #999;}
+  .grand{font-size:14px;font-weight:bold;border-top:1px solid #999;}
   .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1.5px solid #111;padding-bottom:4px;}
-  .copytag{font-size:7px;font-weight:bold;letter-spacing:0.08em;color:#111;margin-top:2px;
+  .copytag{font-size:9px;font-weight:bold;letter-spacing:0.08em;color:#111;margin-top:2px;
            border:1px solid #111;border-radius:2px;padding:1px 4px;display:inline-block;}
-  .paydetail{font-size:7.5px;color:#333;display:inline;}
-  .payfoot{margin-top:3px;font-size:7.5px;color:#333;}
+  .paydetail{font-size:9.5px;color:#333;display:inline;}
+  .payfoot{margin-top:3px;font-size:9.5px;color:#333;}
   .signrow{margin-top:8px;display:flex;gap:14px;}
-  .sign{flex:1;font-size:7.5px;color:#333;}
-  .signline{border-bottom:1px solid #333;height:18px;margin-bottom:2px;}
+  .sign{flex:1;font-size:9.5px;color:#333;}
+  .signline{border-bottom:1px solid #333;height:20px;margin-bottom:2px;}
   /* A printed staff name sits on the line instead of a handwritten signature. */
   .signline.signed{display:flex;align-items:flex-end;padding-bottom:1px;
                    font-size:9px;font-weight:600;font-style:italic;color:#111;}
-  .terms{margin-top:5px;padding-top:3px;border-top:1px solid #ccc;font-size:7px;color:#333;}
-  .footer{margin-top:3px;padding-top:2px;border-top:1px solid #ccc;font-size:6.5px;color:#444;line-height:1.4;text-align:center;}
+  .terms{margin-top:5px;padding-top:3px;border-top:1px solid #ccc;font-size:8.5px;color:#111;}
+  .statusword{font-size:10.5px;letter-spacing:0.04em;}
+  .policy{margin-top:3px;font-size:8px;color:#333;line-height:1.35;}
+  .footer{margin-top:3px;padding-top:2px;border-top:1px solid #ccc;font-size:8px;color:#444;line-height:1.4;text-align:center;}
   .logos{display:flex;gap:10px;align-items:center;margin-bottom:3px;}
   /* The sheet holds the two copies as columns. */
   .sheet{display:flex;width:297mm;height:210mm;box-sizing:border-box;}
@@ -185,7 +189,8 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
         </div>
         <div class="sign"><div class="signline"></div>Customer Signature</div>
       </div>
-      <div class="terms">${esc(o.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.')}</div>
+      <div class="terms"><b>${esc((o.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.').toUpperCase())}</b></div>
+      ${o.policyText ? `<div class="policy"><b>CANCELLATION / EXCHANGE / REFUND POLICY</b><br/>${esc(o.policyText).replace(/\n/g, '<br/>')}</div>` : ''}
       ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
       ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
     </div>`;
