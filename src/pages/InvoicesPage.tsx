@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
+import { sendDocumentPdf, saveDocumentPdf, whatsappNumber, emailAddress } from '../lib/sendDoc';
+import { PdfDoc } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
@@ -11,7 +13,7 @@ import {
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { Modal, ReasonModal } from '../components/ui';
 import {
-  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, Coins } from 'lucide-react';
+  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, Coins , MessageCircle, Mail} from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -660,6 +662,7 @@ const InvoicesPage: React.FC = () => {
     setDetailTherapy(null);
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
+    setSendErr(null);
     void loadInvoiceLegacy(inv.id, inv);
     void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
@@ -805,6 +808,84 @@ const InvoicesPage: React.FC = () => {
 
   const filtered = invoices.filter(i => statusFilter === 'all' || i.status === statusFilter);
 
+  // Shared by the printed document and the WhatsApp / email message.
+  const lineName = (it: InvoiceItem) =>
+    it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
+    : it.line_kind === 'promotion' ? `Promotion: ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? ''}`
+    : prodName(it.product_id ?? '');
+
+  const [sendErr, setSendErr] = useState<string | null>(null);
+  const [sendBusy, setSendBusy] = useState<'whatsapp' | 'email' | null>(null);
+
+  // The customer copy as a real A5 PDF — same content as the printed customer
+  // half. Built in src/lib/invoicePdf.ts.
+  const buildPdfDoc = (): PdfDoc | null => {
+    if (!detail) return null;
+    const store: any = stores.find(s2 => s2.id === detail.store_id) ?? {};
+    const cust = customerOf(detail.customer_id);
+    const bal = Number(detail.total_amount ?? 0) - Number(detail.paid_amount ?? 0);
+    return {
+      kindLabel: 'Tax Invoice',
+      docNo: detail.invoice_no,
+      date: new Date(detail.created_at).toLocaleDateString('en-GB'),
+      status: INVOICE_STATUS_LABELS[detail.status as InvoiceStatus] ?? detail.status,
+      storeName: store.name ?? null,
+      storeAddress: store.address ?? null,
+      storePhone: store.phone ?? null,
+      customerName: cust?.full_name ?? '—',
+      customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
+      lines: detailItems.map(it => {
+        const focQty = Number((it as any).foc_quantity ?? 0);
+        const notes: string[] = [];
+        if (focQty > 0) notes.push(`FOC ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`}`);
+        if (it.price_overridden) notes.push('Manual price override');
+        return {
+          name: lineName(it), qty: it.quantity,
+          unit: Number(it.unit_price ?? 0), total: Number(it.line_total ?? 0), notes,
+        };
+      }),
+      totals: [
+        ['Subtotal', `S$${Number(detail.subtotal ?? 0).toFixed(2)}`],
+        ['Discount', `-S$${Number(detail.discount_total ?? 0).toFixed(2)}`],
+        ...(Number(detail.paid_amount ?? 0) > 0
+          ? [['Paid', `S$${Number(detail.paid_amount).toFixed(2)}`] as [string, string]] : []),
+        ...(bal > 0 ? [['Balance', `S$${bal.toFixed(2)}`] as [string, string]] : []),
+      ],
+      grandTotal: ['Total', `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
+      payments: detailPayments.map((pm: any) => [
+        methods.find(m => m.id === pm.payment_method_id)?.name ?? 'Payment',
+        `S$${Number(pm.amount ?? 0).toFixed(2)}`,
+      ] as [string, string]),
+      payDetails: [
+        store.paynow_uen ? `CIMB UEN: ${store.paynow_uen}` : '',
+        store.bank_account ? `CIMB corporate account: ${store.bank_account}` : '',
+      ].filter(Boolean),
+      staffName: (profiles.find(u => u.id === (detail as any).created_by)?.full_name) ?? profile?.full_name ?? '',
+      footerBits: [
+        store.phone ? `DID: ${store.phone}` : '',
+        store.email ? `Email: ${store.email}` : '',
+        store.website ? `Website: ${store.website}` : '',
+        store.co_reg_no ? `Co. Reg No.: ${store.co_reg_no}` : '',
+      ].filter(Boolean),
+    };
+  };
+
+  const sendPdf = async (channel: 'whatsapp' | 'email') => {
+    const pdf = buildPdfDoc();
+    if (!detail || !pdf) return;
+    const cust = customerOf(detail.customer_id);
+    setSendBusy(channel); setSendErr(null);
+    const r = await sendDocumentPdf({
+      channel, phone: cust?.phone, email: cust?.email,
+      storeId: detail.store_id, docKind: 'invoice', kindLabel: 'Invoice',
+      docNo: detail.invoice_no, docId: detail.id,
+      customerId: detail.customer_id, customerName: cust?.full_name, pdf,
+    });
+    setSendBusy(null);
+    setSendErr(r.ok ? null : r.reason ?? 'Could not send.');
+  };
+  const savePdf = () => { const d = buildPdfDoc(); if (d && detail) saveDocumentPdf(d, detail.invoice_no); };
+
   const printInvoice = () => {
     if (!detail) return;
     const store = stores.find(s => s.id === detail.store_id);
@@ -827,10 +908,6 @@ const InvoicesPage: React.FC = () => {
         ...chosen.map(s => `<tr class="sub"><td colspan="3">— ${esc(nameOf(s))} × ${s.quantity} (chosen)</td><td></td></tr>`),
       ].join('');
     };
-    const lineName = (it: InvoiceItem) =>
-      it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
-      : it.line_kind === 'promotion' ? `Promotion: ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? ''}`
-      : prodName(it.product_id ?? '');
     const itemRows = detailItems.map(it => {
       const lv = (it as any).line_voucher_id
         ? `<div class="mut">Voucher ${esc(vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? '')} −S$${Number((it as any).line_discount ?? 0).toFixed(2)}</div>` : '';
@@ -1462,21 +1539,86 @@ const InvoicesPage: React.FC = () => {
         <Modal title={`Invoice ${detail.invoice_no}`} wide onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
+                    ? 'Open WhatsApp with this invoice ready to send'
+                    : 'This customer has no usable mobile number'}>
+                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  title={emailAddress(customerOf(detail.customer_id)?.email)
+                    ? 'Open your mail client with this invoice ready to send'
+                    : 'This customer has no valid email address'}>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
                   <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>{isOwnerOrManager(profile?.role) ? 'Refund/Cancel' : 'Request Refund'}</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
+                    ? 'Open WhatsApp with this invoice ready to send'
+                    : 'This customer has no usable mobile number'}>
+                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  title={emailAddress(customerOf(detail.customer_id)?.email)
+                    ? 'Open your mail client with this invoice ready to send'
+                    : 'This customer has no valid email address'}>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
+                    ? 'Open WhatsApp with this invoice ready to send'
+                    : 'This customer has no usable mobile number'}>
+                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  title={emailAddress(customerOf(detail.customer_id)?.email)
+                    ? 'Open your mail client with this invoice ready to send'
+                    : 'This customer has no valid email address'}>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email'}</button>
                   <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
                   <button className="btn btn-secondary" onClick={openEdit}><FileText size={14} /> Edit Invoice</button>
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
                     : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
               : detail.status === 'completed_foc'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
-              : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
+                    ? 'Open WhatsApp with this invoice ready to send'
+                    : 'This customer has no usable mobile number'}>
+                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  title={emailAddress(customerOf(detail.customer_id)?.email)
+                    ? 'Open your mail client with this invoice ready to send'
+                    : 'This customer has no valid email address'}>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
+              : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
+                    ? 'Open WhatsApp with this invoice ready to send'
+                    : 'This customer has no usable mobile number'}>
+                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
+                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  title={emailAddress(customerOf(detail.customer_id)?.email)
+                    ? 'Open your mail client with this invoice ready to send'
+                    : 'This customer has no valid email address'}>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
                     : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
@@ -1563,6 +1705,8 @@ const InvoicesPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {sendErr && <div className="alert alert-danger"><span>⚠</span><div>{sendErr}</div></div>}
 
             {isOwnerOrManager(profile?.role) && ['draft','unpaid','partially_paid'].includes(detail.status) && (
               <div>

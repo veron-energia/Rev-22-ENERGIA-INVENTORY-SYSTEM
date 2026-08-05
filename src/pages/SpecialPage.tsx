@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { sendDocumentPdf, whatsappNumber, emailAddress } from '../lib/sendDoc';
+import { PdfDoc } from '../lib/invoicePdf';
 import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -7,7 +9,7 @@ import {
   SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, RENTAL_STATUS_LABELS, isOwnerOrManager,
 } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer} from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer, MessageCircle, Mail} from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { CustomerSearchSelect } from '../components/SearchSelect';
 
@@ -98,6 +100,87 @@ const SpecialPage: React.FC = () => {
 
   // Special sales and rentals are their own transactions with their own numbers,
   // so they get a printable receipt rather than being forced through an invoice.
+  // The customer copy as a real A5 PDF, matching the printed receipt.
+  const [sendBusy, setSendBusy] = useState<string | null>(null);
+  const buildReceiptPdf = (kind: 'sale' | 'rental', row: any): PdfDoc => {
+    const prod = rows.find((p: any) => p.id === row.special_product_id);
+    const cust = customers.find((c: any) => c.id === row.customer_id);
+    const wh = warehouses.find((w: any) => w.id === row.warehouse_id);
+    const b: any = brandStores[0] ?? {};
+    const fee = Number(kind === 'sale' ? row.total_amount : row.rental_fee) || 0;
+    const late = Number(row.late_fee_total ?? 0);
+    const d = (v: any) => v ? new Date(v).toLocaleDateString('en-GB') : '';
+    return {
+      kindLabel: kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental',
+      docNo: row.sale_no ?? row.rental_no,
+      date: d(row.created_at),
+      status: String(row.status ?? '').replace(/_/g, ' '),
+      storeName: b.name ?? null, storeAddress: b.address ?? null, storePhone: b.phone ?? null,
+      customerName: cust?.full_name ?? '—',
+      customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
+      lines: [
+        {
+          name: prod?.name ?? 'Special product', qty: row.quantity,
+          unit: Number(kind === 'sale' ? row.unit_price : row.rate_amount) || 0, total: fee,
+          notes: [
+            ...(prod?.sku ? [`SKU ${prod.sku}`] : []),
+            ...(wh?.name ? [`From ${wh.name}`] : []),
+            ...(kind === 'rental'
+              ? [`${row.periods} x ${row.rate_type}`,
+                 `From ${d(row.start_date)} — due back ${d(row.expected_return_date)}`,
+                 ...(row.returned_at ? [`Returned ${d(row.returned_at)}`] : [])]
+              : []),
+          ],
+        },
+        ...(late > 0 ? [{
+          name: `Late fee — ${row.late_days} day(s)`, qty: row.late_days,
+          unit: Number(row.late_fee_per_day ?? 0), total: late,
+        }] : []),
+      ],
+      totals: [
+        [kind === 'sale' ? 'Subtotal' : 'Rental fee', `S$${fee.toFixed(2)}`],
+        ...(late > 0 ? [['Late fee', `S$${late.toFixed(2)}`] as [string, string]] : []),
+      ],
+      grandTotal: ['Total', `S$${(fee + late).toFixed(2)}`],
+      payments: [
+        ...(row.payment_method_id
+          ? [[methods.find(m => m.id === row.payment_method_id)?.name ?? 'Payment', `S$${fee.toFixed(2)}`] as [string, string]] : []),
+        ...(late > 0 && row.late_payment_method_id
+          ? [[`${methods.find(m => m.id === row.late_payment_method_id)?.name ?? 'Payment'} (late fee)`, `S$${late.toFixed(2)}`] as [string, string]] : []),
+      ],
+      payDetails: [
+        b.paynow_uen ? `CIMB UEN: ${b.paynow_uen}` : '',
+        b.bank_account ? `CIMB corporate account: ${b.bank_account}` : '',
+      ].filter(Boolean),
+      staffName: staffProfiles.find((u: any) => u.id === (row.sold_by ?? row.created_by))?.full_name
+        ?? profile?.full_name ?? '',
+      termsText: kind === 'rental'
+        ? 'Rented goods remain the property of Rev 22 Pte Ltd. Late returns incur the daily late fee shown above.'
+        : undefined,
+      footerBits: [
+        b.phone ? `DID: ${b.phone}` : '', b.email ? `Email: ${b.email}` : '',
+        b.website ? `Website: ${b.website}` : '', b.co_reg_no ? `Co. Reg No.: ${b.co_reg_no}` : '',
+      ].filter(Boolean),
+    };
+  };
+
+  const sendReceiptPdf = async (channel: 'whatsapp' | 'email', kind: 'sale' | 'rental', row: any) => {
+    const cust = customers.find((c: any) => c.id === row.customer_id);
+    const key = `${channel}-${row.id}`;
+    setSendBusy(key); setErr(null);
+    const r = await sendDocumentPdf({
+      channel, phone: cust?.phone, email: cust?.email,
+      storeId: brandStores[0]?.id ?? null,
+      docKind: kind === 'sale' ? 'special_sale' : 'rental',
+      kindLabel: kind === 'sale' ? 'Sale' : 'Rental',
+      docNo: row.sale_no ?? row.rental_no, docId: row.id,
+      customerId: row.customer_id, customerName: cust?.full_name,
+      pdf: buildReceiptPdf(kind, row),
+    });
+    setSendBusy(null);
+    if (!r.ok) setErr(r.reason ?? 'Could not send.');
+  };
+
   const printReceipt = (kind: 'sale' | 'rental', row: any) => {
     const prod = rows.find((p: any) => p.id === row.special_product_id);
     const cust = customers.find((c: any) => c.id === row.customer_id);
@@ -399,6 +482,12 @@ const SpecialPage: React.FC = () => {
                   <td>{s.status === 'paid' ? <span className="badge badge-success">Paid</span> : <span className="badge badge-muted">Cancelled{s.stock_returned ? ' · stock back' : ''}</span>}</td>
                   <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('sale', s)} title="Print this sale"><Printer size={13} /> Print</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('whatsapp', 'sale', s)}
+                      disabled={!whatsappNumber(customers.find((c: any) => c.id === s.customer_id)?.phone)}
+                      title="Send by WhatsApp"><MessageCircle size={13} /></button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('email', 'sale', s)}
+                      disabled={!emailAddress(customers.find((c: any) => c.id === s.customer_id)?.email)}
+                      title="Send by email"><Mail size={13} /></button>
                     {s.status === 'paid' && <button className="btn btn-danger btn-sm" onClick={() => cancelSale(s)}>Cancel</button>}
                   </div></td>
                 </tr>))}
@@ -432,6 +521,12 @@ const SpecialPage: React.FC = () => {
                     </>}
                     {r.status === 'active' && <button className="btn btn-primary btn-sm" onClick={() => openReturn(r)}>Return</button>}
                     <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('rental', r)} title="Print this rental"><Printer size={13} /> Print</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('whatsapp', 'rental', r)}
+                      disabled={!whatsappNumber(customers.find((c: any) => c.id === r.customer_id)?.phone)}
+                      title="Send by WhatsApp"><MessageCircle size={13} /></button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('email', 'rental', r)}
+                      disabled={!emailAddress(customers.find((c: any) => c.id === r.customer_id)?.email)}
+                      title="Send by email"><Mail size={13} /></button>
                   </div></td>
                 </tr>);
               })}
