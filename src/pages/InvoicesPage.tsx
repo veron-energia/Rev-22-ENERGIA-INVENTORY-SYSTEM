@@ -894,12 +894,17 @@ const InvoicesPage: React.FC = () => {
       : await sendViaEmailAttachment(args);
     setSendBusy(null);
     if (!r.ok) { setSendErr(r.reason ?? 'Could not send.'); return; }
-    // A fallback succeeded, but not in the way that was asked for — say so as
-    // information rather than pretending the PDF was attached.
-    if ((r as any).fellBackToLink) { setSendNote((r as any).reason); return; }
-    setSendNote(channel === 'email'
-      ? `The invoice PDF has been emailed to ${cust?.email}.`
-      : 'WhatsApp has opened with a link to the invoice PDF.');
+    if (channel === 'whatsapp') {
+      setSendNote('WhatsApp has opened with a link to the invoice PDF.');
+      return;
+    }
+    // Say which of the three routes was used, rather than implying the PDF was
+    // attached when only a link went out.
+    const outcome = (r as any).outcome as 'attached' | 'shared' | 'link' | undefined;
+    setSendNote(
+      outcome === 'attached' ? `The invoice PDF has been emailed to ${cust?.email}.`
+      : outcome === 'shared' ? ((r as any).reason ?? 'Choose your email app — the PDF is attached.')
+      : ((r as any).reason ?? 'Your mail client has opened with a link to the PDF.'));
   };
   const savePdf = () => { const d = buildPdfDoc(); if (d && detail) void saveDocumentFile(d, 'pdf', detail.invoice_no); };
   const saveImg = () => { const d = buildPdfDoc(); if (d && detail) void saveDocumentFile(d, 'image', detail.invoice_no); };

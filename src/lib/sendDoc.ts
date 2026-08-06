@@ -230,87 +230,151 @@ export async function sendViaWhatsAppLink(a: SendArgs): Promise<{ ok: boolean; r
 }
 
 /** Email: send the PDF as a real attachment via the Edge Function. */
+/**
+ * Is the email Edge Function reachable?
+ *
+ * Once a call has failed with "not deployed" we remember it for the rest of the
+ * session, so the browser console is not filled with the same CORS/404 pair on
+ * every send. Setting VITE_INVOICE_EMAIL=off skips the attempt entirely.
+ */
+const FN_FLAG = 'energia.emailFn.unavailable';
+const emailFnDisabled = () =>
+  String((import.meta as any).env?.VITE_INVOICE_EMAIL ?? '').toLowerCase() === 'off';
+const emailFnKnownDown = () => {
+  try { return sessionStorage.getItem(FN_FLAG) === '1'; } catch { return false; }
+};
+const markEmailFnDown = () => {
+  try { sessionStorage.setItem(FN_FLAG, '1'); } catch { /* private mode */ }
+};
+
+/** Can this device attach a real file to a share? (Phones can; desktops cannot.) */
+export function canShareFiles(): boolean {
+  try {
+    const nav: any = navigator;
+    if (!nav?.canShare || !nav?.share) return false;
+    return !!nav.canShare({ files: [new File(['x'], 'p.pdf', { type: 'application/pdf' })] });
+  } catch { return false; }
+}
+
+export type EmailOutcome = 'attached' | 'shared' | 'link';
+
+/**
+ * Email the customer their invoice, preferring the method that actually
+ * attaches the PDF:
+ *
+ *   1. the Edge Function — a true server-sent email with the PDF attached,
+ *      fully automatic and works on any device;
+ *   2. the device share sheet — on a phone this hands the real PDF to Gmail,
+ *      Outlook or Mail, with no backend at all;
+ *   3. a link to the PDF — the last resort, so a customer is never left with
+ *      nothing.
+ */
 export async function sendViaEmailAttachment(
   a: SendArgs,
-): Promise<{ ok: boolean; reason?: string; fellBackToLink?: boolean }> {
+): Promise<{ ok: boolean; reason?: string; outcome?: EmailOutcome }> {
   const addr = emailAddress(a.email);
   if (!addr) return { ok: false, reason: 'This customer has no valid email address.' };
 
-  let base64: string;
+  let pdfBlob: Blob;
   try {
-    base64 = await blobToBase64(documentPdfBlob(a.pdf));
+    pdfBlob = documentPdfBlob(a.pdf);
   } catch (e: any) {
     return { ok: false, reason: e?.message ?? 'Could not prepare the PDF.' };
   }
 
-  let data: any = null, error: any = null;
-  try {
-    ({ data, error } = await supabase.functions.invoke('send-invoice-email', {
-      body: {
-        to: addr,
-        subject: `${a.kindLabel} ${a.docNo} — Energia`,
-        customerName: a.customerName ?? null,
-        docNo: a.docNo, kindLabel: a.kindLabel,
-        filename: `${safeName(a.docNo)}.pdf`,
-        pdfBase64: base64,
-      },
-    }));
-  } catch (e: any) {
-    error = e;
+  // ---- 1. The Edge Function -----------------------------------------
+  if (!emailFnDisabled() && !emailFnKnownDown()) {
+    let data: any = null, error: any = null;
+    try {
+      ({ data, error } = await supabase.functions.invoke('send-invoice-email', {
+        body: {
+          to: addr,
+          subject: `${a.kindLabel} ${a.docNo} — Energia`,
+          customerName: a.customerName ?? null,
+          docNo: a.docNo, kindLabel: a.kindLabel,
+          filename: `${safeName(a.docNo)}.pdf`,
+          pdfBase64: await blobToBase64(pdfBlob),
+        },
+      }));
+    } catch (e: any) { error = e; }
+
+    const status = error?.context?.status ?? error?.status;
+    const raw = String(error?.message ?? '');
+    const notDeployed = status === 404
+      || /failed to (fetch|send)|networkerror|load failed|cors/i.test(raw);
+
+    if (!notDeployed) {
+      const reason = data?.error ?? (error ? (error?.context?.error ?? error.message) : null);
+      if (error || reason) {
+        logSend(a, 'email', addr, null, 'failed', String(reason ?? 'unknown'));
+        return { ok: false, reason: String(reason ?? 'The email could not be sent.') };
+      }
+      logSend(a, 'email', addr, null, 'sent');
+      return { ok: true, outcome: 'attached' };
+    }
+    // Not deployed — remember, so this is the only console error this session.
+    markEmailFnDown();
   }
 
-  const status = error?.context?.status ?? error?.status;
-  const raw = String(error?.message ?? '');
-
-  // A 404 on the function URL, or the CORS/network failure that a 404 causes,
-  // both mean the same thing: the function is not deployed. The browser
-  // reports this as an opaque CORS error, which tells the shop nothing.
-  const notDeployed =
-    status === 404 ||
-    /failed to (fetch|send)|networkerror|load failed|cors/i.test(raw);
-
-  if (notDeployed) {
-    // Rather than leaving the customer without their invoice, fall back to the
-    // link — the same PDF, delivered a different way — and say so plainly.
+  // ---- 2. The device share sheet, which attaches the real file -------
+  // The Web Share API has no recipient field — the spec simply does not carry
+  // one — so the mail app opens with "To:" blank. The address is copied to the
+  // clipboard so it is one paste away, and repeated in the body as a fallback
+  // for when the clipboard is unavailable.
+  if (canShareFiles()) {
+    let copied = false;
     try {
-      const { url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf);
-      const body = [
-        a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
-        `Here is your ${a.kindLabel.toLowerCase()} ${a.docNo} from Energia:`,
-        url, '',
-        'Thank you for shopping with Energia.',
-      ].join('\n');
-      window.location.href = `mailto:${encodeURIComponent(addr)}`
-        + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
-        + `&body=${encodeURIComponent(body)}`;
-      logSend(a, 'email', addr, path, 'sent', 'link fallback — email function not deployed');
+      await navigator.clipboard.writeText(addr);
+      copied = true;
+    } catch { /* clipboard blocked — the address is in the body instead */ }
+
+    try {
+      const file = new File([pdfBlob], `${safeName(a.docNo)}.pdf`, { type: 'application/pdf' });
+      await (navigator as any).share({
+        files: [file],
+        title: `${a.kindLabel} ${a.docNo}`,
+        text: [
+          `To: ${addr}`, '',
+          a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
+          `Please find your ${a.kindLabel.toLowerCase()} ${a.docNo} attached.`, '',
+          'Thank you for shopping with Energia.',
+        ].join('\n'),
+      });
+      logSend(a, 'email', addr, null, 'sent', 'shared as a file from the device');
       return {
-        ok: true, fellBackToLink: true,
-        reason: 'The email service is not set up yet, so your mail client has opened with a '
-              + 'link to the PDF instead. To attach the PDF automatically, deploy the '
-              + 'send-invoice-email function and set RESEND_API_KEY and INVOICE_FROM.',
+        ok: true, outcome: 'shared',
+        reason: copied
+          ? `The PDF is attached. ${addr} has been copied — paste it into "To:".`
+          : `The PDF is attached. Send it to ${addr} (the address is also at the top of the message).`,
       };
     } catch (e: any) {
-      logSend(a, 'email', addr, null, 'failed', 'function not deployed; link fallback failed');
-      return {
-        ok: false,
-        reason: 'The email service is not set up yet. Deploy the send-invoice-email function '
-              + '(supabase functions deploy send-invoice-email) and set RESEND_API_KEY and '
-              + 'INVOICE_FROM, then try again.',
-      };
+      // Dismissing the share sheet is a choice, not a failure.
+      if (e?.name === 'AbortError') return { ok: true, outcome: 'shared' };
     }
   }
 
-  // The function replied, so show whatever it or the provider actually said —
-  // "domain not verified" is far more useful than a generic failure.
-  const reason = data?.error ?? (error ? (error?.context?.error ?? error.message) : null);
-  if (error || reason) {
-    logSend(a, 'email', addr, null, 'failed', String(reason ?? 'unknown'));
-    return { ok: false, reason: String(reason ?? 'The email could not be sent.') };
+  // ---- 3. A link, so the customer still gets their invoice -----------
+  try {
+    const { url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf);
+    const body = [
+      a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
+      `Here is your ${a.kindLabel.toLowerCase()} ${a.docNo} from Energia:`,
+      url, '',
+      'Thank you for shopping with Energia.',
+    ].join('\n');
+    window.location.href = `mailto:${encodeURIComponent(addr)}`
+      + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
+      + `&body=${encodeURIComponent(body)}`;
+    logSend(a, 'email', addr, path, 'sent', 'link fallback — email function not deployed');
+    return {
+      ok: true, outcome: 'link',
+      reason: 'Your mail client has opened with a link to the PDF. To attach the PDF itself, '
+            + 'either send from a phone, or deploy the send-invoice-email function.',
+    };
+  } catch (e: any) {
+    logSend(a, 'email', addr, null, 'failed', String(e?.message ?? 'link fallback failed'));
+    return { ok: false, reason: e?.message ?? 'The invoice could not be sent.' };
   }
-
-  logSend(a, 'email', addr, null, 'sent');
-  return { ok: true };
 }
 
 /** Save the customer copy locally. */

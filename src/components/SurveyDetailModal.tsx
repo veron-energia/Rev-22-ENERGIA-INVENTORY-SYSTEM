@@ -171,8 +171,13 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
     (acc[o.category] ??= []).push(o); return acc;
   }, {});
 
-  const Field: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
-    <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 600 }}>{v || '—'}</div></div>
+  const Field: React.FC<{ k: string; v: React.ReactNode; span?: number }> = ({ k, v, span }) => (
+    <div style={{ minWidth: 0, gridColumn: span ? `span ${span}` : undefined }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{k}</div>
+      {/* minWidth:0 plus overflowWrap lets a long value wrap inside its cell;
+          without both, a grid item refuses to shrink and spills over the next. */}
+      <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: 'anywhere' }}>{v || '—'}</div>
+    </div>
   );
 
   return (
@@ -256,11 +261,13 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
           ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
             <Field k="HP No." v={s.phone} />
-            <Field k="Email" v={s.email} />
+            <Field k="Sex" v={s.sex ? (s.sex === 'female' ? 'Female' : 'Male') : '—'} />
             <Field k="Date of Birth" v={d(s.date_of_birth)} />
             <Field k="Age" v={s.age} />
-            <Field k="Sex" v={s.sex ? (s.sex === 'female' ? 'Female' : 'Male') : '—'} />
             <Field k="Occupation" v={s.occupation} />
+            {/* An email is far longer than the other values, so it is given two
+                columns and allowed to wrap rather than running into its neighbour. */}
+            <Field k="Email" v={s.email} span={2} />
             <Field k="How did you hear about us?" v={(s as any).source_label ? `${(s as any).source_label}${(s as any).source_details ? ` — ${(s as any).source_details}` : ''}` : null} />
             <Field k="Event" v={s.event_name} />
             <Field k="Submitted" v={new Date(s.submitted_at).toLocaleString()} />

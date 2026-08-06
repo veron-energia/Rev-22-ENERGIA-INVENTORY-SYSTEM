@@ -183,7 +183,9 @@ const SpecialPage: React.FC = () => {
       ? await sendViaWhatsAppLink(args)
       : await sendViaEmailAttachment(args);
     setSendBusy(null);
-    if (!r.ok) setErr(r.reason ?? 'Could not send.');
+    if (!r.ok) { setErr(r.reason ?? 'Could not send.'); return; }
+    // A link or a share sheet is not the same as an attached PDF; say which.
+    if ((r as any).reason) setErr((r as any).reason);
   };
 
   const printReceipt = (kind: 'sale' | 'rental', row: any) => {
