@@ -50,6 +50,8 @@ const TransfersPage: React.FC = () => {
   const canApprove = isOwnerOrManager(profile?.role);
   const isStaff = profile?.role === 'staff';
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
+  // Staff may be assigned to several stores and choose among them.
+  const [myStores, setMyStores] = useState<{ store_id: string; store_name: string; is_default: boolean }[]>([]);
   const [approveSourceWh, setApproveSourceWh] = useState('');
   const [storePrices, setStorePrices] = useState<{ store_id: string; product_id: string }[]>([]);
 
@@ -108,7 +110,7 @@ const TransfersPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [req, lns, wh, st, prod, prof, myStore, prc] = await Promise.all([
+    const [req, lns, wh, st, prod, prof, myStore, myStoreList, prc] = await Promise.all([
       supabase.from('transfer_requests').select('*').order('created_at', { ascending: false }),
       supabase.from('transfer_request_lines').select('*'),
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -116,6 +118,7 @@ const TransfersPage: React.FC = () => {
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('*'),
       supabase.rpc('my_assigned_store_id'),
+      supabase.rpc('my_assigned_stores'),
       supabase.from('store_product_prices').select('store_id,product_id').is('deleted_at', null).eq('is_active', true),
     ]);
     setRequests((req.data as TransferRequest[]) ?? []);
@@ -127,6 +130,7 @@ const TransfersPage: React.FC = () => {
     setProducts((prod.data as Product[]) ?? []);
     setProfiles((prof.data as Profile[]) ?? []);
     setAssignedStoreId((myStore.data as string | null) ?? null);
+    setMyStores((myStoreList.data as any[]) ?? []);
     setStorePrices((prc.data as { store_id: string; product_id: string }[]) ?? []);
     setLoading(false);
   }, []);
@@ -146,7 +150,9 @@ const TransfersPage: React.FC = () => {
   };
 
   const resetCreate = () => {
-    setTType('warehouse_to_store'); setSourceId(''); setDestId('');
+    setTType('warehouse_to_store'); setSourceId('');
+    setDestId(isStaff && myStores.length === 1
+      ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : '');
     setLines([{ product_id: '', quantity: 0 }]); setNote(''); setCreateErr(null);
   };
 
@@ -157,10 +163,14 @@ const TransfersPage: React.FC = () => {
     // Staff: simplified request — product + qty + note only. Destination is
     // their assigned store; source is chosen by Owner/Manager at approval.
     if (isStaff) {
-      if (!assignedStoreId) { setCreateErr('You are not assigned to a store, so you cannot request a transfer.'); return; }
+      if (!assignedStoreId && myStores.length === 0) { setCreateErr('You are not assigned to a store, so you cannot request a transfer.'); return; }
+      if (myStores.length > 1 && !destId) { setCreateErr('Choose which of your stores this stock is for.'); return; }
       setSaving(true); setCreateErr(null);
       const { error } = await supabase.rpc('create_staff_transfer_request', {
         p_lines: validLines, p_note: note.trim() || null,
+        // Only meaningful when assigned to several stores; the function
+        // validates it against this user's own assignments either way.
+        p_store_id: myStores.length > 1 ? (destId || null) : null,
       });
       setSaving(false);
       if (error) { setCreateErr(error.message); return; }
@@ -219,21 +229,81 @@ const TransfersPage: React.FC = () => {
     setRevisions((data as any[]) ?? []);
   };
 
-  const openApprove = (req: TransferRequest) => {
+  // Where each product's stock actually sits, so the approver picks from what
+  // exists rather than guessing a warehouse and being refused.
+  const [sourcing, setSourcing] = useState<any[]>([]);
+  // line_id -> warehouse_id -> quantity
+  const [alloc, setAlloc] = useState<Record<string, Record<string, number>>>({});
+
+  const openApprove = async (req: TransferRequest) => {
     setApproveReq(req);
     const reqLines = linesByReq[req.id] ?? [];
     setApproveLines(reqLines.map(l => ({ product_id: l.product_id, quantity: l.quantity })));
     setApproveNote(''); setRejectReason(''); setApproveErr(null); setApproveSourceWh('');
+    setAlloc({});
+    const { data } = await supabase.rpc('transfer_request_sourcing', { p_request_id: req.id });
+    const rows = (data as any[]) ?? [];
+    setSourcing(rows);
+
+    // Pre-fill greedily from the warehouses holding the most, which is the
+    // answer the approver usually wants; every figure stays editable.
+    const seed: Record<string, Record<string, number>> = {};
+    for (const lineId of Array.from(new Set(rows.map(r => r.line_id)))) {
+      const forLine = rows.filter(r => r.line_id === lineId)
+        .sort((a, b) => b.available - a.available);
+      let left = forLine[0]?.approved ?? 0;
+      seed[lineId] = {};
+      for (const r of forLine) {
+        if (left <= 0) break;
+        const take = Math.min(left, r.available);
+        if (take > 0) { seed[lineId][r.warehouse_id] = take; left -= take; }
+      }
+    }
+    setAlloc(seed);
   };
+
+  const lineIds = Array.from(new Set(sourcing.map(r => r.line_id)));
+  const allocFor = (lineId: string) =>
+    Object.values(alloc[lineId] ?? {}).reduce((a, b) => a + (Number(b) || 0), 0);
+  const approvedFor = (lineId: string) =>
+    sourcing.find(r => r.line_id === lineId)?.approved ?? 0;
+  const allocationComplete = lineIds.length > 0
+    && lineIds.every(id => allocFor(id) === approvedFor(id));
 
   const handleApprove = async () => {
     if (!approveReq) return;
     setApproveBusy(true); setApproveErr(null);
-    if (!approveReq.source_id && !approveSourceWh) { setApproveErr('Choose a source warehouse to approve this request.'); setApproveBusy(false); return; }
-    const { error } = await supabase.rpc('approve_transfer', {
-      p_request_id: approveReq.id, p_approved_lines: approveLines, p_note: approveNote.trim() || null,
-      p_source_warehouse_id: approveReq.source_id ? null : (approveSourceWh || null),
-    });
+
+    // A request raised without a source is sourced per line here.
+    const useMulti = !approveReq.source_id && lineIds.length > 0;
+    if (useMulti && !allocationComplete) {
+      const bad = lineIds.filter(id => allocFor(id) !== approvedFor(id))
+        .map(id => sourcing.find(r => r.line_id === id)?.product_name).join(', ');
+      setApproveErr(`Allocate exactly the approved quantity for: ${bad}.`);
+      setApproveBusy(false); return;
+    }
+    if (!useMulti && !approveReq.source_id && !approveSourceWh) {
+      setApproveErr('Choose a source warehouse to approve this request.');
+      setApproveBusy(false); return;
+    }
+
+    const { error } = useMulti
+      ? await supabase.rpc('approve_transfer_multi', {
+          p_request_id: approveReq.id, p_approved_lines: approveLines,
+          p_note: approveNote.trim() || null, p_source_warehouse_id: null,
+          p_line_sources: lineIds.map(id => ({
+            line_id: id,
+            sources: Object.entries(alloc[id] ?? {})
+              .filter(([, q]) => Number(q) > 0)
+              .map(([wid, q]) => ({ warehouse_id: wid, quantity: Number(q) })),
+          })),
+        })
+      : await supabase.rpc('approve_transfer', {
+          p_request_id: approveReq.id, p_approved_lines: approveLines,
+          p_note: approveNote.trim() || null,
+          p_source_warehouse_id: approveReq.source_id ? null : (approveSourceWh || null),
+        });
+
     setApproveBusy(false);
     if (error) { setApproveErr(error.message); return; }
     setApproveReq(null); loadAll();
@@ -442,7 +512,16 @@ const TransfersPage: React.FC = () => {
             {createErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{createErr}</div></div>}
             {isStaff ? (
               <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
-                Requesting stock into your store: <strong>{stores.find(s => s.id === (assignedStoreId ?? ''))?.name ?? 'No store assigned'}</strong>.
+                Requesting stock into{' '}
+                {myStores.length > 1 ? (
+                  <select value={destId} onChange={e => setDestId(e.target.value)}
+                    style={{ width: 'auto', display: 'inline-block', margin: '0 4px' }}>
+                    <option value="">— choose a store —</option>
+                    {myStores.map(m => <option key={m.store_id} value={m.store_id}>{m.store_name}</option>)}
+                  </select>
+                ) : (
+                  <strong>{stores.find(s => s.id === (assignedStoreId ?? myStores[0]?.store_id ?? ''))?.name ?? 'No store assigned'}</strong>
+                )}.
                 An Owner or Manager will choose which warehouse to send it from when they approve.
               </div></div>
             ) : (
@@ -512,9 +591,71 @@ const TransfersPage: React.FC = () => {
             <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
               {approveReq.source_id ? locName(approveReq.source_type, approveReq.source_id) : <em>source not chosen yet</em>} → {locName(approveReq.dest_type, approveReq.dest_id)}
             </p>
-            {!approveReq.source_id && (
+            {!approveReq.source_id && lineIds.length > 0 && (
               <div className="form-group">
-                <label>Source Warehouse * <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— this was a Staff request; choose where the stock ships from</span></label>
+                <label>Where the stock ships from
+                  <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
+                    {' '}— one product may be drawn from several warehouses
+                  </span>
+                </label>
+                <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+                  {lineIds.map(lineId => {
+                    const rows = sourcing.filter(r => r.line_id === lineId);
+                    const head = rows[0];
+                    const need = approvedFor(lineId);
+                    const got = allocFor(lineId);
+                    const ok = got === need;
+                    return (
+                      <div key={lineId} style={{ borderTop: '1px solid var(--border)', padding: '8px 10px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>
+                            {head?.product_name}
+                            <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 11.5 }}> {head?.product_sku}</span>
+                          </div>
+                          <div style={{ fontSize: 12.5, color: ok ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>
+                            {got} of {need} allocated{ok ? ' ✓' : ''}
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 6, marginTop: 6 }}>
+                          {rows.map(r => {
+                            const val = alloc[lineId]?.[r.warehouse_id] ?? 0;
+                            const none = r.available <= 0;
+                            return (
+                              <div key={r.warehouse_id} style={{
+                                display: 'flex', gap: 6, alignItems: 'center',
+                                opacity: none ? 0.45 : 1,
+                              }}>
+                                <div style={{ flex: 1, fontSize: 12, minWidth: 0 }}>
+                                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {r.warehouse_name}
+                                  </div>
+                                  <div style={{ fontSize: 10.5, color: none ? 'var(--danger)' : 'var(--text-muted)' }}>
+                                    {none ? 'no stock' : `${r.available} in stock`}
+                                  </div>
+                                </div>
+                                <input type="number" min={0} max={r.available} disabled={none}
+                                  value={val || ''} placeholder="0" style={{ width: 68 }}
+                                  onChange={e => {
+                                    const q = Math.max(0, Math.min(Number(e.target.value) || 0, r.available));
+                                    setAlloc(a => ({ ...a, [lineId]: { ...(a[lineId] ?? {}), [r.warehouse_id]: q } }));
+                                  }} />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>
+                  Pre-filled from the warehouses holding the most — adjust any figure. Each product
+                  must add up to its approved quantity before the transfer can be approved.
+                </div>
+              </div>
+            )}
+            {!approveReq.source_id && lineIds.length === 0 && (
+              <div className="form-group">
+                <label>Source Warehouse * <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— choose where the stock ships from</span></label>
                 <select value={approveSourceWh} onChange={e => setApproveSourceWh(e.target.value)}>
                   <option value="">— Select warehouse —</option>
                   {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}

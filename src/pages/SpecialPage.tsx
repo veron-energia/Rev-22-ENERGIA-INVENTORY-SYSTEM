@@ -301,16 +301,49 @@ const SpecialPage: React.FC = () => {
   const [sMethod, setSMethod] = useState(''); const [sRef, setSRef] = useState('');
   const [sBusy, setSBusy] = useState(false); const [sErr, setSErr] = useState<string | null>(null);
   const openSale = () => { setSProduct(''); setSWh(warehouses[0]?.id ?? ''); setSCustomer(''); setSQty(1); setSMethod(methods[0]?.id ?? ''); setSRef(''); setSErr(null); setSaleOpen(true); };
+  // Phase 30: a special sale may be part- or fully funded from the customer's
+  // wallet, provided their credit permits the Special Products category.
+  const [sUseCredit, setSUseCredit] = useState(false);
+  const [sCreditAmt, setSCreditAmt] = useState('');
+  const [sWallet, setSWallet] = useState<any>(null);
+  useEffect(() => {
+    if (!sCustomer) { setSWallet(null); return; }
+    supabase.rpc('customer_credit_balances', { p_customer_id: sCustomer })
+      .then(({ data }) => setSWallet(data ?? null));
+  }, [sCustomer]);
+
   const submitSale = async () => {
+    if (!sProduct || !sWh) { setSErr('Select a product and warehouse.'); return; }
+    if (sUseCredit && !sCustomer) { setSErr('Wallet credit needs a customer.'); return; }
     if (!sProduct || !sWh) { setSErr('Select a product and warehouse.'); return; }
     setSBusy(true); setSErr(null);
     const { error } = await supabase.rpc('create_special_sale', {
       p_special_product_id: sProduct, p_warehouse_id: sWh, p_customer_id: sCustomer || null,
       p_quantity: sQty, p_payment_method_id: sMethod || null, p_reference: sRef.trim() || null, p_notes: null,
     });
+    if (error) { setSBusy(false); setSErr(error.message); return; }
+
+    // Apply wallet credit to the sale just created. Done as a second step
+    // because create_special_sale owns the stock movement and numbering.
+    if (sUseCredit && Number(sCreditAmt) > 0) {
+      const { data: latest } = await supabase.from('special_sales')
+        .select('id').eq('customer_id', sCustomer).order('created_at', { ascending: false }).limit(1);
+      const saleId = (latest as any[])?.[0]?.id;
+      if (saleId) {
+        const { error: cErr } = await supabase.rpc('pay_special_with_credit', {
+          p_doc_kind: 'special_sale', p_doc_id: saleId, p_customer_id: sCustomer,
+          p_amount: Number(sCreditAmt), p_store_id: brandStores[0]?.id ?? null,
+        });
+        if (cErr) {
+          setSBusy(false);
+          setSErr(`The sale was created, but the wallet payment failed: ${cErr.message}`);
+          load(); return;
+        }
+      }
+    }
     setSBusy(false);
-    if (error) { setSErr(error.message); return; }
-    setSaleOpen(false); load();
+    setSaleOpen(false); setSUseCredit(false); setSCreditAmt('');
+    load();
   };
   const cancelSale = async (s: SpecialSale) => {
     const back = confirm(`Cancel sale ${s.sale_no}?\n\nOK = return stock to warehouse · Cancel = keep stock out`);
@@ -347,13 +380,34 @@ const SpecialPage: React.FC = () => {
   const [payFor, setPayFor] = useState<Rental | null>(null);
   const [payMethod, setPayMethod] = useState(''); const [payRef, setPayRef] = useState('');
   const [payBusy, setPayBusy] = useState(false); const [payErr, setPayErr] = useState<string | null>(null);
+  // Phase 30: a rental fee may be met from wallet credit that permits Rentals.
+  const [payUseCredit, setPayUseCredit] = useState(false);
+  const [payCreditAmt, setPayCreditAmt] = useState('');
+  const [payWallet, setPayWallet] = useState<any>(null);
+  useEffect(() => {
+    if (!payFor?.customer_id) { setPayWallet(null); return; }
+    supabase.rpc('customer_credit_balances', { p_customer_id: payFor.customer_id })
+      .then(({ data }) => setPayWallet(data ?? null));
+    setPayUseCredit(false); setPayCreditAmt('');
+  }, [payFor?.customer_id]);
+
   const submitPay = async () => {
     if (!payFor) return;
     setPayBusy(true); setPayErr(null);
+
+    // Credit first, so the remainder settles against the chosen method.
+    if (payUseCredit && Number(payCreditAmt) > 0) {
+      const { error: cErr } = await supabase.rpc('pay_special_with_credit', {
+        p_doc_kind: 'rental', p_doc_id: payFor.id, p_customer_id: payFor.customer_id,
+        p_amount: Number(payCreditAmt), p_store_id: brandStores[0]?.id ?? null,
+      });
+      if (cErr) { setPayBusy(false); setPayErr(cErr.message); return; }
+    }
+
     const { error } = await supabase.rpc('pay_rental', { p_rental_id: payFor.id, p_payment_method_id: payMethod || null, p_reference: payRef.trim() || null });
     setPayBusy(false);
     if (error) { setPayErr(error.message); return; }
-    setPayFor(null); load();
+    setPayFor(null); setPayUseCredit(false); setPayCreditAmt(''); load();
   };
   const doActivate = async (r: Rental) => {
     const { error } = await supabase.rpc('activate_rental', { p_rental_id: r.id });
@@ -631,7 +685,45 @@ const SpecialPage: React.FC = () => {
               </div>
               <div className="form-group"><label>Reference</label><input value={sRef} onChange={e => setSRef(e.target.value)} placeholder="Optional" /></div>
             </div>
-            {sProduct && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Total: <strong>{money((rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty)}</strong> — paid now; warehouse stock deducts immediately. No commission on special products.</div></div>}
+
+            {/* Wallet credit — only offered where the customer actually has some. */}
+            {sCustomer && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={sUseCredit}
+                    onChange={e => {
+                      setSUseCredit(e.target.checked);
+                      if (e.target.checked && !sCreditAmt) {
+                        const total = (rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty;
+                        const avail = Number(sWallet?.available_total ?? 0);
+                        setSCreditAmt(String(Math.min(total, avail).toFixed(2)));
+                      }
+                    }} />
+                  Pay with wallet credit
+                </label>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Wallet balance: <strong>{money(Number(sWallet?.available_total ?? 0))}</strong>.
+                  Only credit permitted for <strong>Special Products</strong> can be used, and
+                  Bonus Credit is spent first.
+                </div>
+                {sUseCredit && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 6 }}>
+                    <div style={{ flex: '0 0 160px' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Credit to apply (S$)</div>
+                      <input type="number" min={0} step={0.01} value={sCreditAmt}
+                        onChange={e => setSCreditAmt(e.target.value)} />
+                    </div>
+                    <div style={{ fontSize: 12.5, paddingBottom: 6 }}>
+                      Remaining to pay by {methods.find(m => m.id === sMethod)?.name ?? 'the chosen method'}:{' '}
+                      <strong>{money(Math.max(
+                        (rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty - Number(sCreditAmt || 0), 0))}</strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {sProduct && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Total: <strong>{money((rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty)}</strong> — paid now; warehouse stock deducts immediately. Credit-funded value earns no commission; externally paid value still qualifies for Legacy Therapy.</div></div>}
           </div>
         </Modal>
       )}
@@ -699,6 +791,39 @@ const SpecialPage: React.FC = () => {
               <select value={payMethod} onChange={e => setPayMethod(e.target.value)}>{methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
             </div>
             <div className="form-group"><label>Reference</label><input value={payRef} onChange={e => setPayRef(e.target.value)} placeholder="Optional" /></div>
+
+            {payFor.customer_id && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={payUseCredit}
+                    onChange={e => {
+                      setPayUseCredit(e.target.checked);
+                      if (e.target.checked && !payCreditAmt) {
+                        setPayCreditAmt(String(Math.min(
+                          Number(payFor.rental_fee), Number(payWallet?.available_total ?? 0)).toFixed(2)));
+                      }
+                    }} />
+                  Pay with wallet credit
+                </label>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Wallet balance: <strong>{money(Number(payWallet?.available_total ?? 0))}</strong>.
+                  Only credit permitted for <strong>Rentals</strong> can be used, Bonus Credit first.
+                  Rental value never counts toward Legacy Therapy, however it is paid.
+                </div>
+                {payUseCredit && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 6 }}>
+                    <div style={{ flex: '0 0 160px' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Credit to apply (S$)</div>
+                      <input type="number" min={0} step={0.01} value={payCreditAmt}
+                        onChange={e => setPayCreditAmt(e.target.value)} />
+                    </div>
+                    <div style={{ fontSize: 12.5, paddingBottom: 6 }}>
+                      Remaining: <strong>{money(Math.max(Number(payFor.rental_fee) - Number(payCreditAmt || 0), 0))}</strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </Modal>
       )}

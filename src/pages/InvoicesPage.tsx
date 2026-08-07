@@ -64,6 +64,8 @@ const InvoicesPage: React.FC = () => {
   const [storeInv, setStoreInv] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
+  // A staff member may be assigned to several stores; they choose among those.
+  const [myStores, setMyStores] = useState<{ store_id: string; store_name: string; is_default: boolean }[]>([]);
   const [therapyRules, setTherapyRules] = useState<TherapyPackageRule[]>([]);
   const [therapyPackages, setTherapyPackages] = useState<any[]>([]);
   const [cServiceStaff, setCServiceStaff] = useState<string[]>([]);
@@ -155,7 +157,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -170,6 +172,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
       supabase.rpc('my_assigned_store_id'),
+      supabase.rpc('my_assigned_stores'),
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).eq('is_active', true).order('duration_months'),
       supabase.from('unlimited_therapy_store_prices').select('*').is('deleted_at', null),
@@ -196,6 +199,7 @@ const InvoicesPage: React.FC = () => {
     const allProfiles = (prof.data as Profile[]) ?? [];
     setProfiles(allProfiles);
     setAssignedStoreId((myStore.data as string | null) ?? null);
+    setMyStores((myStoreList.data as any[]) ?? []);
     setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
     setTherapyPackages((utpk?.data as any[]) ?? []);
     setTherapyPrices((utsp?.data as any[]) ?? []);
@@ -215,12 +219,27 @@ const InvoicesPage: React.FC = () => {
   const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
   const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
   const isStaff = profile?.role === 'staff';
-  const activeStore = isStaff ? (assignedStoreId ?? '') : cStore;
+  // Staff choose among their assigned stores; with only one, it behaves as
+  // before. Owners and Managers use the full store list.
+  // With more than one assigned store nothing is preselected: the staff member
+  // must choose deliberately, because the store decides the prices, the stock
+  // the sale comes out of, and where the invoice is reported.
+  const staffMustChooseStore = isStaff && myStores.length > 1;
+  const storeOptions = isStaff
+    ? myStores.map(m => ({ id: m.store_id, name: m.store_name }))
+    : stores.map(s2 => ({ id: s2.id, name: s2.name }));
+  const activeStore = isStaff
+    ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
+    : cStore;
 
   const openBuy = async () => {
     setBuyErr(null); setBuyId(''); setBuyBasket({}); setBuyCustomer('');
     setBuyKind('credit_package'); setBuyOpen(true);
-    const store = activeStore || stores[0]?.id || '';
+    // Same rule as the invoice form: with several assigned stores, nothing is
+    // chosen for the staff member.
+    const store = staffMustChooseStore
+      ? activeStore
+      : (activeStore || storeOptions[0]?.id || '');
     setBuyStore(store);
     if (!store) return;
     const { data: cp } = await supabase.rpc('credit_packages_for_store', { p_store_id: store, p_day: null });
@@ -476,7 +495,9 @@ const InvoicesPage: React.FC = () => {
   const sellableVouchers = useMemo(() => vouchers, [vouchers]);
 
   const resetCreate = () => {
-    setCStore(isStaff ? (assignedStoreId ?? '') : '');
+    // Blank when there is a real choice to make.
+    setCStore(isStaff && myStores.length === 1
+      ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : '');
     setCCustomer('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
@@ -484,8 +505,11 @@ const InvoicesPage: React.FC = () => {
   };
 
   const handleCreate = async () => {
-    if (isStaff && !assignedStoreId) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
-    const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
+    if (isStaff && myStores.length === 0) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
+    const effectiveStore = isStaff
+      ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
+      : cStore;
+    if (!effectiveStore) { setCErr('Choose which store this invoice belongs to.'); return; }
     if (!effectiveStore) { setCErr('Select a store.'); return; }
     if (!cCustomer) { setCErr('Select a customer.'); return; }
     const activeLines = cLines.filter(l => l.quantity > 0 && (l.kind === 'product' ? l.product_id : l.kind === 'voucher' ? l.voucher_id : l.kind === 'therapy' ? l.therapy_package_id : l.promotion_id));
@@ -804,7 +828,9 @@ const InvoicesPage: React.FC = () => {
   const canExport = isOwnerOrManager(profile?.role);
   const serviceStaffOptions = useMemo(() => profiles.filter(p => SERVICE_STAFF_ROLES.includes(p.role)), [profiles]);
   const staffName = (id: string) => profiles.find(p => p.id === id)?.full_name ?? '—';
-  const effectiveStore = isStaff ? (assignedStoreId ?? '') : cStore;
+  const effectiveStore = isStaff
+    ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
+    : cStore;
 
   const filtered = invoices.filter(i => statusFilter === 'all' || i.status === statusFilter);
 
@@ -1189,9 +1215,10 @@ const InvoicesPage: React.FC = () => {
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>Store *</label>
-              <select value={buyStore} onChange={e => setBuyStore(e.target.value)} disabled={isStaff}>
-                <option value="">— Select store —</option>
-                {stores.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
+              <select value={buyStore} onChange={e => setBuyStore(e.target.value)}
+                disabled={isStaff && myStores.length <= 1}>
+                {(!isStaff || staffMustChooseStore) && <option value="">— Select store —</option>}
+                {storeOptions.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
               </select>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                 Only packages and bundles available at this store are listed.
@@ -1266,13 +1293,25 @@ const InvoicesPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group">
                 <label>Store *</label>
-                {isStaff ? (
-                  <input value={stores.find(s => s.id === (assignedStoreId ?? ''))?.name ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />
+                {/* Staff assigned to a single store see it fixed, as before.
+                    Assigned to several, they choose among exactly those. */}
+                {isStaff && myStores.length <= 1 ? (
+                  <input value={myStores[0]?.store_name
+                    ?? stores.find(s => s.id === (assignedStoreId ?? ''))?.name
+                    ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />
                 ) : (
-                  <select value={cStore} disabled={!!editingInvoiceId} title={editingInvoiceId ? "The store cannot be changed on an existing invoice" : undefined} onChange={e => { setCStore(e.target.value); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
-                    <option value="">— Select store —</option>
-                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  <select value={activeStore} disabled={!!editingInvoiceId}
+                    title={editingInvoiceId ? "The store cannot be changed on an existing invoice" : undefined}
+                    onChange={e => { setCStore(e.target.value); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
+                    {(!isStaff || staffMustChooseStore) && <option value="">— Select store —</option>}
+                    {storeOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
+                )}
+                {isStaff && myStores.length > 1 && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    You are assigned to {myStores.length} stores, so none is chosen for you.
+                    The invoice, its prices and its stock all belong to the one you select here.
+                  </div>
                 )}
               </div>
               <div className="form-group">

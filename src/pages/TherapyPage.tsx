@@ -5,6 +5,7 @@ import { Store, Customer, UnlimitedTherapyPackage, UnlimitedTherapyStorePrice, P
 import { Modal, DateModal, ReasonModal } from '../components/ui';
 import { RefreshCw, Plus, Sparkles, Search, CalendarClock, Play, Ban, Archive, Pencil } from 'lucide-react';
 import StorePriceEditor from '../components/StorePriceEditor';
+import { SearchSelect } from '../components/SearchSelect';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -41,6 +42,11 @@ const TherapyPage: React.FC = () => {
   // package modal
   const [pkgModal, setPkgModal] = useState<UnlimitedTherapyPackage | null | 'new'>(null);
   const [pkgName, setPkgName] = useState(''); const [pkgSku, setPkgSku] = useState(''); const [pkgMonths, setPkgMonths] = useState(12);
+  // A package grants either unlimited months or a quantity of vouchers, the
+  // same choice Legacy Therapy rules already offer.
+  const [pkgKind, setPkgKind] = useState<'unlimited' | 'voucher'>('unlimited');
+  const [pkgVoucherQty, setPkgVoucherQty] = useState(10);
+  const [pkgVoucherId, setPkgVoucherId] = useState('');
   const [pkgDesc, setPkgDesc] = useState(''); const [pkgActive, setPkgActive] = useState(true);
   const [priceFor, setPriceFor] = useState<{ id: string; name: string } | null>(null);
   const [reschedEnt, setReschedEnt] = useState<PurchasedTherapyEntitlement | null>(null);
@@ -96,8 +102,14 @@ const TherapyPage: React.FC = () => {
   const emptyPkg = { id: null as string | null, name: '', sku: '', grants_reward: false, customer_price: '', paid_credit_amount: '',
     is_active: true, effective_from: '', effective_to: '', commission_classification: 'own',
     staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', reward_qualifying_amount: '',
-    store_ids: [] as string[], voucher_ids: [] as string[] };
+    store_ids: [] as string[], voucher_ids: [] as string[],
+    // Phase 30: which categories this package's Paid Credit may buy, and the
+    // Bonus Credit it issues alongside.
+    allow_product: false, allow_voucher: true, allow_promotion: false, allow_therapy: false,
+    allow_rental: false, allow_event: false, allow_special_product: false,
+    bonus_enabled: false, bonus_mode: 'fixed' as 'fixed' | 'percentage', bonus_value: '' };
   const [pkgForm, setPkgForm] = useState<typeof emptyPkg | null>(null);
+  const [, setNoticeTick] = useState(0);
   const [pkgBusy, setPkgBusy] = useState(false);
   const [pkgErr, setPkgErr] = useState<string | null>(null);
   const saveCreditPkg = async () => {
@@ -119,6 +131,16 @@ const TherapyPage: React.FC = () => {
       p_notes: null,
       p_store_ids: pkgForm.store_ids.length ? pkgForm.store_ids : null,
       p_voucher_ids: pkgForm.voucher_ids.length ? pkgForm.voucher_ids : null,
+      p_allow_product: pkgForm.allow_product,
+      p_allow_voucher: pkgForm.allow_voucher,
+      p_allow_promotion: pkgForm.allow_promotion,
+      p_allow_therapy: pkgForm.allow_therapy,
+      p_allow_rental: pkgForm.allow_rental,
+      p_allow_event: pkgForm.allow_event,
+      p_allow_special_product: pkgForm.allow_special_product,
+      p_bonus_enabled: pkgForm.bonus_enabled,
+      p_bonus_mode: pkgForm.bonus_mode,
+      p_bonus_value: pkgForm.bonus_value === '' ? 0 : Number(pkgForm.bonus_value),
     });
     setPkgBusy(false);
     if (error) { setPkgErr(error.message); return; }
@@ -286,6 +308,9 @@ const TherapyPage: React.FC = () => {
 
   const openPkg = (p: UnlimitedTherapyPackage | 'new') => {
     setPkgSku(p === 'new' ? '' : ((p as any).sku ?? ''));
+    setPkgKind(p === 'new' ? 'unlimited' : (((p as any).entitlement_kind ?? 'unlimited') as any));
+    setPkgVoucherQty(p === 'new' ? 10 : Number((p as any).voucher_qty ?? 10));
+    setPkgVoucherId(p === 'new' ? '' : ((p as any).voucher_id ?? ''));
     setPkgModal(p);
     if (p === 'new') { setPkgName(''); setPkgMonths(12); setPkgDesc(''); setPkgActive(true); }
     else { setPkgName(p.name); setPkgMonths(p.duration_months); setPkgDesc(p.description ?? ''); setPkgActive(p.is_active); }
@@ -295,6 +320,9 @@ const TherapyPage: React.FC = () => {
     const { error } = await supabase.rpc('upsert_unlimited_therapy_package', {
       p_id: pkgModal === 'new' ? null : (pkgModal as UnlimitedTherapyPackage).id,
       p_name: pkgName, p_duration_months: pkgMonths, p_description: pkgDesc || null, p_is_active: pkgActive,
+      p_entitlement_kind: pkgKind,
+      p_voucher_qty: pkgKind === 'voucher' ? pkgVoucherQty : null,
+      p_voucher_id: pkgKind === 'voucher' ? (pkgVoucherId || null) : null,
     });
     if (error) { setBusy(null); setErr(error.message); return; }
     // The SKU is stored separately so the upsert signature stays stable.
@@ -423,13 +451,18 @@ const TherapyPage: React.FC = () => {
           <div className="card">
             {packages.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No packages yet.</p></div> : (
               <table>
-                <thead><tr><th>Name</th><th>SKU</th><th>Duration</th><th>Description</th><th>Active</th><th></th></tr></thead>
+                <thead><tr><th>Name</th><th>SKU</th><th>Grants</th><th>Duration</th><th>Description</th><th>Active</th><th></th></tr></thead>
                 <tbody>
                   {packages.map(p => (
                     <tr key={p.id}>
                       <td style={{ fontWeight: 600 }}>{p.name}</td>
                       <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{(p as any).sku ?? '—'}</td>
-                      <td>{p.duration_months} months</td>
+                      <td style={{ fontSize: 12 }}>
+                        {(p as any).entitlement_kind === 'voucher'
+                          ? <span className="badge badge-accent">{(p as any).voucher_qty} voucher(s)</span>
+                          : <span className="badge badge-primary">Unlimited</span>}
+                      </td>
+                      <td>{(p as any).entitlement_kind === 'voucher' ? '—' : `${p.duration_months} months`}</td>
                       <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{p.description ?? '—'}</td>
                       <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                       <td>
@@ -720,9 +753,30 @@ const TherapyPage: React.FC = () => {
 
       {tab === 'credit' && canManage && (
         <>
+          {!sessionStorage.getItem('energia.p30.noticeSeen') && (
+            <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+              <span>⚠</span>
+              <div>
+                <strong>Credit Packages changed.</strong> Packages created before this update were
+                migrated as <strong>Vouchers only</strong> with <strong>no Bonus Credit</strong> —
+                exactly how they behaved before, so nothing changed for customers. Open a package to
+                widen what its credit may buy or to add a bonus. Editing a package does
+                <strong> not</strong> change credit already issued.
+                <div style={{ marginTop: 6 }}>
+                  <button className="btn btn-secondary btn-sm"
+                    onClick={() => { sessionStorage.setItem('energia.p30.noticeSeen', '1'); setNoticeTick(t => t + 1); }}>
+                    Got it
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 640 }}>
-              A customer pays for a Credit Package and receives Paid Credit that may only be spent on the package's eligible Therapy Vouchers, plus one free reward unit for every whole qualifying amount of credit. The package line itself can never be paid with wallet credit.
+              A customer pays for a Credit Package and receives Paid Credit spendable on the
+              categories you choose, optional Bonus Credit, and one free reward unit for every whole
+              reward threshold of the <strong>customer price</strong>. The package line itself can
+              never be paid with wallet credit.
             </div>
             <button className="btn btn-primary" onClick={() => { setPkgForm({ ...emptyPkg }); setPkgErr(null); }}><Plus size={16} /> New Package</button>
           </div>
@@ -747,7 +801,13 @@ const TherapyPage: React.FC = () => {
                           const { data: st3 } = await supabase.from('credit_package_stores').select('store_id').eq('package_id', p2.id);
                           const { data: vs } = await supabase.from('credit_package_vouchers').select('voucher_id').eq('package_id', p2.id);
                           setPkgErr(null);
-                          setPkgForm({ id: p2.id, name: p2.name ?? '', sku: p2.sku ?? '', grants_reward: !!p2.grants_reward, customer_price: String(p2.customer_price ?? ''),
+                          setPkgForm({ id: p2.id, name: p2.name ?? '', sku: p2.sku ?? '', grants_reward: !!p2.grants_reward,
+      allow_product: !!p2.allow_product, allow_voucher: !!p2.allow_voucher,
+      allow_promotion: !!p2.allow_promotion, allow_therapy: !!p2.allow_therapy,
+      allow_rental: !!p2.allow_rental, allow_event: !!p2.allow_event,
+      allow_special_product: !!p2.allow_special_product,
+      bonus_enabled: !!p2.bonus_enabled, bonus_mode: p2.bonus_mode ?? 'fixed',
+      bonus_value: p2.bonus_value != null ? String(p2.bonus_value) : '', customer_price: String(p2.customer_price ?? ''),
                             paid_credit_amount: String(p2.paid_credit_amount ?? ''), is_active: p2.is_active,
                             effective_from: p2.effective_from ?? '', effective_to: p2.effective_to ?? '',
                             commission_classification: p2.commission_classification ?? 'own',
@@ -797,6 +857,117 @@ const TherapyPage: React.FC = () => {
                   <option value="third_party">Third-party rate</option>
                 </select>
               </div>
+            </div>
+
+            {/* ---- What this package's Paid Credit may buy ---- */}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Paid Credit may be spent on *</label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 6, marginTop: 4 }}>
+                {([
+                  ['allow_product', 'Normal Products'],
+                  ['allow_voucher', 'Vouchers'],
+                  ['allow_promotion', 'Promotions'],
+                  ['allow_therapy', 'Purchasable Therapy'],
+                  ['allow_rental', 'Rentals'],
+                  ['allow_event', 'Events'],
+                  ['allow_special_product', 'Special Products'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                    <input type="checkbox" style={{ width: 'auto' }}
+                      checked={(pkgForm as any)[key]}
+                      onChange={e => setPkgForm(f => f && ({ ...f, [key]: e.target.checked }))} />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
+                Ticking <strong>Vouchers</strong> allows every active sellable voucher — you do not
+                pick them individually. Paid Credit can never buy another Credit Package or a
+                Premium Bundle.
+              </div>
+              {!(pkgForm.allow_product || pkgForm.allow_voucher || pkgForm.allow_promotion
+                 || pkgForm.allow_therapy || pkgForm.allow_rental || pkgForm.allow_event
+                 || pkgForm.allow_special_product) && (
+                <div className="alert alert-warning" style={{ marginTop: 6, marginBottom: 0 }}>
+                  <span>⚠</span><div>With no category selected this credit cannot buy anything.</div>
+                </div>
+              )}
+            </div>
+
+            {/* ---- Bonus Credit ---- */}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input type="checkbox" style={{ width: 'auto' }} checked={pkgForm.bonus_enabled}
+                  onChange={e => setPkgForm(f => f && ({ ...f, bonus_enabled: e.target.checked }))} />
+                Also issue Bonus Credit
+              </label>
+              {pkgForm.bonus_enabled && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '0 0 150px' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Bonus type</div>
+                    <select value={pkgForm.bonus_mode}
+                      onChange={e => setPkgForm(f => f && ({ ...f, bonus_mode: e.target.value as 'fixed' | 'percentage' }))}>
+                      <option value="fixed">Fixed amount</option>
+                      <option value="percentage">Percentage of price</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: '0 0 140px' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {pkgForm.bonus_mode === 'percentage' ? 'Percentage (%)' : 'Amount (S$)'}
+                    </div>
+                    <input type="number" min={0} step={0.01} value={pkgForm.bonus_value}
+                      onChange={e => setPkgForm(f => f && ({ ...f, bonus_value: e.target.value }))} />
+                  </div>
+                  <div style={{ fontSize: 12.5, paddingBottom: 6 }}>
+                    Bonus issued: <strong>S${(() => {
+                      const price = Number(pkgForm.customer_price || 0);
+                      const val = Number(pkgForm.bonus_value || 0);
+                      return (pkgForm.bonus_mode === 'percentage' ? price * val / 100 : val).toFixed(2);
+                    })()}</strong>
+                  </div>
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
+                A percentage is taken from the <strong>customer price</strong>, not the credit issued.
+                Bonus Credit buys every normal category and is always spent before Paid Credit.
+              </div>
+            </div>
+
+            {/* ---- What the customer will actually receive ---- */}
+            <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius-sm)', padding: 10, fontSize: 12.5 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>This package issues</div>
+              {(() => {
+                const price = Number(pkgForm.customer_price || 0);
+                const paid = Number(pkgForm.paid_credit_amount || 0);
+                const bonus = !pkgForm.bonus_enabled ? 0
+                  : (pkgForm.bonus_mode === 'percentage'
+                      ? price * Number(pkgForm.bonus_value || 0) / 100
+                      : Number(pkgForm.bonus_value || 0));
+                const thr = Number(pkgForm.reward_qualifying_amount || 0);
+                const cats = ([
+                  [pkgForm.allow_product, 'Products'], [pkgForm.allow_voucher, 'Vouchers'],
+                  [pkgForm.allow_promotion, 'Promotions'], [pkgForm.allow_therapy, 'Therapy'],
+                  [pkgForm.allow_rental, 'Rentals'], [pkgForm.allow_event, 'Events'],
+                  [pkgForm.allow_special_product, 'Special Products'],
+                ] as [boolean, string][]).filter(([on]) => on).map(([, l]) => l);
+                return (<>
+                  <div>Paid Credit <strong>S${paid.toFixed(2)}</strong>, spendable on {cats.length ? cats.join(', ') : <em>nothing yet</em>}</div>
+                  <div>Bonus Credit <strong>S${bonus.toFixed(2)}</strong>, spendable on all normal categories</div>
+                  <div>
+                    Reward units{' '}
+                    <strong>{thr > 0 ? Math.floor(price / thr) : '—'}</strong>
+                    {thr > 0 && <> — from the customer price S${price.toFixed(2)} ÷ S${thr.toFixed(2)}</>}
+                    {thr <= 0 && <> — set a reward threshold to preview this</>}
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                    The full credit, bonus and reward are issued even if the package is discounted or
+                    made FOC. Commission is earned only on money actually paid.
+                  </div>
+                </>);
+              })()}
+            </div>
+
+            <div className="form-grid-2">
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Reward threshold (S$)</label>
                 <input type="number" min={0} step={0.01} value={pkgForm.reward_qualifying_amount} onChange={e => setPkgForm(f => f && ({ ...f, reward_qualifying_amount: e.target.value }))} placeholder="defaults to the Legacy tier" />
@@ -1052,7 +1223,44 @@ const TherapyPage: React.FC = () => {
           <div className="form-grid">
             <div className="form-group" style={{ marginBottom: 0 }}><label>Name *</label><input value={pkgName} onChange={e => setPkgName(e.target.value)} placeholder="e.g. Unlimited Therapy – 1 Year" /></div>
             <div className="form-group" style={{ marginBottom: 0 }}><label>SKU</label><input value={pkgSku} onChange={e => setPkgSku(e.target.value)} placeholder="e.g. TH-12M" /></div>
-            <div className="form-group" style={{ marginBottom: 0 }}><label>Duration (calendar months) *</label><input type="number" min={1} value={pkgMonths} onChange={e => setPkgMonths(+e.target.value)} /></div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>What the customer receives *</label>
+              <select value={pkgKind} onChange={e => setPkgKind(e.target.value as 'unlimited' | 'voucher')}>
+                <option value="unlimited">Unlimited therapy for a period</option>
+                <option value="voucher">A quantity of vouchers</option>
+              </select>
+            </div>
+            {pkgKind === 'unlimited' ? (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Duration (calendar months) *</label>
+                <input type="number" min={1} value={pkgMonths} onChange={e => setPkgMonths(+e.target.value)} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  The customer activates within a year of purchase, then has unlimited therapy for
+                  this many calendar months.
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Voucher *</label>
+                  <SearchSelect value={pkgVoucherId} onChange={setPkgVoucherId}
+                    placeholder="Search voucher name or code…"
+                    options={allVouchers.map((v: any) => ({
+                      value: v.id, label: v.name, sublabel: v.code,
+                      search: `${v.name} ${v.code ?? ''}`,
+                    }))} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Vouchers granted *</label>
+                  <input type="number" min={1} value={pkgVoucherQty}
+                    onChange={e => setPkgVoucherQty(+e.target.value)} />
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    Issued to the customer as soon as the invoice is paid — there is nothing to
+                    activate, so no duration applies.
+                  </div>
+                </div>
+              </>
+            )}
             <div className="form-group" style={{ marginBottom: 0 }}><label>Description</label><input value={pkgDesc} onChange={e => setPkgDesc(e.target.value)} /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
               <input type="checkbox" checked={pkgActive} onChange={e => setPkgActive(e.target.checked)} style={{ width: 'auto' }} /> Active

@@ -21,13 +21,15 @@ const ExchangesPage: React.FC = () => {
   const [storeInv, setStoreInv] = useState<{ store_id: string; product_id: string; current_qty: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
+  // Staff may be assigned to several stores and choose among them.
+  const [myStores, setMyStores] = useState<{ store_id: string; store_name: string; is_default: boolean }[]>([]);
   const [promotions, setPromotions] = useState<Promotion[]>([]);
 
   const isStaff = profile?.role === 'staff';
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [ex, exinv, pr, st, cu, pm, spp, si, mine, promo] = await Promise.all([
+    const [ex, exinv, pr, st, cu, pm, spp, si, mine, myStoreList, promo] = await Promise.all([
       supabase.from('product_exchanges').select('*').order('created_at', { ascending: false }),
       supabase.from('invoices').select('id, invoice_no, exchange_id').eq('is_exchange', true),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -37,6 +39,7 @@ const ExchangesPage: React.FC = () => {
       supabase.from('store_product_prices').select('store_id,product_id,selling_price,is_active').eq('is_active', true),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
       supabase.rpc('my_assigned_store_id'),
+      supabase.rpc('my_assigned_stores'),
       supabase.from('promotions').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
     ]);
     setExchanges((ex.data as ProductExchange[]) ?? []);
@@ -58,6 +61,7 @@ const ExchangesPage: React.FC = () => {
     setPrices((spp.data as any[]) ?? []);
     setStoreInv((si.data as any[]) ?? []);
     setAssignedStoreId((mine.data as string | null) ?? null);
+    setMyStores((myStoreList.data as any[]) ?? []);
     setPromotions((promo.data as Promotion[]) ?? []);
     setLoading(false);
   }, []);
@@ -93,10 +97,16 @@ const ExchangesPage: React.FC = () => {
   const [confirming, setConfirming] = useState(false);
   const [attestName, setAttestName] = useState('');
 
-  const effectiveStore = isStaff ? (assignedStoreId ?? '') : store;
+  // With several assigned stores nothing is preselected — the store decides
+  // which stock the replacement comes out of.
+  const staffMustChooseStore = isStaff && myStores.length > 1;
+  const effectiveStore = isStaff
+    ? (staffMustChooseStore ? store : (store || assignedStoreId || myStores[0]?.store_id || ''))
+    : store;
 
   const resetWizard = () => {
-    setStore(isStaff ? (assignedStoreId ?? '') : ''); setInvSearch(''); setInvoice(null); setInvItems([]);
+    setStore(isStaff && myStores.length === 1
+      ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : ''); setInvSearch(''); setInvoice(null); setInvItems([]);
     setEligMsg(null); setReturnIds([]); setRepl([{ product_id: '', quantity: 1 }]); setPays([]); setReason(''); setNotes(''); setErr(null);
     setMode('product'); setBundleLineId(''); setNewPromoId(''); setComponentPid(''); setComponentQty(1); setBundleComps([]);
   };
@@ -362,8 +372,12 @@ const ExchangesPage: React.FC = () => {
 
             <div className="form-group">
               <label>Processing Store *</label>
-              {isStaff ? <input value={sName(assignedStoreId ?? '') } disabled style={{ background: 'var(--surface-2)' }} />
-                : <select value={store} onChange={e => setStore(e.target.value)}><option value="">— Select —</option>{stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>}
+              {isStaff && myStores.length <= 1 ? <input value={sName(assignedStoreId ?? myStores[0]?.store_id ?? '')} disabled style={{ background: 'var(--surface-2)' }} />
+                : <select value={effectiveStore} onChange={e => setStore(e.target.value)}>
+                    {(!isStaff || staffMustChooseStore) && <option value="">— Select —</option>}
+                    {(isStaff ? myStores.map(m => ({ id: m.store_id, name: m.store_name })) : stores)
+                      .map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>}
             </div>
 
             <div className="form-group">
