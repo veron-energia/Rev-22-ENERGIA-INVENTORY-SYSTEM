@@ -1575,7 +1575,13 @@ const InvoicesPage: React.FC = () => {
             )}
 
             <div className="form-grid-2">
-              <div className="form-group"><label>Manual Discount (S$)</label><input type="number" min={0} step={0.01} value={cDiscount || ''} onChange={e => setCDiscount(+e.target.value)} placeholder="0.00" /></div>
+              <div className="form-group"><label>Manual Discount (S$)</label>
+                <input type="number" min={0} step={0.01} value={cDiscount || ''} onChange={e => setCDiscount(+e.target.value)} placeholder="0.00" />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Applies to everything on the invoice — products, third-party items, vouchers,
+                  promotions and therapy — capped at the subtotal.
+                </div>
+              </div>
               <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                   <input type="checkbox" checked={saveEarthOn} style={{ width: 'auto' }}
