@@ -199,7 +199,8 @@ const DashboardPage: React.FC = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                       flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Sales</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center',
+                        background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 2 }}>
             {([['day','Today'],['week','This week'],['month','This month'],
                ['year','This year'],['all','All time'],['custom','Custom']] as const).map(([k, lbl]) => (
               <button key={k} className={`btn btn-sm ${period === k ? 'btn-primary' : 'btn-secondary'}`}
@@ -240,10 +241,11 @@ const DashboardPage: React.FC = () => {
 
         {!salesBusy && sales && (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{sales.label}</div>
-                <div style={{ fontSize: 26, fontWeight: 700 }}>S${Number(sales.sales).toFixed(2)}</div>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ flex: '0 0 auto', minWidth: 200 }}>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', textTransform: 'uppercase',
+                              letterSpacing: '0.04em', fontWeight: 600 }}>{sales.label}</div>
+                <div style={{ fontSize: 34, fontWeight: 700, lineHeight: 1.1 }}>S${Number(sales.sales).toFixed(2)}</div>
                 {sales.change_percent != null && (
                   <div style={{ fontSize: 12, fontWeight: 600,
                                 color: Number(sales.change_percent) >= 0 ? 'var(--success)' : 'var(--danger)' }}>
@@ -254,21 +256,21 @@ const DashboardPage: React.FC = () => {
                   </div>
                 )}
               </div>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Invoices</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>{sales.invoice_count}</div>
+              <div style={{ flex: '0 0 auto' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Invoices</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{sales.invoice_count}</div>
               </div>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Average invoice</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>S${Number(sales.average_invoice).toFixed(2)}</div>
+              <div style={{ flex: '0 0 auto' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Average invoice</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>S${Number(sales.average_invoice).toFixed(2)}</div>
               </div>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Items sold</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>{sales.items_sold}</div>
+              <div style={{ flex: '0 0 auto' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Items sold</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{sales.items_sold}</div>
               </div>
-              <div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Discounts given</div>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>S${Number(sales.discount_total).toFixed(2)}</div>
+              <div style={{ flex: '0 0 auto' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Discounts given</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>S${Number(sales.discount_total).toFixed(2)}</div>
               </div>
             </div>
 

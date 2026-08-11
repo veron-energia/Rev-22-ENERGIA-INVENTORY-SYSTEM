@@ -73,6 +73,8 @@ const InvoicesPage: React.FC = () => {
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'all' | InvoiceStatus>('all');
+  // Free-text search across invoice number, customer, store and date/time.
+  const [invSearch, setInvSearch] = useState('');
 
   // Create modal
   const [createOpen, setCreateOpen] = useState(false);
@@ -583,6 +585,8 @@ const InvoicesPage: React.FC = () => {
           p_invoice_id: editingInvoiceId, p_lines: allItems,
           p_reason: editReason.trim(), p_discount: cDiscount || 0,
           p_service_staff: cServiceStaff?.length ? cServiceStaff : null,
+          // Correcting a sale rung up at the wrong till: the stock follows.
+          p_store_id: cStore || null,
         })
       : editingInvoiceId
       ? await supabase.rpc('update_invoice', {
@@ -715,6 +719,9 @@ const InvoicesPage: React.FC = () => {
     setRevisions([]);
     supabase.rpc('invoice_revision_history', { p_invoice_id: inv.id })
       .then(({ data }) => setRevisions((data as any[]) ?? []));
+    setBillToSource('-');
+    supabase.rpc('invoice_bill_to_source', { p_invoice_id: inv.id })
+      .then(({ data }) => setBillToSource((data as string) || '-'));
     void loadInvoiceLegacy(inv.id, inv);
     void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
@@ -860,7 +867,28 @@ const InvoicesPage: React.FC = () => {
     ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
     : cStore;
 
-  const filtered = invoices.filter(i => statusFilter === 'all' || i.status === statusFilter);
+  const filtered = useMemo(() => {
+    const q = invSearch.trim().toLowerCase();
+    return invoices.filter(i => {
+      if (statusFilter !== 'all' && i.status !== statusFilter) return false;
+      if (!q) return true;
+      const when = i.created_at ? new Date(i.created_at) : null;
+      // Several date renderings are searched, so "11/08", "2026-08-11",
+      // "11 Aug" and a time such as "14:32" all find the same invoice.
+      const haystack = [
+        i.invoice_no,
+        customerOf(i.customer_id)?.full_name,
+        customerOf(i.customer_id)?.phone,
+        stores.find(s2 => s2.id === i.store_id)?.name,
+        when?.toLocaleDateString('en-GB'),
+        when?.toLocaleDateString('en-CA'),
+        when?.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        when?.toLocaleTimeString('en-GB'),
+        String(i.total_amount ?? ''),
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [invoices, statusFilter, invSearch, customers, stores]);
 
   // Shared by the printed document and the WhatsApp / email message.
   const lineName = (it: InvoiceItem) =>
@@ -887,7 +915,7 @@ const InvoicesPage: React.FC = () => {
       storeAddress: store.address ?? null,
       storePhone: [store.phone, store.whatsapp_phone ? `WhatsApp ${store.whatsapp_phone}` : '']
         .filter(Boolean).join(' · ') || null,
-      customerName: `${cust?.full_name ?? '—'} (${cust?.referred_by ? (customerOf(cust.referred_by)?.full_name ?? '—') : '—'}, ${(cust as any)?.source_label || '—'})`,
+      customerName: `${cust?.full_name ?? '—'} (${billToSource || '-'})`,
       customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
       lines: detailItems.map(it => {
         const focQty = Number((it as any).foc_quantity ?? 0);
@@ -931,6 +959,9 @@ const InvoicesPage: React.FC = () => {
   // it to be attached, because desktop browsers cannot share files.
   const [sendNote, setSendNote] = useState<string | null>(null);
   const [revisions, setRevisions] = useState<any[]>([]);
+  // Resolved server-side so the printed Bill To is right whether or not the
+  // affiliate list happens to be loaded in the browser.
+  const [billToSource, setBillToSource] = useState<string>('-');
   // WhatsApp gets a link to the PDF; email gets the PDF attached, sent by the
   // send-invoice-email Edge Function. See src/lib/sendDoc.ts.
   const sendPdf = async (channel: 'whatsapp' | 'email') => {
@@ -970,9 +1001,9 @@ const InvoicesPage: React.FC = () => {
     const cust = customerOf(detail.customer_id);
     // "First Last (Referrer, Source)" — a missing referrer or source prints
     // as a dash so the two slots stay readable.
-    const refName = cust?.referred_by ? (customerOf(cust.referred_by)?.full_name ?? '—') : '—';
-    const srcName = (cust as any)?.source_label || '—';
-    const billTo = `${cust?.full_name ?? '—'} (${refName}, ${srcName})`;
+    // Affiliate if the invoice has one, otherwise the customer's source,
+    // otherwise a dash. Matches invoice_bill_to_source() in migration 103.
+    const billTo = `${cust?.full_name ?? '—'} (${billToSource || '-'})`;
     // The staff signature is printed, not signed by hand. Use whoever raised the
     // invoice; fall back to the person printing it if that is not recorded.
     const signedByName =
@@ -1191,6 +1222,18 @@ const InvoicesPage: React.FC = () => {
         </div>
       </div>
 
+          <div style={{ marginBottom: 10 }}>
+            <input value={invSearch} onChange={e => setInvSearch(e.target.value)}
+              placeholder="Search invoice number, customer, store, date or time…"
+              style={{ maxWidth: 460 }} />
+            {invSearch && (
+              <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--text-muted)' }}>
+                {filtered.length} match{filtered.length === 1 ? '' : 'es'}
+                <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }}
+                  onClick={() => setInvSearch('')}>Clear</button>
+              </span>
+            )}
+          </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
         {statusOptions.map(s => (
           <button key={s} className={`btn btn-sm ${statusFilter === s ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setStatusFilter(s)}>
@@ -1340,7 +1383,17 @@ const InvoicesPage: React.FC = () => {
                 <label>Store *</label>
                 {/* Staff assigned to a single store see it fixed, as before.
                     Assigned to several, they choose among exactly those. */}
-                {isStaff && myStores.length <= 1 ? (
+                {editingPaid && !isStaff ? (
+                  <>
+                    <select value={cStore} onChange={e => setCStore(e.target.value)}>
+                      {storeOptions.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
+                    </select>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                      Moving the invoice returns its stock to the current store and takes it from
+                      the new one.
+                    </div>
+                  </>
+                ) : isStaff && myStores.length <= 1 ? (
                   <input value={myStores[0]?.store_name
                     ?? stores.find(s => s.id === (assignedStoreId ?? ''))?.name
                     ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />

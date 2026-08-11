@@ -32,6 +32,11 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   const [notes, setNotes] = useState<any[]>([]);
   const [noteBusy, setNoteBusy] = useState(false);
   const [allOptions, setAllOptions] = useState<any[]>([]);
+  const [sourceOptions, setSourceOptions] = useState<any[]>([]);
+  useEffect(() => {
+    supabase.from('customer_source_options').select('*').order('label')
+      .then(({ data }) => setSourceOptions((data as any[]) ?? []));
+  }, []);
   useEffect(() => {
     supabase.from('health_symptom_options').select('*').eq('is_active', true)
       .order('category').order('sort_order')
@@ -140,6 +145,15 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   const [edBusy, setEdBusy] = useState(false);
   const openEdit = () => {
     setEd({
+      source_option_id: (s as any)?.source_option_id ?? '',
+      source_details: (s as any)?.source_details ?? '',
+      has_medical_condition: !!(s as any)?.has_medical_condition,
+      drinks_alcohol: !!(s as any)?.drinks_alcohol,
+      smokes: !!(s as any)?.smokes,
+      on_treatment: !!(s as any)?.on_treatment,
+      treatment_list: (s as any)?.treatment_list ?? '',
+      // option_id -> duration, seeded from what was declared.
+      symptoms: Object.fromEntries(syms.map((x: any) => [String(x.option_id), x.duration_text ?? ''])),
       first_name: s?.first_name ?? '', last_name: s?.last_name ?? '',
       phone: s?.phone ?? '', email: s?.email ?? '',
       date_of_birth: s?.date_of_birth ? String(s.date_of_birth).slice(0, 10) : '',
@@ -156,6 +170,16 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       p_phone: ed.phone?.trim() || null, p_email: ed.email?.trim() || null,
       p_date_of_birth: ed.date_of_birth || null, p_sex: ed.sex || null,
       p_occupation: ed.occupation?.trim() || null, p_others_text: ed.others_text?.trim() || null,
+      p_source_option_id: ed.source_option_id || null,
+      p_source_details: ed.source_details?.trim() || null,
+      p_has_medical_condition: !!ed.has_medical_condition,
+      p_drinks_alcohol: !!ed.drinks_alcohol,
+      p_smokes: !!ed.smokes,
+      p_on_treatment: !!ed.on_treatment,
+      p_treatment_list: ed.on_treatment ? (ed.treatment_list?.trim() || null) : null,
+      p_symptoms: Object.entries(ed.symptoms ?? {}).map(([option_id, duration_text]) => ({
+        option_id, duration_text: String(duration_text || '') || null,
+      })),
     });
     setEdBusy(false);
     if (error) { setErr(error.message); return; }
@@ -257,6 +281,42 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
                 <div className="form-group" style={{ marginBottom: 0 }}><label>Others (symptoms)</label>
                   <input value={ed.others_text} onChange={e => setEd({ ...ed, others_text: e.target.value })} /></div>
               </div>
+
+              <div className="form-grid-2">
+                <div className="form-group" style={{ marginBottom: 0 }}><label>How did you hear about us?</label>
+                  <select value={ed.source_option_id}
+                    onChange={e => setEd({ ...ed, source_option_id: e.target.value })}>
+                    <option value="">— Not specified —</option>
+                    {sourceOptions.map((o: any) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select></div>
+                <div className="form-group" style={{ marginBottom: 0 }}><label>Source details</label>
+                  <input value={ed.source_details}
+                    onChange={e => setEd({ ...ed, source_details: e.target.value })}
+                    placeholder="e.g. the event or referrer name" /></div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Declarations</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 6, marginTop: 4 }}>
+                  {([
+                    ['has_medical_condition', 'Medical/physical condition'],
+                    ['drinks_alcohol', 'Drinks alcohol'],
+                    ['smokes', 'Smokes'],
+                    ['on_treatment', 'On treatment'],
+                  ] as const).map(([k, label]) => (
+                    <label key={k} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                      <input type="checkbox" style={{ width: 'auto' }} checked={!!(ed as any)[k]}
+                        onChange={e => setEd({ ...ed, [k]: e.target.checked })} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                {ed.on_treatment && (
+                  <input style={{ marginTop: 6 }} value={ed.treatment_list}
+                    onChange={e => setEd({ ...ed, treatment_list: e.target.value })}
+                    placeholder="What treatment or medication?" />
+                )}
+              </div>
             </div>
           ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
@@ -286,7 +346,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
           </div>
 
           <div>
-            <label>Symptoms &amp; conditions ({syms.length} of {allOptions.length} declared)</label>
+            <label>Symptoms &amp; conditions ({editing ? Object.keys(ed.symptoms ?? {}).length : syms.length} of {allOptions.length} declared)</label>
             {allOptions.length === 0
               ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>The symptom checklist could not be loaded.</div>
               : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginTop: 6 }}>
@@ -294,8 +354,30 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
                     <div key={cat}>
                       <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>{cat}</div>
                       {(opts as any[]).map(o => {
-                        const on = declared.has(o.label);
-                        const dur = declared.get(o.label);
+                        // While editing, the tick is live and reads from the
+                        // draft rather than from what was originally declared.
+                        const on = editing
+                          ? Object.prototype.hasOwnProperty.call(ed.symptoms ?? {}, String(o.id))
+                          : declared.has(o.label);
+                        const dur = editing ? (ed.symptoms ?? {})[String(o.id)] : declared.get(o.label);
+                        if (editing) return (
+                          <div key={o.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '1.5px 0' }}>
+                            <input type="checkbox" style={{ width: 'auto' }} checked={on}
+                              onChange={e => {
+                                const next = { ...(ed.symptoms ?? {}) };
+                                if (e.target.checked) next[String(o.id)] = dur ?? '';
+                                else delete next[String(o.id)];
+                                setEd({ ...ed, symptoms: next });
+                              }} />
+                            <span style={{ fontSize: 12, flex: 1 }}>{o.label}</span>
+                            {on && (
+                              <input value={dur ?? ''} placeholder="how long?"
+                                style={{ width: 96, fontSize: 11, padding: '2px 5px' }}
+                                onChange={e => setEd({ ...ed,
+                                  symptoms: { ...(ed.symptoms ?? {}), [String(o.id)]: e.target.value } })} />
+                            )}
+                          </div>
+                        );
                         return (
                           <div key={o.id} style={{ display: 'flex', gap: 6, alignItems: 'baseline',
                                                    fontSize: 12, padding: '1.5px 0',
