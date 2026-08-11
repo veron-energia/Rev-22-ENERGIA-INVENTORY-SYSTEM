@@ -95,7 +95,9 @@ const StaffCommissionsPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Staff Commissions</h2><p>Service staff earn an equal share of {rate}% of each paid invoice they served. Unpaid total: <strong>{money(unpaidTotal)}</strong></p></div>
+        <div><h2>Staff Commissions</h2><p>Each paid invoice pays {rate}% of its total, shared equally between the
+          <strong> active staff assigned to that store</strong> — Owners and Managers are excluded,
+          and "Served by" does not affect it. Unpaid total: <strong>{money(unpaidTotal)}</strong></p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
             rows={tab === 'earned' ? earnedGroups : payouts}
@@ -175,7 +177,7 @@ const StaffCommissionsPage: React.FC = () => {
         <Modal title="Staff Commission Rate" maxWidth={380} onClose={() => setRateOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setRateOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={saveRate} disabled={rateBusy}>{rateBusy ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
-            <div className="form-group"><label>Rate (% of each paid invoice, split equally)</label>
+            <div className="form-group"><label>Rate (% of each paid invoice, shared between the store's active staff)</label>
               <input type="number" min={0} step={0.1} value={rateDraft || ''} onChange={e => setRateDraft(+e.target.value)} autoFocus />
             </div>
             <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Applies to invoices paid from now on. Already-earned commissions keep the rate they were calculated at.</div></div>

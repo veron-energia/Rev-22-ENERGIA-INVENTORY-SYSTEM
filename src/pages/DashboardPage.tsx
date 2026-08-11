@@ -33,6 +33,40 @@ const DashboardPage: React.FC = () => {
   const [lowStock, setLowStock] = useState<{ name: string; sku: string; loc: string; qty: number; threshold: number }[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [todaySales, setTodaySales] = useState(0);
+  // Sales period selector: day / week / month / year / all, plus a custom range.
+  const [period, setPeriod] = useState<'day' | 'week' | 'month' | 'year' | 'all' | 'custom'>('day');
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const [periodStore, setPeriodStore] = useState('');
+  const [sales, setSales] = useState<any>(null);
+  const [salesBusy, setSalesBusy] = useState(false);
+  const [byStore, setByStore] = useState<any[]>([]);
+
+  useEffect(() => {
+    // A custom range is only queried once both ends are set, so the panel does
+    // not flicker an error while the dates are being typed.
+    if (period === 'custom' && !rangeFrom) return;
+    let cancelled = false;
+    setSalesBusy(true);
+    (async () => {
+      const args = {
+        p_period: period,
+        p_from: period === 'custom' ? rangeFrom : null,
+        p_to: period === 'custom' ? (rangeTo || rangeFrom) : null,
+        p_store_id: periodStore || null,
+      };
+      const [{ data: s1 }, { data: s2 }] = await Promise.all([
+        supabase.rpc('dashboard_sales', args),
+        supabase.rpc('dashboard_sales_by_store', {
+          p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
+      ]);
+      if (cancelled) return;
+      setSales(s1 ?? null);
+      setByStore((s2 as any[]) ?? []);
+      setSalesBusy(false);
+    })();
+    return () => { cancelled = true; };
+  }, [period, rangeFrom, rangeTo, periodStore]);
   const [todayCount, setTodayCount] = useState(0);
   // 5G-2 additions (Manager+ only — the underlying tables are RLS-gated)
   const [unpaidCommission, setUnpaidCommission] = useState(0);
@@ -158,6 +192,112 @@ const DashboardPage: React.FC = () => {
           <h2>Welcome back, {profile?.full_name?.split(' ')[0]}</h2>
           <p>You're signed in as {profile ? ROLE_LABELS[profile.role] : ''}. Here's the current setup at a glance.</p>
         </div>
+      </div>
+
+      {/* ---- Sales for a chosen period ---- */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>Sales</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {([['day','Today'],['week','This week'],['month','This month'],
+               ['year','This year'],['all','All time'],['custom','Custom']] as const).map(([k, lbl]) => (
+              <button key={k} className={`btn btn-sm ${period === k ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setPeriod(k)}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+
+        {period === 'custom' && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+            <div style={{ flex: '0 0 160px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>From</div>
+              <input type="date" value={rangeFrom} onChange={e => setRangeFrom(e.target.value)} />
+            </div>
+            <div style={{ flex: '0 0 160px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>To</div>
+              <input type="date" value={rangeTo} min={rangeFrom}
+                onChange={e => setRangeTo(e.target.value)} />
+            </div>
+            {!rangeFrom && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', paddingBottom: 8 }}>
+                Choose a start date to see the range.
+              </div>
+            )}
+          </div>
+        )}
+
+        {byStore.length > 1 && (
+          <div style={{ marginBottom: 12 }}>
+            <select value={periodStore} onChange={e => setPeriodStore(e.target.value)} style={{ maxWidth: 320 }}>
+              <option value="">All stores</option>
+              {byStore.map(b => <option key={b.store_id} value={b.store_id}>{b.store_name}</option>)}
+            </select>
+          </div>
+        )}
+
+        {salesBusy && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading…</div>}
+
+        {!salesBusy && sales && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{sales.label}</div>
+                <div style={{ fontSize: 26, fontWeight: 700 }}>S${Number(sales.sales).toFixed(2)}</div>
+                {sales.change_percent != null && (
+                  <div style={{ fontSize: 12, fontWeight: 600,
+                                color: Number(sales.change_percent) >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                    {Number(sales.change_percent) >= 0 ? '▲' : '▼'} {Math.abs(Number(sales.change_percent)).toFixed(1)}%
+                    <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
+                      {' '}vs S${Number(sales.previous_sales).toFixed(0)} before
+                    </span>
+                  </div>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Invoices</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{sales.invoice_count}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Average invoice</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>S${Number(sales.average_invoice).toFixed(2)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Items sold</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{sales.items_sold}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Discounts given</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>S${Number(sales.discount_total).toFixed(2)}</div>
+              </div>
+            </div>
+
+            {byStore.length > 1 && !periodStore && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 6 }}>By store</div>
+                {byStore.map(b => {
+                  const top = Math.max(...byStore.map(x => Number(x.sales)), 1);
+                  return (
+                    <div key={b.store_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <div style={{ flex: '0 0 170px', fontSize: 12.5, overflow: 'hidden',
+                                    textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.store_name}</div>
+                      <div style={{ flex: 1, background: 'var(--surface-2)', borderRadius: 3, height: 8 }}>
+                        <div style={{ width: `${Number(b.sales) / top * 100}%`, background: 'var(--primary)',
+                                      height: 8, borderRadius: 3 }} />
+                      </div>
+                      <div style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5, fontWeight: 600 }}>
+                        S${Number(b.sales).toFixed(2)}
+                      </div>
+                      <div style={{ flex: '0 0 60px', textAlign: 'right', fontSize: 11.5, color: 'var(--text-muted)' }}>
+                        {b.invoice_count} inv
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {isManagerOrAbove(profile?.role) && summary && (

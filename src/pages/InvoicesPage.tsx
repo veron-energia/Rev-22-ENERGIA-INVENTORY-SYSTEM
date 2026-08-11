@@ -109,6 +109,10 @@ const InvoicesPage: React.FC = () => {
   const [focBusy, setFocBusy] = useState(false);
   // Phase 13 — edit mode + exchange detail + revision history
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
+  // Correcting a SETTLED invoice is a different, Owner/Manager-only operation:
+  // it unwinds stock and commission, writes a revision, and needs a reason.
+  const [editingPaid, setEditingPaid] = useState(false);
+  const [editReason, setEditReason] = useState('');
   const [detailExchange, setDetailExchange] = useState<any>(null);
   const [detailRevisions, setDetailRevisions] = useState<InvoiceRevision[]>([]);
   const [affiliateOptions, setAffiliateOptions] = useState<{ affiliate_id: string; full_name: string; phone: string }[]>([]);
@@ -401,7 +405,8 @@ const InvoicesPage: React.FC = () => {
     return opts.length ? Math.min(...opts) : null;
   };
 
-  // 3rd-party product lines are discount-proof: invoice-level discounts never touch them.
+  // 3rd-party product lines cannot be discounted by VOUCHERS. Since migration 99
+  // a manual discount does apply to them, so this sum is the voucher base only.
   const isThirdParty = (productId: string) => products.find(p => p.id === productId)?.product_type === 'third_party';
   const thirdPartySum = useMemo(() =>
     cLines.reduce((s, l) => {
@@ -462,6 +467,8 @@ const InvoicesPage: React.FC = () => {
   // Whole-invoice voucher: base = subtotal − manual − line-voucher discounts (matches SQL).
   const voucherDiscountPreview = useMemo(() => {
     if (!cDiscountVoucher) return 0;
+    // A discount voucher still cannot reach third-party value; the manual
+    // discount is taken off first.
     const base = Math.max(0, createSubtotal + topupPreview - thirdPartySum - (cDiscount || 0) - lineVoucherDiscountPreview);
     return voucherDiscAmount(vouchers.find(x => x.id === cDiscountVoucher), base);
   }, [cDiscountVoucher, vouchers, createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview]);
@@ -482,10 +489,14 @@ const InvoicesPage: React.FC = () => {
   useEffect(() => { if (hasPromoLine && cDiscountVoucher) setCDiscountVoucher(''); }, [hasPromoLine, cDiscountVoucher]);
 
   const previewTotal = useMemo(() => {
-    const discountable = Math.max(0, createSubtotal + topupPreview - thirdPartySum - lineVoucherDiscountPreview);
-    const invLevel = Math.min((cDiscount || 0) + voucherDiscountPreview, discountable);
+    // Mirrors migration 99: a MANUAL discount applies to the whole invoice,
+    // third-party included; a VOUCHER discount keeps the narrower base.
+    const gross = createSubtotal + topupPreview - lineVoucherDiscountPreview;
+    const manual = Math.min(cDiscount || 0, Math.max(0, gross));
+    const voucherBase = Math.max(0, createSubtotal + topupPreview - thirdPartySum - lineVoucherDiscountPreview - manual);
+    const invLevel = manual + Math.min(voucherDiscountPreview, voucherBase);
     const se = saveEarthOn ? Math.max(0, saveEarthAmount || 0) : 0;
-    return Math.max(0, createSubtotal + topupPreview - lineVoucherDiscountPreview - invLevel - se);
+    return Math.max(0, gross - invLevel - se);
   }, [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview, voucherDiscountPreview, saveEarthOn, saveEarthAmount]);
 
 
@@ -562,7 +573,18 @@ const InvoicesPage: React.FC = () => {
     setCSaving(true); setCErr(null);
     // Phase 13: the same payload edits an existing unpaid invoice in place —
     // update_invoice revalidates every rule exactly as create_invoice does.
-    const { data: rpcId, error } = editingInvoiceId
+    if (editingPaid && !editReason.trim()) {
+      setCErr('Give a reason for changing a paid invoice — it is kept in the revision history.');
+      setCSaving(false); return;
+    }
+
+    const { data: rpcId, error } = editingInvoiceId && editingPaid
+      ? await supabase.rpc('edit_paid_invoice', {
+          p_invoice_id: editingInvoiceId, p_lines: allItems,
+          p_reason: editReason.trim(), p_discount: cDiscount || 0,
+          p_service_staff: cServiceStaff?.length ? cServiceStaff : null,
+        })
+      : editingInvoiceId
       ? await supabase.rpc('update_invoice', {
           p_invoice_id: editingInvoiceId, p_customer_id: cCustomer, p_affiliate_id: null,
           p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
@@ -593,7 +615,8 @@ const InvoicesPage: React.FC = () => {
         await supabase.rpc('audit_create_time_override', { p_item_id: it.id });
       }
     }
-    setCreateOpen(false); resetCreate(); setEditingInvoiceId(null); loadAll();
+    setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
+    setEditingPaid(false); setEditReason(''); loadAll();
   };
 
   // Phase 13 — prefill the builder modal from an unpaid invoice and switch it
@@ -635,6 +658,8 @@ const InvoicesPage: React.FC = () => {
     setSaveEarthLabel((detail as any).save_earth_label ?? saveEarthDefault.label);
     setSaveEarthAmount(Number((detail as any).save_earth_amount ?? saveEarthDefault.amount));
     setEditingInvoiceId(detail.id);
+    setEditingPaid(['paid', 'partially_paid', 'completed_foc'].includes(String(detail.status)));
+    setEditReason('');
     setDetail(null);
     setCErr(null);
     setCreateOpen(true);
@@ -687,6 +712,9 @@ const InvoicesPage: React.FC = () => {
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
     setSendErr(null); setSendNote(null);
+    setRevisions([]);
+    supabase.rpc('invoice_revision_history', { p_invoice_id: inv.id })
+      .then(({ data }) => setRevisions((data as any[]) ?? []));
     void loadInvoiceLegacy(inv.id, inv);
     void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
@@ -902,6 +930,7 @@ const InvoicesPage: React.FC = () => {
   // file already attached; on desktop the file downloads and the chat opens for
   // it to be attached, because desktop browsers cannot share files.
   const [sendNote, setSendNote] = useState<string | null>(null);
+  const [revisions, setRevisions] = useState<any[]>([]);
   // WhatsApp gets a link to the PDF; email gets the PDF attached, sent by the
   // send-invoice-email Edge Function. See src/lib/sendDoc.ts.
   const sendPdf = async (channel: 'whatsapp' | 'email') => {
@@ -1286,9 +1315,25 @@ const InvoicesPage: React.FC = () => {
       )}
 
       {createOpen && (
-        <Modal title={editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); }}
-          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); }}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button></>}>
+        <Modal title={editingPaid ? "Correct Paid Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}
+          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button></>}>
           <div className="form-grid">
+            {editingPaid && (
+              <div className="alert alert-warning" style={{ marginBottom: 0 }}>
+                <span>⚠</span>
+                <div>
+                  <strong>This invoice has already been paid.</strong> Saving will return the stock
+                  from the current lines and deduct it for the new ones, reverse the commission
+                  earned and re-earn it on the corrected total, and keep a full copy of the invoice
+                  as it stands now. The payment records themselves are never altered.
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Reason for the correction *</div>
+                    <input value={editReason} onChange={e => setEditReason(e.target.value)}
+                      placeholder="e.g. Wrong quantity keyed at the till" />
+                  </div>
+                </div>
+              </div>
+            )}
             {cErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
             <div className="form-grid-2">
               <div className="form-group">
@@ -1440,7 +1485,8 @@ const InvoicesPage: React.FC = () => {
                       )}
                       {line.kind === 'product' && line.product_id && isThirdParty(line.product_id) && (
                         <div style={{ marginLeft: 118, marginTop: -2, fontSize: 11.5, color: 'var(--text-muted)' }}>
-                          3rd-party product — discounts don't apply.
+                          3rd-party product — discount vouchers don't apply. A manual
+                          discount still does.
                         </div>
                       )}
                       {line.kind === 'product' && line.product_id && !isThirdParty(line.product_id) && discountVouchers.length > 0 && (
@@ -1630,6 +1676,11 @@ const InvoicesPage: React.FC = () => {
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+                  {isOwnerOrManager(profile?.role) && (
+                    <button className="btn btn-secondary" onClick={openEdit}
+                      title="Correct this paid invoice — stock and commission are adjusted and a revision is kept">
+                      <FileText size={14} /> Correct Invoice</button>
+                  )}
                   <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>{isOwnerOrManager(profile?.role) ? 'Refund/Cancel' : 'Request Refund'}</button></>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
@@ -1787,6 +1838,23 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
+            {revisions.length > 0 && (
+              <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                  Corrections ({revisions.length})
+                </div>
+                {revisions.map(r => (
+                  <div key={r.revision_no} style={{ fontSize: 12, marginBottom: 4 }}>
+                    <strong>#{r.revision_no}</strong>{' '}
+                    {new Date(r.edited_at).toLocaleString()} — {r.edited_by_name ?? 'Unknown'}
+                    <div style={{ color: 'var(--text-muted)' }}>
+                      Was S${Number(r.old_total ?? 0).toFixed(2)} ({String(r.from_status ?? '').replace(/_/g,' ')})
+                      {r.edit_reason ? ` · ${r.edit_reason}` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {sendErr && <div className="alert alert-danger"><span>⚠</span><div>{sendErr}</div></div>}
             {sendNote && <div className="alert alert-info"><span>ℹ</span><div>{sendNote}</div></div>}
 
