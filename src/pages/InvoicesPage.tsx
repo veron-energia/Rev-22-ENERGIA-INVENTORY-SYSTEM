@@ -24,7 +24,9 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy'; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
+interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental';
+  special_product_id?: string; rental_rate_type?: 'day' | 'week' | 'month' | 'year';
+  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
 
 const InvoicesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -81,6 +83,11 @@ const InvoicesPage: React.FC = () => {
   const [cStore, setCStore] = useState('');
   const [cCustomer, setCCustomer] = useState('');
   useEffect(() => { if (cCustomer) void ensureCustomers([cCustomer]); }, [cCustomer, ensureCustomers]);
+  // Declared HERE, above lineUnit(), which reads it. A `const` is not hoisted:
+  // declaring this further down put it in the temporal dead zone, so the first
+  // render threw "Cannot access 'specialProducts' before initialization" and
+  // the whole page went blank.
+  const [specialProducts, setSpecialProducts] = useState<any[]>([]);
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
   const [cDiscountVoucher, setCDiscountVoucher] = useState('');
   const [cDiscount, setCDiscount] = useState(0);
@@ -163,7 +170,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
+    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -179,6 +186,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null).eq('is_active', true),
       supabase.rpc('my_assigned_store_id'),
       supabase.rpc('my_assigned_stores'),
+      supabase.from('special_products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).eq('is_active', true).order('duration_months'),
       supabase.from('unlimited_therapy_store_prices').select('*').is('deleted_at', null),
@@ -206,6 +214,7 @@ const InvoicesPage: React.FC = () => {
     setProfiles(allProfiles);
     setAssignedStoreId((myStore.data as string | null) ?? null);
     setMyStores((myStoreList.data as any[]) ?? []);
+    setSpecialProducts((specialRes.data as any[]) ?? []);
     setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
     setTherapyPackages((utpk?.data as any[]) ?? []);
     setTherapyPrices((utsp?.data as any[]) ?? []);
@@ -343,7 +352,17 @@ const InvoicesPage: React.FC = () => {
 
   const lineMember = (_l: LineDraft): boolean => effMember;
   const lineUnit = (l: LineDraft): number | null =>
-    l.kind === 'therapy' ? (l.therapy_package_id ? therapyPrice(l.therapy_package_id, lineMember(l)) : null)
+    l.kind === 'special_product' ? (() => {
+      const sp = specialProducts.find((x: any) => x.id === l.special_product_id);
+      return sp ? Number(sp.sale_price) : null;
+    })()
+    : l.kind === 'rental' ? (() => {
+      const sp = specialProducts.find((x: any) => x.id === l.special_product_id);
+      if (!sp) return null;
+      const rate = Number(sp[`rate_${l.rental_rate_type ?? 'day'}`] ?? 0);
+      return rate > 0 ? rate * Math.max(1, l.rental_periods ?? 1) : null;
+    })()
+    : l.kind === 'therapy' ? (l.therapy_package_id ? therapyPrice(l.therapy_package_id, lineMember(l)) : null)
     : l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id, lineMember(l)) : null)
     : l.kind === 'promotion' ? (l.promotion_id ? promoPrice(l.promotion_id, lineMember(l)) : null)
     : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
@@ -525,7 +544,12 @@ const InvoicesPage: React.FC = () => {
     if (!effectiveStore) { setCErr('Choose which store this invoice belongs to.'); return; }
     if (!effectiveStore) { setCErr('Select a store.'); return; }
     if (!cCustomer) { setCErr('Select a customer.'); return; }
-    const activeLines = cLines.filter(l => l.quantity > 0 && (l.kind === 'product' ? l.product_id : l.kind === 'voucher' ? l.voucher_id : l.kind === 'therapy' ? l.therapy_package_id : l.promotion_id));
+    const activeLines = cLines.filter(l => l.quantity > 0 && (
+      l.kind === 'product' ? l.product_id
+      : l.kind === 'voucher' ? l.voucher_id
+      : l.kind === 'therapy' ? l.therapy_package_id
+      : (l.kind === 'special_product' || l.kind === 'rental') ? l.special_product_id
+      : l.promotion_id));
     if (activeLines.length === 0) { setCErr('Add at least one product, voucher, promotion or therapy line.'); return; }
     // Choice-group completeness check (client-side; server re-validates).
     for (const l of activeLines) {
@@ -562,6 +586,15 @@ const InvoicesPage: React.FC = () => {
         }
       : l.kind === 'therapy'
       ? { kind: 'therapy', therapy_package_id: l.therapy_package_id, quantity: 1, ...ovr(l), ...foc(l) }
+      : l.kind === 'special_product'
+      ? { kind: 'special_product', special_product_id: l.special_product_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
+      : l.kind === 'rental'
+      ? { kind: 'rental', special_product_id: l.special_product_id, quantity: l.quantity,
+          rental_rate_type: l.rental_rate_type ?? 'day',
+          rental_periods: Math.max(1, l.rental_periods ?? 1),
+          rental_start_date: l.rental_start_date || null,
+          rental_return_date: l.rental_return_date || null,
+          ...ovr(l), ...foc(l) }
       : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null, ...ovr(l), ...foc(l) });
     const focMissing = activeLines.find(l => (l.foc_quantity ?? 0) > 0 && !l.foc_reason_id && !(l.foc_reason ?? '').trim());
     if (focMissing) { setCErr('A FOC reason is required on every FOC line.'); return; }
@@ -648,6 +681,19 @@ const InvoicesPage: React.FC = () => {
         lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'promotion') {
         lines.push({ kind: 'promotion', product_id: '', voucher_id: '', promotion_id: (it as any).promotion_id ?? '', quantity: it.quantity, line_voucher_id: '', selections: selByItem[it.id] ?? {}, ...ovr, ...foc });
+      } else if (it.line_kind === 'special_product' || it.line_kind === 'rental') {
+        // Without this branch a special or rental line fell through to
+        // 'product' with an empty product_id, and reopening the invoice
+        // rendered a line the rest of the form could not describe.
+        lines.push({ kind: it.line_kind as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '',
+          special_product_id: (it as any).special_product_id ?? '',
+          rental_rate_type: (it as any).rental_rate_type ?? 'day',
+          rental_periods: Number((it as any).rental_periods ?? 1),
+          rental_start_date: (it as any).rental_start_date
+            ? String((it as any).rental_start_date).slice(0, 10) : '',
+          rental_return_date: (it as any).rental_return_date
+            ? String((it as any).rental_return_date).slice(0, 10) : '',
+          quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else {
         lines.push({ kind: 'product', product_id: it.product_id ?? '', voucher_id: '', promotion_id: '', quantity: it.quantity, line_voucher_id: (it as any).line_voucher_id ?? '', selections: {}, ...ovr, ...foc });
       }
@@ -1460,13 +1506,69 @@ const InvoicesPage: React.FC = () => {
                     return (
                     <React.Fragment key={i}>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '' } : l))} style={{ width: 110 }}>
+                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '',
+                            special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
+                            rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 110 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
                           <option value="promotion">Promotion</option>
                           {therapyPackages.length > 0 && <option value="therapy">Therapy</option>}
+                          {specialProducts.length > 0 && <option value="special_product">Special Product</option>}
+                          {specialProducts.length > 0 && <option value="rental">Rental</option>}
                         </select>
-                        {line.kind === 'product' ? (
+                        {(line.kind === 'special_product' || line.kind === 'rental') ? (
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <SearchSelect value={line.special_product_id ?? ''}
+                              onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, special_product_id: v } : l))}
+                              placeholder="Search special product…"
+                              options={specialProducts
+                                .filter((sp: any) => line.kind === 'special_product'
+                                  ? Number(sp.sale_price) > 0
+                                  : (Number(sp.rate_day) > 0 || Number(sp.rate_week) > 0
+                                     || Number(sp.rate_month) > 0 || Number(sp.rate_year) > 0))
+                                .map((sp: any) => ({
+                                  value: sp.id,
+                                  label: line.kind === 'special_product'
+                                    ? `${sp.name} — ${money(Number(sp.sale_price))}`
+                                    : sp.name,
+                                  sublabel: sp.sku, search: `${sp.name} ${sp.sku ?? ''}`,
+                                }))} />
+                            {line.kind === 'rental' && line.special_product_id && (
+                              <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                                <div style={{ flex: '0 0 100px' }}>
+                                  <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Rate</div>
+                                  <select value={line.rental_rate_type ?? 'day'}
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, rental_rate_type: e.target.value as any } : l))}>
+                                    {(() => {
+                                      const sp = specialProducts.find((x: any) => x.id === line.special_product_id);
+                                      const avail = (['day','week','month','year'] as const)
+                                        .filter(rt => Number(sp?.[`rate_${rt}`] ?? 0) > 0);
+                                      return avail.length > 0
+                                        ? avail.map(rt => <option key={rt} value={rt}>Per {rt}</option>)
+                                        : <option value="">No rental rate set</option>;
+                                    })()}
+                                  </select>
+                                </div>
+                                <div style={{ flex: '0 0 80px' }}>
+                                  <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Periods</div>
+                                  <input type="number" min={1} value={line.rental_periods ?? 1}
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i
+                                      ? { ...l, rental_periods: Math.min(Math.max(1, Math.floor(+e.target.value || 1)), 3650) } : l))} />
+                                </div>
+                                <div style={{ flex: '0 0 140px' }}>
+                                  <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>From</div>
+                                  <input type="date" value={line.rental_start_date ?? ''}
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, rental_start_date: e.target.value } : l))} />
+                                </div>
+                                <div style={{ flex: '0 0 140px' }}>
+                                  <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Due back</div>
+                                  <input type="date" value={line.rental_return_date ?? ''} min={line.rental_start_date}
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, rental_return_date: e.target.value } : l))} />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : line.kind === 'product' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
                             value={line.product_id}
                             onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: v } : l))}
@@ -1498,8 +1600,9 @@ const InvoicesPage: React.FC = () => {
                               label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}`,
                               sublabel: (p as any).code, search: `${p.name} ${(p as any).code ?? ''}` }))} />
                         )}
-                        <input type="number" min={1} value={line.quantity || ''} placeholder="Qty" style={{ width: 70 }}
-                          onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, quantity: +e.target.value } : l))} />
+                        <input type="number" min={1} max={9999} value={line.quantity || ''} placeholder="Qty" style={{ width: 70 }}
+                          onChange={e => setCLines(ls => ls.map((l, j) => j === i
+                            ? { ...l, quantity: Math.min(Math.max(0, Math.floor(+e.target.value || 0)), 9999) } : l))} />
                         <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
                         <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setCLines(ls => ls.filter((_, j) => j !== i))} disabled={cLines.length === 1}><X size={13} /></button>
                       </div>
@@ -1512,7 +1615,7 @@ const InvoicesPage: React.FC = () => {
                             onChange={e => { const q = +e.target.value; setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_quantity: q, ...(q === 0 ? { foc_reason_id: '', foc_reason: '' } : {}) } : l)); }}
                             style={{ width: 108, fontSize: 12.5 }}>
                             <option value="0">None</option>
-                            {Array.from({ length: line.quantity }, (_, k) => k + 1).map(q => (
+                            {Array.from({ length: Math.min(Math.max(0, Math.floor(line.quantity || 0)), 100) }, (_, k) => k + 1).map(q => (
                               <option key={q} value={q}>{q === line.quantity ? `All ${q} free` : `${q} free`}</option>
                             ))}
                           </select>
@@ -2243,7 +2346,7 @@ const InvoicesPage: React.FC = () => {
             <div>
               <label>Free quantity (of {focLine.quantity})</label>
               <select value={String(focQty)} onChange={e => setFocQty(+e.target.value)}>
-                {Array.from({ length: focLine.quantity }, (_, k) => k + 1).map(q => (
+                {Array.from({ length: Math.min(Math.max(0, Math.floor(focLine.quantity || 0)), 100) }, (_, k) => k + 1).map(q => (
                   <option key={q} value={q}>{q === focLine.quantity ? `All ${q} (full FOC)` : `${q} free`}</option>
                 ))}
               </select>

@@ -355,7 +355,14 @@ export interface InvoiceItem {
   id: string;
   invoice_id: string;
   product_id: string | null;
-  line_kind?: 'product' | 'voucher' | 'promotion' | 'therapy';
+  line_kind?: 'product' | 'voucher' | 'promotion' | 'therapy'
+    | 'credit_package' | 'premium_bundle' | 'special_product' | 'rental';
+  // Special products and rentals (migration 106).
+  special_product_id?: string | null;
+  rental_rate_type?: 'day' | 'week' | 'month' | 'year' | null;
+  rental_periods?: number | null;
+  rental_start_date?: string | null;
+  rental_return_date?: string | null;
   voucher_id?: string | null;
   promotion_id?: string | null;
   line_voucher_id?: string | null;

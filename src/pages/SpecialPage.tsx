@@ -9,9 +9,10 @@ import {
   SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, RENTAL_STATUS_LABELS, isOwnerOrManager,
 } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, X, Download, Printer, MessageCircle, Mail} from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, X, Download, Printer, MessageCircle, Mail} from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { CustomerSearchSelect } from '../components/SearchSelect';
+import { SearchSelect } from '../components/SearchSelect';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 // Local (Singapore) date — never via toISOString, which shifts to UTC.
@@ -21,6 +22,7 @@ const todayStr = () => {
 };
 
 const blank = (p?: SpecialProduct) => ({
+  product_id: (p as any)?.product_id ?? '',
   name: p?.name ?? '', sku: p?.sku ?? '', description: p?.description ?? '',
   sale_price: p?.sale_price ?? 0, rate_day: p?.rate_day ?? 0, rate_week: p?.rate_week ?? 0,
   rate_month: p?.rate_month ?? 0, rate_year: p?.rate_year ?? 0,
@@ -65,7 +67,7 @@ const SpecialPage: React.FC = () => {
     setLoading(true);
     const [sp, st, sa, re, wh, cu, pm, sto, prof] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
-      supabase.from('special_product_stock').select('*'),
+      supabase.from('warehouse_inventory').select('warehouse_id,product_id,current_qty'),
       supabase.from('special_sales').select('*').order('created_at', { ascending: false }),
       supabase.from('rentals').select('*').order('created_at', { ascending: false }),
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -74,8 +76,21 @@ const SpecialPage: React.FC = () => {
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('id,full_name').is('deleted_at', null),
     ]);
-    setRows((sp.data as SpecialProduct[]) ?? []);
-    setStock((st.data as SpecialProductStock[]) ?? []);
+    const spRows = (sp.data as SpecialProduct[]) ?? [];
+    setRows(spRows);
+    // A special product IS a warehouse product (migration 108), so its stock is
+    // the warehouse stock of the product it points at. Mapped here to the shape
+    // the rest of this page already expects.
+    const byProduct = new Map<string, string>(
+      spRows.map((r: any) => [r.product_id, r.id]).filter(([pid]) => !!pid) as [string, string][]);
+    setStock(((st.data as any[]) ?? [])
+      .filter(w => byProduct.has(w.product_id))
+      .map(w => ({
+        id: `${w.warehouse_id}:${w.product_id}`,
+        special_product_id: byProduct.get(w.product_id)!,
+        warehouse_id: w.warehouse_id,
+        current_qty: w.current_qty,
+      })) as SpecialProductStock[]);
     setSales((sa.data as SpecialSale[]) ?? []);
     setRentals((re.data as Rental[]) ?? []);
     setWarehouses((wh.data as Warehouse[]) ?? []);
@@ -102,6 +117,86 @@ const SpecialPage: React.FC = () => {
   // so they get a printable receipt rather than being forced through an invoice.
   // The customer copy as a real A5 PDF, matching the printed receipt.
   const [sendBusy, setSendBusy] = useState<string | null>(null);
+  // Paid sales and rentals with no warehouse yet — Owner/Manager assigns one,
+  // and only then does stock move.
+  const [awaiting, setAwaiting] = useState<any[]>([]);
+  const [fulfilWh, setFulfilWh] = useState<Record<string, string>>({});
+  const [fulfilBusy, setFulfilBusy] = useState<string | null>(null);
+  const [editRental, setEditRental] = useState<any | null>(null);
+  const [rentForm, setRentForm] = useState<any>({});
+  const [rentBusy, setRentBusy] = useState(false);
+  const [rentNote, setRentNote] = useState<string | null>(null);
+  const [queueOpen, setQueueOpen] = useState(false);
+
+  const openRentalEdit = (row: any) => {
+    setEditRental(row);
+    setRentForm({
+      quantity: row.quantity ?? 1, rate_type: row.rate_type ?? 'day',
+      periods: row.periods ?? 1,
+      start_date: row.start_date ? String(row.start_date).slice(0, 10) : '',
+      expected_return_date: row.expected_return_date ? String(row.expected_return_date).slice(0, 10) : '',
+    });
+    setRentNote(null);
+  };
+  const saveRental = async () => {
+    if (!editRental) return;
+    setRentBusy(true); setErr(null);
+    const { data, error } = await supabase.rpc('update_pending_rental', {
+      p_rental_id: editRental.doc_id,
+      p_quantity: Number(rentForm.quantity) || 1,
+      p_rate_type: rentForm.rate_type,
+      p_periods: Number(rentForm.periods) || 1,
+      p_start_date: rentForm.start_date || null,
+      p_expected_return_date: rentForm.expected_return_date || null,
+    });
+    setRentBusy(false);
+    if (error) { setErr(error.message); return; }
+    const diff = Number((data as any)?.difference ?? 0);
+    setEditRental(null);
+    await loadAwaiting();
+    if (diff !== 0) {
+      // The invoice was settled at the old fee, so say so rather than letting
+      // the discrepancy surface later.
+      setRentNote(`The rental fee is now ${money(Number((data as any).rental_fee))} — `
+        + `${money(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than the `
+        + `${money(Number((data as any).invoiced_fee))} already invoiced. `
+        + `Collect or refund the difference on the invoice.`);
+    }
+  };
+  // Availability per waiting document: what each warehouse holds, and how much
+  // of it is already claimed by pending transfer requests.
+  const [avail, setAvail] = useState<Record<string, any[]>>({});
+  const loadAwaiting = async () => {
+    const { data } = await supabase.rpc('special_docs_awaiting_fulfilment');
+    const rows = (data as any[]) ?? [];
+    setAwaiting(rows);
+    const map: Record<string, any[]> = {};
+    await Promise.all(rows.map(async r => {
+      const { data: a } = await supabase.rpc('special_product_availability',
+        { p_special_product_id: r.special_product_id });
+      map[r.doc_id] = (a as any[]) ?? [];
+    }));
+    setAvail(map);
+  };
+  useEffect(() => { void loadAwaiting(); }, []);
+
+  const doFulfil = async (row: any) => {
+    const wh = fulfilWh[row.doc_id];
+    if (!wh) { setErr('Choose a warehouse first.'); return; }
+    setFulfilBusy(row.doc_id); setErr(null);
+    const { error } = await supabase.rpc('fulfil_special_doc', {
+      p_doc_kind: row.doc_kind, p_doc_id: row.doc_id, p_warehouse_id: wh,
+    });
+    setFulfilBusy(null);
+    if (error) { setErr(error.message); return; }
+    // Clear the choice so a stale warehouse cannot linger against a doc id.
+    setFulfilWh(w => { const n = { ...w }; delete n[row.doc_id]; return n; });
+    const { data } = await supabase.rpc('special_docs_awaiting_fulfilment');
+    const left = (data as any[]) ?? [];
+    await loadAwaiting(); load();
+    // Nothing left to release: close rather than leaving an empty dialog open.
+    if (left.length === 0) setQueueOpen(false);
+  };
   const buildReceiptPdf = (kind: 'sale' | 'rental', row: any): PdfDoc => {
     const prod = rows.find((p: any) => p.id === row.special_product_id);
     const cust = customers.find((c: any) => c.id === row.customer_id);
@@ -258,21 +353,34 @@ const SpecialPage: React.FC = () => {
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blank());
   const [saving, setSaving] = useState(false);
+  const [availableProducts, setAvailableProducts] = useState<any[]>([]);
+  const loadAvailableProducts = () => supabase.rpc('products_available_as_special')
+    .then(({ data }) => setAvailableProducts((data as any[]) ?? []));
+  useEffect(() => { void loadAvailableProducts(); }, []);
   const [err, setErr] = useState<string | null>(null);
 
   const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
   const openEdit = (p: SpecialProduct) => { setForm(blank(p)); setEditId(p.id); setErr(null); setModalOpen(true); };
   const handleSave = async () => {
-    if (!form.name.trim()) { setErr('Name is required.'); return; }
-    if (!form.sku.trim()) { setErr('SKU is required.'); return; }
+    if (!editId && !form.product_id) { setErr('Choose the warehouse product this is.'); return; }
+    if (!form.sale_price && !form.rate_day && !form.rate_week && !form.rate_month && !form.rate_year) {
+      setErr('Set a sale price or at least one rental rate, or this cannot be sold or rented.');
+      return;
+    }
     setSaving(true); setErr(null);
-    const payload = { ...form, name: form.name.trim(), sku: form.sku.trim(), description: form.description.trim() || null };
-    const res = editId
-      ? await supabase.from('special_products').update(payload).eq('id', editId)
-      : await supabase.from('special_products').insert(payload);
+    // Through the RPC: it derives the name and SKU from the product and applies
+    // the same rules the database enforces.
+    const { error } = await supabase.rpc('upsert_special_product_from_product', {
+      p_id: editId, p_product_id: form.product_id || null,
+      p_sale_price: form.sale_price || 0,
+      p_rate_day: form.rate_day || 0, p_rate_week: form.rate_week || 0,
+      p_rate_month: form.rate_month || 0, p_rate_year: form.rate_year || 0,
+      p_late_fee_per_day: form.late_fee_per_day || 0,
+      p_description: form.description.trim() || null, p_is_active: form.is_active,
+    });
     setSaving(false);
-    if (res.error) { setErr(res.error.message); return; }
-    setModalOpen(false); load();
+    if (error) { setErr(error.message); return; }
+    setModalOpen(false); loadAvailableProducts(); load();
   };
   const handleDelete = async (p: SpecialProduct) => {
     if (!confirm(`Delete special product "${p.name}"?`)) return;
@@ -497,10 +605,38 @@ const SpecialPage: React.FC = () => {
         <button className={`btn btn-sm ${tab === 'catalog' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('catalog')}><KeyRound size={14} /> Catalog</button>
         <button className={`btn btn-sm ${tab === 'sales' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('sales')}><ShoppingBag size={14} /> Sales</button>
         <button className={`btn btn-sm ${tab === 'rentals' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('rentals')}><CalendarClock size={14} /> Rentals</button>
+      {/* ---- Waiting for a warehouse: a button, with the detail in a dialog ---- */}
+      {/* Always shown, so its colour carries the state: white when there is
+          nothing to do, amber when something is waiting. */}
+      <button className="btn" style={{
+          marginBottom: 16,
+          background: awaiting.length > 0 ? 'var(--warning-light)' : 'var(--surface)',
+          borderColor: awaiting.length > 0 ? '#fde68a' : 'var(--border)',
+          color: awaiting.length > 0 ? '#92400e' : 'var(--text-muted)',
+          fontWeight: awaiting.length > 0 ? 700 : 500,
+          cursor: awaiting.length > 0 ? 'pointer' : 'default',
+        }}
+        disabled={awaiting.length === 0}
+        onClick={() => awaiting.length > 0 && setQueueOpen(true)}>
+        <Clock size={14} />
+        {awaiting.length > 0 ? 'Waiting for a warehouse' : 'Nothing waiting for a warehouse'}
+        {awaiting.length > 0 && (
+          <span style={{
+            marginLeft: 8, padding: '1px 8px', borderRadius: 999, fontSize: 11.5,
+            fontWeight: 700, background: 'var(--warning)', color: '#fff',
+          }}>{awaiting.length}</span>
+        )}
+      </button>
+
+
         <div style={{ flex: 1 }} />
         {tab === 'catalog' && <button className="btn btn-primary btn-sm" onClick={openAdd}><Plus size={14} /> Add Special Product</button>}
-        {tab === 'sales' && <button className="btn btn-primary btn-sm" onClick={openSale}><Plus size={14} /> New Sale</button>}
-        {tab === 'rentals' && <button className="btn btn-primary btn-sm" onClick={openRent}><Plus size={14} /> New Rental</button>}
+        {(tab === 'sales' || tab === 'rentals') && (
+          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+            Sales and rentals are now raised on the <strong>Invoices</strong> page, so the customer
+            gets one invoice and one receipt. They appear here once paid, waiting for a warehouse.
+          </span>
+        )}
       </div>
 
       <div className="card"><div className="table-wrap">
@@ -598,14 +734,206 @@ const SpecialPage: React.FC = () => {
       </div></div>
 
       {/* Catalog add/edit */}
+      {queueOpen && (
+        <Modal title="Waiting for a warehouse" wide onClose={() => setQueueOpen(false)}
+          footer={<button className="btn btn-secondary" onClick={() => setQueueOpen(false)}>Close</button>}>
+          <div className="form-grid">
+            {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+            {rentNote && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ</span><div>{rentNote}</div></div>}
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              These are paid for and no stock has moved. Choosing a warehouse is what takes the
+              goods out of it.
+            </div>
+            {awaiting.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
+                Nothing is waiting — everything paid for has been released.
+              </div>
+            ) : (
+              <div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'minmax(260px, 2fr) minmax(280px, 1.4fr) auto',
+                  gap: 20, fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                  textTransform: 'uppercase', color: 'var(--text-muted)', paddingBottom: 6,
+                }}>
+                  <div>Item</div>
+                  <div>Release from</div>
+                  <div />
+                </div>
+{awaiting.map(row => {
+            const opts = avail[row.doc_id] ?? [];
+            const chosen = opts.find((o: any) => o.warehouse_id === fulfilWh[row.doc_id]);
+            const canCover = opts.filter((o: any) => o.available >= row.quantity);
+            const isRental = row.doc_kind === 'rental';
+            return (
+              <div key={row.doc_id} style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(260px, 2fr) minmax(280px, 1.4fr) auto',
+                gap: 20, alignItems: 'center',
+                padding: '14px 0', borderTop: '1px solid var(--border)',
+              }}>
+                {/* WHAT — the thing itself, read first */}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14, fontWeight: 700 }}>{row.product_name}</span>
+                    <span className={`badge ${isRental ? 'badge-accent' : 'badge-muted'}`}
+                      style={{ fontSize: 10.5 }}>{isRental ? 'Rental' : 'Sale'}</span>
+                    {row.quantity > 1 && <span style={{ fontSize: 13 }}>× {row.quantity}</span>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2,
+                                overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {row.customer_name ?? '—'} · {row.doc_no}
+                    {row.invoice_no ? ` · ${row.invoice_no}` : ''}
+                  </div>
+                  {isRental && (
+                    <div style={{ fontSize: 12, marginTop: 4, display: 'flex',
+                                  gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span>
+                        <strong>{row.periods} {row.rate_type}{(row.periods ?? 1) > 1 ? 's' : ''}</strong>
+                        {row.expected_return_date && (
+                          <span style={{ color: 'var(--text-muted)' }}>
+                            {' '}· back {new Date(row.expected_return_date).toLocaleDateString('en-GB')}
+                          </span>
+                        )}
+                      </span>
+                      {hasAccess && (
+                        <button className="btn btn-secondary btn-sm"
+                          style={{ padding: '1px 8px', fontSize: 11 }}
+                          onClick={() => openRentalEdit(row)}>Change</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* WHERE FROM — the decision being made */}
+                {hasAccess ? (
+                  <div style={{ minWidth: 0 }}>
+                    <select value={fulfilWh[row.doc_id] ?? ''} style={{ width: '100%' }}
+                      onChange={e => setFulfilWh(w => ({ ...w, [row.doc_id]: e.target.value }))}>
+                      <option value="">
+                        {opts.length === 0 ? 'No warehouse holds this'
+                          : canCover.length === 0 ? `Nowhere has ${row.quantity} free`
+                          : `Choose from ${canCover.length} warehouse${canCover.length === 1 ? '' : 's'}…`}
+                      </option>
+                      {opts.map((o: any) => (
+                        <option key={o.warehouse_id} value={o.warehouse_id}
+                          disabled={o.available < row.quantity}>
+                          {o.warehouse_name} — {o.available} free
+                          {o.available < row.quantity ? ' (not enough)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {chosen && chosen.reserved > 0 && (
+                      <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 3 }}>
+                        {chosen.on_hand} on hand, {chosen.reserved} held by pending transfers
+                      </div>
+                    )}
+                    {opts.length > 0 && canCover.length === 0 && (
+                      <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 3 }}>
+                        Add stock, or approve/reject the transfers holding it.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Awaiting an Owner or Manager.
+                  </div>
+                )}
+
+                {/* THE ACTION */}
+                {hasAccess ? (
+                  <button className="btn btn-primary btn-sm" onClick={() => doFulfil(row)}
+                    disabled={fulfilBusy === row.doc_id || !fulfilWh[row.doc_id]
+                              || (chosen && chosen.available < row.quantity)}
+                    style={{ whiteSpace: 'nowrap' }}>
+                    {fulfilBusy === row.doc_id ? 'Releasing…' : 'Release'}
+                  </button>
+                ) : <span />}
+              </div>
+            );
+          })}
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {editRental && (
+        <Modal title={`Change rental terms — ${editRental.doc_no}`} onClose={() => setEditRental(null)}
+          footer={<><button className="btn btn-secondary" onClick={() => setEditRental(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveRental} disabled={rentBusy}>
+              {rentBusy ? 'Saving…' : 'Save terms'}</button></>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {editRental.product_name} · {editRental.customer_name ?? '—'}
+              {editRental.invoice_no ? ` · ${editRental.invoice_no}` : ''}
+            </div>
+            <div className="form-grid-2">
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Quantity</label>
+                <input type="number" min={1} max={999} value={rentForm.quantity}
+                  onChange={e => setRentForm((f: any) => ({ ...f, quantity: Math.max(1, Math.floor(+e.target.value || 1)) }))} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Rate</label>
+                <select value={rentForm.rate_type}
+                  onChange={e => setRentForm((f: any) => ({ ...f, rate_type: e.target.value }))}>
+                  {(['day','week','month','year'] as const)
+                    .filter(rt => Number(rows.find((p: any) => p.id === editRental.special_product_id)?.[`rate_${rt}`] ?? 0) > 0)
+                    .map(rt => <option key={rt} value={rt}>Per {rt}</option>)}
+                </select></div>
+            </div>
+            <div className="form-grid-2">
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Periods</label>
+                <input type="number" min={1} max={3650} value={rentForm.periods}
+                  onChange={e => setRentForm((f: any) => ({ ...f, periods: Math.max(1, Math.floor(+e.target.value || 1)) }))} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Starts</label>
+                <input type="date" value={rentForm.start_date}
+                  onChange={e => setRentForm((f: any) => ({ ...f, start_date: e.target.value }))} /></div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}><label>Due back</label>
+              <input type="date" value={rentForm.expected_return_date} min={rentForm.start_date}
+                onChange={e => setRentForm((f: any) => ({ ...f, expected_return_date: e.target.value }))} /></div>
+            <div className="alert alert-warning" style={{ marginBottom: 0 }}>
+              <span>⚠</span>
+              <div>
+                This invoice has already been paid at <strong>{money(Number(editRental.rental_fee ?? 0))}</strong>.
+                Changing the quantity, rate or periods changes the fee — you will be told the
+                difference so it can be collected or refunded on the invoice.
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {modalOpen && (
         <Modal title={editId ? 'Edit Special Product' : 'Add Special Product'} wide onClose={() => setModalOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
-            <div className="form-grid-2">
-              <div className="form-group"><label>Name *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} autoFocus /></div>
-              <div className="form-group"><label>SKU *</label><input value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} /></div>
+            {/* The product IS the special product: its name, SKU and stock all
+                come from the warehouse, so the two can never disagree. */}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label>Product *</label>
+              {editId ? (
+                <input value={`${form.name}${form.sku ? ` (${form.sku})` : ''}`} disabled
+                  style={{ background: 'var(--surface-2)' }} />
+              ) : (
+                <SearchSelect value={form.product_id ?? ''}
+                  onChange={(v: string) => {
+                    const p = availableProducts.find((x: any) => x.product_id === v);
+                    setForm(f => ({ ...f, product_id: v, name: p?.name ?? '', sku: p?.sku ?? '' }));
+                  }}
+                  placeholder="Search a warehouse product by name or SKU…"
+                  options={availableProducts.map((p: any) => ({
+                    value: p.product_id,
+                    label: p.name,
+                    sublabel: `${p.sku ?? '—'} · ${p.total_stock} in warehouse stock`,
+                    search: `${p.name} ${p.sku ?? ''}`,
+                  }))} />
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                {editId
+                  ? 'The product cannot be changed once added — remove this entry and add the other product instead.'
+                  : 'Stock is the warehouse stock. Renting or selling a unit reduces the same figure a transfer would draw on.'}
+              </div>
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Sale Price (S$)</label><input type="number" min={0} step={0.01} value={form.sale_price || ''} onChange={e => setForm(f => ({ ...f, sale_price: +e.target.value }))} /></div>

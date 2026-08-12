@@ -51,8 +51,21 @@ const StoreInventoryPage: React.FC = () => {
   const [inventory, setInventory] = useState<StoreInventory[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [stockFilter, setStockFilter] = useState<'all' | 'in' | 'out' | 'low'>('all');
+  const [stockFilter, setStockFilter] = useState<'all' | 'important' | 'in' | 'out' | 'low'>('all');
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  // Importance is a product-level flag any staff member may set; kept in its
+  // own map so a toggle updates instantly without reloading the whole list.
+  const [imp, setImp] = useState<Record<string, boolean>>({});
+  const [impBusy, setImpBusy] = useState<string | null>(null);
+  const toggleImportant = async (productId: string) => {
+    const next = !imp[productId];
+    setImpBusy(productId);
+    const { error } = await supabase.rpc('set_product_important',
+      { p_product_id: productId, p_important: next });
+    setImpBusy(null);
+    if (error) { setLoadErr(error.message); return; }
+    setImp(m => ({ ...m, [productId]: next }));
+  };
   const [thresholdRow, setThresholdRow] = useState<Row | null>(null);
   const [thresholdVal, setThresholdVal] = useState(0);
 
@@ -62,7 +75,9 @@ const StoreInventoryPage: React.FC = () => {
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
     ]);
     setStores((st as Store[]) ?? []);
-    setProducts((prod as Product[]) ?? []);
+    const prodRows = (prod as Product[]) ?? [];
+    setProducts(prodRows);
+    setImp(Object.fromEntries(prodRows.map((p2: any) => [p2.id, !!p2.is_important])));
     if (st && st.length > 0 && !selectedStore) setSelectedStore(st[0].id);
   }, [selectedStore]);
 
@@ -84,6 +99,7 @@ const StoreInventoryPage: React.FC = () => {
   })).filter(r => {
     const qty = r.inv?.current_qty ?? 0;
     const thr = r.inv?.low_stock_threshold ?? 0;
+    if (stockFilter === 'important' && !imp[r.product.id]) return false;
     if (stockFilter === 'in' && qty <= 0) return false;
     if (stockFilter === 'out' && qty > 0) return false;
     if (stockFilter === 'low' && !(qty > 0 && thr > 0 && qty <= thr)) return false;
@@ -150,7 +166,7 @@ const StoreInventoryPage: React.FC = () => {
           <div style={{ marginBottom: 14, maxWidth: 360 }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />
             <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-              {([['all', 'All'], ['in', 'With stock'], ['out', 'No stock'], ['low', 'Low stock']] as const).map(([v, l]) => (
+              {([['all', 'All'], ['important', 'Important'], ['in', 'With stock'], ['out', 'No stock'], ['low', 'Low stock']] as const).map(([v, l]) => (
                 <button key={v} className={`btn btn-sm ${stockFilter === v ? 'btn-primary' : 'btn-secondary'}`}
                   onClick={() => setStockFilter(v)}>{l}</button>
               ))}
@@ -167,8 +183,28 @@ const StoreInventoryPage: React.FC = () => {
                     {rows.map(r => {
                       const st = stockStatus(r);
                       return (
-                        <tr key={r.product.id}>
-                          <td><strong>{r.product.name}</strong></td>
+                        <tr key={r.product.id}
+                          style={imp[r.product.id] ? {
+                            // The whole row turns green, so a fast mover is
+                            // visible while scanning rather than needing a column read.
+                            background: 'var(--success-light)',
+                            boxShadow: 'inset 3px 0 0 var(--success)',
+                          } : undefined}>
+                          <td>
+                            <button
+                              onClick={() => toggleImportant(r.product.id)}
+                              disabled={impBusy === r.product.id}
+                              title={imp[r.product.id] ? 'Marked important — click to unmark' : 'Mark as important'}
+                              style={{
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                padding: 0, marginRight: 8, fontSize: 15, lineHeight: 1,
+                                color: imp[r.product.id] ? 'var(--success)' : 'var(--border)',
+                                opacity: impBusy === r.product.id ? 0.4 : 1,
+                              }}>
+                              {imp[r.product.id] ? '★' : '☆'}
+                            </button>
+                            <strong>{r.product.name}</strong>
+                          </td>
                           <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{r.product.sku}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 15 }}>{r.inv?.current_qty ?? 0}</td>
                           <td>{r.inv?.low_stock_threshold ? r.inv.low_stock_threshold : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>

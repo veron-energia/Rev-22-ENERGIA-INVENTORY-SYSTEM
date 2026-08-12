@@ -45,7 +45,13 @@ const DashboardPage: React.FC = () => {
   useEffect(() => {
     // A custom range is only queried once both ends are set, so the panel does
     // not flicker an error while the dates are being typed.
-    if (period === 'custom' && !rangeFrom) return;
+    if (period === 'custom' && !rangeFrom) {
+      // Otherwise the previous period's figures stay on screen under the new
+      // heading, which reads as though they belong to the custom range.
+      setSales(null);
+      setSalesBusy(false);
+      return;
+    }
     let cancelled = false;
     setSalesBusy(true);
     (async () => {
@@ -197,7 +203,9 @@ const DashboardPage: React.FC = () => {
       {/* ---- Sales for a chosen period ---- */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+                      flexWrap: 'wrap', gap: 12,
+                      paddingBottom: 14, marginBottom: 18,
+                      borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontWeight: 700, fontSize: 15 }}>Sales</div>
           <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center',
                         background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 2 }}>
@@ -210,18 +218,24 @@ const DashboardPage: React.FC = () => {
         </div>
 
         {period === 'custom' && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
-            <div style={{ flex: '0 0 160px' }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>From</div>
+          <div style={{
+            display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap',
+            background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)',
+            padding: '12px 14px', marginBottom: 18,
+          }}>
+            <div style={{ flex: '0 0 170px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4,
+                            textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>From</div>
               <input type="date" value={rangeFrom} onChange={e => setRangeFrom(e.target.value)} />
             </div>
-            <div style={{ flex: '0 0 160px' }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>To</div>
+            <div style={{ flex: '0 0 170px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4,
+                            textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>To</div>
               <input type="date" value={rangeTo} min={rangeFrom}
                 onChange={e => setRangeTo(e.target.value)} />
             </div>
             {!rangeFrom && (
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', paddingBottom: 8 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', paddingBottom: 9 }}>
                 Choose a start date to see the range.
               </div>
             )}
@@ -239,38 +253,62 @@ const DashboardPage: React.FC = () => {
 
         {salesBusy && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading…</div>}
 
+        {!salesBusy && !sales && period === 'custom' && (
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '10px 0' }}>
+            Pick a start date above to see the figures for that range.
+          </div>
+        )}
+
         {!salesBusy && sales && (
           <>
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <div style={{ flex: '0 0 auto', minWidth: 200 }}>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', textTransform: 'uppercase',
-                              letterSpacing: '0.04em', fontWeight: 600 }}>{sales.label}</div>
-                <div style={{ fontSize: 34, fontWeight: 700, lineHeight: 1.1 }}>S${Number(sales.sales).toFixed(2)}</div>
-                {sales.change_percent != null && (
-                  <div style={{ fontSize: 12, fontWeight: 600,
-                                color: Number(sales.change_percent) >= 0 ? 'var(--success)' : 'var(--danger)' }}>
-                    {Number(sales.change_percent) >= 0 ? '▲' : '▼'} {Math.abs(Number(sales.change_percent)).toFixed(1)}%
-                    <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
-                      {' '}vs S${Number(sales.previous_sales).toFixed(0)} before
+            {/* The headline figure, then the supporting numbers as a divided
+                row — a strip of equal-weight labels reads as a list rather
+                than as one figure with context. */}
+            <div style={{ display: 'flex', alignItems: 'stretch',
+                          gap: 0, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 200, paddingRight: 32 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+                              letterSpacing: '0.06em', fontWeight: 600 }}>{sales.label}</div>
+                <div style={{ fontSize: 38, fontWeight: 700, lineHeight: 1.05,
+                              letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
+                  S${Number(sales.sales).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                {sales.change_percent != null ? (
+                  <div style={{ fontSize: 12, marginTop: 2 }}>
+                    <span style={{
+                      fontWeight: 700,
+                      color: Number(sales.change_percent) >= 0 ? 'var(--success)' : 'var(--danger)',
+                    }}>
+                      {Number(sales.change_percent) >= 0 ? '↑' : '↓'} {Math.abs(Number(sales.change_percent)).toFixed(1)}%
                     </span>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      {' '}on S${Number(sales.previous_sales).toLocaleString('en-SG', { maximumFractionDigits: 0 })} before
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    No earlier period to compare
                   </div>
                 )}
               </div>
-              <div style={{ flex: '0 0 auto' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Invoices</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>{sales.invoice_count}</div>
-              </div>
-              <div style={{ flex: '0 0 auto' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Average invoice</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>S${Number(sales.average_invoice).toFixed(2)}</div>
-              </div>
-              <div style={{ flex: '0 0 auto' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Items sold</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>{sales.items_sold}</div>
-              </div>
-              <div style={{ flex: '0 0 auto' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Discounts given</div>
-                <div style={{ fontSize: 18, fontWeight: 600 }}>S${Number(sales.discount_total).toFixed(2)}</div>
+
+              {/* Supporting figures, separated so they read as a set */}
+              <div style={{ display: 'flex', gap: 34, flexWrap: 'wrap',
+                            alignItems: 'flex-end', paddingBottom: 4,
+                            borderLeft: '1px solid var(--border)', paddingLeft: 32 }}>
+                {([
+                  ['Invoices', String(sales.invoice_count)],
+                  ['Average', `S$${Number(sales.average_invoice).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+                  ['Items sold', String(sales.items_sold)],
+                  ['Discounts', `S$${Number(sales.discount_total).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+                ] as [string, string][]).map(([label, value]) => (
+                  <div key={label}>
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)', textTransform: 'uppercase',
+                                  letterSpacing: '0.05em', fontWeight: 600 }}>{label}</div>
+                    <div style={{ fontSize: 19, fontWeight: 600, marginTop: 1,
+                                  fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                  </div>
+                ))}
               </div>
             </div>
 

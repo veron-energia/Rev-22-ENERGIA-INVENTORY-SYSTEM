@@ -33,6 +33,7 @@ import AdjustmentsPage from './pages/AdjustmentsPage';
 import AuditLogPage from './pages/AuditLogPage';
 import ReportsPage from './pages/ReportsPage';
 import { Leaf } from 'lucide-react';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const FullScreenLoader: React.FC<{ message?: string }> = ({ message }) => (
   <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, background: 'var(--bg)' }}>
@@ -73,6 +74,7 @@ const AppRoutes: React.FC = () => {
   if (loading) return <FullScreenLoader />;
 
   return (
+    <ErrorBoundary>
     <Routes>
       {/* Public: no login required (QR survey) */}
       <Route path="/survey/:token" element={<PublicSurveyPage />} />
@@ -106,6 +108,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/users" element={<Protected><UsersPage /></Protected>} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
+    </ErrorBoundary>
   );
 };
 
