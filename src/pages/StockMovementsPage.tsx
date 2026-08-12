@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import {
@@ -24,6 +24,7 @@ const StockMovementsPage: React.FC = () => {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<'all' | StockMovementType>('all');
@@ -57,7 +58,26 @@ const StockMovementsPage: React.FC = () => {
     return null;
   };
 
-  const filtered = movements.filter(m => typeFilter === 'all' || m.movement_type === typeFilter);
+  // Searches everything visible in a row: product name and SKU, either end of
+  // the movement, who made it, the type and the note — so "Emi", "P00201",
+  // "Adelphi" and "opening" all find what you would expect.
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return movements.filter(m => {
+      if (typeFilter !== 'all' && m.movement_type !== typeFilter) return false;
+      if (!q) return true;
+      const when = m.created_at ? new Date(m.created_at) : null;
+      return [
+        pName(m.product_id), pSku(m.product_id),
+        locName(m.from_warehouse_id, m.from_store_id),
+        locName(m.to_warehouse_id, m.to_store_id),
+        uName(m.created_by),
+        MOVEMENT_LABELS[m.movement_type], m.movement_type.replace(/_/g, ' '),
+        m.notes, String(m.quantity ?? ''),
+        when?.toLocaleDateString('en-GB'), when?.toLocaleDateString('en-CA'),
+      ].filter(Boolean).join(' ').toLowerCase().includes(q);
+    });
+  }, [movements, typeFilter, search, products, warehouses, stores, profiles]);
 
   const typeOptions: (StockMovementType | 'all')[] = ['all', 'warehouse_stock_in', 'warehouse_to_store', 'warehouse_to_warehouse', 'store_to_store', 'store_sale', 'inventory_adjustment'];
 
@@ -80,6 +100,18 @@ const StockMovementsPage: React.FC = () => {
             ]} />
         </div>
         <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+      </div>
+
+      <div style={{ marginBottom: 12, maxWidth: 460 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search product, SKU, warehouse, store, person or note…" />
+        {search && (
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 6 }}>
+            {filtered.length} match{filtered.length === 1 ? '' : 'es'}
+            <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }}
+              onClick={() => setSearch('')}>Clear</button>
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>

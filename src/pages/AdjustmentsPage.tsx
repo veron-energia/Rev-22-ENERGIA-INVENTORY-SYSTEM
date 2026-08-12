@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -20,6 +20,7 @@ const AdjustmentsPage: React.FC = () => {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
 
   const [open, setOpen] = useState(false);
   const [locType, setLocType] = useState<LocationType>('store');
@@ -49,11 +50,30 @@ const AdjustmentsPage: React.FC = () => {
 
   const pName = (id?: string) => products.find(p => p.id === id)?.name ?? '—';
   const uName = (id: string | null) => id ? (profiles.find(p => p.id === id)?.full_name ?? '—') : '—';
+  const pSku = (id?: string) => products.find(p => p.id === id)?.sku ?? '';
   const locName = (p: AdjustmentRequest['payload']) => {
     if (!p) return '—';
     if (p.location_type === 'store') return `🏪 ${stores.find(s => s.id === p.location_id)?.name ?? '—'}`;
     return `🏭 ${warehouses.find(w => w.id === p.location_id)?.name ?? '—'}`;
   };
+
+  // Searches everything in a row, plus the SKU, which is not a visible column
+  // but is how stock is usually identified on a count sheet.
+  const filtered = useMemo<AdjustmentRequest[]>(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return requests;
+    return requests.filter(req => {
+      const p = req.payload;
+      const when = req.created_at ? new Date(req.created_at) : null;
+      return [
+        pName(p?.product_id), pSku(p?.product_id),
+        locName(p), uName(req.requested_by), uName((req as any).approved_by),
+        req.reason, req.status, (req as any).reference,
+        String(p?.current_qty ?? ''), String(p?.new_qty ?? ''), String(p?.difference ?? ''),
+        when?.toLocaleDateString('en-GB'), when?.toLocaleDateString('en-CA'),
+      ].filter(Boolean).join(' ').toLowerCase().includes(q);
+    });
+  }, [requests, search, products, stores, warehouses, profiles]);
 
   // Several products can be corrected in one go; each line carries its own
   // corrected total.
@@ -106,7 +126,7 @@ const AdjustmentsPage: React.FC = () => {
         <div><h2>Inventory Adjustments</h2><p>Request a stock correction. Owner or Manager approval applies the change.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
-            rows={requests} filename="adjustments" sheetName="Adjustments"
+            rows={filtered} filename="adjustments" sheetName="Adjustments"
             dateOf={(r: any) => r.created_at} dateLabel="Requested"
             columns={[
               { header: 'Date', value: (r: any) => new Date(r.created_at).toLocaleDateString('en-GB') },
@@ -121,15 +141,33 @@ const AdjustmentsPage: React.FC = () => {
         </div>
       </div>
 
+      <div style={{ marginBottom: 12, maxWidth: 460 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search product, SKU, warehouse, store, person or reason…" />
+        {search && (
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 6 }}>
+            {filtered.length} match{filtered.length === 1 ? '' : 'es'} of {requests.length}
+            <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }}
+              onClick={() => setSearch('')}>Clear</button>
+          </div>
+        )}
+      </div>
+
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : requests.length === 0 ? <div className="empty-state"><SlidersHorizontal size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No adjustment requests yet</p></div>
+          : filtered.length === 0 ? <div className="empty-state"><SlidersHorizontal size={32} style={{ opacity: 0.3 }} />
+              <p style={{ fontWeight: 600, marginTop: 8 }}>
+                {search ? 'Nothing matches that search' : 'No adjustment requests yet'}
+              </p>
+              {search && <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }}
+                onClick={() => setSearch('')}>Clear search</button>}
+            </div>
           : (
             <table>
               <thead><tr><th>Date</th><th>Location</th><th>Product</th><th>Change</th><th>Reason</th><th>Status</th><th>By</th></tr></thead>
               <tbody>
-                {requests.map(req => {
+                {filtered.map(req => {
                   const p = req.payload;
                   return (
                     <tr key={req.id}>

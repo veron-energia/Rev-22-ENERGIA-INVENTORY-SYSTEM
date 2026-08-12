@@ -157,12 +157,18 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       first_name: s?.first_name ?? '', last_name: s?.last_name ?? '',
       phone: s?.phone ?? '', email: s?.email ?? '',
       date_of_birth: s?.date_of_birth ? String(s.date_of_birth).slice(0, 10) : '',
+      dob_y: s?.date_of_birth ? String(s.date_of_birth).slice(0, 4) : '',
+      dob_m: s?.date_of_birth ? String(Number(String(s.date_of_birth).slice(5, 7))) : '',
+      dob_d: s?.date_of_birth ? String(Number(String(s.date_of_birth).slice(8, 10))) : '',
       sex: s?.sex ?? '', occupation: s?.occupation ?? '', others_text: s?.others_text ?? '',
     });
     setEditing(true);
   };
   const saveEdit = async () => {
     if (!ed.first_name?.trim()) { setErr('A first name is required.'); return; }
+    if ((ed.dob_y || ed.dob_m || ed.dob_d) && !ed.date_of_birth) {
+      setErr('Choose the day, month and year, or clear all three.'); return;
+    }
     setEdBusy(true); setErr(null);
     const { error } = await supabase.rpc('update_survey_particulars', {
       p_survey_id: surveyId,
@@ -247,15 +253,28 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
                 <div className="form-group" style={{ marginBottom: 0 }}><label>Date of Birth</label>
                   <div style={{ display: 'flex', gap: 6 }}>
                     {(() => {
-                      const [yy = '', mm = '', dd = ''] = String(ed.date_of_birth || '').split('-');
+                      // The three parts are held SEPARATELY. Deriving them from
+                      // date_of_birth alone meant an incomplete date collapsed
+                      // to '' on every change, so no selection ever stuck and
+                      // the date could not be edited at all.
+                      const yy = ed.dob_y ?? '';
+                      const mm = ed.dob_m ?? '';
+                      const dd = ed.dob_d ?? '';
                       const set = (y: string, m: string, dday: string) =>
-                        setEd({ ...ed, date_of_birth: y && m && dday ? `${y}-${m.padStart(2,'0')}-${dday.padStart(2,'0')}` : '' });
+                        setEd({
+                          ...ed, dob_y: y, dob_m: m, dob_d: dday,
+                          // Only a complete date is submitted; a partial one is
+                          // kept on screen so the next choice can complete it.
+                          date_of_birth: y && m && dday
+                            ? `${y}-${String(m).padStart(2, '0')}-${String(dday).padStart(2, '0')}`
+                            : '',
+                        });
                       return <>
-                        <select value={dd ? String(Number(dd)) : ''} onChange={e => set(yy, mm, e.target.value)} style={{ flex: '0 0 76px' }}>
+                        <select value={dd} onChange={e => set(yy, mm, e.target.value)} style={{ flex: '0 0 76px' }}>
                           <option value="">Day</option>
                           {Array.from({ length: 31 }, (_, i) => String(i + 1)).map(x => <option key={x} value={x}>{x}</option>)}
                         </select>
-                        <select value={mm ? String(Number(mm)) : ''} onChange={e => set(yy, e.target.value, dd)} style={{ flex: 1 }}>
+                        <select value={mm} onChange={e => set(yy, e.target.value, dd)} style={{ flex: 1 }}>
                           <option value="">Month</option>
                           {['January','February','March','April','May','June','July','August','September','October','November','December']
                             .map((mn, i) => <option key={mn} value={String(i + 1)}>{mn}</option>)}

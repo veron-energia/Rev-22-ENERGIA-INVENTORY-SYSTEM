@@ -80,6 +80,32 @@ const StaffCommissionsPage: React.FC = () => {
   const [rateOpen, setRateOpen] = useState(false);
   const [rateDraft, setRateDraft] = useState(3);
   const [rateBusy, setRateBusy] = useState(false);
+  // Moving outstanding commission onto the store-staff basis. Previewed first:
+  // this changes what people are owed, so it must be readable before it is done.
+  const [rebaseOpen, setRebaseOpen] = useState(false);
+  const [rebasePreview, setRebasePreview] = useState<any[]>([]);
+  const [rebaseBusy, setRebaseBusy] = useState(false);
+  const [rebaseDone, setRebaseDone] = useState<string | null>(null);
+
+  const openRebase = async () => {
+    setRebaseDone(null); setRebaseOpen(true); setRebasePreview([]);
+    const { data } = await supabase.rpc('preview_commission_rebase_effect');
+    setRebasePreview((data as any[]) ?? []);
+  };
+  const applyRebase = async () => {
+    setRebaseBusy(true);
+    const { data, error } = await supabase.rpc('apply_commission_rebase_all');
+    setRebaseBusy(false);
+    if (error) { setRebaseDone(`Could not rebase: ${error.message}`); return; }
+    const d = data as any;
+    setRebaseDone(`${d?.invoices_affected ?? 0} invoice(s) rebased.`
+      + (d?.invoices_with_no_commission_before
+          ? ` ${d.invoices_with_no_commission_before} had no commission recorded before and now do.` : '')
+      + (d?.invoices_skipped_already_paid
+          ? ` ${d.invoices_skipped_already_paid} skipped — already paid out.` : ''));
+    setRebasePreview([]);
+    load();
+  };
   const saveRate = async () => {
     setRateBusy(true);
     const { error } = await supabase.rpc('set_staff_commission_rate', { p_rate: rateDraft });
@@ -113,6 +139,7 @@ const StaffCommissionsPage: React.FC = () => {
               { header: 'Amount', value: (p: any) => Number(p.amount ?? 0) },
             ]} />
           {canPay && <button className="btn btn-secondary" onClick={() => { setRateDraft(rate); setRateOpen(true); }}><Settings size={15} /> Rate</button>}
+          {canPay && <button className="btn btn-secondary" onClick={openRebase}><RefreshCw size={15} /> Rebase unpaid</button>}
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
         </div>
       </div>
@@ -169,6 +196,73 @@ const StaffCommissionsPage: React.FC = () => {
               <select value={payMethod} onChange={e => setPayMethod(e.target.value)}>{methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
             </div>
             <div className="form-group"><label>Reference</label><input value={payRef} onChange={e => setPayRef(e.target.value)} placeholder="Optional" /></div>
+          </div>
+        </Modal>
+      )}
+
+      {rebaseOpen && (
+        <Modal title="Rebase unpaid commission" maxWidth={640} onClose={() => setRebaseOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setRebaseOpen(false)}>Close</button>
+            {rebasePreview.length > 0 && (
+              <button className="btn btn-primary" onClick={applyRebase} disabled={rebaseBusy}>
+                {rebaseBusy ? 'Rebasing…' : 'Apply to all unpaid'}</button>
+            )}</>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              This recalculates commission that has <strong>not yet been paid out</strong> onto the
+              current rule: <strong>every paid invoice divided equally between the active staff
+              assigned to that store</strong>, whoever served the customer. Owners, Managers,
+              Admins and Inventory Managers receive nothing. Anything already paid out is left
+              exactly as it is.
+            </div>
+
+            {rebaseDone && (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}>
+                <span>ℹ</span><div>{rebaseDone}</div>
+              </div>
+            )}
+
+            {!rebaseDone && rebasePreview.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>
+                Nothing outstanding to rebase.
+              </div>
+            )}
+
+            {rebasePreview.length > 0 && (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>Staff</th>
+                    <th style={{ textAlign: 'right' }}>Owed now</th>
+                    <th style={{ textAlign: 'right' }}>After</th>
+                    <th style={{ textAlign: 'right' }}>Change</th>
+                  </tr></thead>
+                  <tbody>
+                    {rebasePreview.map((r: any) => (
+                      <tr key={r.staff_name}>
+                        <td><strong>{r.staff_name}</strong></td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.current_unpaid))}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{money(Number(r.projected_unpaid))}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600,
+                                     color: Number(r.difference) >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                          {Number(r.difference) >= 0 ? '+' : ''}{money(Number(r.difference))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {rebasePreview.length > 0 && (
+              <div className="alert alert-warning" style={{ marginBottom: 0 }}>
+                <span>⚠</span>
+                <div>
+                  The total paid out does not change — only how it is divided. The original rows are
+                  kept and marked reversed, so the history stays intact.
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}
