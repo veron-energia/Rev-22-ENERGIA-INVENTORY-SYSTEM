@@ -637,7 +637,21 @@ const PromotionsPage: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <strong style={{ flex: 1, fontSize: 13 }}>{g.label}</strong>
                     <span className="badge badge-primary">choose {g.choose_qty} {g.item_kind}{g.choose_qty > 1 ? 's' : ''}</span>
-                    {g.item_kind === 'product' && <span className="badge badge-muted" title="At sale, any product can be chosen; the cheapest option here sets the base price and pricier picks pay the difference.">base = cheapest option</span>}
+                    {/* This badge was hardcoded to "cheapest" and ignored the
+                        group's actual base_mode, so a group saved as "highest"
+                        still read as "cheapest" — the setting was right, the
+                        label was lying about it. */}
+                    {g.item_kind === 'product' && (() => {
+                      const highest = (g as any).base_mode === 'highest';
+                      return (
+                        <span className="badge badge-muted"
+                          title={highest
+                            ? 'At sale, any product can be chosen; the HIGHEST-priced option here sets the base price, so cheaper picks pay no more.'
+                            : 'At sale, any product can be chosen; the cheapest option here sets the base price and pricier picks pay the difference.'}>
+                          base = {highest ? 'highest' : 'cheapest'} option
+                        </span>
+                      );
+                    })()}
                     <button className="btn btn-danger btn-sm btn-icon" onClick={() => removeGroup(g.id)}><X size={13} /></button>
                   </div>
                   <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>

@@ -413,7 +413,13 @@ const InvoicesPage: React.FC = () => {
   const optionsFor = (groupId: string) => choiceOptions.filter(o => o.group_id === groupId);
   const selSum = (l: LineDraft, gId: string) => Object.values(l.selections[gId] ?? {}).reduce((s, n) => s + (n || 0), 0);
 
-  // Baseline of a product group = cheapest listed option at the chosen store.
+  // Baseline of a product group, following the group's OWN base_mode.
+  //
+  // This previously always took the cheapest option, ignoring base_mode — so a
+  // group set to "highest" showed one top-up on screen and the database
+  // computed another when the invoice was saved. promotion_selections_topup()
+  // has always honoured base_mode; only this preview did not.
+  //
   // G: baseline follows the applied pricing mode — a top-up computed under the
   // previous mode is never reused (the memo recomputes on mode change).
   // C: baseline resolves in the promotion LINE's applied mode, not the
@@ -423,7 +429,9 @@ const InvoicesPage: React.FC = () => {
     const opts = optionsFor(gId)
       .map(o => (o.product_id ? priceFor(activeStore, o.product_id, member) : null))
       .filter((p): p is number => p != null);
-    return opts.length ? Math.min(...opts) : null;
+    if (!opts.length) return null;
+    const highest = (choiceGroups.find(g => g.id === gId) as any)?.base_mode === 'highest';
+    return highest ? Math.max(...opts) : Math.min(...opts);
   };
 
   // 3rd-party product lines cannot be discounted by VOUCHERS. Since migration 99

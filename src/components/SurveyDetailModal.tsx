@@ -143,6 +143,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
   const [editing, setEditing] = useState(false);
   const [ed, setEd] = useState<any>({});
   const [edBusy, setEdBusy] = useState(false);
+  const [edErr, setEdErr] = useState<string | null>(null);
   const openEdit = () => {
     setEd({
       source_option_id: (s as any)?.source_option_id ?? '',
@@ -165,9 +166,11 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
     setEditing(true);
   };
   const saveEdit = async () => {
-    if (!ed.first_name?.trim()) { setErr('A first name is required.'); return; }
+    setEdErr(null);
+    if (!ed.first_name?.trim()) { setEdErr('A first name is required.'); return; }
     if ((ed.dob_y || ed.dob_m || ed.dob_d) && !ed.date_of_birth) {
-      setErr('Choose the day, month and year, or clear all three.'); return;
+      setEdErr('Choose the day, month and year — all three are needed for a date of birth.');
+      return;
     }
     setEdBusy(true); setErr(null);
     const { error } = await supabase.rpc('update_survey_particulars', {
@@ -188,7 +191,13 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       })),
     });
     setEdBusy(false);
-    if (error) { setErr(error.message); return; }
+    if (error) {
+      // Shown inside the edit form: a save that fails silently is
+      // indistinguishable from a form that does not work.
+      setEdErr(error.message);
+      return;
+    }
+    setEdErr(null);
     setEditing(false); load(false); onSaved();
   };
 
@@ -237,6 +246,11 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
 
           {editing ? (
             <div className="form-grid">
+              {edErr && (
+                <div className="alert alert-danger" style={{ marginBottom: 0 }}>
+                  <span>⚠</span><div>{edErr}</div>
+                </div>
+              )}
               <div className="form-grid-2">
                 <div className="form-group" style={{ marginBottom: 0 }}><label>First Name *</label>
                   <input value={ed.first_name} onChange={e => setEd({ ...ed, first_name: e.target.value })} /></div>
@@ -281,7 +295,9 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
                         </select>
                         <select value={yy} onChange={e => set(e.target.value, mm, dd)} style={{ flex: '0 0 90px' }}>
                           <option value="">Year</option>
-                          {Array.from({ length: 100 }, (_, i) => String(new Date().getFullYear() - i)).map(x => <option key={x} value={x}>{x}</option>)}
+                          {/* 120 years: at 100 the oldest selectable year was 1927,
+                              so anyone born earlier simply had no option to choose. */}
+                          {Array.from({ length: 120 }, (_, i) => String(new Date().getFullYear() - i)).map(x => <option key={x} value={x}>{x}</option>)}
                         </select>
                       </>;
                     })()}
