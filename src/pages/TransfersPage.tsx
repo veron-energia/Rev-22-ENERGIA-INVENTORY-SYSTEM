@@ -306,7 +306,10 @@ const TransfersPage: React.FC = () => {
             line_id: id,
             sources: Object.entries(alloc[id] ?? {})
               .filter(([, q]) => Number(q) > 0)
-              .map(([wid, q]) => ({ warehouse_id: wid, quantity: Number(q) })),
+              .map(([key, q]) => {
+                const [st, id] = key.includes(':') ? key.split(':') : ['warehouse', key];
+                return { warehouse_id: id, source_type: st, quantity: Number(q) };
+              }),
           })),
         })
       : await supabase.rpc('approve_transfer', {
@@ -629,16 +632,17 @@ const TransfersPage: React.FC = () => {
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 6, marginTop: 6 }}>
                           {rows.map(r => {
-                            const val = alloc[lineId]?.[r.warehouse_id] ?? 0;
+                            const key = `${r.source_type ?? 'warehouse'}:${r.warehouse_id}`;
+                            const val = alloc[lineId]?.[key] ?? 0;
                             const none = r.available <= 0;
                             return (
-                              <div key={r.warehouse_id} style={{
+                              <div key={key} style={{
                                 display: 'flex', gap: 6, alignItems: 'center',
                                 opacity: none ? 0.45 : 1,
                               }}>
                                 <div style={{ flex: 1, fontSize: 12, minWidth: 0 }}>
                                   <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {r.warehouse_name}
+                                    {(r.source_type ?? 'warehouse') === 'store' ? '🏪 ' : '🏭 '}{r.warehouse_name}
                                   </div>
                                   <div style={{ fontSize: 10.5, color: none ? 'var(--danger)' : 'var(--text-muted)' }}>
                                     {none ? 'no stock' : `${r.available} in stock`}
@@ -648,7 +652,7 @@ const TransfersPage: React.FC = () => {
                                   value={val || ''} placeholder="0" style={{ width: 68 }}
                                   onChange={e => {
                                     const q = Math.max(0, Math.min(Number(e.target.value) || 0, r.available));
-                                    setAlloc(a => ({ ...a, [lineId]: { ...(a[lineId] ?? {}), [r.warehouse_id]: q } }));
+                                    setAlloc(a => ({ ...a, [lineId]: { ...(a[lineId] ?? {}), [key]: q } }));
                                   }} />
                               </div>
                             );
@@ -659,8 +663,9 @@ const TransfersPage: React.FC = () => {
                   })}
                 </div>
                 <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>
-                  Pre-filled from the warehouses holding the most — adjust any figure. Each product
-                  must add up to its approved quantity before the transfer can be approved.
+                  Pre-filled from the locations holding the most — adjust any figure. Stock can
+                  come from a warehouse 🏭 or another store 🏪. Each product must add up to its
+                  approved quantity before the transfer can be approved.
                 </div>
               </div>
             )}
@@ -695,7 +700,7 @@ const TransfersPage: React.FC = () => {
                         for (const r of forLine) {
                           if (left <= 0) break;
                           const take = Math.min(left, r.available);
-                          if (take > 0) { next[r.warehouse_id] = take; left -= take; }
+                          if (take > 0) { next[`${r.source_type ?? 'warehouse'}:${r.warehouse_id}`] = take; left -= take; }
                         }
                         setAlloc(a => ({ ...a, [row.line_id]: next }));
                       }} />

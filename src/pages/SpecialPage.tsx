@@ -184,8 +184,12 @@ const SpecialPage: React.FC = () => {
     const wh = fulfilWh[row.doc_id];
     if (!wh) { setErr('Choose a warehouse first.'); return; }
     setFulfilBusy(row.doc_id); setErr(null);
+    // The dropdown value is "type:id", since a warehouse and a store could
+    // otherwise be indistinguishable by id alone.
+    const [locType, locId] = String(wh).includes(':') ? String(wh).split(':') : ['warehouse', String(wh)];
     const { error } = await supabase.rpc('fulfil_special_doc', {
-      p_doc_kind: row.doc_kind, p_doc_id: row.doc_id, p_warehouse_id: wh,
+      p_doc_kind: row.doc_kind, p_doc_id: row.doc_id, p_warehouse_id: locId,
+      p_location_type: locType,
     });
     setFulfilBusy(null);
     if (error) { setErr(error.message); return; }
@@ -762,7 +766,7 @@ const SpecialPage: React.FC = () => {
                 </div>
 {awaiting.map(row => {
             const opts = avail[row.doc_id] ?? [];
-            const chosen = opts.find((o: any) => o.warehouse_id === fulfilWh[row.doc_id]);
+            const chosen = opts.find((o: any) => `${o.location_type}:${o.warehouse_id}` === fulfilWh[row.doc_id]);
             const canCover = opts.filter((o: any) => o.available >= row.quantity);
             const isRental = row.doc_kind === 'rental';
             return (
@@ -811,9 +815,9 @@ const SpecialPage: React.FC = () => {
                     <select value={fulfilWh[row.doc_id] ?? ''} style={{ width: '100%' }}
                       onChange={e => setFulfilWh(w => ({ ...w, [row.doc_id]: e.target.value }))}>
                       <option value="">
-                        {opts.length === 0 ? 'No warehouse holds this'
+                        {opts.length === 0 ? 'Nowhere holds this'
                           : canCover.length === 0 ? `Nowhere has ${row.quantity} free`
-                          : `Choose from ${canCover.length} warehouse${canCover.length === 1 ? '' : 's'}…`}
+                          : `Choose from ${canCover.length} location${canCover.length === 1 ? '' : 's'}…`}
                       </option>
                       {opts.map((o: any) => (
                         <option key={o.warehouse_id} value={o.warehouse_id}
