@@ -265,8 +265,19 @@ const TransfersPage: React.FC = () => {
   const lineIds = Array.from(new Set(sourcing.map(r => r.line_id)));
   const allocFor = (lineId: string) =>
     Object.values(alloc[lineId] ?? {}).reduce((a, b) => a + (Number(b) || 0), 0);
-  const approvedFor = (lineId: string) =>
-    sourcing.find(r => r.line_id === lineId)?.approved ?? 0;
+  // The LIVE approved quantity, not the figure loaded when the dialog opened.
+  //
+  // This read only `sourcing`, which is fetched once on open, so editing
+  // "Approved Quantities" left the allocation targets stale: the row still
+  // demanded the original quantity, the running total never balanced, and the
+  // server would have rejected the split anyway. approveLines is keyed by
+  // product, sourcing by line, hence the lookup through the row's product.
+  const approvedFor = (lineId: string) => {
+    const row = sourcing.find(r => r.line_id === lineId);
+    if (!row) return 0;
+    const edited = approveLines.find(a => a.product_id === row.product_id);
+    return edited ? Number(edited.quantity ?? 0) : (row.approved ?? 0);
+  };
   const allocationComplete = lineIds.length > 0
     && lineIds.every(id => allocFor(id) === approvedFor(id));
 
@@ -669,7 +680,25 @@ const TransfersPage: React.FC = () => {
                   <div key={l.id} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                     <div style={{ flex: 1 }}><strong>{productName(l.product_id)}</strong> <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>requested {l.quantity}</span></div>
                     <input type="number" min={0} max={l.quantity} value={approveLines[i]?.quantity ?? 0} style={{ width: 90 }}
-                      onChange={e => setApproveLines(al => al.map((a, j) => j === i ? { ...a, quantity: Math.min(+e.target.value, l.quantity) } : a))} />
+                      onChange={e => {
+                        const q = Math.max(0, Math.min(Math.floor(+e.target.value || 0), l.quantity));
+                        setApproveLines(al => al.map((a, j) => j === i ? { ...a, quantity: q } : a));
+                        // Re-fill this product's warehouse split to match the new
+                        // quantity. Without this the allocation keeps the old
+                        // numbers and can never balance.
+                        const row = sourcing.find(r => r.product_id === l.product_id);
+                        if (!row) return;
+                        const forLine = sourcing.filter(r => r.line_id === row.line_id)
+                          .sort((a, b) => b.available - a.available);
+                        let left = q;
+                        const next: Record<string, number> = {};
+                        for (const r of forLine) {
+                          if (left <= 0) break;
+                          const take = Math.min(left, r.available);
+                          if (take > 0) { next[r.warehouse_id] = take; left -= take; }
+                        }
+                        setAlloc(a => ({ ...a, [row.line_id]: next }));
+                      }} />
                   </div>
                 ))}
               </div>

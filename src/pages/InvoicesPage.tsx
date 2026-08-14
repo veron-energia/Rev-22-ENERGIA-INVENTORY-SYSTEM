@@ -129,6 +129,10 @@ const InvoicesPage: React.FC = () => {
   // Who the invoice is attributed to. Owner only — it changes what a printed
   // document says about who served the customer.
   const [cCreatedBy, setCCreatedBy] = useState('');
+  // Snapshots taken when the correction opens: `detail` is cleared at that
+  // point, so without these there is nothing to diff against on save.
+  const [createdByBeforeEdit, setCreatedByBeforeEdit] = useState('');
+  const [paymentsBeforeEdit, setPaymentsBeforeEdit] = useState<InvoicePayment[]>([]);
   const [detailExchange, setDetailExchange] = useState<any>(null);
   const [detailRevisions, setDetailRevisions] = useState<InvoiceRevision[]>([]);
   const [affiliateOptions, setAffiliateOptions] = useState<{ affiliate_id: string; full_name: string; phone: string }[]>([]);
@@ -653,8 +657,43 @@ const InvoicesPage: React.FC = () => {
           p_discount_voucher_id: cDiscountVoucher || null,
           p_service_staff: cServiceStaff,
         });
+    if (error) { setCSaving(false); setCErr(error.message); return; }
+
+    // ---- Corrections that are separate RPCs, applied only when correcting a
+    //      settled invoice and only when the field was actually changed. ----
+    if (editingPaid && editingInvoiceId) {
+      // Who the invoice is attributed to (Owner only).
+      if (isOwner(profile?.role) && cCreatedBy
+          && cCreatedBy !== createdByBeforeEdit) {
+        const { error: aErr } = await supabase.rpc('correct_invoice_created_by', {
+          p_invoice_id: editingInvoiceId, p_staff_id: cCreatedBy,
+          p_reason: editReason.trim() || null,
+        });
+        if (aErr) {
+          setCSaving(false);
+          setCErr(`The invoice was corrected, but who it is attributed to could not be: ${aErr.message}`);
+          loadAll(); return;
+        }
+      }
+
+      // Payment methods: only the attribution, never the amounts.
+      const changedPayments = Object.entries(payFix)
+        .filter(([id, mid]) => paymentsBeforeEdit.find((p2: InvoicePayment) => p2.id === id)?.payment_method_id !== mid)
+        .map(([id, mid]) => ({ payment_id: id, payment_method_id: mid }));
+      if (changedPayments.length > 0) {
+        const { error: pErr } = await supabase.rpc('correct_invoice_payment_methods', {
+          p_invoice_id: editingInvoiceId, p_payments: changedPayments,
+          p_reason: editReason.trim() || null,
+        });
+        if (pErr) {
+          setCSaving(false);
+          setCErr(`The invoice was corrected, but the payment method could not be: ${pErr.message}`);
+          loadAll(); return;
+        }
+      }
+    }
+
     setCSaving(false);
-    if (error) { setCErr(error.message); return; }
     const newInvId = editingInvoiceId ?? (rpcId as string | null);
     // Save Earth (post-create; on edit this also handles switching it off).
     if (newInvId && (saveEarthOn || editingInvoiceId)) {
@@ -733,6 +772,8 @@ const InvoicesPage: React.FC = () => {
     setAffTouched(false);
     setPayFix(Object.fromEntries(detailPayments.map(p2 => [p2.id, p2.payment_method_id])));
     setCCreatedBy((detail as any).created_by ?? '');
+    setCreatedByBeforeEdit((detail as any).created_by ?? '');
+    setPaymentsBeforeEdit(detailPayments);
     void loadAffiliateOptions();
     setDetail(null);
     setCErr(null);
