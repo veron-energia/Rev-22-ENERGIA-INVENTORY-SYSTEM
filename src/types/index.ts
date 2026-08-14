@@ -101,6 +101,9 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 export const isOwnerOrAdmin = (r?: UserRole) => r === 'owner' || r === 'admin';
 export const isManagerOrAbove = (r?: UserRole) => r === 'owner' || r === 'admin' || r === 'manager';
 export const isOwnerOrManager = (r?: UserRole) => r === 'owner' || r === 'manager';
+/** Owner only — for actions a Manager must not perform, such as changing who
+ *  an invoice is attributed to. */
+export const isOwner = (r?: UserRole) => r === 'owner';
 export const canManageWarehouseStock = (r?: UserRole) =>
   r === 'owner' || r === 'manager' || r === 'inventory_manager';
 

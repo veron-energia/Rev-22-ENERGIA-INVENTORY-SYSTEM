@@ -9,7 +9,7 @@ import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
-  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
+  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { Modal, ReasonModal } from '../components/ui';
 import {
@@ -122,6 +122,13 @@ const InvoicesPage: React.FC = () => {
   // it unwinds stock and commission, writes a revision, and needs a reason.
   const [editingPaid, setEditingPaid] = useState(false);
   const [editReason, setEditReason] = useState('');
+  // Correcting the affiliate and the payment methods on a settled invoice.
+  const [cAffiliate, setCAffiliate] = useState('');
+  const [affTouched, setAffTouched] = useState(false);
+  const [payFix, setPayFix] = useState<Record<string, string>>({});
+  // Who the invoice is attributed to. Owner only — it changes what a printed
+  // document says about who served the customer.
+  const [cCreatedBy, setCCreatedBy] = useState('');
   const [detailExchange, setDetailExchange] = useState<any>(null);
   const [detailRevisions, setDetailRevisions] = useState<InvoiceRevision[]>([]);
   const [affiliateOptions, setAffiliateOptions] = useState<{ affiliate_id: string; full_name: string; phone: string }[]>([]);
@@ -628,6 +635,10 @@ const InvoicesPage: React.FC = () => {
           p_service_staff: cServiceStaff?.length ? cServiceStaff : null,
           // Correcting a sale rung up at the wrong till: the stock follows.
           p_store_id: cStore || null,
+          // Only sent when the affiliate was actually touched, so an unrelated
+          // correction never clears one by omission.
+          p_affiliate_id: affTouched ? (cAffiliate || null) : null,
+          p_set_affiliate: affTouched,
         })
       : editingInvoiceId
       ? await supabase.rpc('update_invoice', {
@@ -718,6 +729,11 @@ const InvoicesPage: React.FC = () => {
     setEditingInvoiceId(detail.id);
     setEditingPaid(['paid', 'partially_paid', 'completed_foc'].includes(String(detail.status)));
     setEditReason('');
+    setCAffiliate((detail as any).affiliate_id ?? '');
+    setAffTouched(false);
+    setPayFix(Object.fromEntries(detailPayments.map(p2 => [p2.id, p2.payment_method_id])));
+    setCCreatedBy((detail as any).created_by ?? '');
+    void loadAffiliateOptions();
     setDetail(null);
     setCErr(null);
     setCreateOpen(true);
@@ -1427,6 +1443,85 @@ const InvoicesPage: React.FC = () => {
                     <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Reason for the correction *</div>
                     <input value={editReason} onChange={e => setEditReason(e.target.value)}
                       placeholder="e.g. Wrong quantity keyed at the till" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {editingPaid && (
+              <div className="form-grid-2">
+                {/* Referrer: add one that was missed, change it, or clear it. */}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Referrer / affiliate</label>
+                  <select value={cAffiliate}
+                    onChange={e => { setCAffiliate(e.target.value); setAffTouched(true); }}>
+                    <option value="">— None —</option>
+                    {affiliateOptions.map(a => (
+                      <option key={a.affiliate_id} value={a.affiliate_id}>
+                        {a.full_name}{a.phone ? ` · ${a.phone}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    Changing this reverses the affiliate commission and re-earns it for whoever is
+                    selected here.
+                  </div>
+                </div>
+
+                {/* Who raised it. Owner only: this changes what the printed
+                    document says about who served the customer. */}
+                {isOwner(profile?.role) && (
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>Raised by</label>
+                    <select value={cCreatedBy} onChange={e => setCCreatedBy(e.target.value)}>
+                      <option value="">— Unchanged —</option>
+                      {profiles
+                        .filter(u => u.is_active !== false)
+                        .map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.full_name}{u.role ? ` · ${u.role.replace(/_/g, ' ')}` : ''}
+                          </option>
+                        ))}
+                    </select>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                      Changes the staff signature on the printed invoice. Commission is unaffected —
+                      it follows the store's staff, not this field. The person must work at this store.
+                    </div>
+                  </div>
+                )}
+
+                {/* Payment method: how the money arrived, not how much. */}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Payment method{detailPayments.length > 1 ? 's' : ''}</label>
+                  {detailPayments.length === 0 ? (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No payments recorded.</div>
+                  ) : detailPayments.map(p2 => {
+                    // A wallet payment consumed credit from the customer's
+                    // wallet; the database refuses to reattribute it, so it is
+                    // shown as fixed rather than offered and then rejected.
+                    const isWallet = !!(methods.find(m => m.id === p2.payment_method_id) as any)?.is_wallet_credit;
+                    return (
+                      <div key={p2.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
+                        <span style={{ flex: '0 0 84px', fontSize: 12.5, fontWeight: 600,
+                                       fontVariantNumeric: 'tabular-nums' }}>
+                          {money(Number(p2.amount))}
+                        </span>
+                        {isWallet ? (
+                          <span style={{ flex: 1, fontSize: 12.5, color: 'var(--text-muted)' }}>
+                            {methods.find(m => m.id === p2.payment_method_id)?.name} — wallet credit, cannot be reattributed
+                          </span>
+                        ) : (
+                          <select style={{ flex: 1 }} value={payFix[p2.id] ?? p2.payment_method_id}
+                            onChange={e => setPayFix(m => ({ ...m, [p2.id]: e.target.value }))}>
+                            {methods.filter(m => !(m as any).is_wallet_credit)
+                              .map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                          </select>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    Only which method the money came through — the amounts cannot be changed here.
                   </div>
                 </div>
               </div>
