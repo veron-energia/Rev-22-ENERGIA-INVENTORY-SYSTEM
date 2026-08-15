@@ -819,10 +819,15 @@ const SpecialPage: React.FC = () => {
                           : canCover.length === 0 ? `Nowhere has ${row.quantity} free`
                           : `Choose from ${canCover.length} location${canCover.length === 1 ? '' : 's'}…`}
                       </option>
+                      {/* The value carries the LOCATION TYPE as well as the id.
+                          Without the prefix the id alone was sent, doFulfil
+                          defaulted to 'warehouse', and picking a store failed
+                          with "That warehouse does not exist". */}
                       {opts.map((o: any) => (
-                        <option key={o.warehouse_id} value={o.warehouse_id}
+                        <option key={`${o.location_type}:${o.warehouse_id}`}
+                          value={`${o.location_type}:${o.warehouse_id}`}
                           disabled={o.available < row.quantity}>
-                          {o.warehouse_name} — {o.available} free
+                          {o.location_type === 'store' ? '🏪 ' : '🏭 '}{o.warehouse_name} — {o.available} free
                           {o.available < row.quantity ? ' (not enough)' : ''}
                         </option>
                       ))}
