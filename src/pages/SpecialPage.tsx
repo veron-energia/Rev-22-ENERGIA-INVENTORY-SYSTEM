@@ -51,6 +51,12 @@ const SpecialPage: React.FC = () => {
 
   const [rows, setRows] = useState<SpecialProduct[]>([]);
   const [stock, setStock] = useState<SpecialProductStock[]>([]);
+  // Store stock is held separately from warehouse stock: the two are counted
+  // apart. Declared HERE, above load() and the helpers that read them, so the
+  // ordering cannot become a temporal dead zone if this file is reshuffled.
+  const [storeStock, setStoreStock] = useState<SpecialProductStock[]>([]);
+  // Which total was clicked: the product and whether warehouses or stores.
+  const [breakdown, setBreakdown] = useState<{ product: any; kind: 'warehouse' | 'store' } | null>(null);
   const [sales, setSales] = useState<SpecialSale[]>([]);
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -65,9 +71,10 @@ const SpecialPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [sp, st, sa, re, wh, cu, pm, sto, prof] = await Promise.all([
+    const [sp, st, si, sa, re, wh, cu, pm, sto, prof] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('warehouse_inventory').select('warehouse_id,product_id,current_qty'),
+      supabase.from('store_inventory').select('store_id,product_id,current_qty'),
       supabase.from('special_sales').select('*').order('created_at', { ascending: false }),
       supabase.from('rentals').select('*').order('created_at', { ascending: false }),
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -91,6 +98,14 @@ const SpecialPage: React.FC = () => {
         warehouse_id: w.warehouse_id,
         current_qty: w.current_qty,
       })) as SpecialProductStock[]);
+    setStoreStock(((si.data as any[]) ?? [])
+      .filter(w => byProduct.has(w.product_id))
+      .map(w => ({
+        id: `${w.store_id}:${w.product_id}`,
+        special_product_id: byProduct.get(w.product_id)!,
+        warehouse_id: w.store_id,          // the location id; a store here
+        current_qty: w.current_qty,
+      })) as SpecialProductStock[]);
     setSales((sa.data as SpecialSale[]) ?? []);
     setRentals((re.data as Rental[]) ?? []);
     setWarehouses((wh.data as Warehouse[]) ?? []);
@@ -106,6 +121,9 @@ const SpecialPage: React.FC = () => {
   const whName = (id: string) => warehouses.find(w => w.id === id)?.name ?? '—';
   const cuName = (id: string | null) => id ? (customers.find(c => c.id === id)?.full_name ?? '—') : '—';
   const pmName = (id: string | null) => id ? (methods.find(m => m.id === id)?.name ?? '—') : '—';
+  const storeStockOf = (spId: string, stId?: string) =>
+    storeStock.filter(s2 => s2.special_product_id === spId && (!stId || s2.warehouse_id === stId));
+  const totalIn = (list: SpecialProductStock[]) => list.reduce((a, b) => a + (b.current_qty || 0), 0);
   const stockOf = (spId: string, whId?: string) => stock.filter(s => s.special_product_id === spId && (!whId || s.warehouse_id === whId));
   const isOverdue = (r: Rental) => (r.status === 'paid' || r.status === 'active') && todayStr() > r.expected_return_date;
   const latePreview = (r: Rental) => {
@@ -648,7 +666,7 @@ const SpecialPage: React.FC = () => {
         : tab === 'catalog' ? (
           rows.length === 0 ? <div className="empty-state"><KeyRound size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No special products yet</p></div>
           : <table>
-              <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Sale</th><th style={{ textAlign: 'right' }}>Day</th><th style={{ textAlign: 'right' }}>Week</th><th style={{ textAlign: 'right' }}>Month</th><th style={{ textAlign: 'right' }}>Year</th><th style={{ textAlign: 'right' }}>Late/day</th><th style={{ textAlign: 'right' }}>Stock</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Sale</th><th style={{ textAlign: 'right' }}>Day</th><th style={{ textAlign: 'right' }}>Week</th><th style={{ textAlign: 'right' }}>Month</th><th style={{ textAlign: 'right' }}>Year</th><th style={{ textAlign: 'right' }}>Late/day</th><th style={{ textAlign: 'right' }} title="Total held across all warehouses">In warehouses</th><th style={{ textAlign: 'right' }} title="Total held across all stores">In stores</th><th></th></tr></thead>
               <tbody>{rows.map(p => (
                 <tr key={p.id}>
                   <td><strong>{p.name}</strong>{!p.is_active && <span className="badge badge-muted" style={{ marginLeft: 6 }}>Inactive</span>}</td>
@@ -659,7 +677,29 @@ const SpecialPage: React.FC = () => {
                   <td style={{ textAlign: 'right', fontSize: 12.5 }}>{money(p.rate_month)}</td>
                   <td style={{ textAlign: 'right', fontSize: 12.5 }}>{money(p.rate_year)}</td>
                   <td style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--danger)' }}>{money(p.late_fee_per_day)}</td>
-                  <td style={{ textAlign: 'right' }}>{stockOf(p.id).reduce((s, x) => s + x.current_qty, 0)}</td>
+                  {/* Two totals, each opening its own breakdown. */}
+                  <td style={{ textAlign: 'right' }}>
+                    <button className="link-button"
+                      onClick={() => setBreakdown({ product: p, kind: 'warehouse' })}
+                      title="Show each warehouse"
+                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                               font: 'inherit', fontWeight: 700,
+                               color: totalIn(stockOf(p.id)) > 0 ? 'var(--primary)' : 'var(--text-muted)',
+                               textDecoration: 'underline dotted' }}>
+                      {totalIn(stockOf(p.id))}
+                    </button>
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button className="link-button"
+                      onClick={() => setBreakdown({ product: p, kind: 'store' })}
+                      title="Show each store"
+                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                               font: 'inherit', fontWeight: 700,
+                               color: totalIn(storeStockOf(p.id)) > 0 ? 'var(--primary)' : 'var(--text-muted)',
+                               textDecoration: 'underline dotted' }}>
+                      {totalIn(storeStockOf(p.id))}
+                    </button>
+                  </td>
                   <td><div style={{ display: 'flex', gap: 4 }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => { setStockFor(p); setStockWh(warehouses[0]?.id ?? ''); setStockQtyIn(0); }}><Boxes size={13} /> Stock</button>
                     <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(p)}><Pencil size={13} /></button>
@@ -738,6 +778,64 @@ const SpecialPage: React.FC = () => {
       </div></div>
 
       {/* Catalog add/edit */}
+      {breakdown && (() => {
+        const isWh = breakdown.kind === 'warehouse';
+        const rowsFor = isWh ? stockOf(breakdown.product.id) : storeStockOf(breakdown.product.id);
+        // Only locations actually holding some: a list of zeroes is noise.
+        const held = rowsFor.filter(r => (r.current_qty || 0) > 0)
+          .sort((a, b) => (b.current_qty || 0) - (a.current_qty || 0));
+        const nameOf = (id: string) => isWh
+          ? (warehouses.find(w => w.id === id)?.name ?? 'Unknown warehouse')
+          : (brandStores.find((s2: any) => s2.id === id)?.name ?? 'Unknown store');
+        return (
+          <Modal title={`${breakdown.product.name} — ${isWh ? 'warehouses' : 'stores'}`}
+            maxWidth={480} onClose={() => setBreakdown(null)}
+            footer={<button className="btn btn-secondary" onClick={() => setBreakdown(null)}>Close</button>}>
+            <div className="form-grid">
+              <div style={{ display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'baseline', gap: 12 }}>
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                  {isWh ? 'Held in warehouses' : 'Held in stores'}
+                </span>
+                <span style={{ fontSize: 24, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                  {totalIn(rowsFor)}
+                </span>
+              </div>
+
+              {held.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>
+                  None held in any {isWh ? 'warehouse' : 'store'}.
+                </div>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr>
+                      <th>{isWh ? 'Warehouse' : 'Store'}</th>
+                      <th style={{ textAlign: 'right' }}>Quantity</th>
+                    </tr></thead>
+                    <tbody>
+                      {held.map(r => (
+                        <tr key={r.id}>
+                          <td>{isWh ? '🏭 ' : '🏪 '}{nameOf(r.warehouse_id)}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 600,
+                                       fontVariantNumeric: 'tabular-nums' }}>{r.current_qty}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                {isWh
+                  ? 'Stores are counted separately — see the "In stores" column.'
+                  : 'Warehouses are counted separately — see the "In warehouses" column.'}
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
       {queueOpen && (
         <Modal title="Waiting for a warehouse" wide onClose={() => setQueueOpen(false)}
           footer={<button className="btn btn-secondary" onClick={() => setQueueOpen(false)}>Close</button>}>
@@ -980,6 +1078,12 @@ const SpecialPage: React.FC = () => {
             </div>
             <div>
               <label>Current stock by warehouse</label>
+              {totalIn(storeStockOf(stockFor.id)) > 0 && (
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  A further <strong>{totalIn(storeStockOf(stockFor.id))}</strong> is held in stores.
+                  Stock is added to warehouses here; store stock arrives by transfer.
+                </div>
+              )}
               <table style={{ marginTop: 4 }}>
                 <thead><tr><th>Warehouse</th><th style={{ textAlign: 'right' }}>Qty</th></tr></thead>
                 <tbody>
