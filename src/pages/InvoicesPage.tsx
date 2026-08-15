@@ -1848,9 +1848,21 @@ const InvoicesPage: React.FC = () => {
                         const itemPrice = (id: string): number | null => isProd
                           ? priceFor(activeStore, id)
                           : voucherPrice(id);
-                        const setQty = (itemId: string, q: number) => setCLines(ls => ls.map((l, j) => j === i
-                          ? { ...l, selections: { ...l.selections, [g.id]: { ...(l.selections[g.id] ?? {}), [itemId]: Math.max(0, q) } } }
-                          : l));
+                        // The quantity can now be TYPED, not only stepped, since a group
+                        // may call for 60 or more. The cap lives here rather than on the
+                        // "+" button alone, so a typed figure cannot exceed what the
+                        // group needs — the invoice would be rejected otherwise.
+                        const setQty = (itemId: string, q: number) => setCLines(ls => ls.map((l, j) => {
+                          if (j !== i) return l;
+                          const current = l.selections[g.id] ?? {};
+                          const wanted = Math.max(0, Math.floor(Number.isFinite(q) ? q : 0));
+                          const others = Object.entries(current)
+                            .filter(([k]) => k !== itemId)
+                            .reduce((a, [, v]) => a + (Number(v) || 0), 0);
+                          const room = Math.max(0, (g.choose_qty * l.quantity) - others);
+                          return { ...l, selections: { ...l.selections,
+                            [g.id]: { ...current, [itemId]: Math.min(wanted, room) } } };
+                        }));
                         return (
                           <div key={g.id} style={{ marginLeft: 118, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--surface-2)' }}>
@@ -1873,7 +1885,12 @@ const InvoicesPage: React.FC = () => {
                                     </span>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <button className="btn btn-secondary btn-sm btn-icon" style={{ width: 26, height: 26, padding: 0 }} onClick={() => setQty(id, val - 1)} disabled={val <= 0}>−</button>
-                                      <span style={{ minWidth: 20, textAlign: 'center', fontSize: 13, fontWeight: 600 }}>{val}</span>
+                                      <input type="number" min={0} max={need} value={val === 0 ? '' : val}
+                                        placeholder="0"
+                                        onChange={e => setQty(id, e.target.value === '' ? 0 : +e.target.value)}
+                                        onFocus={e => e.currentTarget.select()}
+                                        style={{ width: 54, textAlign: 'center', fontSize: 13, fontWeight: 600,
+                                                 padding: '2px 4px', height: 26 }} />
                                       <button className="btn btn-secondary btn-sm btn-icon" style={{ width: 26, height: 26, padding: 0 }} onClick={() => setQty(id, val + 1)} disabled={done}>+</button>
                                     </div>
                                   </div>
