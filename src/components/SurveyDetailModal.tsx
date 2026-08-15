@@ -18,7 +18,16 @@ const ACIDITY: { v: 'red' | 'green' | 'blue'; label: string; color: string }[] =
 const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSaved: () => void }> = ({ surveyId, onClose, onSaved }) => {
   const { profile } = useAuth();
   // Staff (and Admin) may SEE the consultant section but not edit it.
-  const readOnly = !isOwnerOrManager(profile?.role);
+  // Staff may correct a submission (migration 122) — they are the ones sitting
+  // with the customer when a detail turns out to be wrong. The SOURCE stays
+  // Owner/Manager-only, enforced by the database and reflected below.
+  const readOnly = !profile?.id;
+  const canEditSource = isOwnerOrManager(profile?.role);
+  // The consultant section is clinical judgement: acidity result, health goals,
+  // condition, recommendation, attachments and the notes timeline. The database
+  // already refuses staff on review_health_survey() and add_consultant_note();
+  // this hides it so they are not shown something they cannot use.
+  const canConsult = isOwnerOrManager(profile?.role);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -224,8 +233,8 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       footer={<>
         <button className="btn btn-secondary" onClick={onClose}>Close</button>
         {data?.has_pdf && <button className="btn btn-secondary" onClick={downloadPdf}><Download size={14} /> Signed PDF</button>}
-        {!readOnly && <button className="btn btn-secondary" onClick={submitNote} disabled={noteBusy}>{noteBusy ? 'Submitting…' : noteSaved ? <><Check size={14} /> Added</> : 'Submit as Note'}</button>}
-        {!readOnly && <button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : saved ? <><Check size={14} /> Saved</> : 'Save Review'}</button>}
+        {canConsult && <button className="btn btn-secondary" onClick={submitNote} disabled={noteBusy}>{noteBusy ? 'Submitting…' : noteSaved ? <><Check size={14} /> Added</> : 'Submit as Note'}</button>}
+        {canConsult && <button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : saved ? <><Check size={14} /> Saved</> : 'Save Review'}</button>}
       </>}>
       {loading ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : !s ? <div className="empty-state">Not found</div> : (
         <div className="form-grid">
@@ -318,8 +327,11 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
               </div>
 
               <div className="form-grid-2">
-                <div className="form-group" style={{ marginBottom: 0 }}><label>How did you hear about us?</label>
-                  <select value={ed.source_option_id}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>How did you hear about us?{!canEditSource && ' (Owner/Manager only)'}</label>
+                  <select value={ed.source_option_id} disabled={!canEditSource}
+                    title={canEditSource ? undefined
+                      : 'This records how the customer found us when they submitted, and can only be corrected by an Owner or Manager.'}
                     onChange={e => setEd({ ...ed, source_option_id: e.target.value })}>
                     <option value="">— Not specified —</option>
                     {sourceOptions.map((o: any) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -447,11 +459,11 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
             </div>
           )}
 
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+          {canConsult && <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <FileText size={14} style={{ color: 'var(--primary)' }} />
               <strong style={{ fontSize: 13 }}>Consultant section</strong>
-              {readOnly && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 999, padding: '1px 7px' }}><Lock size={9} /> View only — Owner/Manager can edit</span>}
+              {readOnly && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5, color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 999, padding: '1px 7px' }}><Lock size={9} /> View only — sign in to edit</span>}
               {s.reviewed_at && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 last saved {new Date(s.reviewed_at).toLocaleString()}{data.reviewer ? ` by ${data.reviewer}` : ''}</span>}
             </div>
@@ -512,7 +524,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
                 </div>
               </div>
             )}
-          </div>
+          </div>}
         </div>
       )}
     </Modal>
