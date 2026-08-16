@@ -232,6 +232,37 @@ const CustomersPage: React.FC = () => {
               { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
+
+          {/* Same data and filters as the export above; the difference is that
+              you choose which columns go into the sheet. A few extra fields are
+              offered here that the standard export does not carry. */}
+          <ExcelExportButton
+            rows={filtered} filename="customers-selected" sheetName="Customers"
+            label="Special Export" selectableColumns
+            dateOf={(c: any) => c.created_at} dateLabel="Created"
+            fetchAll={fetchAllForExport}
+            columns={[
+              { header: 'Name', value: (c: any) => c.full_name },
+              { header: 'First Name', value: (c: any) => c.first_name ?? '' },
+              { header: 'Last Name', value: (c: any) => c.last_name ?? '' },
+              { header: 'Phone', value: (c: any) => c.phone ?? '' },
+              { header: 'Email', value: (c: any) => c.email ?? '' },
+              { header: 'Customer ID', value: (c: any) => (String(c.notes ?? '').match(/CUST-\d+/i) || [''])[0] },
+              { header: 'Source', value: (c: any) => c.source_label ?? '' },
+              { header: 'Source Details', value: (c: any) => c.source_details ?? '' },
+              { header: 'Date of Birth', value: (c: any) => c.date_of_birth ? new Date(c.date_of_birth).toLocaleDateString('en-GB') : '' },
+              { header: 'Gender', value: (c: any) => c.gender ?? '' },
+              { header: 'Occupation', value: (c: any) => c.occupation ?? '' },
+              { header: 'Address', value: (c: any) => c.address ?? '' },
+              // The loaded page does not hold every customer, so a name lookup
+              // would print blanks for referrers who are not on screen. The id
+              // is exported instead: always correct, and joinable in the sheet.
+              { header: 'Referred By (ID)', value: (c: any) => c.referred_by ?? '' },
+              { header: 'Is Referrer', value: (c: any) => c.is_referrer ? 'Yes' : 'No' },
+              { header: 'Notes', value: (c: any) => c.notes ?? '' },
+              { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
+              { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
+            ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Customer</button>
         </div>

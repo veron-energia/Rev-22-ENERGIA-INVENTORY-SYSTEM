@@ -41,6 +41,13 @@ set check_function_bodies = off;
 --   p_source — a source option id, or '__none' for "no source recorded"
 -- Returns the page plus total_count so the caller can show "x of y".
 -- ---------------------------------------------------------------------
+-- The result type gained first_name and last_name in a later migration. Because
+-- "83_" sorts AFTER "125_" as text, a filename-ordered deploy runs this file
+-- last, and "create or replace" cannot change a return type — so it would abort
+-- the deploy. The old definition is dropped first, and migration 126 adds the
+-- name columns back afterwards whatever order things run in.
+drop function if exists public.search_customers(text, text, integer, integer);
+
 create or replace function public.search_customers(
   p_query text default null,
   p_source text default null,
