@@ -3,6 +3,7 @@ import { PRINT_CSS } from '../lib/printDoc';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
+import { PaymentSummaryExport } from '../components/PaymentSummaryExport';
 import { supabase } from '../lib/supabase';
 import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import type { FocReason, InvoiceRevision } from '../types';
@@ -108,6 +109,9 @@ const InvoicesPage: React.FC = () => {
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
   const [detailSelections, setDetailSelections] = useState<any[]>([]);      // chosen items for this invoice
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
+  // Payment methods per invoice for the whole list, so the table can show them
+  // and the search can match on them. Keyed by invoice for a direct lookup.
+  const [payMethodsByInvoice, setPayMethodsByInvoice] = useState<Record<string, string[]>>({});
   const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
@@ -181,8 +185,9 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
+    const [inv, allPays, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+      supabase.from('invoice_payments').select('invoice_id,payment_method_id,amount'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('customers').select('*').is('deleted_at', null).order('full_name'),
@@ -207,6 +212,20 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('active_foc_reasons'),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
+
+    // Method NAMES per invoice, resolved once here rather than on every render.
+    // Duplicates are collapsed: two cash payments on one invoice read as "Cash",
+    // not "Cash, Cash".
+    const methodName = new Map<string, string>(
+      ((pm.data as any[]) ?? []).map(m => [m.id, m.name]));
+    const byInvoice: Record<string, string[]> = {};
+    for (const row of ((allPays.data as any[]) ?? [])) {
+      const name = methodName.get(row.payment_method_id);
+      if (!name) continue;
+      const list = byInvoice[row.invoice_id] ?? (byInvoice[row.invoice_id] = []);
+      if (!list.includes(name)) list.push(name);
+    }
+    setPayMethodsByInvoice(byInvoice);
     setStores((st.data as Store[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
     setCustomers((cu.data as Customer[]) ?? []);
@@ -996,10 +1015,12 @@ const InvoicesPage: React.FC = () => {
         when?.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
         when?.toLocaleTimeString('en-GB'),
         String(i.total_amount ?? ''),
+        // So "Atome" or "cash" finds the invoices paid that way.
+        ...(payMethodsByInvoice[i.id] ?? []),
       ].filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(q);
     });
-  }, [invoices, statusFilter, invSearch, customers, stores]);
+  }, [invoices, statusFilter, invSearch, customers, stores, payMethodsByInvoice]);
 
   // Shared by the printed document and the WhatsApp / email message.
   const lineName = (it: InvoiceItem) =>
@@ -1316,6 +1337,9 @@ const InvoicesPage: React.FC = () => {
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
+          {canExport && <PaymentSummaryExport
+            stores={stores.map(s2 => ({ id: s2.id, name: s2.name }))}
+            defaultStoreId={activeStore ?? ''} />}
           {canExport && <ExcelExportButton
             rows={filtered} filename="invoices" sheetName="Invoices"
             dateOf={(i: any) => i.created_at} dateLabel="Invoice date"
@@ -1326,6 +1350,9 @@ const InvoicesPage: React.FC = () => {
               { header: 'Customer', value: (i: any) => custName(i.customer_id) },
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
               { header: 'Paid', value: (i: any) => Number(i.paid_amount ?? 0) },
+              // Kept in step with the table: the export mirrors these columns,
+              // and a sheet missing a column the screen shows is confusing.
+              { header: 'Payment', value: (i: any) => (payMethodsByInvoice[i.id] ?? []).join(', ') },
               { header: 'Status', value: (i: any) => INVOICE_STATUS_LABELS[i.status as InvoiceStatus] ?? i.status },
             ]} />}
           <button className="btn btn-secondary" onClick={openBuy}><Coins size={15} /> Buy Credit</button>
@@ -1335,7 +1362,7 @@ const InvoicesPage: React.FC = () => {
 
           <div style={{ marginBottom: 10 }}>
             <input value={invSearch} onChange={e => setInvSearch(e.target.value)}
-              placeholder="Search invoice number, customer, store, date or time…"
+              placeholder="Search invoice number, customer, store, payment method, date or time…"
               style={{ maxWidth: 460 }} />
             {invSearch && (
               <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--text-muted)' }}>
@@ -1359,7 +1386,7 @@ const InvoicesPage: React.FC = () => {
           : filtered.length === 0 ? <div className="empty-state"><FileText size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No invoices yet</p></div>
           : (
             <table>
-              <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Customer</th><th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>Paid</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Customer</th><th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>Paid</th><th>Payment</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {filtered.map(inv => (
                   <tr key={inv.id}>
@@ -1369,6 +1396,11 @@ const InvoicesPage: React.FC = () => {
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
                     <td style={{ textAlign: 'right', color: inv.paid_amount >= inv.total_amount ? 'var(--success)' : 'var(--text-muted)' }}>{money(inv.paid_amount)}</td>
+                    <td style={{ fontSize: 12.5 }}>
+                      {(payMethodsByInvoice[inv.id] ?? []).length > 0
+                        ? (payMethodsByInvoice[inv.id] ?? []).join(', ')
+                        : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                    </td>
                     <td><StatusBadge s={inv.status} /></td>
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
