@@ -39,6 +39,10 @@ const DashboardPage: React.FC = () => {
   const [rangeTo, setRangeTo] = useState('');
   const [periodStore, setPeriodStore] = useState('');
   const [sales, setSales] = useState<any>(null);
+  // Credit settled in the same period. Reported separately because sales
+  // deliberately exclude it: the money arrived when the credit was bought.
+  const [credit, setCredit] = useState<any>(null);
+  const [creditByStore, setCreditByStore] = useState<any[]>([]);
   const [salesBusy, setSalesBusy] = useState(false);
   const [byStore, setByStore] = useState<any[]>([]);
 
@@ -49,6 +53,8 @@ const DashboardPage: React.FC = () => {
       // Otherwise the previous period's figures stay on screen under the new
       // heading, which reads as though they belong to the custom range.
       setSales(null);
+      setCredit(null);
+      setCreditByStore([]);
       setSalesBusy(false);
       return;
     }
@@ -61,14 +67,19 @@ const DashboardPage: React.FC = () => {
         p_to: period === 'custom' ? (rangeTo || rangeFrom) : null,
         p_store_id: periodStore || null,
       };
-      const [{ data: s1 }, { data: s2 }] = await Promise.all([
+      const [{ data: s1 }, { data: s2 }, { data: c1 }, { data: c2 }] = await Promise.all([
         supabase.rpc('dashboard_sales', args),
         supabase.rpc('dashboard_sales_by_store', {
+          p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
+        supabase.rpc('dashboard_credit_spend', args),
+        supabase.rpc('dashboard_credit_by_store', {
           p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
       ]);
       if (cancelled) return;
       setSales(s1 ?? null);
       setByStore((s2 as any[]) ?? []);
+      setCredit(c1 ?? null);
+      setCreditByStore((c2 as any[]) ?? []);
       setSalesBusy(false);
     })();
     return () => { cancelled = true; };
@@ -311,6 +322,60 @@ const DashboardPage: React.FC = () => {
                 ))}
               </div>
             </div>
+
+            {/* Credit settled in this period. Kept apart from the sales figure
+                above, which deliberately excludes it — the money arrived when
+                the credit was bought, not when it was spent. */}
+            {credit && Number(credit.credit_spent) > 0 && (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px dashed var(--border)' }}>
+                <div style={{ display: 'flex', gap: 28, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
+                                  letterSpacing: '0.05em', fontWeight: 600 }}>
+                      Settled from credit
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.15,
+                                  fontVariantNumeric: 'tabular-nums', color: 'var(--warning)' }}>
+                      S${Number(credit.credit_spent).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)', textTransform: 'uppercase',
+                                  letterSpacing: '0.05em', fontWeight: 600 }}>Invoices</div>
+                    <div style={{ fontSize: 17, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                      {credit.invoices}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', paddingBottom: 3, flex: 1, minWidth: 220 }}>
+                    Not counted in sales above — it was counted when the credit was purchased.
+                    Invoices totalled{' '}
+                    <strong>
+                      S${(Number(sales?.sales ?? 0) + Number(credit.credit_spent))
+                        .toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </strong>{' '}
+                    including it.
+                  </div>
+                </div>
+
+                {creditByStore.length > 1 && !periodStore && (
+                  <div style={{ marginTop: 10 }}>
+                    {creditByStore.map((r: any) => (
+                      <div key={r.store_id} style={{ display: 'flex', gap: 10, alignItems: 'center',
+                                                     fontSize: 12.5, marginBottom: 3 }}>
+                        <span style={{ flex: '0 0 170px', overflow: 'hidden',
+                                       textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.store_name}</span>
+                        <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                          S${Number(r.credit_spent).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
+                          {r.invoices} invoice{r.invoices === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {byStore.length > 1 && !periodStore && (
               <div style={{ marginTop: 14 }}>
