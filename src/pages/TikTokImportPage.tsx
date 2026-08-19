@@ -198,7 +198,18 @@ const TikTokImportPage: React.FC = () => {
     setSelected(sel);
   };
 
-  const SETTLE_CONFIRMABLE = new Set(['New — Matched', 'New — Pending Order', 'Updated — Requires Confirmation']);
+  // A platform money movement — TikTok ad payment, subscription, payout — has
+  // no customer order to match, so it is complete rather than waiting for one.
+  // Shown apart from both Matched and Pending so the pending queue means what
+  // it says: rows that still need an order to arrive.
+  const matchBadge = (status?: string) =>
+    status === 'matched'
+      ? <span className="badge badge-success">Matched</span>
+      : status === 'no_match_needed'
+      ? <span className="badge badge-muted" title="A TikTok platform payment, not a customer order — nothing to match">No match needed</span>
+      : <span className="badge badge-warning">Pending Order</span>;
+
+  const SETTLE_CONFIRMABLE = new Set(['New — Matched', 'New — Pending Order', 'New — No Match Needed', 'Updated — Requires Confirmation']);
 
   const loadSettleRows = async (batchId: string) => {
     const [{ data: b }, { data: r }] = await Promise.all([
@@ -210,7 +221,10 @@ const TikTokImportPage: React.FC = () => {
     setSettleRows(rr);
     const sel: Record<string, boolean> = {};
     // Only matched rows are pre-selected; pending/unmatched need a deliberate tick.
-    rr.forEach(x => { sel[x.id] = !x.excluded && SETTLE_CONFIRMABLE.has(x.staging_status) && x.match_status === 'matched'; });
+    // Finance rows are ticked too: they are complete, so leaving them
+    // unselected would strand them in the preview permanently.
+    rr.forEach(x => { sel[x.id] = !x.excluded && SETTLE_CONFIRMABLE.has(x.staging_status)
+      && (x.match_status === 'matched' || x.match_status === 'no_match_needed'); });
     setSettleSel(sel);
   };
 
@@ -231,6 +245,11 @@ const TikTokImportPage: React.FC = () => {
   useEffect(() => {
     const fetchTab = async () => {
       if (pageTab === 'staged' || pageTab === 'history') { setTabRows([]); return; }
+      // Clear FIRST. tabRows is shared by every tab, so without this the new tab
+      // renders the previous tab's rows for a moment — and those have different
+      // fields. Switching to Reconciliation showed rows with no `kind`, and
+      // `r.kind.replace(...)` threw "Cannot read properties of undefined".
+      setTabRows([]);
       setTabLoading(true);
       let rows: any[] = [];
       if (pageTab === 'orders') {
@@ -257,11 +276,54 @@ const TikTokImportPage: React.FC = () => {
       }
       const filtered = effectiveStore && ['orders', 'items', 'returns', 'corrections'].includes(pageTab)
         ? rows.filter(r => r.store_id === effectiveStore) : rows;
+      if (cancelled) return;   // a slower earlier tab must not overwrite this one
       setTabRows(filtered);
       setTabLoading(false);
     };
+    let cancelled = false;
     fetchTab();
+    return () => { cancelled = true; };
   }, [pageTab, effectiveStore]);
+
+  // ── Worksheet range repair ────────────────────────────────────────────────
+  //
+  // REGRESSION GUARD. TikTok settlement exports — and XLSX files written by WPS
+  // Office generally — can carry a STALE OR WRONG worksheet dimension. One real
+  // settlement file held rows 1-12 but declared its range as "A1:BG2".
+  //
+  // sheet_to_json() trusts !ref, so it read the header and ONE data row and
+  // silently dropped the other ten. Nothing errored: the import simply appeared
+  // to contain a single settlement line.
+  //
+  // So !ref is recomputed from the cell addresses actually present before any
+  // parsing. Keys beginning with "!" (!ref, !merges, !cols, !rows) are metadata
+  // and are skipped.
+  const repairWorksheetRange = (ws: XLSX.WorkSheet) => {
+    const addresses = Object.keys(ws).filter(
+      key => !key.startsWith('!') && /^[A-Z]+[1-9][0-9]*$/.test(key)
+    );
+    if (addresses.length === 0) return;
+
+    let minRow = Infinity;
+    let minCol = Infinity;
+    let maxRow = -1;
+    let maxCol = -1;
+
+    for (const address of addresses) {
+      const cell = XLSX.utils.decode_cell(address);
+      minRow = Math.min(minRow, cell.r);
+      minCol = Math.min(minCol, cell.c);
+      maxRow = Math.max(maxRow, cell.r);
+      maxCol = Math.max(maxCol, cell.c);
+    }
+
+    if (Number.isFinite(minRow) && Number.isFinite(minCol) && maxRow >= 0 && maxCol >= 0) {
+      ws['!ref'] = XLSX.utils.encode_range(
+        { r: minRow, c: minCol },
+        { r: maxRow, c: maxCol }
+      );
+    }
+  };
 
   // ── File parsing (both areas share it) ────────────────────────────────────
   const readGrids = async (file: File): Promise<{ name: string; grid: string[][] }[]> => {
@@ -274,8 +336,11 @@ const TikTokImportPage: React.FC = () => {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: 'array', cellText: true });
     return wb.SheetNames.map(name => {
+      const ws = wb.Sheets[name];
+      // See repairWorksheetRange: TikTok's own !ref cannot be trusted.
+      repairWorksheetRange(ws);
       // raw:false -> formatted text for every cell, so big IDs keep all digits.
-      const grid = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name], { header: 1, raw: false, defval: '' }) as unknown as string[][];
+      const grid = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' }) as unknown as string[][];
       return { name, grid: grid.map(r => r.map(c => String(c ?? ''))) };
     });
   };
@@ -568,9 +633,7 @@ const TikTokImportPage: React.FC = () => {
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.settlement_amount != null ? Number(r.settlement_amount).toFixed(2) : '—'}</td>
                     <td style={{ textAlign: 'right', fontSize: 12 }}>{r.revenue_amount != null ? Number(r.revenue_amount).toFixed(2) : '—'}</td>
                     <td style={{ textAlign: 'right', fontSize: 12 }}>{r.fee_amount != null ? Number(r.fee_amount).toFixed(2) : '—'}</td>
-                    <td>{r.match_status === 'matched'
-                      ? <span className="badge badge-success">Matched</span>
-                      : <span className="badge badge-warning">Pending Order</span>}</td>
+                    <td>{matchBadge(r.match_status)}</td>
                     <td>
                       <span className={`badge ${r.staging_status?.startsWith('Updated') ? 'badge-warning' : r.staging_status === 'Invalid Row' ? 'badge-danger' : 'badge-muted'}`}>{r.staging_status}</span>
                       {r.value_diff && Object.keys(r.value_diff).length > 0 && (
@@ -673,7 +736,7 @@ const TikTokImportPage: React.FC = () => {
                       <td style={{ fontSize: 12 }}>{r.financial_date ? new Date(r.financial_date).toLocaleDateString() : '—'}</td>
                       <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_adjustment_id}{r.version_no > 1 ? ` (v${r.version_no})` : ''}</td>
                       <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.txn_class}</td>
-                      <td>{r.match_status === 'matched' ? <span className="badge badge-success">Matched</span> : <span className="badge badge-warning">Pending</span>}</td>
+                      <td>{matchBadge(r.match_status)}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}</td>
                       <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
                       <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
@@ -718,7 +781,7 @@ const TikTokImportPage: React.FC = () => {
                   <tbody>{tabRows.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>Fully reconciled — no exceptions</td></tr>
                     : tabRows.map((r, i) => (
                     <tr key={i}>
-                      <td><span className={`badge ${r.kind === 'reconciliation_difference' ? 'badge-danger' : 'badge-warning'}`}>{r.kind.replace(/_/g, ' ')}</span></td>
+                      <td><span className={`badge ${r.kind === 'reconciliation_difference' ? 'badge-danger' : 'badge-warning'}`}>{String(r.kind ?? '—').replace(/_/g, ' ')}</span></td>
                       <td style={{ fontSize: 12 }}>{r.store_name}</td>
                       <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
                       <td style={{ fontSize: 12 }}>{r.detail}</td>

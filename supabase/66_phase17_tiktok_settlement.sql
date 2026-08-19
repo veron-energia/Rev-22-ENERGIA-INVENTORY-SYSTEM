@@ -38,14 +38,22 @@ set check_function_bodies = off;
 -- 1. Schema additions on tiktok_settlement_rows.
 -- ---------------------------------------------------------------------
 alter table public.tiktok_settlement_rows add column if not exists transaction_type text;
+-- 'finance' covers platform money movements (TikTok ad payments, subscriptions,
+-- penalties, payouts). Included HERE as well as in migration 131 because "66_"
+-- sorts AFTER "131_" as text: a filename-ordered deploy runs this file last, and
+-- without it the constraint reverts and every settlement import containing an ad
+-- payment fails.
 alter table public.tiktok_settlement_rows add column if not exists txn_class text
-  check (txn_class in ('order','adjustment','refund'));
+  check (txn_class in ('order','adjustment','refund','finance'));
 alter table public.tiktok_settlement_rows add column if not exists order_created_time timestamptz;
 alter table public.tiktok_settlement_rows add column if not exists related_order_id text;
 alter table public.tiktok_settlement_rows add column if not exists adjustment_amount numeric(12,2);
 alter table public.tiktok_settlement_rows add column if not exists refund_amount numeric(12,2);
+-- 'no_match_needed' marks a platform money movement (TikTok ads, subscriptions,
+-- payouts): settled and complete, with no customer order to wait for. Included
+-- here as well as in migration 133 because "66_" sorts AFTER "133_" as text.
 alter table public.tiktok_settlement_rows add column if not exists match_status text not null default 'pending'
-  check (match_status in ('matched','pending'));
+  check (match_status in ('matched','pending','no_match_needed'));
 alter table public.tiktok_settlement_rows add column if not exists matched_order_id text;
 alter table public.tiktok_settlement_rows add column if not exists staging_status text;
 alter table public.tiktok_settlement_rows add column if not exists excluded boolean not null default false;
@@ -85,6 +93,17 @@ returns text language sql immutable as $$
   select case
     when lower(coalesce(p_type,'')) like '%adjust%' then 'adjustment'
     when lower(coalesce(p_type,'')) like '%refund%' or lower(coalesce(p_type,'')) like '%return%' then 'refund'
+    -- Platform money movements, not customer sales. Kept in step with migration
+    -- 130: this file is recreated on every deploy and would otherwise revert it.
+    when lower(coalesce(p_type,'')) like '%tiktok ads%'
+      or lower(coalesce(p_type,'')) like '%gmv payment%'
+      or lower(coalesce(p_type,'')) like '%advertis%'
+      or lower(coalesce(p_type,'')) like '%subscription%'
+      or lower(coalesce(p_type,'')) like '%penalt%'
+      or lower(coalesce(p_type,'')) like '%deposit%'
+      or lower(coalesce(p_type,'')) like '%loan%'
+      or lower(coalesce(p_type,'')) like '%payout%'
+      or lower(coalesce(p_type,'')) like '%transfer%' then 'finance'
     else 'order'
   end
 $$;
@@ -97,6 +116,9 @@ create or replace function public.tiktok_settlement_match(
   p_store_id uuid, p_order_adjustment_id text, p_related_order_id text, p_class text
 ) returns text language sql stable security definer set search_path = public as $$
   select case
+    -- A platform money movement has no customer order to match. Kept in step
+    -- with migration 130, which this file would otherwise revert.
+    when p_class = 'finance' then null::text
     when p_class = 'order' then
       (select s.order_id from public.tiktok_order_state s
         where s.store_id = p_store_id and s.order_id = p_order_adjustment_id limit 1)
@@ -203,9 +225,16 @@ begin
       v_status := 'Invalid Row';
     end if;
 
-    -- Duplicate inside THIS file (store + order/adjustment id): keep first.
-    v_dup := v_status is null and exists (select 1 from public.tiktok_settlement_rows
-              where batch_id = v_batch and order_id = v_oaid);
+    -- Duplicate inside THIS file. An order id ALONE is not enough: TikTok can
+    -- settle one order across two lines, and rejecting the second lost real
+    -- money. Same order, type, related order AND amount. Kept in step with
+    -- migration 130, which this file would otherwise revert.
+    v_dup := v_status is null and exists (select 1 from public.tiktok_settlement_rows r
+              where r.batch_id = v_batch
+                and r.order_id = v_oaid
+                and coalesce(r.transaction_type, '') = coalesce(v_type, '')
+                and r.related_order_id is not distinct from v_related
+                and coalesce(r.settlement_amount, 0) = coalesce(v_settle, 0));
     if v_dup then v_status := 'Duplicate Row'; end if;
 
     v_match := case when v_status is null
@@ -249,7 +278,9 @@ begin
             ) as f(field, o, n);
         end if;
       else
-        v_status := case when v_match is not null then 'New — Matched' else 'New — Pending Order' end;
+        v_status := case when v_match is not null then 'New — Matched'
+                         when v_class = 'finance' then 'New — No Match Needed'
+                         else 'New — Pending Order' end;
       end if;
     end if;
 
@@ -267,7 +298,9 @@ begin
       v_settle, v_rev, v_fees, v_adj, v_ref, v_curr, v_created, v_settled, v_r,
       v_status, v_diff,
       v_status in ('Invalid Row','Duplicate Row','Already Imported'),
-      case when v_match is not null then 'matched' else 'pending' end,
+      case when v_match is not null then 'matched'
+           when v_class = 'finance' then 'no_match_needed'
+           else 'pending' end,
       v_match,
       coalesce(v_prev_ver, 0) + 1,
       v_prev_id,
@@ -320,7 +353,8 @@ begin
      where id = v_row.id;
 
     v_applied := v_applied + 1;
-    if v_row.match_status = 'pending' then v_pending := v_pending + 1; end if;
+    if v_row.match_status = 'pending' and coalesce(v_row.txn_class, '') <> 'finance'
+      then v_pending := v_pending + 1; end if;
     if v_row.reconciled is false then v_unrec := v_unrec + 1; end if;
   end loop;
 
