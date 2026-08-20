@@ -4,6 +4,7 @@ import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsapp
 import { PdfDoc } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { PaymentSummaryExport } from '../components/PaymentSummaryExport';
+import { XeroExportButton } from '../components/XeroExport';
 import { supabase } from '../lib/supabase';
 import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import type { FocReason, InvoiceRevision } from '../types';
@@ -1337,6 +1338,10 @@ const InvoicesPage: React.FC = () => {
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
+          {/* canExport is already Owner/Manager only. */}
+          {canExport && <XeroExportButton
+            stores={stores.map(s2 => ({ id: s2.id, name: s2.name }))}
+            defaultStoreId={activeStore ?? ''} />}
           {canExport && <PaymentSummaryExport
             stores={stores.map(s2 => ({ id: s2.id, name: s2.name }))}
             defaultStoreId={activeStore ?? ''} />}

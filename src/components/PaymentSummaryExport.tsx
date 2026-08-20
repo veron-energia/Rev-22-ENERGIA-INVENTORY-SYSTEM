@@ -31,22 +31,31 @@ export const PaymentSummaryExport: React.FC<{
     if (to < from) { setErr('The end date cannot be before the start date.'); return; }
     setBusy(true); setErr(null);
 
-    const [methodsRes, rowsRes] = await Promise.all([
-      supabase.rpc('payment_methods_in_range', {
-        p_from: from, p_to: to, p_store_id: storeId || null,
-      }),
-      supabase.rpc('daily_payments_by_method', {
-        p_from: from, p_to: to, p_store_id: storeId || null,
-      }),
-    ]);
-    setBusy(false);
+    // PostgREST caps a response at 1000 rows, and this cross-tab returns one row
+    // per day PER METHOD: a year across three methods is 1095. Unpaginated, the
+    // later days would simply be absent from the sheet with no error. Paged.
+    const fetchAllRpc = async (fn: string, args: Record<string, any>) => {
+      const PAGE = 1000;
+      const out: any[] = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const { data, error } = await supabase.rpc(fn, args).range(offset, offset + PAGE - 1);
+        if (error) throw new Error(error.message);
+        const batch = (data as any[]) ?? [];
+        out.push(...batch);
+        if (batch.length < PAGE) break;
+      }
+      return out;
+    };
 
-    if (methodsRes.error || rowsRes.error) {
-      setErr((methodsRes.error ?? rowsRes.error)!.message);
-      return;
-    }
-    const methods = (methodsRes.data as any[]) ?? [];
-    const rows = (rowsRes.data as any[]) ?? [];
+    let methods: any[] = [], rows: any[] = [];
+    try {
+      const args = { p_from: from, p_to: to, p_store_id: storeId || null };
+      [methods, rows] = await Promise.all([
+        fetchAllRpc('payment_methods_in_range', args),
+        fetchAllRpc('daily_payments_by_method', args),
+      ]);
+    } catch (e: any) { setBusy(false); setErr(e.message); return; }
+    setBusy(false);
     if (methods.length === 0) {
       setErr('No payments were taken in that range.');
       return;
