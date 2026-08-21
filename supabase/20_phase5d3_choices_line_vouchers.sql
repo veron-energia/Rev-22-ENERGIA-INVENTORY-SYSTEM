@@ -282,7 +282,10 @@ language sql stable security definer set search_path = public as $$
     select s.kind, s.item_id, (s.quantity)::bigint
     from public.invoice_items ii
     cross join lateral public.promotion_stock_items(ii.promotion_id, ii.quantity) s
-    where ii.invoice_id = p_invoice_id and ii.line_kind = 'promotion'
+    where ii.invoice_id = p_invoice_id and ii.line_kind::text in ('promotion', 'premium_bundle')  -- a bundle carries a
+      -- promotion_id and keeps its contents in promotion_items exactly as a
+      -- promotion does; expanding only 'promotion' meant a bundle consumed
+      -- no stock at all, on corrections and on ordinary sales alike.
     union all
     -- chosen products from choice groups
     select 'product', ips.product_id, ips.quantity::bigint

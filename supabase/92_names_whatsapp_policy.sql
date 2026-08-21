@@ -131,50 +131,22 @@ $function$;
 --    without asking them to submit again. The linked customer is updated in
 --    step, so the two do not drift apart.
 -- ---------------------------------------------------------------------
-create or replace function public.update_survey_particulars(
-  p_survey_id uuid,
-  p_first_name text default null, p_last_name text default null,
-  p_phone text default null, p_email text default null,
-  p_date_of_birth date default null, p_sex text default null,
-  p_occupation text default null, p_others_text text default null)
-returns void language plpgsql security definer set search_path to 'public' as $function$
-declare v_cust uuid; v_full text;
-begin
-  if not public.is_owner_or_manager() then
-    raise exception 'Only an Owner or Manager can edit a submission'; end if;
+-- ---------------------------------------------------------------------
+-- update_survey_particulars() USED TO BE DEFINED HERE. It is not any more.
+--
+-- Migration 104 supersedes it entirely: it carries the same join_person_name
+-- policy this file introduced, plus source, declarations and symptom editing,
+-- and takes a longer parameter list.
+--
+-- Keeping the short 9-argument version alive created a SECOND function rather
+-- than replacing the first, so a call could resolve to this older one and
+-- silently ignore the declarations. Worse, "92_" sorts after "104_" and "122_"
+-- as text, so on a filename-ordered deploy this file ran LAST and reverted both
+-- of them — staff editing, the phone carry-through and the gender sync all
+-- disappeared without any error.
+--
+-- The definition now lives in 104, extended by 122 and 137.
+-- ---------------------------------------------------------------------
 
-  v_full := public.join_person_name(p_first_name, p_last_name);
-  if v_full is null then raise exception 'A first name is required'; end if;
-
-  update public.health_surveys set
-    first_name = nullif(trim(p_first_name),''),
-    last_name  = nullif(trim(p_last_name),''),
-    full_name  = v_full,
-    phone      = nullif(trim(p_phone),''),
-    email      = nullif(trim(p_email),''),
-    date_of_birth = coalesce(p_date_of_birth, date_of_birth),
-    sex        = coalesce(nullif(trim(p_sex),''), sex),
-    occupation = nullif(trim(p_occupation),''),
-    others_text = nullif(trim(p_others_text),'')
-  where id = p_survey_id
-  returning customer_id into v_cust;
-
-  if not found then raise exception 'Submission not found'; end if;
-
-  -- Keep the customer record aligned with the corrected submission.
-  if v_cust is not null then
-    update public.customers set
-      first_name = nullif(trim(p_first_name),''),
-      last_name  = nullif(trim(p_last_name),''),
-      full_name  = v_full,
-      email      = coalesce(nullif(trim(p_email),''), email),
-      date_of_birth = coalesce(p_date_of_birth, date_of_birth),
-      occupation = coalesce(nullif(trim(p_occupation),''), occupation)
-    where id = v_cust;
-  end if;
-
-  perform public.write_audit_ex('health_surveys', p_survey_id, 'survey_particulars_edited', null,
-    jsonb_build_object('name', v_full), 'survey', null, null);
-end $function$;
 
 notify pgrst, 'reload schema';

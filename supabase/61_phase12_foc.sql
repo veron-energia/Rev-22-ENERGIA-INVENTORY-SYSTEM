@@ -1004,7 +1004,10 @@ language sql stable security definer set search_path = public as $$
     select s.kind, s.item_id, (s.quantity)::bigint
     from public.invoice_items ii
     cross join lateral public.promotion_stock_items(ii.promotion_id, ii.quantity) s
-    where ii.invoice_id = p_invoice_id and ii.line_kind = 'promotion'
+    where ii.invoice_id = p_invoice_id and ii.line_kind::text in ('promotion', 'premium_bundle')  -- a bundle carries a
+      -- promotion_id and keeps its contents in promotion_items exactly as a
+      -- promotion does; expanding only 'promotion' meant a bundle consumed
+      -- no stock at all, on corrections and on ordinary sales alike.
       and ii.promotion_id is not null
     union all
     select 'product', ips.product_id, ips.quantity::bigint
@@ -1110,7 +1113,10 @@ begin
   -- 7. Members-only promotion gate (unchanged by FOC).
   if not coalesce((v_ms->>'is_member')::boolean,false) and v_memline.plan_id is null then
     if exists (select 1 from public.invoice_items ii
-                where ii.invoice_id = p_invoice_id and ii.line_kind = 'promotion'
+                where ii.invoice_id = p_invoice_id and ii.line_kind::text in ('promotion', 'premium_bundle')  -- a bundle carries a
+      -- promotion_id and keeps its contents in promotion_items exactly as a
+      -- promotion does; expanding only 'promotion' meant a bundle consumed
+      -- no stock at all, on corrections and on ordinary sales alike.
                   and coalesce(ii.price_overridden,false) = false) then
       raise exception 'Promotions are for members only. Add a membership to this invoice or apply a manual override.';
     end if;
@@ -1324,7 +1330,10 @@ begin
   -- 10./11. Prices + eligibility were enforced during reprice; promotion gate:
   if not coalesce((v_ms->>'is_member')::boolean,false) and v_memline.plan_id is null then
     if exists (select 1 from public.invoice_items ii
-                where ii.invoice_id = p_invoice_id and ii.line_kind = 'promotion'
+                where ii.invoice_id = p_invoice_id and ii.line_kind::text in ('promotion', 'premium_bundle')  -- a bundle carries a
+      -- promotion_id and keeps its contents in promotion_items exactly as a
+      -- promotion does; expanding only 'promotion' meant a bundle consumed
+      -- no stock at all, on corrections and on ordinary sales alike.
                   and coalesce(ii.price_overridden,false) = false) then
       raise exception 'Promotions are for members only. Add a membership to this invoice or apply a manual override.';
     end if;
