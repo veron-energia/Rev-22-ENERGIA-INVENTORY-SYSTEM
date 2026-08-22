@@ -1146,9 +1146,15 @@ const InvoicesPage: React.FC = () => {
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
       const chosen = detailSelections.filter(s => s.invoice_item_id === it.id);
+      // Therapy and credit packages were missing here, so a promotion containing
+      // therapy printed "— × 1 (included)" with a blank name: the row appeared
+      // but the therapy itself was invisible once the invoice was created. The
+      // creation form resolves these correctly; this list did not.
       const nameOf = (x: any) => x.product_id ? (products.find(p => p.id === x.product_id)?.name ?? '')
         : x.voucher_id ? (vouchers.find(v => v.id === x.voucher_id)?.name ?? '')
         : x.child_promotion_id ? (promotions.find(p => p.id === x.child_promotion_id)?.name ?? '')
+        : x.therapy_package_id ? (therapyPackages.find((t: any) => t.id === x.therapy_package_id)?.name ?? 'Therapy')
+        : x.credit_package_id ? 'Credit package'
         : (x.treatment_name ?? '');
       return [
         ...fixed.map(f => `<tr class="sub"><td colspan="3">— ${esc(nameOf(f))} × ${f.quantity * it.quantity} (included)</td><td></td></tr>`),
@@ -2267,10 +2273,18 @@ const InvoicesPage: React.FC = () => {
                     const isPromo = it.line_kind === 'promotion';
                     const fixed = isPromo ? detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id) : [];
                     const chosen = isPromo ? detailSelections.filter(s => s.invoice_item_id === it.id) : [];
+                    // Therapy and credit packages fell through to "—", so a
+                    // promotion containing therapy showed a row with no name
+                    // once the invoice existed, even though the creation form
+                    // named it correctly. Checked by id as well as item_type,
+                    // since a chosen option carries the id without the type.
                     const subLabel = (x: any): string => {
                       if (x.item_type === 'product' || x.product_id) return `📦 ${prodName(x.product_id ?? '')}`;
                       if (x.item_type === 'voucher' || x.voucher_id) return `🎟 ${vouchers.find(v => v.id === x.voucher_id)?.name ?? 'Voucher'}`;
                       if (x.item_type === 'promotion') return `🧩 ${promotions.find(p => p.id === x.child_promotion_id)?.name ?? 'Promotion'}`;
+                      if (x.item_type === 'therapy' || x.therapy_package_id)
+                        return `🧖 ${therapyPackages.find((t: any) => t.id === x.therapy_package_id)?.name ?? 'Therapy'}`;
+                      if (x.item_type === 'credit_package' || x.credit_package_id) return '💳 Credit package';
                       if (x.item_type === 'treatment') return `💆 ${x.treatment_name}`;
                       return '—';
                     };
