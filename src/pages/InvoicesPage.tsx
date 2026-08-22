@@ -1238,8 +1238,20 @@ const InvoicesPage: React.FC = () => {
     ].filter(Boolean).join(' &nbsp;|&nbsp; ');
 
     // Therapy block for print (spec 4.12) — only when this invoice qualified one.
+    //
+    // TURNED OFF. The Unlimited Therapy qualification block is internal working:
+    // eligible totals, qualification top-up, forfeited amounts, entitlement
+    // numbers and beneficiary rows. It sits AFTER the totals and payment
+    // methods, so hiding it changes no figure on the invoice — the customer's
+    // copy still reconciles exactly as before.
+    //
+    // The markup is kept rather than deleted so it can be brought back by
+    // setting this to true. The same block still shows on screen, so staff can
+    // see the qualification without it going out to the customer.
+    const PRINT_THERAPY_BLOCK = false;
+
     const th = detailTherapy;
-    const therapyBlock = (th && th.used) ? `
+    const therapyBlock = (PRINT_THERAPY_BLOCK && th && th.used) ? `
       <h2>Unlimited Therapy</h2>
       <div class="ther">
         <div class="mut">
@@ -2372,8 +2384,24 @@ const InvoicesPage: React.FC = () => {
                     <span>Eligible amount: <strong>{money(detailTherapy.eligible_total)}</strong></span>
                     {Number(detailTherapy.topup_amount) > 0 && <span>Qualification top-up: <strong>{money(detailTherapy.topup_amount)}</strong></span>}
                     <span>Applied to packages: <strong>{money(detailTherapy.qualified_total)}</strong></span>
-                    {Number(detailTherapy.forfeited_total) > 0 &&
-                      <span style={{ color: 'var(--danger)' }}>Forfeited balance: <strong>{money(detailTherapy.forfeited_total)}</strong></span>}
+                    {/* DERIVED, not taken from the RPC.
+                        forfeited_total is a SUM of a per-entitlement column,
+                        but forfeiture belongs to the qualification as a whole —
+                        so a group of 8 entitlements reported 8 x S$742 =
+                        S$5,936 against an eligible total of S$7,094, which is
+                        more than was ever eligible. Eligible less applied is the
+                        definition and cannot be multiplied by a row count. */}
+                    {(() => {
+                      const derived = Math.max(
+                        Math.round((Number(detailTherapy.eligible_total ?? 0)
+                          - Number(detailTherapy.qualified_total ?? 0)) * 100) / 100, 0);
+                      if (derived <= 0) return null;
+                      return (
+                        <span style={{ color: 'var(--danger)' }}>
+                          Forfeited balance: <strong>{money(derived)}</strong>
+                        </span>
+                      );
+                    })()}
                   </div>
 
                   {(detailTherapy.linked_invoices ?? []).length > 1 && (
