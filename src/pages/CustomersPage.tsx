@@ -19,6 +19,11 @@ const CustomersPage: React.FC = () => {
   const { profile } = useAuth();
   const canComplete = isOwnerOrManager(profile?.role);   // complete profile view: Owner/Manager only
   const [rows, setRows] = useState<Customer[]>([]);
+  const [delFor, setDelFor] = useState<Customer | null>(null);
+  const [delName, setDelName] = useState('');
+  const [delReason, setDelReason] = useState('');
+  const [delBusy, setDelBusy] = useState(false);
+  const [delErr, setDelErr] = useState<string | null>(null);
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
@@ -180,9 +185,28 @@ const CustomersPage: React.FC = () => {
     setSaving(false); setModalOpen(false); load();
   };
 
-  const handleDelete = async (c: Customer) => {
-    if (!confirm(`Delete "${c.full_name}"? They can be restored later.`)) return;
-    await supabase.from('customers').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', c.id);
+  // Deleting now goes through delete_customer(), which checks the role, matches
+  // the typed name, refuses to strand credit or entitlements, and records who
+  // did it. Writing to the table directly was blocked by RLS and, worse, threw
+  // away the error — the click simply did nothing.
+  const handleDelete = (c: Customer) => {
+    setDelFor(c);
+    setDelName('');
+    setDelReason('');
+    setDelErr(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!delFor) return;
+    setDelBusy(true); setDelErr(null);
+    const { error } = await supabase.rpc('delete_customer', {
+      p_customer_id: delFor.id,
+      p_confirm_name: delName,
+      p_reason: delReason.trim() || null,
+    });
+    setDelBusy(false);
+    if (error) { setDelErr(error.message); return; }
+    setDelFor(null);
     load();
   };
 
@@ -305,7 +329,11 @@ const CustomersPage: React.FC = () => {
                       <button className="btn btn-secondary btn-sm" title="Change customer source (old surveys keep their snapshot)"
                         onClick={() => { setSrcFor(c); setSrcOptId((c as any).source_option_id ?? ''); setSrcDetails((c as any).source_details ?? ''); setSrcReason(''); setSrcErr(null); }}>Source</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(c)}><Pencil size={13} /></button>
-                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>
+                      {/* canComplete is Owner/Manager, matching delete_customer's
+                          own check — staff should not be offered a button that
+                          the database will refuse. */}
+                      {canComplete && <button className="btn btn-danger btn-sm btn-icon"
+                        title="Delete customer" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>}
                     </div></td>
                   </tr>
                 ))}
@@ -333,6 +361,55 @@ const CustomersPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {delFor && (() => {
+        // Compared the same way the database does: case-insensitive, with runs
+        // of whitespace collapsed. The point is to make someone read the name,
+        // not to test their typing.
+        const norm = (v: string) => v.trim().toLowerCase().replace(/\s+/g, ' ');
+        const matches = norm(delName) === norm(delFor.full_name ?? '');
+        return (
+          <Modal title="Delete customer" maxWidth={460} onClose={() => setDelFor(null)}
+            footer={<>
+              <button className="btn btn-secondary" onClick={() => setDelFor(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={confirmDelete}
+                disabled={delBusy || !matches}>
+                {delBusy ? 'Deleting…' : 'Delete customer'}
+              </button>
+            </>}>
+            <div className="form-grid">
+              <div style={{ fontSize: 13 }}>
+                This removes <strong>{delFor.full_name}</strong> from the customer list.
+                Their invoices and history are kept, and an Owner or Manager can restore them.
+              </div>
+
+              {delErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}>
+                <span>⚠</span><div>{delErr}</div></div>}
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Type <strong>{delFor.full_name}</strong> to confirm *</label>
+                <input value={delName} autoFocus
+                  placeholder={delFor.full_name ?? ''}
+                  onChange={e => setDelName(e.target.value)} />
+                {delName.length > 0 && !matches && (
+                  <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 3 }}>
+                    That does not match the customer's name.
+                  </div>
+                )}
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Reason</label>
+                <input value={delReason} onChange={e => setDelReason(e.target.value)}
+                  placeholder="Duplicate record, created in error…" />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Recorded against the deletion, alongside who performed it.
+                </div>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {modalOpen && (
         <Modal title={editId ? 'Edit Customer' : 'Add Customer'} maxWidth={460} onClose={() => setModalOpen(false)}
