@@ -25,17 +25,39 @@ const StaffCommissionsPage: React.FC = () => {
   const [rate, setRate] = useState<number>(3);
   const [loading, setLoading] = useState(true);
 
+  // PostgREST caps a response at 1000 rows. staff_commissions was read in one
+  // unpaginated call, and the table GROWS with every rebase: each press reverses
+  // the existing rows (which stay) and inserts new ones. Once past 1000 rows the
+  // page could see only a fraction of the earned ones, so the total fell with
+  // each press — while the server-side preview, which aggregates in SQL, stayed
+  // correct. The stored commission was never changing; only how much of it the
+  // page could see.
+  const fetchAllRows = async <T,>(build: (from: number, to: number) => any): Promise<T[]> => {
+    const PAGE = 1000;
+    const out: T[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await build(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const batch = (data as T[]) ?? [];
+      out.push(...batch);
+      if (batch.length < PAGE) break;
+    }
+    return out;
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     const [sc, pay, prof, pm, st] = await Promise.all([
-      supabase.from('staff_commissions').select('*').order('invoice_paid_date', { ascending: false }),
-      supabase.from('staff_commission_payouts').select('*').order('paid_at', { ascending: false }),
+      fetchAllRows<StaffCommission>((f, t) => supabase.from('staff_commissions')
+        .select('*').order('invoice_paid_date', { ascending: false }).range(f, t)),
+      fetchAllRows<StaffCommissionPayout>((f, t) => supabase.from('staff_commission_payouts')
+        .select('*').order('paid_at', { ascending: false }).range(f, t)),
       supabase.from('profiles').select('id,full_name,role,work_phone,is_active').is('deleted_at', null),
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('app_settings').select('staff_commission_rate').eq('id', true).single(),
     ]);
-    setCommissions((sc.data as StaffCommission[]) ?? []);
-    setPayouts((pay.data as StaffCommissionPayout[]) ?? []);
+    setCommissions(sc ?? []);
+    setPayouts(pay ?? []);
     setProfiles((prof.data as Profile[]) ?? []);
     setMethods((pm.data as PaymentMethod[]) ?? []);
     if (st.data) setRate(Number((st.data as any).staff_commission_rate));
@@ -84,13 +106,24 @@ const StaffCommissionsPage: React.FC = () => {
   // this changes what people are owed, so it must be readable before it is done.
   const [rebaseOpen, setRebaseOpen] = useState(false);
   const [rebasePreview, setRebasePreview] = useState<any[]>([]);
+  // The preview only covers invoices the rebase can act on. Anything outside
+  // that — refunded, cancelled, deleted, part-paid — still shows on this page,
+  // which is why the two totals never matched.
+  const [rebaseScope, setRebaseScope] = useState<any>(null);
+  const [outOfScope, setOutOfScope] = useState<any[]>([]);
   const [rebaseBusy, setRebaseBusy] = useState(false);
   const [rebaseDone, setRebaseDone] = useState<string | null>(null);
 
   const openRebase = async () => {
     setRebaseDone(null); setRebaseOpen(true); setRebasePreview([]);
-    const { data } = await supabase.rpc('preview_commission_rebase_effect');
+    const [{ data }, { data: rec }, { data: out }] = await Promise.all([
+      supabase.rpc('preview_commission_rebase_effect'),
+      supabase.rpc('commission_totals_reconciliation'),
+      supabase.rpc('commission_outside_rebase_scope'),
+    ]);
     setRebasePreview((data as any[]) ?? []);
+    setRebaseScope(rec ?? null);
+    setOutOfScope((out as any[]) ?? []);
   };
   const applyRebase = async () => {
     setRebaseBusy(true);
@@ -208,6 +241,52 @@ const StaffCommissionsPage: React.FC = () => {
                 {rebaseBusy ? 'Rebasing…' : 'Apply to all unpaid'}</button>
             )}</>}>
           <div className="form-grid">
+            {/* Why this dialog's figures differ from the page. Stated plainly,
+                because unpaid commission on a refunded or cancelled invoice is a
+                question about the money, not a display quirk. */}
+            {rebaseScope && Number(rebaseScope.outside_rebase_scope ?? 0) !== 0 && (
+              <div className="alert alert-warning" style={{ marginBottom: 0, display: 'block' }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  These figures cover part of the unpaid total
+                </div>
+                <div style={{ fontSize: 12.5 }}>
+                  The page shows <strong>{money(Number(rebaseScope.page_total ?? 0))}</strong> unpaid.
+                  Of that, <strong>{money(Number(rebaseScope.in_rebase_scope ?? 0))}</strong> is on
+                  invoices this rebase can act on, and{' '}
+                  <strong>{money(Number(rebaseScope.outside_rebase_scope ?? 0))}</strong> is not —
+                  so it will be left exactly as it is.
+                </div>
+                {outOfScope.length > 0 && (
+                  <table style={{ marginTop: 8, fontSize: 12 }}>
+                    <tbody>
+                      {outOfScope.map((r: any, i: number) => (
+                        <tr key={i}>
+                          <td style={{ paddingRight: 12 }}>{r.reason}</td>
+                          <td style={{ paddingRight: 12, color: 'var(--text-muted)' }}>
+                            {r.invoices} invoice{r.invoices === 1 ? '' : 's'}
+                          </td>
+                          <td style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                            {money(Number(r.amount))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <div style={{ fontSize: 11.5, marginTop: 6, color: 'var(--text-muted)' }}>
+                  Commission still owed on a refunded or cancelled invoice is worth looking at —
+                  the sale was undone but the commission was not.
+                </div>
+              </div>
+            )}
+
+            {rebaseScope && Number(rebaseScope.no_paid_date ?? 0) !== 0 && (
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                A further {money(Number(rebaseScope.no_paid_date))} has no paid date recorded and
+                is not counted on this page at all.
+              </div>
+            )}
+
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
               This recalculates commission that has <strong>not yet been paid out</strong> onto the
               current rule: <strong>every paid invoice divided equally between the active staff

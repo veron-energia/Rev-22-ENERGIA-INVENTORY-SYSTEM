@@ -7,8 +7,17 @@ import { Modal } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
 
+// join_person_name() in the database: the two parts, trimmed, single-spaced,
+// with either side allowed to be empty. Mirrored here so the name the form
+// shows is the name that gets stored.
+export const joinPersonName = (first?: string | null, last?: string | null) =>
+  [String(first ?? '').trim(), String(last ?? '').trim()].filter(Boolean).join(' ');
+
 const blank = (c?: Customer) => ({
-  full_name: c?.full_name ?? '', phone: c?.phone ?? '', email: c?.email ?? '',
+  // Existing records were split by migration 92 — first word, then the rest —
+  // so anyone created before this has both parts already.
+  first_name: c?.first_name ?? '', last_name: c?.last_name ?? '',
+  phone: c?.phone ?? '', email: c?.email ?? '',
   date_of_birth: c?.date_of_birth ?? '', gender: (c?.gender ?? '') as CustomerGender | '',
   gender_other: c?.gender_other ?? '', occupation: c?.occupation ?? '',
   notes: c?.notes ?? '', is_active: c?.is_active ?? true,
@@ -160,11 +169,18 @@ const CustomersPage: React.FC = () => {
   const openEdit = (c: Customer) => { setForm(blank(c)); setEditId(c.id); setErr(null); setModalOpen(true); };
 
   const handleSave = async () => {
-    if (!form.full_name.trim()) { setErr('Name is required.'); return; }
+    // A first name is required, matching update_survey_particulars(), which
+    // raises 'A first name is required'. A last name is optional — plenty of
+    // customers give only one name.
+    if (!form.first_name.trim()) { setErr('First name is required.'); return; }
     if (!form.phone.trim()) { setErr('Phone number is required (must be unique).'); return; }
     setSaving(true); setErr(null);
     const payload = {
-      full_name: form.full_name.trim(), phone: form.phone.trim(),
+      first_name: form.first_name.trim(),
+      last_name: form.last_name.trim() || null,
+      // Derived, never typed separately, so it cannot drift from the parts.
+      full_name: joinPersonName(form.first_name, form.last_name),
+      phone: form.phone.trim(),
       email: form.email.trim() || null,
       date_of_birth: form.date_of_birth || null,
       gender: form.gender || null,
@@ -417,7 +433,28 @@ const CustomersPage: React.FC = () => {
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
             <div className="form-grid-2">
-              <div className="form-group"><label>Full Name *</label><input value={form.full_name} onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))} autoFocus /></div>
+              {/* Two fields, matching the health survey exactly, so a name
+                  entered here needs no splitting to sync across. */}
+              <div className="form-grid-2">
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>First Name *</label>
+                  <input value={form.first_name} autoFocus
+                    onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Last Name</label>
+                  <input value={form.last_name}
+                    placeholder="Optional"
+                    onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} />
+                </div>
+              </div>
+              {/* What will actually be stored and printed, so there is no doubt
+                  about how the two parts come together. */}
+              {(form.first_name.trim() || form.last_name.trim()) && (
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: -6 }}>
+                  Will be shown as <strong>{joinPersonName(form.first_name, form.last_name)}</strong>
+                </div>
+              )}
               <div className="form-group"><label>Phone * (unique)</label><input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="e.g. 91234567" /></div>
             </div>
             <div className="form-grid-2">

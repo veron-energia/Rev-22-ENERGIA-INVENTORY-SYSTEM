@@ -319,8 +319,17 @@ const InvoicesPage: React.FC = () => {
     setBuyBusy(true); setBuyErr(null);
     const line: any = { kind: buyKind, id: buyId };
     if (buyKind === 'premium_bundle') {
-      line.voucher_selection = Object.entries(buyBasket).filter(([, q]) => q > 0)
-        .map(([voucher_id, quantity]) => ({ voucher_id, quantity }));
+      // Only send a selection when the bundle actually grants vouchers. A basket
+      // left over from a previously selected bundle would otherwise be sent and
+      // rejected — the server wants none, and "Voucher X is not an eligible
+      // choice" or "Select exactly 0" would come back with nothing on screen to
+      // explain it.
+      const bundle: any = buyBundles.find((x: any) => x.id === buyId);
+      const grants = !!(bundle && bundle.grants_reward && (bundle.free_voucher_qty ?? 0) > 0);
+      line.voucher_selection = grants
+        ? Object.entries(buyBasket).filter(([, q]) => q > 0)
+            .map(([voucher_id, quantity]) => ({ voucher_id, quantity }))
+        : [];
     }
     const { data, error } = await supabase.rpc('create_credit_purchase_invoice', {
       p_store_id: buyStore, p_customer_id: buyCustomer,
@@ -1479,14 +1488,28 @@ const InvoicesPage: React.FC = () => {
                 value={buyId} onChange={setBuyId}
                 options={(buyKind === 'credit_package' ? buyPkgs : buyBundles).map((x: any) => ({
                   value: x.id,
-                  label: `${x.name} — pays ${money(buyKind === 'credit_package' ? x.customer_price : x.customer_payment_amount)}${buyKind === 'premium_bundle' ? ` · ${x.free_voucher_qty} vouchers` : ''}`,
+                  label: `${x.name} — pays ${money(buyKind === 'credit_package' ? x.customer_price : x.customer_payment_amount)}${buyKind === 'premium_bundle' && x.grants_reward && (x.free_voucher_qty ?? 0) > 0 ? ` · ${x.free_voucher_qty} vouchers` : ''}`,
                   search: x.name }))} />
             </div>
 
             {buyKind === 'premium_bundle' && buyId && (() => {
               const b: any = buyBundles.find((x: any) => x.id === buyId);
-              const need = b ? b.free_voucher_qty : 0;
+              // Must match validate_bundle_voucher_selection(): a bundle that
+              // grants no reward needs NO vouchers, whatever free_voucher_qty
+              // says. Reading the quantity alone made the form ask for 150 on a
+              // bundle the server wanted 0 for — so the sale could not be saved
+              // however many were picked.
+              const need = (b && b.grants_reward) ? (b.free_voucher_qty ?? 0) : 0;
               const chosen = Object.values(buyBasket).reduce((a, c) => a + (c || 0), 0);
+              // Nothing to choose: showing an empty picker only invites someone
+              // to select vouchers the sale will then refuse.
+              if (need <= 0) {
+                return (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    This bundle grants no reward vouchers.
+                  </div>
+                );
+              }
               return (
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>Choose {need} reward voucher(s) — {chosen}/{need} selected</label>

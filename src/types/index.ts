@@ -270,6 +270,11 @@ export interface TransferRequestLine {
 export type CustomerGender = 'male' | 'female' | 'other';
 export interface Customer {
   id: string;
+  // The name is held as parts, exactly as a health survey holds it, so the two
+  // stay in step. full_name is derived from them by join_person_name() in the
+  // database and mirrored on the client.
+  first_name: string | null;
+  last_name: string | null;
   full_name: string;
   phone: string;
   email: string | null;

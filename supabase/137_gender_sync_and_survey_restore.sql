@@ -81,11 +81,20 @@ begin
   v_new := v_def;
 
   -- 1. Carry the sex across to the customer's gender, and the phone with it.
+  --
+  -- The phone is added ONLY IF IT IS NOT ALREADY THERE. Migration 122 adds it
+  -- too, and guarding solely on the gender line meant that on a database where
+  -- 122 had already run, this inserted the phone a second time — producing
+  -- "multiple assignments to same column phone" and breaking survey editing
+  -- entirely. A guard has to cover everything the patch inserts, not just its
+  -- newest part.
   if position('gender = case' in v_new) = 0 then
     v_new := replace(v_new,
       '      email      = coalesce(nullif(trim(p_email),''''), email),',
       '      email      = coalesce(nullif(trim(p_email),''''), email),' || chr(10) ||
-      '      phone      = coalesce(nullif(trim(p_phone),''''), phone),' || chr(10) ||
+      case when position('phone      = coalesce(nullif(trim(p_phone)' in v_new) > 0
+           then ''
+           else '      phone      = coalesce(nullif(trim(p_phone),''''), phone),' || chr(10) end ||
       '      -- health_surveys.sex is free text and customers.gender is an enum,' || chr(10) ||
       '      -- so only a value that genuinely matches a label is assigned. An' || chr(10) ||
       '      -- unrecognised entry leaves the customer as it was rather than' || chr(10) ||
