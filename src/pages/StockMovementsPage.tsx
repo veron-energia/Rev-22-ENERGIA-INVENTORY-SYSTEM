@@ -29,15 +29,54 @@ const StockMovementsPage: React.FC = () => {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<'all' | StockMovementType>('all');
 
+  // PostgREST caps a response at 1000 rows, so every lookup here has to page.
+  // The products list especially: a movement whose product sits beyond the
+  // first page renders with NO NAME, which reads as a missing record rather
+  // than a missing lookup. That is what made promotion products look absent.
+  const fetchAllRows = async <T,>(build: (from: number, to: number) => any): Promise<T[]> => {
+    const PAGE = 1000;
+    const out: T[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await build(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const batch = (data as T[]) ?? [];
+      out.push(...batch);
+      if (batch.length < PAGE) break;
+    }
+    return out;
+  };
+
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [mv, prod, wh, st, prof] = await Promise.all([
-      supabase.from('stock_movements').select('*').order('created_at', { ascending: false }).limit(500),
-      supabase.from('products').select('id,name,sku'),
-      supabase.from('warehouses').select('id,name'),
-      supabase.from('stores').select('id,name'),
-      supabase.from('profiles').select('id,full_name'),
+    // Movements are paged too, up to a visible ceiling — the old fixed
+    // limit(500) silently hid everything older, which on a busy month is most
+    // of the history.
+    const MOVEMENT_CAP = 5000;
+    const [mvRows, prod, wh, st, prof] = await Promise.all([
+      (async () => {
+        const rows: StockMovement[] = [];
+        const PAGE = 1000;
+        for (let from = 0; from < MOVEMENT_CAP; from += PAGE) {
+          const { data, error } = await supabase.from('stock_movements').select('*')
+            .order('created_at', { ascending: false })
+            .range(from, Math.min(from + PAGE, MOVEMENT_CAP) - 1);
+          if (error) return { data: rows, error } as any;
+          const batch = (data as StockMovement[]) ?? [];
+          rows.push(...batch);
+          if (batch.length < PAGE) break;
+        }
+        return { data: rows, error: null } as any;
+      })(),
+      fetchAllRows<Product>((f, t) => supabase.from('products').select('id,name,sku').range(f, t))
+        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
+      fetchAllRows<Warehouse>((f, t) => supabase.from('warehouses').select('id,name').range(f, t))
+        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
+      fetchAllRows<Store>((f, t) => supabase.from('stores').select('id,name').range(f, t))
+        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
+      fetchAllRows<Profile>((f, t) => supabase.from('profiles').select('id,full_name').range(f, t))
+        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
     ]);
+    const mv = mvRows;
     if (mv.error) { console.error('stock_movements read failed:', mv.error); setLoadErr(mv.error.message); }
     else setLoadErr(null);
     setMovements((mv.data as StockMovement[]) ?? []);
@@ -48,6 +87,11 @@ const StockMovementsPage: React.FC = () => {
     setLoading(false);
   }, []);
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // Shown when the list is at its ceiling, so an absent movement is never
+  // mistaken for one that was never written. The old fixed limit(500) gave no
+  // hint at all: older entries simply were not there.
+  const atCeiling = movements.length >= 5000;
 
   const pName = (id: string) => products.find(p => p.id === id)?.name ?? 'Unknown';
   const pSku = (id: string) => products.find(p => p.id === id)?.sku ?? '';
@@ -123,6 +167,16 @@ const StockMovementsPage: React.FC = () => {
       </div>
 
       {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read stock history: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
+
+      {atCeiling && (
+        <div className="alert alert-warning">
+          <span>⚠</span>
+          <div>
+            Showing the most recent 5,000 movements. Older entries exist but are not listed —
+            use the search to find a specific product, or narrow by type.
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="table-wrap">
