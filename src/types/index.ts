@@ -365,6 +365,14 @@ export interface InvoiceItem {
   product_id: string | null;
   line_kind?: 'product' | 'voucher' | 'promotion' | 'therapy'
     | 'credit_package' | 'premium_bundle' | 'special_product' | 'rental';
+  // Credit Packages and Premium Bundles bought on an invoice (Phase 28/31).
+  credit_package_id?: string | null;
+  premium_bundle_id?: string | null;
+  credit_paid_snapshot?: number | null;
+  credit_bonus_snapshot?: number | null;
+  credit_voucher_qty_snapshot?: number | null;
+  bundle_voucher_selection?: any;
+  credit_issued_at?: string | null;
   // Special products and rentals (migration 106).
   special_product_id?: string | null;
   rental_rate_type?: 'day' | 'week' | 'month' | 'year' | null;

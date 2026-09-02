@@ -15,7 +15,7 @@ import {
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { Modal, ReasonModal } from '../components/ui';
 import {
-  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, Coins , MessageCircle, Mail} from 'lucide-react';
+  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail} from 'lucide-react';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -26,9 +26,14 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental';
+interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle';
   special_product_id?: string; rental_rate_type?: 'day' | 'week' | 'month' | 'year';
-  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
+  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string;
+  // Credit purchases bought directly on the invoice (Phase 31). The price and
+  // every credit/reward snapshot come from the backend; these only carry the
+  // chosen package/bundle and, for a bundle, the reward-voucher mix.
+  credit_package_id?: string; premium_bundle_id?: string; bundle_voucher_selection?: Record<string, number>;
+  quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
 
 const InvoicesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -145,19 +150,13 @@ const InvoicesPage: React.FC = () => {
   const [affiliateErr, setAffiliateErr] = useState<string | null>(null);
   const [effAffiliate, setEffAffiliate] = useState<any>(null);
   const [invLegacy, setInvLegacy] = useState<any[]>([]);
-  const [buyOpen, setBuyOpen] = useState(false);
-  const [buyPkgs, setBuyPkgs] = useState<any[]>([]);
-  const [buyBundles, setBuyBundles] = useState<any[]>([]);
-  const [buyVouchers, setBuyVouchers] = useState<any[]>([]);
-  const [buyKind, setBuyKind] = useState<'credit_package' | 'premium_bundle'>('credit_package');
-  // Buy Credit used to borrow the New Invoice form's store, which is empty
-  // until that form is opened — so the package list silently came back empty.
-  const [buyStore, setBuyStore] = useState('');
-  const [buyId, setBuyId] = useState('');
-  const [buyCustomer, setBuyCustomer] = useState('');
-  const [buyBasket, setBuyBasket] = useState<Record<string, number>>({});
-  const [buyBusy, setBuyBusy] = useState(false);
-  const [buyErr, setBuyErr] = useState<string | null>(null);
+  // Credit Packages and Premium Bundles are now bought inside New Invoice as
+  // ordinary line kinds (Phase 31). These hold what is available at the chosen
+  // New Invoice store; the reward-voucher options for a selected bundle are
+  // loaded lazily and cached by bundle id.
+  const [creditPkgs, setCreditPkgs] = useState<any[]>([]);
+  const [creditBundles, setCreditBundles] = useState<any[]>([]);
+  const [bundleVoucherOpts, setBundleVoucherOpts] = useState<Record<string, any[]>>({});
   const [legacyDiag, setLegacyDiag] = useState<any>(null);
   const [payWallet, setPayWallet] = useState<any>(null);
   const [warehouses, setWarehouses] = useState<any[]>([]);
@@ -264,6 +263,12 @@ const InvoicesPage: React.FC = () => {
   const custName = (id: string) => customerOf(id)?.full_name ?? '—';
   const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
   const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
+  // Credit Package / Premium Bundle lines carry their name in plan_name_snapshot
+  // so a historical invoice keeps its name even if the package is later renamed.
+  const creditLineName = (it: any): string | null =>
+    it?.line_kind === 'credit_package' ? (it.plan_name_snapshot || 'Credit Package')
+    : it?.line_kind === 'premium_bundle' ? (it.plan_name_snapshot || 'Premium Bundle')
+    : null;
   const isStaff = profile?.role === 'staff';
   // Staff choose among their assigned stores; with only one, it behaves as
   // before. Owners and Managers use the full store list.
@@ -278,68 +283,56 @@ const InvoicesPage: React.FC = () => {
     ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
     : cStore;
 
-  const openBuy = async () => {
-    setBuyErr(null); setBuyId(''); setBuyBasket({}); setBuyCustomer('');
-    setBuyKind('credit_package'); setBuyOpen(true);
-    // Same rule as the invoice form: with several assigned stores, nothing is
-    // chosen for the staff member.
-    const store = staffMustChooseStore
-      ? activeStore
-      : (activeStore || storeOptions[0]?.id || '');
-    setBuyStore(store);
-    if (!store) return;
-    const { data: cp } = await supabase.rpc('credit_packages_for_store', { p_store_id: store, p_day: null });
-    setBuyPkgs((cp as any[]) ?? []);
-    const { data: pb } = await supabase.rpc('premium_bundles_for_store', { p_store_id: store, p_day: null });
-    setBuyBundles((pb as any[]) ?? []);
-  };
+  // Credit Packages and Premium Bundles available at the chosen New Invoice
+  // store. Reloaded whenever the store changes; the backend RPCs are the single
+  // source of truth for availability and price. Changing the store also resets
+  // the item lines (see the Store selector), so a package from the previous
+  // store can never be silently retained.
   useEffect(() => {
-    if (!buyOpen || buyKind !== 'premium_bundle' || !buyId) { return; }
+    if (!createOpen || !activeStore) { setCreditPkgs([]); setCreditBundles([]); return; }
+    let cancelled = false;
     (async () => {
-      const { data } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', buyId);
-      const ids = ((data as any[]) ?? []).map(x => x.voucher_id);
-      const { data: vs } = await supabase.rpc('legacy_reward_voucher_options',
-        { p_store_id: buyStore });
-      setBuyVouchers(((vs as any[]) ?? []).filter(v => ids.includes(v.voucher_id)));
-      setBuyBasket({});
+      const [{ data: cp }, { data: pb }] = await Promise.all([
+        supabase.rpc('credit_packages_for_store', { p_store_id: activeStore, p_day: null }),
+        supabase.rpc('premium_bundles_for_store', { p_store_id: activeStore, p_day: null }),
+      ]);
+      if (cancelled) return;
+      setCreditPkgs((cp as any[]) ?? []);
+      setCreditBundles((pb as any[]) ?? []);
     })();
-  }, [buyOpen, buyKind, buyId, activeStore]);
-  useEffect(() => {
-    if (!buyOpen || !buyStore) return;
-    (async () => {
-      const { data: cp } = await supabase.rpc('credit_packages_for_store', { p_store_id: buyStore, p_day: null });
-      setBuyPkgs((cp as any[]) ?? []);
-      const { data: pb } = await supabase.rpc('premium_bundles_for_store', { p_store_id: buyStore, p_day: null });
-      setBuyBundles((pb as any[]) ?? []);
-      setBuyId(''); setBuyBasket({});
-    })();
-  }, [buyOpen, buyStore]);
+    return () => { cancelled = true; };
+  }, [createOpen, activeStore]);
 
-  const submitBuy = async () => {
-    setBuyBusy(true); setBuyErr(null);
-    const line: any = { kind: buyKind, id: buyId };
-    if (buyKind === 'premium_bundle') {
-      // Only send a selection when the bundle actually grants vouchers. A basket
-      // left over from a previously selected bundle would otherwise be sent and
-      // rejected — the server wants none, and "Voucher X is not an eligible
-      // choice" or "Select exactly 0" would come back with nothing on screen to
-      // explain it.
-      const bundle: any = buyBundles.find((x: any) => x.id === buyId);
-      const grants = !!(bundle && bundle.grants_reward && (bundle.free_voucher_qty ?? 0) > 0);
-      line.voucher_selection = grants
-        ? Object.entries(buyBasket).filter(([, q]) => q > 0)
-            .map(([voucher_id, quantity]) => ({ voucher_id, quantity }))
-        : [];
-    }
-    const { data, error } = await supabase.rpc('create_credit_purchase_invoice', {
-      p_store_id: buyStore, p_customer_id: buyCustomer,
-      p_lines: [line], p_affiliate_id: null, p_discount_total: 0, p_notes: null,
-    });
-    setBuyBusy(false);
-    if (error) { setBuyErr(error.message); return; }
-    setBuyOpen(false); await loadAll();
-    const { data: invRow } = await supabase.from('invoices').select('*').eq('id', data).single();
-    if (invRow) await openDetail(invRow as Invoice);
+  // Reward-voucher choices for any Premium Bundle line currently selected.
+  // Loaded once per bundle and cached; mirrors the old Buy Credit chooser:
+  // only vouchers eligible for that bundle AND stocked at this store appear.
+  useEffect(() => {
+    if (!createOpen || !activeStore) return;
+    const need = cLines
+      .filter(l => l.kind === 'premium_bundle' && l.premium_bundle_id && !(l.premium_bundle_id in bundleVoucherOpts))
+      .map(l => l.premium_bundle_id as string);
+    const uniq = Array.from(new Set(need));
+    if (uniq.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const { data: vs } = await supabase.rpc('legacy_reward_voucher_options', { p_store_id: activeStore });
+      const opts = (vs as any[]) ?? [];
+      const updates: Record<string, any[]> = {};
+      for (const bid of uniq) {
+        const { data } = await supabase.from('premium_bundle_vouchers').select('voucher_id').eq('bundle_id', bid);
+        const ids = ((data as any[]) ?? []).map(x => x.voucher_id);
+        updates[bid] = opts.filter(v => ids.includes(v.voucher_id));
+      }
+      if (!cancelled) setBundleVoucherOpts(prev => ({ ...prev, ...updates }));
+    })();
+    return () => { cancelled = true; };
+  }, [createOpen, activeStore, cLines, bundleVoucherOpts]);
+
+  // A Premium Bundle grants reward vouchers only when it is flagged to and has a
+  // non-zero quantity — the same rule validate_bundle_voucher_selection() uses.
+  const bundleGrants = (bundleId?: string): number => {
+    const b: any = creditBundles.find(x => x.id === bundleId);
+    return (b && b.grants_reward) ? (b.free_voucher_qty ?? 0) : 0;
   };
   // Phase 19: one selling price. The former Member Price is the single price.
   const effMember = true;
@@ -403,6 +396,14 @@ const InvoicesPage: React.FC = () => {
       return rate > 0 ? rate * Math.max(1, l.rental_periods ?? 1) : null;
     })()
     : l.kind === 'therapy' ? (l.therapy_package_id ? therapyPrice(l.therapy_package_id, lineMember(l)) : null)
+    : l.kind === 'credit_package' ? (() => {
+      const p: any = creditPkgs.find(x => x.id === l.credit_package_id);
+      return p ? Number(p.customer_price) : null;
+    })()
+    : l.kind === 'premium_bundle' ? (() => {
+      const b: any = creditBundles.find(x => x.id === l.premium_bundle_id);
+      return b ? Number(b.customer_payment_amount) : null;
+    })()
     : l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id, lineMember(l)) : null)
     : l.kind === 'promotion' ? (l.promotion_id ? promoPrice(l.promotion_id, lineMember(l)) : null)
     : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
@@ -414,7 +415,7 @@ const InvoicesPage: React.FC = () => {
       const price = lineUnit(l);
       return sum + (price ? price * (l.foc_quantity ?? 0) : 0);
     }, 0),
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages]);
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles]);
   const createSubtotal = useMemo(() =>
     cLines.reduce((sum, l) => {
       const price = lineUnit(l);
@@ -422,7 +423,7 @@ const InvoicesPage: React.FC = () => {
     }, 0),
     // B: every input that can change a line's applied price must be here,
     // or totals go stale when the pricing mode flips.
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages]);
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles]);
 
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
@@ -597,8 +598,10 @@ const InvoicesPage: React.FC = () => {
       : l.kind === 'voucher' ? l.voucher_id
       : l.kind === 'therapy' ? l.therapy_package_id
       : (l.kind === 'special_product' || l.kind === 'rental') ? l.special_product_id
+      : l.kind === 'credit_package' ? l.credit_package_id
+      : l.kind === 'premium_bundle' ? l.premium_bundle_id
       : l.promotion_id));
-    if (activeLines.length === 0) { setCErr('Add at least one product, voucher, promotion or therapy line.'); return; }
+    if (activeLines.length === 0) { setCErr('Add at least one product, voucher, promotion, therapy, credit package or premium bundle line.'); return; }
     // Choice-group completeness check (client-side; server re-validates).
     for (const l of activeLines) {
       if (l.kind !== 'promotion') continue;
@@ -609,6 +612,19 @@ const InvoicesPage: React.FC = () => {
           setCErr(`"${promotions.find(p => p.id === l.promotion_id)?.name}" — ${g.label}: choose exactly ${need} (currently ${got}).`);
           return;
         }
+      }
+    }
+    // Reward-voucher completeness for Premium Bundles (server re-validates via
+    // validate_bundle_voucher_selection). Only bundles that grant vouchers.
+    for (const l of activeLines) {
+      if (l.kind !== 'premium_bundle') continue;
+      const need = bundleGrants(l.premium_bundle_id);
+      if (need <= 0) continue;
+      const got = Object.values(l.bundle_voucher_selection ?? {}).reduce((a, c) => a + (c || 0), 0);
+      if (got !== need) {
+        const b: any = creditBundles.find(x => x.id === l.premium_bundle_id);
+        setCErr(`"${b?.name ?? 'Premium bundle'}" — choose exactly ${need} reward voucher(s) (currently ${got}).`);
+        return;
       }
     }
     const ovr = (_l: LineDraft) => ({});
@@ -634,6 +650,17 @@ const InvoicesPage: React.FC = () => {
         }
       : l.kind === 'therapy'
       ? { kind: 'therapy', therapy_package_id: l.therapy_package_id, quantity: 1, ...ovr(l), ...foc(l) }
+      : l.kind === 'credit_package'
+      ? { kind: 'credit_package', credit_package_id: l.credit_package_id, quantity: 1 }
+      : l.kind === 'premium_bundle'
+      ? { kind: 'premium_bundle', premium_bundle_id: l.premium_bundle_id, quantity: 1,
+          // Only send a selection when the bundle actually grants vouchers, and
+          // only the chosen ones — matching validate_bundle_voucher_selection().
+          voucher_selection: bundleGrants(l.premium_bundle_id) > 0
+            ? Object.entries(l.bundle_voucher_selection ?? {})
+                .filter(([, q]) => (q || 0) > 0)
+                .map(([voucher_id, quantity]) => ({ voucher_id, quantity }))
+            : [] }
       : l.kind === 'special_product'
       ? { kind: 'special_product', special_product_id: l.special_product_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
       : l.kind === 'rental'
@@ -764,6 +791,16 @@ const InvoicesPage: React.FC = () => {
         : {};
       if (it.line_kind === 'therapy') {
         lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+      } else if (it.line_kind === 'credit_package') {
+        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {} });
+      } else if (it.line_kind === 'premium_bundle') {
+        // Rebuild the reward-voucher basket from the stored selection so editing
+        // shows what was chosen and re-validates against the same rule.
+        const basket: Record<string, number> = {};
+        const raw = (it as any).bundle_voucher_selection;
+        const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : []);
+        for (const s of (arr as any[])) { if (s && s.voucher_id) basket[s.voucher_id] = (basket[s.voucher_id] ?? 0) + Number(s.quantity ?? 0); }
+        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {} });
       } else if (it.line_kind === 'voucher') {
         lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'promotion') {
@@ -1036,6 +1073,7 @@ const InvoicesPage: React.FC = () => {
   const lineName = (it: InvoiceItem) =>
     it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
     : it.line_kind === 'promotion' ? `Promotion: ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? ''}`
+    : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? creditLineName(it)!
     : prodName(it.product_id ?? '');
 
   const [sendErr, setSendErr] = useState<string | null>(null);
@@ -1387,7 +1425,6 @@ const InvoicesPage: React.FC = () => {
               { header: 'Payment', value: (i: any) => (payMethodsByInvoice[i.id] ?? []).join(', ') },
               { header: 'Status', value: (i: any) => INVOICE_STATUS_LABELS[i.status as InvoiceStatus] ?? i.status },
             ]} />}
-          <button className="btn btn-secondary" onClick={openBuy}><Coins size={15} /> Buy Credit</button>
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
         </div>
       </div>
@@ -1450,101 +1487,6 @@ const InvoicesPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Create invoice modal */}
-      {buyOpen && (
-        <Modal title="Buy Credit" maxWidth={520} onClose={() => setBuyOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setBuyOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={submitBuy}
-              disabled={buyBusy || !buyId || !buyCustomer || !buyStore}>{buyBusy ? 'Creating…' : 'Create Invoice'}</button></>}>
-          <div className="form-grid">
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              Creates an invoice for a Credit Package or Premium Bundle. The credit, bonus credit and reward vouchers are issued automatically once the invoice is fully paid. Wallet credit cannot pay for it.
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Store *</label>
-              <select value={buyStore} onChange={e => setBuyStore(e.target.value)}
-                disabled={isStaff && myStores.length <= 1}>
-                {(!isStaff || staffMustChooseStore) && <option value="">— Select store —</option>}
-                {storeOptions.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
-              </select>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                Only packages and bundles available at this store are listed.
-              </div>
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Customer *</label>
-              <CustomerSearchSelect value={buyCustomer} onChange={setBuyCustomer} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>What are they buying?</label>
-              <select value={buyKind} onChange={e => { setBuyKind(e.target.value as any); setBuyId(''); setBuyBasket({}); }}>
-                <option value="credit_package">Credit Package</option>
-                <option value="premium_bundle">Premium Bundle</option>
-              </select>
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>{buyKind === 'credit_package' ? 'Credit Package' : 'Premium Bundle'} *</label>
-              <SearchSelect placeholder="Search package or bundle name…"
-                value={buyId} onChange={setBuyId}
-                options={(buyKind === 'credit_package' ? buyPkgs : buyBundles).map((x: any) => ({
-                  value: x.id,
-                  label: `${x.name} — pays ${money(buyKind === 'credit_package' ? x.customer_price : x.customer_payment_amount)}${buyKind === 'premium_bundle' && x.grants_reward && (x.free_voucher_qty ?? 0) > 0 ? ` · ${x.free_voucher_qty} vouchers` : ''}`,
-                  search: x.name }))} />
-            </div>
-
-            {buyKind === 'premium_bundle' && buyId && (() => {
-              const b: any = buyBundles.find((x: any) => x.id === buyId);
-              // Must match validate_bundle_voucher_selection(): a bundle that
-              // grants no reward needs NO vouchers, whatever free_voucher_qty
-              // says. Reading the quantity alone made the form ask for 150 on a
-              // bundle the server wanted 0 for — so the sale could not be saved
-              // however many were picked.
-              const need = (b && b.grants_reward) ? (b.free_voucher_qty ?? 0) : 0;
-              const chosen = Object.values(buyBasket).reduce((a, c) => a + (c || 0), 0);
-              // Nothing to choose: showing an empty picker only invites someone
-              // to select vouchers the sale will then refuse.
-              if (need <= 0) {
-                return (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    This bundle grants no reward vouchers.
-                  </div>
-                );
-              }
-              return (
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label>Choose {need} reward voucher(s) — {chosen}/{need} selected</label>
-                  <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
-                    {buyVouchers.length === 0 && <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No eligible vouchers available at this store.</div>}
-                    {buyVouchers.map((v: any) => {
-                      const cur = buyBasket[v.voucher_id] ?? 0;
-                      const cap = v.available_qty == null ? need : Math.min(need, v.available_qty);
-                      return (
-                        <div key={v.voucher_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 9px', borderBottom: '1px solid var(--border)' }}>
-                          <div style={{ fontSize: 12.5 }}>{v.name}
-                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v.available_qty == null ? 'unlimited' : `${v.available_qty} in stock`}</div>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <button className="btn btn-secondary btn-sm" disabled={cur <= 0}
-                              onClick={() => setBuyBasket(bk => ({ ...bk, [v.voucher_id]: Math.max(0, (bk[v.voucher_id] ?? 0) - 10) }))}>−10</button>
-                            <span style={{ minWidth: 30, textAlign: 'center', fontSize: 13 }}>{cur}</span>
-                            <button className="btn btn-secondary btn-sm" disabled={chosen >= need || cur >= cap}
-                              onClick={() => setBuyBasket(bk => ({ ...bk, [v.voucher_id]: Math.min(cap, (bk[v.voucher_id] ?? 0) + 10) }))}>+10</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                    Mix any eligible vouchers up to the required quantity. Stock is checked before the invoice is created.
-                  </div>
-                </div>
-              );
-            })()}
-
-            {buyErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{buyErr}</div></div>}
-          </div>
-        </Modal>
-      )}
 
       {createOpen && (
         <Modal title={editingPaid ? "Correct Paid Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}
@@ -1730,11 +1672,14 @@ const InvoicesPage: React.FC = () => {
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
-                            rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 110 }}>
+                            credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
+                            rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 130 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
                           <option value="promotion">Promotion</option>
                           {therapyPackages.length > 0 && <option value="therapy">Therapy</option>}
+                          {creditPkgs.length > 0 && <option value="credit_package">Credit Package</option>}
+                          {creditBundles.length > 0 && <option value="premium_bundle">Premium Bundle</option>}
                           {specialProducts.length > 0 && <option value="special_product">Special Product</option>}
                           {specialProducts.length > 0 && <option value="rental">Rental</option>}
                         </select>
@@ -1813,6 +1758,22 @@ const InvoicesPage: React.FC = () => {
                               value: p.id,
                               label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`,
                               search: p.name }; })} />
+                        ) : line.kind === 'credit_package' ? (
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search Credit Package…"
+                            value={line.credit_package_id ?? ''}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, credit_package_id: v, quantity: 1 } : l))}
+                            options={creditPkgs.map((p: any) => ({
+                              value: p.id,
+                              label: `💳 ${p.name} — ${money(Number(p.customer_price))}`,
+                              search: p.name }))} />
+                        ) : line.kind === 'premium_bundle' ? (
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search Premium Bundle…"
+                            value={line.premium_bundle_id ?? ''}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, premium_bundle_id: v, quantity: 1, bundle_voucher_selection: {} } : l))}
+                            options={creditBundles.map((b: any) => ({
+                              value: b.id,
+                              label: `💳 ${b.name} — ${money(Number(b.customer_payment_amount))}${b.grants_reward && (b.free_voucher_qty ?? 0) > 0 ? ` · ${b.free_voucher_qty} vouchers` : ''}`,
+                              search: b.name }))} />
                         ) : (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search promotion name or code…"
                             value={line.promotion_id}
@@ -1822,14 +1783,20 @@ const InvoicesPage: React.FC = () => {
                               label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}`,
                               sublabel: (p as any).code, search: `${p.name} ${(p as any).code ?? ''}` }))} />
                         )}
-                        <input type="number" min={1} max={9999} value={line.quantity || ''} placeholder="Qty" style={{ width: 70 }}
+                        <input type="number" min={1} max={9999}
+                          value={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 1 : (line.quantity || '')}
+                          placeholder="Qty" style={{ width: 70 }}
+                          disabled={line.kind === 'credit_package' || line.kind === 'premium_bundle'}
+                          title={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 'Credit purchases are always quantity 1' : undefined}
                           onChange={e => setCLines(ls => ls.map((l, j) => j === i
                             ? { ...l, quantity: Math.min(Math.max(0, Math.floor(+e.target.value || 0)), 9999) } : l))} />
                         <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
                         <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setCLines(ls => ls.filter((_, j) => j !== i))} disabled={cLines.length === 1}><X size={13} /></button>
                       </div>
-                      {/* Phase 12 — FOC. Quantity stays full (stock still moves); only the charge drops. */}
-                      {(line.kind !== 'product' || line.product_id) && (line.quantity ?? 0) > 0 && (
+                      {/* Phase 12 — FOC. Quantity stays full (stock still moves); only the charge drops.
+                          Credit purchases don't take a product-style FOC. */}
+                      {line.kind !== 'credit_package' && line.kind !== 'premium_bundle'
+                        && (line.kind !== 'product' || line.product_id) && (line.quantity ?? 0) > 0 && (
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC:</span>
                           <select
@@ -1881,6 +1848,52 @@ const InvoicesPage: React.FC = () => {
                           {line.line_voucher_id && price ? <span style={{ fontSize: 11.5, color: 'var(--success)' }}>− {money(voucherDiscAmount(vouchers.find(v => v.id === line.line_voucher_id), price * line.quantity))}</span> : null}
                         </div>
                       )}
+                      {line.kind === 'premium_bundle' && line.premium_bundle_id && (() => {
+                        const need = bundleGrants(line.premium_bundle_id);
+                        if (need <= 0) {
+                          return (
+                            <div style={{ marginLeft: 28, marginTop: 4, fontSize: 11.5, color: 'var(--text-muted)' }}>
+                              This bundle grants no reward vouchers.
+                            </div>
+                          );
+                        }
+                        const opts = bundleVoucherOpts[line.premium_bundle_id] ?? [];
+                        const basket = line.bundle_voucher_selection ?? {};
+                        const chosen = Object.values(basket).reduce((a, c) => a + (c || 0), 0);
+                        const setBasket = (fn: (b: Record<string, number>) => Record<string, number>) =>
+                          setCLines(ls => ls.map((l, j) => j === i ? { ...l, bundle_voucher_selection: fn(l.bundle_voucher_selection ?? {}) } : l));
+                        return (
+                          <div style={{ marginLeft: 28, marginTop: 6, marginBottom: 6 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                              Choose {need} reward voucher(s) — {chosen}/{need} selected
+                            </div>
+                            <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                              {opts.length === 0 && <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No eligible vouchers available at this store.</div>}
+                              {opts.map((v: any) => {
+                                const cur = basket[v.voucher_id] ?? 0;
+                                const cap = v.available_qty == null ? need : Math.min(need, v.available_qty);
+                                return (
+                                  <div key={v.voucher_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 9px', borderBottom: '1px solid var(--border)' }}>
+                                    <div style={{ fontSize: 12.5 }}>{v.name}
+                                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v.available_qty == null ? 'unlimited' : `${v.available_qty} in stock`}</div>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <button className="btn btn-secondary btn-sm" disabled={cur <= 0}
+                                        onClick={() => setBasket(bk => ({ ...bk, [v.voucher_id]: Math.max(0, (bk[v.voucher_id] ?? 0) - 10) }))}>−10</button>
+                                      <span style={{ minWidth: 30, textAlign: 'center', fontSize: 13 }}>{cur}</span>
+                                      <button className="btn btn-secondary btn-sm" disabled={chosen >= need || cur >= cap}
+                                        onClick={() => setBasket(bk => ({ ...bk, [v.voucher_id]: Math.min(cap, (bk[v.voucher_id] ?? 0) + 10) }))}>+10</button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                              Mix any eligible vouchers up to the required quantity. Stock is checked before the invoice is created.
+                            </div>
+                          </div>
+                        );
+                      })()}
                       {line.kind === 'promotion' && line.promotion_id && includedFor(line.promotion_id).length > 0 && (
                         <div style={{ marginLeft: 28, marginTop: 6, marginBottom: 6, border: '1px solid var(--border)',
                                       borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
@@ -2326,7 +2339,7 @@ const InvoicesPage: React.FC = () => {
                     return (
                       <React.Fragment key={it.id}>
                         <tr>
-                          <td>{it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : prodName(it.product_id ?? '')}
+                          <td>{it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${creditLineName(it)}` : prodName(it.product_id ?? '')}
                             {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {Number(it.foc_quantity ?? 0) === 0 && detail.status !== 'paid' && detail.status !== 'completed_foc'
@@ -2501,10 +2514,22 @@ const InvoicesPage: React.FC = () => {
             )}
 
             {/* Payment entry (only if not fully paid) */}
-            {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (
+            {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (() => {
+              // Wallet Credit can never pay for a Credit Package or Premium Bundle.
+              // If the invoice contains ANY such line, wallet methods are hidden
+              // for the WHOLE invoice — the database enforces the same rule, so
+              // this only spares the user a rejected attempt.
+              const hasCreditLine = detailItems.some(it => it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle');
+              return (
               <div>
                 {payErr && <div className="alert alert-danger"><span>⚠</span><div>{payErr}</div></div>}
                 <label>Record Payment <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— split across methods if needed</span></label>
+                {hasCreditLine && (
+                  <div className="alert alert-info" style={{ margin: '6px 0' }}>
+                    <span>💳</span>
+                    <div>Wallet Credit cannot be used to purchase a Credit Package or Premium Bundle.</div>
+                  </div>
+                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
                     <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -2513,14 +2538,16 @@ const InvoicesPage: React.FC = () => {
                         <optgroup label="Payment methods">
                           {methods.filter((m: any) => !m.is_wallet_credit).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                         </optgroup>
-                        <optgroup label="Wallet credit">
-                          {methods.filter((m: any) => m.is_wallet_credit).map((m: any) => {
-                            const bal = Number(payWallet?.categories?.[m.wallet_category] ?? 0);
-                            return <option key={m.id} value={m.id} disabled={bal <= 0}>
-                              {m.name} — {money(bal)} available
-                            </option>;
-                          })}
-                        </optgroup>
+                        {!hasCreditLine && (
+                          <optgroup label="Wallet credit">
+                            {methods.filter((m: any) => m.is_wallet_credit).map((m: any) => {
+                              const bal = Number(payWallet?.categories?.[m.wallet_category] ?? 0);
+                              return <option key={m.id} value={m.id} disabled={bal <= 0}>
+                                {m.name} — {money(bal)} available
+                              </option>;
+                            })}
+                          </optgroup>
+                        )}
                       </select>
                       <input type="number" min={0} step={0.01} value={pl.amount || ''} placeholder="Amount" style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
@@ -2529,7 +2556,7 @@ const InvoicesPage: React.FC = () => {
                   ))}
                 </div>
                 <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setPayLines(ls => [...ls, { payment_method_id: methods[0]?.id ?? '', amount: 0 }])}><Plus size={13} /> Split Payment</button>
-                {payWallet && Number(payWallet.available_total ?? 0) > 0 && (
+                {!hasCreditLine && payWallet && Number(payWallet.available_total ?? 0) > 0 && (
                   <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--text-muted)' }}>
                     Wallet: <strong>{money(Number(payWallet.available_total))}</strong> available —
                     {' '}{(['paid','bonus','legacy','promotional','exchange'] as const)
@@ -2549,7 +2576,8 @@ const InvoicesPage: React.FC = () => {
                   )}
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </Modal>
       )}
