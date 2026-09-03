@@ -14,6 +14,7 @@ import {
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
+import { PremiumBundleSplitPanel } from '../components/PremiumBundleSplitPanel';
 import { Modal, ReasonModal } from '../components/ui';
 import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail} from 'lucide-react';
@@ -1047,15 +1048,20 @@ const InvoicesPage: React.FC = () => {
     ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
     : cStore;
 
-  // Multi-customer Credit Package split: only offered when a Credit Package is
+  // Multi-customer split: offered when a Credit Package OR Premium Bundle is
   // the sole line (never in edit mode). The panel + RPC are authoritative.
   const creditPkgLineId = (cLines.find(l => l.kind === 'credit_package' && l.credit_package_id)?.credit_package_id) ?? '';
-  const creditPkgOnly = cLines.length === 1 && cLines[0].kind === 'credit_package' && !!cLines[0].credit_package_id;
-  useEffect(() => { if (!creditPkgLineId || editingInvoiceId) setSplitMode(false); }, [creditPkgLineId, editingInvoiceId]);
+  const bundleLineId = (cLines.find(l => l.kind === 'premium_bundle' && l.premium_bundle_id)?.premium_bundle_id) ?? '';
+  const splitKind: 'credit_package' | 'premium_bundle' | null = creditPkgLineId ? 'credit_package' : (bundleLineId ? 'premium_bundle' : null);
+  const splitLineId = creditPkgLineId || bundleLineId;
+  const splitOnly = cLines.length === 1
+    && ((splitKind === 'credit_package' && !!cLines[0].credit_package_id)
+        || (splitKind === 'premium_bundle' && !!cLines[0].premium_bundle_id));
+  useEffect(() => { if (!splitLineId || editingInvoiceId) setSplitMode(false); }, [splitLineId, editingInvoiceId]);
   const handleSplitCreated = (result: any) => {
     setCreateOpen(false); setSplitMode(false); resetCreate();
     setEditingInvoiceId(null); setEditingPaid(false);
-    setSplitSummary({ package_name: result?.package_name ?? 'Credit Package', invoices: result?.invoices ?? [] });
+    setSplitSummary({ package_name: result?.package_name ?? result?.bundle_name ?? 'Split', invoices: result?.invoices ?? [] });
     void loadAll();
   };
 
@@ -1690,25 +1696,37 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
-            {/* ---- Multi-customer Credit Package split ---- */}
-            {creditPkgLineId && !editingInvoiceId && effectiveStore && (
+            {/* ---- Multi-customer Credit Package / Premium Bundle split ---- */}
+            {splitLineId && !editingInvoiceId && effectiveStore && (
               <div className="form-group">
                 <label>Customer Allocation</label>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button type="button" className={`btn btn-sm ${!splitMode ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSplitMode(false)}>Single Customer</button>
                   <button type="button" className={`btn btn-sm ${splitMode ? 'btn-primary' : 'btn-secondary'}`}
-                    disabled={!creditPkgOnly}
-                    title={creditPkgOnly ? '' : 'Remove other invoice items first'}
-                    onClick={() => { if (creditPkgOnly) setSplitMode(true); }}>Split Across Customers</button>
+                    disabled={!splitOnly}
+                    title={splitOnly ? '' : 'Remove other invoice items first'}
+                    onClick={() => { if (splitOnly) setSplitMode(true); }}>Split Across Customers</button>
                 </div>
-                {!creditPkgOnly && <div className="alert alert-warning" style={{ marginTop: 6, marginBottom: 0 }}>Multi-customer Credit Package splitting cannot be used while normal invoice items are present. Remove the other items first.</div>}
+                {!splitOnly && <div className="alert alert-warning" style={{ marginTop: 6, marginBottom: 0 }}>Multi-customer splitting cannot be used while other invoice items are present. Remove the other items first.</div>}
               </div>
             )}
 
-            {splitMode && creditPkgOnly && effectiveStore && creditPkgLineId && (
+            {splitMode && splitOnly && effectiveStore && splitKind === 'credit_package' && (
               <CreditPackageSplitPanel
                 storeId={effectiveStore}
                 creditPackageId={creditPkgLineId}
+                serviceStaff={cServiceStaff}
+                affiliateId={cAffiliate || null}
+                notes={null}
+                onCreated={handleSplitCreated}
+                onCancel={() => setSplitMode(false)}
+              />
+            )}
+
+            {splitMode && splitOnly && effectiveStore && splitKind === 'premium_bundle' && (
+              <PremiumBundleSplitPanel
+                storeId={effectiveStore}
+                bundleId={bundleLineId}
                 serviceStaff={cServiceStaff}
                 affiliateId={cAffiliate || null}
                 notes={null}
