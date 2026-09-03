@@ -165,8 +165,27 @@ const CustomersPage: React.FC = () => {
     }
   };
 
-  const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
-  const openEdit = (c: Customer) => { setForm(blank(c)); setEditId(c.id); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm(blank()); setEditId(null); setOrigReferrer(''); setErr(null); setModalOpen(true); };
+  const openEdit = (c: Customer) => { setForm(blank(c)); setEditId(c.id); setOrigReferrer((c as any)?.referred_by ?? ''); setErr(null); setModalOpen(true); };
+
+  // Correct-referrer (Owner/Manager, audited) — first valid referral otherwise wins.
+  const [origReferrer, setOrigReferrer] = useState('');
+  const [fixOpen, setFixOpen] = useState(false);
+  const [fixVal, setFixVal] = useState('');
+  const [fixReason, setFixReason] = useState('');
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixErr, setFixErr] = useState<string | null>(null);
+  const submitFixReferrer = async () => {
+    if (!editId) return;
+    if (!fixReason.trim()) { setFixErr('A reason is required.'); return; }
+    setFixBusy(true); setFixErr(null);
+    const { error } = await supabase.rpc('reassign_customer_referrer',
+      { p_customer_id: editId, p_new_referrer_id: fixVal || null, p_reason: fixReason.trim() });
+    setFixBusy(false);
+    if (error) { setFixErr(error.message); return; }
+    setOrigReferrer(fixVal); setForm(f => ({ ...f, referred_by: fixVal }));
+    setFixOpen(false); setFixReason(''); load();
+  };
 
   const handleSave = async () => {
     // A first name is required, matching update_survey_particulars(), which
@@ -478,16 +497,48 @@ const CustomersPage: React.FC = () => {
             <div className="form-group"><label>Notes</label><textarea rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional" /></div>
             <div className="form-group">
               <label>Referred by (optional)</label>
-              <CustomerSearchSelect
-                value={form.referred_by}
-                onChange={v => setForm(f => ({ ...f, referred_by: v }))}
-                placeholder="Search name, phone or email…"
-                excludeId={editId ?? undefined} />
-              <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>The customer who introduced this customer. Drives Tier 1 / Tier 2 commission.</span>
+              {editId && origReferrer ? (
+                <>
+                  <div className="input" style={{ background: 'var(--surface-2, #f6f6f6)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Referrer assigned — locked (first valid referral wins)</span>
+                    {canComplete && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setFixVal(origReferrer); setFixReason(''); setFixErr(null); setFixOpen(true); }}>Correct Referrer</button>}
+                  </div>
+                  <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>Referrer ownership is locked. Owner/Manager can correct it with a reason (audited).</span>
+                </>
+              ) : (
+                <>
+                  <CustomerSearchSelect
+                    value={form.referred_by}
+                    onChange={v => setForm(f => ({ ...f, referred_by: v }))}
+                    placeholder="Search name, phone or email…"
+                    excludeId={editId ?? undefined} />
+                  <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>The customer who introduced this customer. Drives Tier 1 / Tier 2 commission.</span>
+                </>
+              )}
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>
+          </div>
+        </Modal>
+      )}
+
+      {fixOpen && (
+        <Modal title="Correct Referrer" maxWidth={460} onClose={() => setFixOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setFixOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submitFixReferrer} disabled={fixBusy}>{fixBusy ? 'Saving…' : 'Save Correction'}</button></>}>
+          <div style={{ padding: 4 }}>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
+              First valid referral normally wins, so this change is audited. Leave the referrer blank to clear it.
+            </p>
+            <div className="form-group">
+              <label>New referrer</label>
+              <CustomerSearchSelect value={fixVal} onChange={setFixVal} placeholder="Search name, phone or email…" excludeId={editId ?? undefined} />
+            </div>
+            <div className="form-group">
+              <label>Reason (required)</label>
+              <textarea rows={3} value={fixReason} onChange={e => setFixReason(e.target.value)} placeholder="Why is this being changed?" />
+            </div>
+            {fixErr && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{fixErr}</p>}
           </div>
         </Modal>
       )}

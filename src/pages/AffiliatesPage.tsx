@@ -1,258 +1,230 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
-import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Store, AffiliateRow, isOwnerOrManager } from '../types';
+import { isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
-import { Plus, RefreshCw, Search, UserPlus, Ban, PlayCircle, Store as StoreIcon, Users, X } from 'lucide-react';
+import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
+import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3 } from 'lucide-react';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
 
-const STATE: Record<string, { cls: string; label: string }> = {
-  active: { cls: 'badge-success', label: 'Active' },
-  suspended_manual: { cls: 'badge-danger', label: 'Suspended' },
-  inactive: { cls: 'badge-muted', label: 'Inactive' },
-  not_activated: { cls: 'badge-muted', label: 'Not Activated' },
-};
+interface DirRow {
+  customer_id: string; name: string; status: string; manually_suspended: boolean;
+  referral_code: string | null; portal_account: 'not_claimed' | 'claimed' | 'disabled';
+  direct_referrals: number; tier2: number; lifetime: number; unpaid: number; blocked: number; last_commission: string | null;
+}
+interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; }
 
-type FilterKey = 'all' | 'eligible' | 'active' | 'inactive' | 'suspended' | 'blocked' | 'missing_store';
+const PORTAL: Record<string, { cls: string; label: string }> = {
+  claimed: { cls: 'badge-success', label: 'Claimed' },
+  not_claimed: { cls: 'badge-muted', label: 'Not Claimed' },
+  disabled: { cls: 'badge-danger', label: 'Disabled' },
+};
 
 const AffiliatesPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
-  // Any customer can be made an affiliate — they do not have to be a referrer
-  // already. Owner/Manager only, which activate_affiliate also enforces.
-  const [addOpen, setAddOpen] = useState(false);
-  const [addCustomer, setAddCustomer] = useState('');
-  const [addStore, setAddStore] = useState('');
-  const [addBusy, setAddBusy] = useState(false);
-  const [addErr, setAddErr] = useState<string | null>(null);
-  const submitAdd = async () => {
-    if (!addCustomer) { setAddErr('Choose a customer.'); return; }
-    setAddBusy(true); setAddErr(null);
-    const { error } = await supabase.rpc('activate_affiliate',
-      { p_customer_id: addCustomer, p_store_id: addStore || null });
-    setAddBusy(false);
-    if (error) { setAddErr(error.message); return; }
-    setAddOpen(false); setAddCustomer(''); setAddStore(''); load();
-  };
-  const [rows, setRows] = useState<AffiliateRow[]>([]);
-  const [stores, setStores] = useState<Store[]>([]);
+
+  const [rows, setRows] = useState<DirRow[]>([]);
+  const [claims, setClaims] = useState<ClaimRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
-  const [filter, setFilter] = useState<FilterKey>('all');
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [storeModal, setStoreModal] = useState<AffiliateRow | null>(null);
-  const [storeSel, setStoreSel] = useState('');
-  const [downlineFor, setDownlineFor] = useState<AffiliateRow | null>(null);
-  const [downlineRows, setDownlineRows] = useState<any[]>([]);
+  const [qrOpen, setQrOpen] = useState(false);
+
+  // Correct-referrer modal
+  const [fixFor, setFixFor] = useState<DirRow | null>(null);
+  const [fixRef, setFixRef] = useState(''); const [fixReason, setFixReason] = useState('');
+  // Resolve-claim modal
+  const [resolveFor, setResolveFor] = useState<ClaimRow | null>(null);
+  const [resolveCust, setResolveCust] = useState(''); const [resolveNote, setResolveNote] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
-    const [dir, st] = await Promise.all([
-      supabase.rpc('affiliate_directory'),
-      supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
+    const [dir, cl] = await Promise.all([
+      supabase.rpc('affiliate_admin_directory'),
+      supabase.rpc('affiliate_pending_claims'),
     ]);
     if (dir.error) setErr(dir.error.message);
-    setRows((dir.data as AffiliateRow[]) ?? []);
-    setStores((st.data as Store[]) ?? []);
+    setRows((dir.data as DirRow[]) ?? []);
+    setClaims((cl.data as ClaimRow[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const act = async (fn: string, args: any, label: string) => {
-    setBusy(label); setErr(null);
+  const act = async (fn: string, args: any, key: string) => {
+    setBusy(key); setErr(null);
     const { error } = await supabase.rpc(fn, args);
     setBusy(null);
     if (error) { setErr(error.message); return false; }
-    await load();
-    return true;
+    await load(); return true;
   };
 
-  const activate = (r: AffiliateRow) => act('activate_affiliate', { p_customer_id: r.customer_id, p_store_id: r.store_id }, r.customer_id);
-  const reactivate = (r: AffiliateRow) => act('reactivate_affiliate', { p_customer_id: r.customer_id }, r.customer_id);
-  const suspend = (r: AffiliateRow) => {
-    const reason = prompt('Reason to suspend this affiliate:')?.trim();
-    if (!reason) return;
-    act('suspend_affiliate', { p_customer_id: r.customer_id, p_reason: reason }, r.customer_id);
+  const suspend = (r: DirRow) => {
+    const reason = window.prompt(`Suspend ${r.name}? Enter a reason:`);
+    if (reason == null) return;
+    act('suspend_affiliate', { p_customer_id: r.customer_id, p_reason: reason || 'Suspended' }, r.customer_id);
   };
-  const saveStore = async () => {
-    if (!storeModal) return;
-    const okDone = await act('set_affiliate_store', { p_customer_id: storeModal.customer_id, p_store_id: storeSel || null }, storeModal.customer_id);
-    if (okDone) setStoreModal(null);
+  const reactivate = (r: DirRow) => act('reactivate_affiliate', { p_customer_id: r.customer_id }, r.customer_id);
+
+  const submitFix = async () => {
+    if (!fixFor) return;
+    if (!fixReason.trim()) { setErr('A reason is required to correct a referrer.'); return; }
+    const ok = await act('reassign_customer_referrer',
+      { p_customer_id: fixFor.customer_id, p_new_referrer_id: fixRef || null, p_reason: fixReason.trim() }, fixFor.customer_id);
+    if (ok) { setFixFor(null); setFixRef(''); setFixReason(''); }
   };
 
-  const openDownline = async (r: AffiliateRow) => {
-    setDownlineFor(r);
-    const { data } = await supabase.from('customers')
-      .select('id, full_name, phone, referred_by').eq('referred_by', r.customer_id);
-    setDownlineRows((data as any[]) ?? []);
+  const submitResolve = async () => {
+    if (!resolveFor) return;
+    if (!resolveCust) { setErr('Choose the customer to link.'); return; }
+    if (!resolveNote.trim()) { setErr('A verification note is required.'); return; }
+    const ok = await act('resolve_affiliate_account_claim',
+      { p_claim_id: resolveFor.claim_id, p_customer_id: resolveCust, p_note: resolveNote.trim() }, resolveFor.claim_id);
+    if (ok) { setResolveFor(null); setResolveCust(''); setResolveNote(''); }
   };
 
-  const filtered = useMemo(() => rows.filter(r => {
+  const activationUrl = `${publicAppUrl()}/affiliate/join`;
+
+  const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (s && !(r.full_name?.toLowerCase().includes(s) || r.phone?.toLowerCase().includes(s))) return false;
-    switch (filter) {
-      case 'eligible': return r.affiliate_state === 'active';
-      case 'active': return r.affiliate_state === 'active';
-      case 'inactive': return r.affiliate_state === 'inactive' || r.affiliate_state === 'not_activated';
-      case 'suspended': return r.manually_suspended;
-      case 'blocked': return Number(r.blocked_commission) > 0;
-      case 'missing_store': return r.has_profile && !r.store_id;
-      default: return true;
-    }
-  }), [rows, q, filter]);
-
-  const counts = useMemo(() => ({
-    all: rows.length,
-    eligible: rows.filter(r => r.affiliate_state === 'active').length,
-    inactive: rows.filter(r => r.affiliate_state === 'inactive' || r.affiliate_state === 'not_activated').length,
-    suspended: rows.filter(r => r.manually_suspended).length,
-    blocked: rows.filter(r => Number(r.blocked_commission) > 0).length,
-    missing_store: rows.filter(r => r.has_profile && !r.store_id).length,
-  }), [rows]);
-
-  const filterBtn = (key: FilterKey, label: string, n?: number) => (
-    <button className={filter === key ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'} onClick={() => setFilter(key)}>
-      {label}{n !== undefined ? ` (${n})` : ''}
-    </button>
-  );
+    if (!s) return rows;
+    return rows.filter(r => r.name.toLowerCase().includes(s) || (r.referral_code ?? '').toLowerCase().includes(s));
+  }, [rows, q]);
 
   return (
-    <div>
-      <div className="page-header">
-        <div><h2>Affiliates</h2><p>Direct-referral affiliate programme. New affiliates are activated by an Owner or Manager.</p></div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <ExcelExportButton
-            rows={filtered} filename="affiliates" sheetName="Affiliates"
-            columns={[
-              { header: 'Affiliate', value: (r: any) => r.full_name ?? '' },
-              { header: 'Phone', value: (r: any) => r.phone ?? '' },
-              { header: 'Status', value: (r: any) => r.status ?? '' },
-              { header: 'Store', value: (r: any) => r.store_name ?? '' },
-              { header: 'Eligible', value: (r: any) => r.eligible ? 'Yes' : 'No' },
-            ]} />
-          <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
-          {canManage && <button className="btn btn-primary" onClick={() => { setAddErr(null); setAddCustomer(''); setAddStore(''); setAddOpen(true); }}><Plus size={16} /> Activate Affiliate</button>}
+    <div style={{ padding: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700 }}>Affiliates</h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginTop: 2 }}>
+            Customers register as affiliates through the Affiliate Signup QR/link. Owner/Manager can suspend or reactivate affiliate accounts.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-secondary" onClick={load} style={{ gap: 6 }}><RefreshCw size={15} /> Refresh</button>
+          {canManage && <button className="btn btn-primary" onClick={() => setQrOpen(true)} style={{ gap: 6 }}><QrCode size={15} /> Affiliate Signup QR</button>}
         </div>
       </div>
 
-      {err && <div className="alert alert-danger"><span>⚠</span><div>{err}</div></div>}
+      {err && <div className="card" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>{err}</div>}
 
-      <div className="card" style={{ padding: 12, marginBottom: 12 }}>
-        <div style={{ position: 'relative', marginBottom: 10 }}>
-          <Search size={15} style={{ position: 'absolute', left: 10, top: 10, opacity: 0.4 }} />
-          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search customer or phone…" style={{ paddingLeft: 32 }} />
-        </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {filterBtn('all', 'All', counts.all)}
-          {filterBtn('eligible', 'Eligible', counts.eligible)}
-          {filterBtn('active', 'Active')}
-          {filterBtn('inactive', 'Inactive', counts.inactive)}
-          {filterBtn('suspended', 'Suspended', counts.suspended)}
-          {filterBtn('blocked', 'Blocked Commission', counts.blocked)}
-          {filterBtn('missing_store', 'Missing Store', counts.missing_store)}
-        </div>
-      </div>
-
-      <div className="card">
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
-        ) : filtered.length === 0 ? (
-          <div className="empty-state" style={{ padding: 40 }}><Users size={32} style={{ opacity: 0.3 }} /><p style={{ marginTop: 10 }}>No affiliates match.</p></div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="data-table">
-              <thead><tr>
-                <th>Customer</th><th>Affiliate</th><th>Store</th>
-                <th>Referrals</th><th>Downline</th><th>Lifetime</th><th>Payable</th><th>Blocked</th><th>Last</th><th></th>
-              </tr></thead>
+      {/* Pending identity claims */}
+      {canManage && claims.length > 0 && (
+        <div className="card" style={{ padding: 16, marginBottom: 16, borderColor: 'var(--warning)' }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <ShieldCheck size={16} /> Pending Account Claims ({claims.length})
+          </h3>
+          <div style={{ overflow: 'auto' }}>
+            <table className="table" style={{ width: '100%' }}>
+              <thead><tr><th>Email</th><th>Phone</th><th>Likely Customer</th><th>When</th><th></th></tr></thead>
               <tbody>
-                {filtered.map(r => {
-                  const stt = STATE[r.affiliate_state] ?? { cls: 'badge-muted', label: r.affiliate_state };
-                  return (
-                    <tr key={r.customer_id}>
-                      <td><div style={{ fontWeight: 600 }}>{r.full_name}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.phone}</div></td>
-                      <td><span className={`badge ${stt.cls}`}>{stt.label}</span>{r.block_reason && r.affiliate_state !== 'active' && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{r.block_reason}</div>}</td>
-                      <td style={{ fontSize: 12 }}>{r.store_name ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                      <td style={{ textAlign: 'center' }}>{r.direct_referrals}</td>
-                      <td style={{ textAlign: 'center' }}>{r.downline}</td>
-                      <td>{money(r.lifetime_earned)}</td>
-                      <td>{money(r.unpaid_payable)}</td>
-                      <td>{Number(r.blocked_commission) > 0 ? <span style={{ color: 'var(--danger)' }}>{money(r.blocked_commission)}</span> : '—'}</td>
-                      <td style={{ fontSize: 12 }}>{d(r.last_commission_date)}</td>
-                      <td>
-                        {canManage && (
-                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                            {!r.has_profile && <button className="btn btn-primary btn-sm" disabled={busy === r.customer_id} onClick={() => activate(r)}><UserPlus size={12} /> Activate</button>}
-                            {r.has_profile && r.manually_suspended && <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => reactivate(r)}><PlayCircle size={12} /> Reactivate</button>}
-                            {r.has_profile && !r.manually_suspended && <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => suspend(r)}><Ban size={12} /> Suspend</button>}
-                            {r.has_profile && <button className="btn btn-secondary btn-sm" onClick={() => { setStoreModal(r); setStoreSel(r.store_id ?? ''); }}><StoreIcon size={12} /></button>}
-                            <button className="btn btn-secondary btn-sm" onClick={() => openDownline(r)}><Users size={12} /></button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {claims.map(c => (
+                  <tr key={c.claim_id}>
+                    <td>{c.verified_email}</td><td>{c.entered_phone}</td>
+                    <td>{c.candidate_name ?? '—'}</td><td>{d(c.created_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button className="btn btn-secondary btn-sm" onClick={() => { setResolveFor(c); setResolveCust(c.candidate_customer_id ?? ''); }}>Resolve</button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        )}
+        </div>
+      )}
+
+      <div style={{ position: 'relative', marginBottom: 12, maxWidth: 320 }}>
+        <Search size={15} style={{ position: 'absolute', left: 10, top: 10, color: 'var(--text-muted)' }} />
+        <input className="input" style={{ paddingLeft: 32 }} placeholder="Search name or code…" value={q} onChange={e => setQ(e.target.value)} />
       </div>
 
-      {storeModal && (
-        <Modal title={`Assign Store — ${storeModal.full_name}`} maxWidth={380} onClose={() => setStoreModal(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setStoreModal(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={saveStore} disabled={busy === storeModal.customer_id}>Save</button></>}>
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label>Affiliate store</label>
-            <select value={storeSel} onChange={e => setStoreSel(e.target.value)}>
-              <option value="">— none —</option>
-              {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+      <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+        <table className="table" style={{ width: '100%' }}>
+          <thead><tr>
+            <th>Affiliate</th><th>Status</th><th>Portal Account</th><th>Referral Code</th>
+            <th style={{ textAlign: 'right' }}>Direct</th><th style={{ textAlign: 'right' }}>Tier 2</th>
+            <th style={{ textAlign: 'right' }}>Lifetime</th><th style={{ textAlign: 'right' }}>Unpaid</th><th style={{ textAlign: 'right' }}>Blocked</th>
+            <th>Last Commission</th>{canManage && <th></th>}
+          </tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={11} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>Loading…</td></tr>}
+            {!loading && filtered.length === 0 && <tr><td colSpan={11} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>No affiliates found</td></tr>}
+            {filtered.map(r => {
+              const portal = PORTAL[r.portal_account] ?? PORTAL.not_claimed;
+              const suspended = r.manually_suspended;
+              return (
+                <tr key={r.customer_id}>
+                  <td style={{ fontWeight: 500 }}>{r.name}</td>
+                  <td><span className={'badge ' + (suspended ? 'badge-danger' : 'badge-success')}>{suspended ? 'Suspended' : 'Active'}</span></td>
+                  <td><span className={'badge ' + portal.cls}>{portal.label}</span></td>
+                  <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{r.referral_code ?? '—'}</td>
+                  <td style={{ textAlign: 'right' }}>{r.direct_referrals}</td>
+                  <td style={{ textAlign: 'right' }}>{r.tier2}</td>
+                  <td style={{ textAlign: 'right' }}>{money(r.lifetime)}</td>
+                  <td style={{ textAlign: 'right' }}>{money(r.unpaid)}</td>
+                  <td style={{ textAlign: 'right' }}>{Number(r.blocked) > 0 ? money(r.blocked) : '—'}</td>
+                  <td>{d(r.last_commission)}</td>
+                  {canManage && (
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-secondary btn-sm" title="Correct referrer" onClick={() => { setFixFor(r); setFixRef(''); setFixReason(''); }} style={{ marginRight: 6 }}><Edit3 size={14} /></button>
+                      {suspended
+                        ? <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => reactivate(r)} style={{ gap: 4 }}><PlayCircle size={14} /> Reactivate</button>
+                        : <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => suspend(r)} style={{ gap: 4 }}><Ban size={14} /> Suspend</button>}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Affiliate Activation QR */}
+      {qrOpen && (
+        <Modal title="Affiliate Registration" onClose={() => setQrOpen(false)}>
+          <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', marginBottom: 16 }}>
+            Anyone who wants to become an Energia Affiliate can scan this QR (or open the link) and create their own account. New affiliates activate automatically after verifying their email.
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <QRCodeCard url={activationUrl} title="Affiliate Signup Link" filename="energia-affiliate-activation" />
           </div>
         </Modal>
       )}
 
-      {downlineFor && (
-        <Modal title={`Direct Referrals — ${downlineFor.full_name}`} maxWidth={440} onClose={() => setDownlineFor(null)}
-          footer={<button className="btn btn-secondary" onClick={() => setDownlineFor(null)}>Close</button>}>
-          {downlineRows.length === 0 ? <p style={{ color: 'var(--text-muted)' }}>No direct referrals.</p> : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {downlineRows.map(c => (
-                <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 6 }}>
-                  <span>{c.full_name}</span><span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{c.phone}</span>
-                </div>
-              ))}
-            </div>
-          )}
+      {/* Correct Referrer */}
+      {fixFor && (
+        <Modal title={`Correct Referrer — ${fixFor.name}`} onClose={() => setFixFor(null)}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
+            First valid referral wins, so referrers can only be changed here with a reason (this is audited). Leave the customer blank to clear the referrer.
+          </p>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>New Referrer (customer)</label>
+          <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={fixRef} onChange={setFixRef} /></div>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Reason (required)</label>
+          <textarea className="input" rows={3} value={fixReason} onChange={e => setFixReason(e.target.value)} style={{ marginBottom: 14 }} />
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setFixFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy === fixFor.customer_id} onClick={submitFix}>Save Correction</button>
+          </div>
         </Modal>
       )}
 
-      {addOpen && (
-        <Modal title="Activate Affiliate" maxWidth={460} onClose={() => setAddOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setAddOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={submitAdd} disabled={addBusy || !addCustomer}>{addBusy ? 'Activating…' : 'Activate'}</button></>}>
-          <div className="form-grid">
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              Any customer can become an affiliate — they do not need to have referred anyone yet. Only an Owner or Manager can do this.
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Customer *</label>
-              <CustomerSearchSelect value={addCustomer} onChange={setAddCustomer} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Home store</label>
-              <select value={addStore} onChange={e => setAddStore(e.target.value)}>
-                <option value="">— No specific store —</option>
-                {stores.map(s2 => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
-              </select>
-            </div>
-            {addErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{addErr}</div></div>}
+      {/* Resolve Claim */}
+      {resolveFor && (
+        <Modal title="Resolve Affiliate Account" onClose={() => setResolveFor(null)}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
+            After verifying identity, link this login ({resolveFor.verified_email}) to the correct existing customer. This does not change the customer's referrer or history.
+          </p>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Customer to link</label>
+          <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={resolveCust} onChange={setResolveCust} /></div>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Verification note (required)</label>
+          <textarea className="input" rows={3} value={resolveNote} onChange={e => setResolveNote(e.target.value)} style={{ marginBottom: 14 }} />
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setResolveFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy === resolveFor.claim_id} onClick={submitResolve}>Link Account</button>
           </div>
         </Modal>
       )}

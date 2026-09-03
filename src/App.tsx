@@ -32,6 +32,18 @@ import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
 import AuditLogPage from './pages/AuditLogPage';
 import ReportsPage from './pages/ReportsPage';
+import AffiliateJoinPage from './pages/AffiliateJoinPage';
+import AffiliateLoginPage from './pages/AffiliateLoginPage';
+import AffiliateVerifyPage from './pages/AffiliateVerifyPage';
+import AffiliateForgotPasswordPage from './pages/AffiliateForgotPasswordPage';
+import AffiliateResetPasswordPage from './pages/AffiliateResetPasswordPage';
+import AffiliateDashboardPage from './pages/AffiliateDashboardPage';
+import AffiliateNetworkPage from './pages/AffiliateNetworkPage';
+import AffiliateEarningsPage from './pages/AffiliateEarningsPage';
+import AffiliatePayoutsPage from './pages/AffiliatePayoutsPage';
+import AffiliateReferralPage from './pages/AffiliateReferralPage';
+import AffiliateAccountPage from './pages/AffiliateAccountPage';
+import ReferralSignupPage from './pages/ReferralSignupPage';
 import { Leaf } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -44,29 +56,40 @@ const FullScreenLoader: React.FC<{ message?: string }> = ({ message }) => (
   </div>
 );
 
-// Wraps protected routes — requires a session AND a valid profile.
+// Staff-only guard. Affiliates are redirected to their portal; a session with
+// neither identity gets a friendly setup state (never the staff "profile" error).
 const Protected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { session, profile, loading, error, signOut } = useAuth();
+  const { session, actorType, profile, loading, error, signOut } = useAuth();
 
   if (loading) return <FullScreenLoader />;
   if (!session) return <Navigate to="/login" replace />;
+  if (actorType === 'affiliate') return <Navigate to="/affiliate/dashboard" replace />;
 
-  // Session exists but no profile (e.g. profile row not created yet).
   if (!profile) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
         <div className="card" style={{ padding: 32, maxWidth: 440, textAlign: 'center' }}>
-          <h3 style={{ marginBottom: 10 }}>Profile not found</h3>
+          <h3 style={{ marginBottom: 10 }}>Account setup needed</h3>
           <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 18 }}>
-            {error ?? 'Your login works, but no profile record is linked to it yet.'}
+            {error ?? 'Your login works, but it is not yet linked to a Staff or Affiliate account. Please contact Energia.'}
           </p>
           <button className="btn btn-secondary" onClick={() => signOut()}>Sign out</button>
         </div>
       </div>
     );
   }
-
   return <AppLayout>{children}</AppLayout>;
+};
+
+// Affiliate-only guard. Staff are sent to the staff app; unauthenticated to the
+// affiliate login. Not-yet-onboarded sessions go to the verify/onboarding flow.
+const AffiliateProtected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { session, actorType, loading } = useAuth();
+  if (loading) return <FullScreenLoader />;
+  if (!session) return <Navigate to="/affiliate/login" replace />;
+  if (actorType === 'staff') return <Navigate to="/" replace />;
+  if (actorType !== 'affiliate') return <Navigate to="/affiliate/verify" replace />;
+  return <>{children}</>;
 };
 
 const AppRoutes: React.FC = () => {
@@ -78,6 +101,20 @@ const AppRoutes: React.FC = () => {
     <Routes>
       {/* Public: no login required (QR survey) */}
       <Route path="/survey/:token" element={<PublicSurveyPage />} />
+      {/* Public affiliate auth + referral signup */}
+      <Route path="/affiliate/join" element={<AffiliateJoinPage />} />
+      <Route path="/affiliate/login" element={<AffiliateLoginPage />} />
+      <Route path="/affiliate/verify" element={<AffiliateVerifyPage />} />
+      <Route path="/affiliate/forgot-password" element={<AffiliateForgotPasswordPage />} />
+      <Route path="/affiliate/reset-password" element={<AffiliateResetPasswordPage />} />
+      <Route path="/r/:referralCode" element={<ReferralSignupPage />} />
+      {/* Authenticated affiliate portal */}
+      <Route path="/affiliate/dashboard" element={<AffiliateProtected><AffiliateDashboardPage /></AffiliateProtected>} />
+      <Route path="/affiliate/network" element={<AffiliateProtected><AffiliateNetworkPage /></AffiliateProtected>} />
+      <Route path="/affiliate/earnings" element={<AffiliateProtected><AffiliateEarningsPage /></AffiliateProtected>} />
+      <Route path="/affiliate/payouts" element={<AffiliateProtected><AffiliatePayoutsPage /></AffiliateProtected>} />
+      <Route path="/affiliate/referral" element={<AffiliateProtected><AffiliateReferralPage /></AffiliateProtected>} />
+      <Route path="/affiliate/account" element={<AffiliateProtected><AffiliateAccountPage /></AffiliateProtected>} />
       <Route path="/login" element={session ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route path="/" element={<Protected><DashboardPage /></Protected>} />
       <Route path="/products" element={<Protected><ProductsPage /></Protected>} />
