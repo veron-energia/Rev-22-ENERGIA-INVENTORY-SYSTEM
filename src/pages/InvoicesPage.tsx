@@ -13,6 +13,7 @@ import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
+import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
 import { Modal, ReasonModal } from '../components/ui';
 import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail} from 'lucide-react';
@@ -108,6 +109,8 @@ const InvoicesPage: React.FC = () => {
   const [seBusy, setSeBusy] = useState(false);
   const [cErr, setCErr] = useState<string | null>(null);
   const [cSaving, setCSaving] = useState(false);
+  const [splitMode, setSplitMode] = useState(false);
+  const [splitSummary, setSplitSummary] = useState<{ package_name: string; invoices: any[] } | null>(null);
 
   // Detail / payment modal
   const [detail, setDetail] = useState<Invoice | null>(null);
@@ -1044,6 +1047,18 @@ const InvoicesPage: React.FC = () => {
     ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
     : cStore;
 
+  // Multi-customer Credit Package split: only offered when a Credit Package is
+  // the sole line (never in edit mode). The panel + RPC are authoritative.
+  const creditPkgLineId = (cLines.find(l => l.kind === 'credit_package' && l.credit_package_id)?.credit_package_id) ?? '';
+  const creditPkgOnly = cLines.length === 1 && cLines[0].kind === 'credit_package' && !!cLines[0].credit_package_id;
+  useEffect(() => { if (!creditPkgLineId || editingInvoiceId) setSplitMode(false); }, [creditPkgLineId, editingInvoiceId]);
+  const handleSplitCreated = (result: any) => {
+    setCreateOpen(false); setSplitMode(false); resetCreate();
+    setEditingInvoiceId(null); setEditingPaid(false);
+    setSplitSummary({ package_name: result?.package_name ?? 'Credit Package', invoices: result?.invoices ?? [] });
+    void loadAll();
+  };
+
   const filtered = useMemo(() => {
     const q = invSearch.trim().toLowerCase();
     return invoices.filter(i => {
@@ -1429,6 +1444,20 @@ const InvoicesPage: React.FC = () => {
         </div>
       </div>
 
+      {splitSummary && (
+        <div className="alert alert-success" style={{ marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div>
+            <strong>{splitSummary.invoices.length} invoice{splitSummary.invoices.length === 1 ? '' : 's'} created</strong> from {splitSummary.package_name}
+            <div style={{ fontSize: 12.5, marginTop: 4 }}>
+              {splitSummary.invoices.map((iv: any) => (
+                <div key={iv.invoice_id}>{iv.invoice_no} — {custName(iv.customer_id)} — {money(Number(iv.payment_amount ?? 0))}</div>
+              ))}
+            </div>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={() => setSplitSummary(null)}>Dismiss</button>
+        </div>
+      )}
+
           <div style={{ marginBottom: 10 }}>
             <input value={invSearch} onChange={e => setInvSearch(e.target.value)}
               placeholder="Search invoice number, customer, store, payment method, date or time…"
@@ -1490,7 +1519,7 @@ const InvoicesPage: React.FC = () => {
 
       {createOpen && (
         <Modal title={editingPaid ? "Correct Paid Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}
-          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}>Cancel</button><button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button></>}>
+          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}>Cancel</button>{!splitMode && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button>}</>}>
           <div className="form-grid">
             {editingPaid && (
               <div className="alert alert-warning" style={{ marginBottom: 0 }}>
@@ -1661,6 +1690,34 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
+            {/* ---- Multi-customer Credit Package split ---- */}
+            {creditPkgLineId && !editingInvoiceId && effectiveStore && (
+              <div className="form-group">
+                <label>Customer Allocation</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button type="button" className={`btn btn-sm ${!splitMode ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSplitMode(false)}>Single Customer</button>
+                  <button type="button" className={`btn btn-sm ${splitMode ? 'btn-primary' : 'btn-secondary'}`}
+                    disabled={!creditPkgOnly}
+                    title={creditPkgOnly ? '' : 'Remove other invoice items first'}
+                    onClick={() => { if (creditPkgOnly) setSplitMode(true); }}>Split Across Customers</button>
+                </div>
+                {!creditPkgOnly && <div className="alert alert-warning" style={{ marginTop: 6, marginBottom: 0 }}>Multi-customer Credit Package splitting cannot be used while normal invoice items are present. Remove the other items first.</div>}
+              </div>
+            )}
+
+            {splitMode && creditPkgOnly && effectiveStore && creditPkgLineId && (
+              <CreditPackageSplitPanel
+                storeId={effectiveStore}
+                creditPackageId={creditPkgLineId}
+                serviceStaff={cServiceStaff}
+                affiliateId={cAffiliate || null}
+                notes={null}
+                onCreated={handleSplitCreated}
+                onCancel={() => setSplitMode(false)}
+              />
+            )}
+
+            {!splitMode && (<>
             {effectiveStore && (
               <div>
                 <label>Items <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— products (priced at this store) or sellable vouchers</span></label>
@@ -2060,6 +2117,7 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 700, marginTop: 2 }}>Total: {money(previewTotal)}</div>
               </div>
             </div>
+            </>)}
           </div>
         </Modal>
       )}
