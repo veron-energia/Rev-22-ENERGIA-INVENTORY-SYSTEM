@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { HealthSymptomOption } from '../types';
 import SignaturePad from '../components/SignaturePad';
+import PhoneInput from '../components/PhoneInput';
 import { Leaf, CheckCircle2, AlertTriangle, RefreshCw } from 'lucide-react';
 
 const sgToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
@@ -43,6 +44,7 @@ const PublicSurveyPage: React.FC = () => {
     consent_marketing_sms: false, consent_marketing_phone: false,
     signature_data: '', signed_date: sgToday(),
   });
+  const [phoneValid, setPhoneValid] = useState(false);
   const [ticks, setTicks] = useState<Record<string, { on: boolean; duration: string }>>({});
 
   useEffect(() => {
@@ -104,7 +106,7 @@ const PublicSurveyPage: React.FC = () => {
     // database trigger keeps the two forms in agreement either way.
     const fullName = [f.first_name.trim(), f.last_name.trim()].filter(Boolean).join(' ');
     if (dobD && dobM && dobY && !f.date_of_birth) { setErr('That date of birth is not valid.'); return; }
-    if (!f.phone.trim()) { setErr('Please enter your mobile number.'); return; }
+    if (!f.phone || !phoneValid) { setErr('Please enter a valid mobile/phone number.'); return; }
     if (!f.email.trim()) { setErr('Please enter your email address.'); return; }
     if (!eventSource) {
       if (!f.source_option_id) { setErr('Please tell us how you heard about us.'); return; }
@@ -147,9 +149,17 @@ const PublicSurveyPage: React.FC = () => {
     });
     setBusy(false);
     if (error) {
-      setErr(error.message.includes('DUPLICATE_PHONE')
-        ? 'This mobile number is already registered with us. This form is for new customers — please speak to our staff and they will help you.'
-        : error.message);
+      const m = error.message;
+      if (m.includes('HEALTH_SURVEY_ALREADY_EXISTS')) {
+        setErr('A Health Survey has already been submitted for this mobile number. Please speak to our staff if you need help updating your information.');
+      } else if (m.includes('AMBIGUOUS_CUSTOMER_MATCH')) {
+        setErr('We found more than one record for this mobile number. Please speak to our staff and they will help you.');
+      } else if (m.includes('DUPLICATE_PHONE')) {
+        // Legacy guard (kept for safety); an existing customer without a survey is now allowed.
+        setErr('This mobile number is already registered with us. Please speak to our staff and they will help you.');
+      } else {
+        setErr(m);
+      }
       return;
     }
     setDone((data as any)?.survey_no ?? '');
@@ -242,7 +252,7 @@ const PublicSurveyPage: React.FC = () => {
           </div>
         </div>
         <div className="form-grid-2">
-          <div className="form-group"><label>HP No. *</label><input value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} inputMode="tel" /></div>
+          <div className="form-group"><label>HP No. *</label><PhoneInput value={f.phone} onChange={(e164, valid) => { setF((s: any) => ({ ...s, phone: e164 })); setPhoneValid(valid); }} /></div>
           <div className="form-group"><label>Email *</label><input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required /></div>
         </div>
         {!eventSource && (

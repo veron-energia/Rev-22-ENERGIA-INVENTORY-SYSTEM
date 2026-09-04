@@ -4,9 +4,9 @@ import { supabase } from '../lib/supabase';
 import { portalRpc, dateStr } from '../lib/affiliatePortal';
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-    <span style={{ color: 'var(--text-muted)', fontSize: 13.5 }}>{label}</span>
-    <span style={{ fontWeight: 600, fontSize: 13.5 }}>{value}</span>
+  <div className="affiliate-kv">
+    <span className="k">{label}</span>
+    <span className="v">{value}</span>
   </div>
 );
 
@@ -33,7 +33,7 @@ const AffiliateAccountPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Account</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your affiliate account details.</p>
-      {err && <p style={{ color: 'var(--danger)' }}>{err}</p>}
+      {err && <p className="affiliate-break" style={{ color: 'var(--danger)' }}>{err}</p>}
       {!me ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <div className="card" style={{ padding: 18, marginBottom: 20 }}>
@@ -54,7 +54,7 @@ const AffiliateAccountPage: React.FC = () => {
               <input className="input" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} />
             </div>
             {pwMsg && <p style={{ fontSize: 13, marginBottom: 10, color: pwMsg === 'Password updated.' ? 'var(--success)' : 'var(--danger)' }}>{pwMsg}</p>}
-            <button className="btn btn-primary" disabled={pwBusy} onClick={changePw}>{pwBusy ? 'Saving…' : 'Update Password'}</button>
+            <button className="btn btn-primary" disabled={pwBusy} onClick={changePw} style={{ minHeight: 44 }}>{pwBusy ? 'Saving…' : 'Update Password'}</button>
           </div>
         </>
       )}

@@ -53,7 +53,7 @@ const AffiliateJoinPage: React.FC = () => {
   return (
     <AffiliateAuthShell title="Become an Energia Affiliate" subtitle="Create your affiliate account"
       footer={<>Already have an account? <Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Sign in</Link></>}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="affiliate-form-grid-2">
         <Field label="First Name"><input className="input" value={f.first} onChange={on('first')} /></Field>
         <Field label="Last Name"><input className="input" value={f.last} onChange={on('last')} /></Field>
       </div>

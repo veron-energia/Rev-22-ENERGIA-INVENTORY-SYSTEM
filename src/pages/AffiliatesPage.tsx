@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
-import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3 } from 'lucide-react';
+import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2 } from 'lucide-react';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -15,7 +15,7 @@ interface DirRow {
   referral_code: string | null; portal_account: 'not_claimed' | 'claimed' | 'disabled';
   direct_referrals: number; tier2: number; lifetime: number; unpaid: number; blocked: number; last_commission: string | null;
 }
-interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; }
+interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; rejected_at?: string | null; rejection_reason?: string | null; }
 
 const PORTAL: Record<string, { cls: string; label: string }> = {
   claimed: { cls: 'badge-success', label: 'Claimed' },
@@ -29,10 +29,12 @@ const AffiliatesPage: React.FC = () => {
 
   const [rows, setRows] = useState<DirRow[]>([]);
   const [claims, setClaims] = useState<ClaimRow[]>([]);
+  const [rejected, setRejected] = useState<ClaimRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
 
   // Correct-referrer modal
@@ -41,40 +43,52 @@ const AffiliatesPage: React.FC = () => {
   // Resolve-claim modal
   const [resolveFor, setResolveFor] = useState<ClaimRow | null>(null);
   const [resolveCust, setResolveCust] = useState(''); const [resolveNote, setResolveNote] = useState('');
+  // Reject-claim modal
+  const [rejectFor, setRejectFor] = useState<ClaimRow | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  // Delete-claim confirmation
+  const [deleteFor, setDeleteFor] = useState<ClaimRow | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
-    const [dir, cl] = await Promise.all([
+    const [dir, cl, rj] = await Promise.all([
       supabase.rpc('affiliate_admin_directory'),
       supabase.rpc('affiliate_pending_claims'),
+      supabase.rpc('affiliate_rejected_claims'),
     ]);
     if (dir.error) setErr(dir.error.message);
     setRows((dir.data as DirRow[]) ?? []);
     setClaims((cl.data as ClaimRow[]) ?? []);
+    setRejected((rj.data as ClaimRow[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const act = async (fn: string, args: any, key: string) => {
-    setBusy(key); setErr(null);
-    const { error } = await supabase.rpc(fn, args);
+  const act = async (fn: string, args: any, key: string, okMsg?: string) => {
+    setBusy(key); setErr(null); setSuccess(null);
+    const { data, error } = await supabase.rpc(fn, args);
     setBusy(null);
     if (error) { setErr(error.message); return false; }
+    // RPCs may return { ok:false, message } for safe no-ops (e.g. already resolved).
+    if (data && typeof data === 'object' && (data as any).ok === false && (data as any).message) {
+      setErr((data as any).message); await load(); return false;
+    }
+    if (okMsg) setSuccess(okMsg);
     await load(); return true;
   };
 
   const suspend = (r: DirRow) => {
     const reason = window.prompt(`Suspend ${r.name}? Enter a reason:`);
     if (reason == null) return;
-    act('suspend_affiliate', { p_customer_id: r.customer_id, p_reason: reason || 'Suspended' }, r.customer_id);
+    act('suspend_affiliate', { p_customer_id: r.customer_id, p_reason: reason || 'Suspended' }, r.customer_id, 'Affiliate suspended.');
   };
-  const reactivate = (r: DirRow) => act('reactivate_affiliate', { p_customer_id: r.customer_id }, r.customer_id);
+  const reactivate = (r: DirRow) => act('reactivate_affiliate', { p_customer_id: r.customer_id }, r.customer_id, 'Affiliate reactivated.');
 
   const submitFix = async () => {
     if (!fixFor) return;
     if (!fixReason.trim()) { setErr('A reason is required to correct a referrer.'); return; }
     const ok = await act('reassign_customer_referrer',
-      { p_customer_id: fixFor.customer_id, p_new_referrer_id: fixRef || null, p_reason: fixReason.trim() }, fixFor.customer_id);
+      { p_customer_id: fixFor.customer_id, p_new_referrer_id: fixRef || null, p_reason: fixReason.trim() }, fixFor.customer_id, 'Referrer updated successfully.');
     if (ok) { setFixFor(null); setFixRef(''); setFixReason(''); }
   };
 
@@ -83,8 +97,23 @@ const AffiliatesPage: React.FC = () => {
     if (!resolveCust) { setErr('Choose the customer to link.'); return; }
     if (!resolveNote.trim()) { setErr('A verification note is required.'); return; }
     const ok = await act('resolve_affiliate_account_claim',
-      { p_claim_id: resolveFor.claim_id, p_customer_id: resolveCust, p_note: resolveNote.trim() }, resolveFor.claim_id);
+      { p_claim_id: resolveFor.claim_id, p_customer_id: resolveCust, p_note: resolveNote.trim() }, resolveFor.claim_id, 'Account claim resolved.');
     if (ok) { setResolveFor(null); setResolveCust(''); setResolveNote(''); }
+  };
+
+  const submitReject = async () => {
+    if (!rejectFor) return;
+    if (!rejectReason.trim()) { setErr('A reason for rejection is required.'); return; }
+    const ok = await act('reject_affiliate_account_claim',
+      { p_claim_id: rejectFor.claim_id, p_reason: rejectReason.trim() }, rejectFor.claim_id, 'Account claim rejected.');
+    if (ok) { setRejectFor(null); setRejectReason(''); }
+  };
+
+  const submitDelete = async () => {
+    if (!deleteFor) return;
+    const ok = await act('delete_affiliate_account_claim',
+      { p_claim_id: deleteFor.claim_id }, deleteFor.claim_id, 'Account request deleted.');
+    if (ok) setDeleteFor(null);
   };
 
   const activationUrl = `${publicAppUrl()}/affiliate/join`;
@@ -111,6 +140,7 @@ const AffiliatesPage: React.FC = () => {
       </div>
 
       {err && <div className="card" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>{err}</div>}
+      {success && <div className="card" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--success)', color: 'var(--success)', fontSize: 13.5, display: 'flex', gap: 8, alignItems: 'center' }}><CheckCircle2 size={16} /> {success}</div>}
 
       {/* Pending identity claims */}
       {canManage && claims.length > 0 && (
@@ -122,12 +152,46 @@ const AffiliatesPage: React.FC = () => {
             <table className="table" style={{ width: '100%' }}>
               <thead><tr><th>Email</th><th>Phone</th><th>Likely Customer</th><th>When</th><th></th></tr></thead>
               <tbody>
-                {claims.map(c => (
+                {claims.map(c => {
+                  const running = busy === c.claim_id;
+                  return (
+                    <tr key={c.claim_id}>
+                      <td>{c.verified_email}</td><td>{c.entered_phone}</td>
+                      <td>{c.candidate_name ?? '—'}</td><td>{d(c.created_at)}</td>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button className="btn btn-secondary btn-sm" disabled={running} title="Resolve" onClick={() => { setResolveFor(c); setResolveCust(c.candidate_customer_id ?? ''); setResolveNote(''); }} style={{ marginRight: 6, gap: 4 }}><ShieldCheck size={14} /> Resolve</button>
+                        <button className="btn btn-secondary btn-sm" disabled={running} title="Reject" onClick={() => { setRejectFor(c); setRejectReason(''); }} style={{ marginRight: 6, gap: 4 }}><XCircle size={14} /> Reject</button>
+                        <button className="btn btn-secondary btn-sm" disabled={running} title="Delete request" onClick={() => setDeleteFor(c)}><Trash2 size={14} /></button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Rejected identity claims (block automatic resubmission until deleted) */}
+      {canManage && rejected.length > 0 && (
+        <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <XCircle size={16} /> Rejected Account Claims ({rejected.length})
+          </h3>
+          <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 10 }}>
+            A rejected request blocks the person from auto-resubmitting. Delete it if you want them to be able to try again.
+          </p>
+          <div style={{ overflow: 'auto' }}>
+            <table className="table" style={{ width: '100%' }}>
+              <thead><tr><th>Email</th><th>Phone</th><th>Likely Customer</th><th>Rejected</th><th>Reason</th><th></th></tr></thead>
+              <tbody>
+                {rejected.map(c => (
                   <tr key={c.claim_id}>
                     <td>{c.verified_email}</td><td>{c.entered_phone}</td>
-                    <td>{c.candidate_name ?? '—'}</td><td>{d(c.created_at)}</td>
+                    <td>{c.candidate_name ?? '—'}</td><td>{d(c.rejected_at)}</td>
+                    <td style={{ maxWidth: 220, whiteSpace: 'normal' }}>{c.rejection_reason ?? '—'}</td>
                     <td style={{ textAlign: 'right' }}>
-                      <button className="btn btn-secondary btn-sm" onClick={() => { setResolveFor(c); setResolveCust(c.candidate_customer_id ?? ''); }}>Resolve</button>
+                      <button className="btn btn-secondary btn-sm" disabled={busy === c.claim_id} title="Delete request" onClick={() => setDeleteFor(c)}><Trash2 size={14} /> Delete</button>
                     </td>
                   </tr>
                 ))}
@@ -225,6 +289,36 @@ const AffiliatesPage: React.FC = () => {
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-secondary" onClick={() => setResolveFor(null)}>Cancel</button>
             <button className="btn btn-primary" disabled={busy === resolveFor.claim_id} onClick={submitResolve}>Link Account</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Reject Claim */}
+      {rejectFor && (
+        <Modal title="Reject Affiliate Account Claim" onClose={() => setRejectFor(null)}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div><b>Email:</b> {rejectFor.verified_email}</div>
+            <div><b>Phone:</b> {rejectFor.entered_phone}</div>
+            <div><b>Likely Customer:</b> {rejectFor.candidate_name ?? '—'}</div>
+          </div>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Reason for rejection (required)</label>
+          <textarea className="input" rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)} style={{ marginBottom: 14 }} />
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setRejectFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy === rejectFor.claim_id} onClick={submitReject} style={{ gap: 4 }}><XCircle size={15} /> Reject Claim</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete Claim confirmation */}
+      {deleteFor && (
+        <Modal title="Delete this Affiliate account request?" onClose={() => setDeleteFor(null)}>
+          <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.6 }}>
+            This removes the account-linking request only. It does not delete the Customer or their Supabase login. They may submit a new request later.
+          </p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setDeleteFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy === deleteFor.claim_id} onClick={submitDelete} style={{ gap: 4 }}><Trash2 size={15} /> Delete Request</button>
           </div>
         </Modal>
       )}

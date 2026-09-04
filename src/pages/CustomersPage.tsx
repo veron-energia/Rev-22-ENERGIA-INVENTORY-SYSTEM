@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
+import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
 
@@ -74,7 +75,7 @@ const CustomersPage: React.FC = () => {
   const [phoneBusy, setPhoneBusy] = useState(false);
   const submitPhoneChange = async () => {
     if (!phoneFor) return;
-    if (!newPhone.trim()) { setPhoneErr('Enter the new phone number.'); return; }
+    if (!newPhone.trim() || !isPhoneValid(newPhone)) { setPhoneErr('Please enter a valid mobile/phone number.'); return; }
     if (!phoneReason.trim()) { setPhoneErr('A reason is required.'); return; }
     setPhoneBusy(true); setPhoneErr(null);
     const { error } = await supabase.rpc('change_customer_phone', { p_customer_id: phoneFor.id, p_new_phone: newPhone.trim(), p_reason: phoneReason.trim() });
@@ -193,6 +194,7 @@ const CustomersPage: React.FC = () => {
     // customers give only one name.
     if (!form.first_name.trim()) { setErr('First name is required.'); return; }
     if (!form.phone.trim()) { setErr('Phone number is required (must be unique).'); return; }
+    if (!isPhoneValid(form.phone)) { setErr('Please enter a valid mobile/phone number.'); return; }
     setSaving(true); setErr(null);
     const payload = {
       first_name: form.first_name.trim(),
@@ -474,7 +476,7 @@ const CustomersPage: React.FC = () => {
                   Will be shown as <strong>{joinPersonName(form.first_name, form.last_name)}</strong>
                 </div>
               )}
-              <div className="form-group"><label>Phone * (unique)</label><input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="e.g. 91234567" /></div>
+              <div className="form-group"><label>Phone * (unique)</label><PhoneInput value={form.phone} onChange={(e164) => setForm(f => ({ ...f, phone: e164 }))} /></div>
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
@@ -743,7 +745,7 @@ const CustomersPage: React.FC = () => {
           <div className="form-grid">
             {phoneErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{phoneErr}</div></div>}
             <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Current number: <strong>{phoneFor.phone}</strong> — it will move into this customer's phone history.</div>
-            <div className="form-group"><label>New Phone Number *</label><input value={newPhone} onChange={e => setNewPhone(e.target.value)} placeholder="e.g. 91234567" autoFocus /></div>
+            <div className="form-group"><label>New Phone Number *</label><PhoneInput value={newPhone} onChange={(e164) => setNewPhone(e164)} autoFocus /></div>
             <div className="form-group"><label>Reason *</label><input value={phoneReason} onChange={e => setPhoneReason(e.target.value)} placeholder="Why is the number changing?" /></div>
           </div>
         </Modal>

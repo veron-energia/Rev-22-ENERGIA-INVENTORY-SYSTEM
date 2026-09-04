@@ -17,13 +17,13 @@ const AffiliateReferralPage: React.FC = () => {
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>
         Share your personal Energia referral QR or link. Friends and family who register through it will be placed directly under you as a referral.
       </p>
-      {err && <p style={{ color: 'var(--danger)' }}>{err}</p>}
+      {err && <p className="affiliate-break" style={{ color: 'var(--danger)' }}>{err}</p>}
       {!info ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           {info.accepting === false && (
             <div className="card" style={{ padding: 14, marginBottom: 18, display: 'flex', gap: 10, alignItems: 'flex-start', borderColor: 'var(--danger)' }}>
               <AlertTriangle size={18} color="var(--danger)" style={{ marginTop: 1 }} />
-              <div style={{ fontSize: 13.5, color: 'var(--text-secondary)' }}>
+              <div className="affiliate-break" style={{ fontSize: 13.5, color: 'var(--text-secondary)', minWidth: 0 }}>
                 Your affiliate account is currently suspended. New referrals cannot be registered through your link. Please contact Energia.
               </div>
             </div>

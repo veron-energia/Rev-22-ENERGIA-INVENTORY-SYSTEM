@@ -163,14 +163,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       on_treatment: !!(s as any)?.on_treatment,
       treatment_list: (s as any)?.treatment_list ?? '',
       // option_id -> duration, seeded from what was declared.
-      // Older health_survey_detail() payloads did not include option_id. In that
-      // case, resolve it from the loaded option list by category + label instead
-      // of turning JavaScript undefined into the literal string "undefined".
-      symptoms: Object.fromEntries(syms.flatMap((x: any) => {
-        const optionId = x.option_id ?? allOptions.find((o: any) =>
-          o.category === x.category && o.label === x.label)?.id;
-        return optionId ? [[String(optionId), x.duration_text ?? '']] : [];
-      })),
+      symptoms: Object.fromEntries(syms.map((x: any) => [String(x.option_id), x.duration_text ?? ''])),
       first_name: s?.first_name ?? '', last_name: s?.last_name ?? '',
       phone: s?.phone ?? '', email: s?.email ?? '',
       date_of_birth: s?.date_of_birth ? String(s.date_of_birth).slice(0, 10) : '',
@@ -202,13 +195,9 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
       p_smokes: !!ed.smokes,
       p_on_treatment: !!ed.on_treatment,
       p_treatment_list: ed.on_treatment ? (ed.treatment_list?.trim() || null) : null,
-      // Never send malformed UUID keys to PostgreSQL. This also protects the
-      // save path if an old/stale client state contains an invalid symptom id.
-      p_symptoms: Object.entries(ed.symptoms ?? {})
-        .filter(([option_id]) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(option_id))
-        .map(([option_id, duration_text]) => ({
-          option_id, duration_text: String(duration_text || '') || null,
-        })),
+      p_symptoms: Object.entries(ed.symptoms ?? {}).map(([option_id, duration_text]) => ({
+        option_id, duration_text: String(duration_text || '') || null,
+      })),
     });
     setEdBusy(false);
     if (error) {

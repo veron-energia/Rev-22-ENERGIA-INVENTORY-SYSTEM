@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
+import PhoneInput from '../components/PhoneInput';
 
 // Public /r/:referralCode — creates a CUSTOMER under the affiliate. It does NOT
 // create a login or an affiliate. The insert is done by a scoped SECURITY
@@ -10,6 +11,7 @@ const ReferralSignupPage: React.FC = () => {
   const { referralCode } = useParams();
   const [info, setInfo] = useState<any>(null);
   const [f, setF] = useState({ first: '', last: '', phone: '', email: '' });
+  const [phoneValid, setPhoneValid] = useState(false);
   const [hp, setHp] = useState(''); // honeypot
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -23,7 +25,8 @@ const ReferralSignupPage: React.FC = () => {
 
   const submit = async () => {
     setErr(null);
-    if (!f.first.trim() || !f.phone.trim()) { setErr('Please enter your name and phone number.'); return; }
+    if (!f.first.trim()) { setErr('Please enter your name.'); return; }
+    if (!f.phone || !phoneValid) { setErr('Please enter a valid mobile/phone number.'); return; }
     setBusy(true);
     const { data, error } = await supabase.rpc('affiliate_referral_signup', {
       p_code: referralCode, p_first_name: f.first.trim(), p_last_name: f.last.trim(),
@@ -60,11 +63,11 @@ const ReferralSignupPage: React.FC = () => {
     <AffiliateAuthShell title="Welcome to Energia"
       subtitle={info?.affiliate_name ? `You've been invited by ${info.affiliate_name}` : 'Register with Energia'}
       footer={<Link to="/affiliate/join" style={{ color: 'var(--primary)', fontWeight: 600 }}>Want to become an affiliate instead?</Link>}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="affiliate-form-grid-2">
         <Field label="First Name"><input className="input" value={f.first} onChange={on('first')} /></Field>
         <Field label="Last Name"><input className="input" value={f.last} onChange={on('last')} /></Field>
       </div>
-      <Field label="Phone Number"><input className="input" value={f.phone} onChange={on('phone')} placeholder="+65…" /></Field>
+      <Field label="Phone Number"><PhoneInput value={f.phone} onChange={(e164, valid) => { setF(s => ({ ...s, phone: e164 })); setPhoneValid(valid); }} /></Field>
       <Field label="Email"><input className="input" type="email" value={f.email} onChange={on('email')} /></Field>
       {/* Honeypot: hidden from real users */}
       <input tabIndex={-1} autoComplete="off" value={hp} onChange={e => setHp(e.target.value)}

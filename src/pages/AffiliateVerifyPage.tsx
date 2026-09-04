@@ -1,18 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
+import PhoneInput from '../components/PhoneInput';
 
 // Landing page after the user clicks the email verification link. The user now
 // has an authenticated session with a verified email; we call the backend to
 // complete onboarding (which re-checks the verified email server-side).
+const ONBOARDING_KEY = 'energia_aff_onboarding';
+
 const AffiliateVerifyPage: React.FC = () => {
   const nav = useNavigate();
   const { refreshProfile } = useAuth();
-  const [state, setState] = useState<'working' | 'need_details' | 'pending' | 'error' | 'suspended'>('working');
+  const [state, setState] = useState<'working' | 'need_details' | 'pending' | 'error' | 'suspended' | 'rejected'>('working');
   const [msg, setMsg] = useState<string | null>(null);
   const [f, setF] = useState({ first: '', last: '', phone: '' });
+  // Guard so React StrictMode / re-renders can't fire onboarding twice. The DB
+  // one-pending-claim index is the authoritative protection; this is secondary.
+  const attempted = useRef(false);
 
   const complete = async (first: string, last: string, phone: string) => {
     setState('working'); setMsg(null);
@@ -20,17 +26,24 @@ const AffiliateVerifyPage: React.FC = () => {
     if (!sess.session) { setState('error'); setMsg('Your verification session has expired. Please sign in.'); return; }
     const { data, error } = await supabase.rpc('complete_affiliate_onboarding',
       { p_first_name: first, p_last_name: last, p_phone: phone, p_agree: true });
-    if (error) { setState('error'); setMsg(error.message); return; }
+    if (error) { setState('error'); setMsg(error.message); return; }  // keep saved state to allow retry
     const res = data as any;
+
+    // Definitive backend response — safe to clear the saved onboarding details.
+    try { localStorage.removeItem(ONBOARDING_KEY); } catch { /* ignore */ }
+
     if (res?.status === 'pending_verification') { setState('pending'); setMsg(res.message); return; }
+    if (res?.status === 'rejected') { setState('rejected'); setMsg(res.message); return; }
     await refreshProfile();
     if (res?.status === 'suspended') { setState('suspended'); return; }
     nav('/affiliate/dashboard', { replace: true });
   };
 
   useEffect(() => {
+    if (attempted.current) return;
+    attempted.current = true;
     let saved: any = null;
-    try { saved = JSON.parse(localStorage.getItem('energia_aff_onboarding') || 'null'); } catch { /* ignore */ }
+    try { saved = JSON.parse(localStorage.getItem(ONBOARDING_KEY) || 'null'); } catch { /* ignore */ }
     if (saved?.phone) { complete(saved.first || '', saved.last || '', saved.phone); }
     else { setState('need_details'); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -41,6 +54,15 @@ const AffiliateVerifyPage: React.FC = () => {
   if (state === 'pending') return (
     <AffiliateAuthShell title="Identity verification needed">
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{msg}</p>
+      <div style={{ textAlign: 'center', marginTop: 16 }}><Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Back to login</Link></div>
+    </AffiliateAuthShell>
+  );
+
+  if (state === 'rejected') return (
+    <AffiliateAuthShell title="Account verification unsuccessful">
+      <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        Your Affiliate account-linking request could not be verified. Please contact Energia for assistance.
+      </p>
       <div style={{ textAlign: 'center', marginTop: 16 }}><Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Back to login</Link></div>
     </AffiliateAuthShell>
   );
@@ -66,7 +88,7 @@ const AffiliateVerifyPage: React.FC = () => {
     <AffiliateAuthShell title="Confirm your details" subtitle="Just a couple of details to finish">
       <Field label="First Name"><input className="input" value={f.first} onChange={e => setF({ ...f, first: e.target.value })} /></Field>
       <Field label="Last Name"><input className="input" value={f.last} onChange={e => setF({ ...f, last: e.target.value })} /></Field>
-      <Field label="Phone Number"><input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="+65…" /></Field>
+      <Field label="Phone Number"><PhoneInput value={f.phone} onChange={(e164) => setF({ ...f, phone: e164 })} /></Field>
       <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => complete(f.first, f.last, f.phone)}>Finish Setup</button>
     </AffiliateAuthShell>
   );

@@ -196,3 +196,163 @@ tbody tr:hover { background: var(--surface-2); }
   table { font-size: 12.5px; }
   th, td { padding: 8px 8px; }
 }
+
+/* ============================================================
+   AFFILIATE PORTAL — responsive layout (scoped with .affiliate-*)
+   Breakpoints: sidebar↔stack at 820px; tables↔cards at 640px;
+   very small tweaks at 400px. Nothing here targets bare <main>.
+   ============================================================ */
+
+.affiliate-shell {
+  min-height: 100vh;
+  background: var(--bg);
+  display: flex;
+  flex-direction: row;
+}
+
+/* Desktop sidebar */
+.affiliate-sidebar {
+  width: 240px;
+  flex: 0 0 240px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 16px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Main column */
+.affiliate-main { flex: 1 1 auto; min-width: 0; width: 100%; }
+.affiliate-content {
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 28px 24px calc(64px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Mobile header (hidden on desktop) */
+.affiliate-mobile-header { display: none; }
+.affiliate-mobile-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.affiliate-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.affiliate-brand span { font-weight: 700; white-space: nowrap; }
+.affiliate-hamburger {
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.affiliate-mobile-nav {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+
+/* Nav links (used in both sidebar and mobile nav) */
+.aff-navlink {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; min-height: 44px; border-radius: 10px;
+  font-size: 14px; font-weight: 500; text-decoration: none;
+  color: var(--text-secondary); background: transparent;
+  border: none; cursor: pointer; width: 100%; text-align: left;
+}
+.aff-navlink.active { background: var(--primary); color: #fff; }
+.aff-navlink.danger { color: var(--danger); }
+
+@media (max-width: 820px) {
+  .affiliate-shell { flex-direction: column; }
+  .affiliate-sidebar { display: none; }
+  .affiliate-mobile-header { display: block; position: sticky; top: 0; z-index: 30; }
+  .affiliate-content { padding: 18px 16px calc(48px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (max-width: 400px) {
+  .affiliate-content { padding: 14px 12px calc(40px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* ---- Reusable pieces ---- */
+.affiliate-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 12px;
+}
+.affiliate-stat-card { padding: 16px; }
+.affiliate-stat-card .val { font-size: 22px; font-weight: 700; overflow-wrap: anywhere; }
+.affiliate-stat-card .lbl { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12.5px; margin-bottom: 6px; }
+
+/* Two-column form grid that stacks on phones */
+.affiliate-form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 640px) { .affiliate-form-grid-2 { grid-template-columns: 1fr; gap: 0; } }
+
+/* Table wrapper: horizontal scroll stays inside the card, never the page */
+.affiliate-table-wrap { width: 100%; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* Desktop table vs mobile cards toggle (single data source, two renders) */
+.affiliate-desktop-only { display: block; }
+.affiliate-mobile-only { display: none; }
+@media (max-width: 640px) {
+  .affiliate-desktop-only { display: none !important; }
+  .affiliate-mobile-only { display: block !important; }
+}
+
+/* Mobile record card */
+.affiliate-mobile-card { padding: 14px; margin-bottom: 10px; }
+.affiliate-mobile-card .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13.5px; }
+.affiliate-mobile-card .row .k { color: var(--text-muted); }
+.affiliate-mobile-card .row .v { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.affiliate-mobile-card .title { font-weight: 700; margin-bottom: 6px; overflow-wrap: anywhere; }
+
+/* Key/value rows (Account page) */
+.affiliate-kv { display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  padding: 10px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.affiliate-kv .k { color: var(--text-muted); font-size: 13.5px; flex: 0 0 auto; }
+.affiliate-kv .v { font-weight: 600; font-size: 13.5px; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .affiliate-kv { flex-direction: column; gap: 2px; align-items: stretch; }
+  .affiliate-kv .v { text-align: left; }
+}
+
+/* QR card */
+.affiliate-qr-card { width: 100%; max-width: 360px; margin: 0 auto; padding: 20px; text-align: center; }
+.affiliate-qr-card canvas { max-width: 100%; height: auto; border-radius: 10px; }
+.affiliate-qr-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.affiliate-qr-actions .btn { flex: 1 1 auto; min-width: 120px; }
+.affiliate-break { overflow-wrap: anywhere; word-break: break-word; }
+
+/* PhoneInput: never overflow; stack on very small screens */
+.phone-input { display: flex; gap: 8px; min-width: 0; }
+.phone-input select { flex: 0 0 auto; width: 132px; min-width: 0; }
+.phone-input input { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 380px) {
+  .phone-input { flex-direction: column; }
+  .phone-input select { width: 100%; }
+}
+
+/* Auth shell */
+.affiliate-auth-card { padding: 24px; }
+@media (max-width: 640px) { .affiliate-auth-card { padding: 16px; } }
+@media (max-width: 400px) { .affiliate-auth-card { padding: 14px; } }
+
+/* iOS Safari zooms when it focuses an input under 16px. Scope to affiliate +
+   public forms so the Staff app is untouched. */
+@media (max-width: 640px) {
+  .affiliate-content input, .affiliate-content select, .affiliate-content textarea,
+  .affiliate-mobile-nav input,
+  .affiliate-auth input, .affiliate-auth select, .affiliate-auth textarea {
+    font-size: 16px;
+  }
+}
+
+/* Long error/empty text must wrap, never widen the page */
+.affiliate-content .card, .affiliate-auth .card { overflow-wrap: anywhere; }

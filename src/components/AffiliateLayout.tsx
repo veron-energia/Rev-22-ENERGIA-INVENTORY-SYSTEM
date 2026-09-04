@@ -13,40 +13,33 @@ const NAV = [
 ];
 
 // Standalone portal shell — Energia styling, NO staff/POS navigation.
+// Layout is CSS-driven (.affiliate-* in globals.css): a row on desktop with a
+// sidebar, a stacked column on mobile with a sticky header above the content.
 const AffiliateLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { signOut } = useAuth();
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
 
-  const doSignOut = async () => { await signOut(); nav('/affiliate/login', { replace: true }); };
+  const doSignOut = async () => { setOpen(false); await signOut(); nav('/affiliate/login', { replace: true }); };
 
   const links = (
     <>
       {NAV.map(({ to, label, icon: Icon }) => (
         <NavLink key={to} to={to} onClick={() => setOpen(false)}
-          className={({ isActive }) => 'aff-navlink' + (isActive ? ' active' : '')}
-          style={({ isActive }) => ({
-            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 10,
-            color: isActive ? '#fff' : 'var(--text-secondary)', background: isActive ? 'var(--primary)' : 'transparent',
-            fontSize: 14, fontWeight: 500, textDecoration: 'none',
-          })}>
+          className={({ isActive }) => 'aff-navlink' + (isActive ? ' active' : '')}>
           <Icon size={18} /> {label}
         </NavLink>
       ))}
-      <button className="aff-navlink" onClick={doSignOut}
-        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 10,
-          color: 'var(--danger)', background: 'transparent', fontSize: 14, fontWeight: 500, border: 'none', cursor: 'pointer', width: '100%' }}>
+      <button className="aff-navlink danger" onClick={doSignOut}>
         <LogOut size={18} /> Sign Out
       </button>
     </>
   );
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex' }}>
+    <div className="affiliate-shell">
       {/* Sidebar (desktop) */}
-      <aside style={{ width: 240, borderRight: '1px solid var(--border)', background: 'var(--surface)', padding: 16,
-        position: 'sticky', top: 0, height: '100vh', display: 'flex', flexDirection: 'column', gap: 6 }}
-        className="aff-sidebar">
+      <aside className="affiliate-sidebar">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px 16px' }}>
           <div style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Leaf size={20} color="#fff" />
@@ -59,38 +52,26 @@ const AffiliateLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
         {links}
       </aside>
 
-      {/* Mobile top bar */}
-      <div className="aff-topbar" style={{ display: 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px',
-          borderBottom: '1px solid var(--border)', background: 'var(--surface)', position: 'sticky', top: 0, zIndex: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* Mobile header (sticky, above content) */}
+      <header className="affiliate-mobile-header">
+        <div className="affiliate-mobile-bar">
+          <div className="affiliate-brand">
+            <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto' }}>
               <Leaf size={17} color="#fff" />
             </div>
-            <span style={{ fontWeight: 700 }}>Energia Affiliate</span>
+            <span>Energia Affiliate</span>
           </div>
-          <button className="btn btn-secondary" onClick={() => setOpen(v => !v)} style={{ padding: 8 }}>
-            {open ? <X size={18} /> : <Menu size={18} />}
+          <button className="affiliate-hamburger" aria-label={open ? 'Close menu' : 'Open menu'}
+            aria-expanded={open} aria-controls="affiliate-mobile-nav" onClick={() => setOpen(v => !v)}>
+            {open ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
-        {open && (
-          <div style={{ padding: 12, background: 'var(--surface)', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {links}
-          </div>
-        )}
-      </div>
+        {open && <nav id="affiliate-mobile-nav" className="affiliate-mobile-nav">{links}</nav>}
+      </header>
 
-      <main style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ maxWidth: 960, margin: '0 auto', padding: '24px 20px 64px' }}>{children}</div>
+      <main className="affiliate-main">
+        <div className="affiliate-content">{children}</div>
       </main>
-
-      <style>{`
-        @media (max-width: 820px) {
-          .aff-sidebar { display: none !important; }
-          .aff-topbar { display: block !important; width: 100%; }
-          main { width: 100%; }
-        }
-      `}</style>
     </div>
   );
 };

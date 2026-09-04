@@ -289,6 +289,7 @@ export interface Customer {
   is_active: boolean;
   deleted_at: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface Affiliate {
