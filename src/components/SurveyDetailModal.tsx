@@ -1,3 +1,5 @@
+import PhoneInput from './PhoneInput';
+import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -203,7 +205,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
     if (error) {
       // Shown inside the edit form: a save that fails silently is
       // indistinguishable from a form that does not work.
-      setEdErr(error.message);
+      setEdErr(phoneErrorMessage(error.message));
       return;
     }
     setEdErr(null);
@@ -268,7 +270,7 @@ const SurveyDetailModal: React.FC<{ surveyId: string; onClose: () => void; onSav
               </div>
               <div className="form-grid-2">
                 <div className="form-group" style={{ marginBottom: 0 }}><label>HP No.</label>
-                  <input value={ed.phone} onChange={e => setEd({ ...ed, phone: e.target.value })} /></div>
+                  <PhoneInput value={ed.phone} onChange={phone => setEd({ ...ed, phone })} /></div>
                 <div className="form-group" style={{ marginBottom: 0 }}><label>Email</label>
                   <input value={ed.email} onChange={e => setEd({ ...ed, email: e.target.value })} /></div>
               </div>

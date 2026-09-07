@@ -35,7 +35,7 @@ const CustomerPicker: React.FC<{
       list = list.filter(c =>
         c.full_name.toLowerCase().includes(q) ||
         c.phone.toLowerCase().includes(q) ||
-        (c.email ?? '').toLowerCase().includes(q));
+        (c.email ?? '').toLowerCase().includes(q) || c.id.toLowerCase() === q);
     }
     // Pinned (buyer) first when it survives the filter.
     const pin = list.find(c => c.id === pinnedId);
@@ -49,7 +49,7 @@ const CustomerPicker: React.FC<{
       {selected && !open ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '8px 10px', background: 'var(--surface)' }}>
           <div style={{ flex: 1, fontSize: 13 }}>
-            <strong>{selected.full_name}</strong>
+            <strong>{selected.full_name}</strong><div style={{ fontSize: 10.5, color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>Customer ID: {selected.id}</div>
             <span style={{ color: 'var(--text-muted)' }}> · {selected.phone}{selected.email ? ` · ${selected.email}` : ''}</span>
             {selected.id === pinnedId && <span className="badge badge-primary" style={{ marginLeft: 6, fontSize: 10 }}>{pinnedNote}</span>}
           </div>
@@ -93,6 +93,7 @@ const CustomerPicker: React.FC<{
                 <strong>{c.full_name}</strong>
                 {c.id === pinnedId && <span className="badge badge-primary" style={{ marginLeft: 6, fontSize: 10 }}>{pinnedNote}</span>}
                 <div style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>{c.phone}{c.email ? ` · ${c.email}` : ''}</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 10.5, overflowWrap: 'anywhere' }}>Customer ID: {c.id}</div>
               </span>
             </button>
           ))}

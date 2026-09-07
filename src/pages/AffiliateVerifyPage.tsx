@@ -1,9 +1,10 @@
+import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import React, { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
-import PhoneInput from '../components/PhoneInput';
+import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 
 // Landing page after the user clicks the email verification link. The user now
 // has an authenticated session with a verified email; we call the backend to
@@ -21,12 +22,14 @@ const AffiliateVerifyPage: React.FC = () => {
   const attempted = useRef(false);
 
   const complete = async (first: string, last: string, phone: string) => {
+    setF({ first, last, phone });
+    if (!first.trim() || !isPhoneValid(phone)) { setState('need_details'); setMsg('Enter your name and a valid international phone number.'); return; }
     setState('working'); setMsg(null);
     const { data: sess } = await supabase.auth.getSession();
     if (!sess.session) { setState('error'); setMsg('Your verification session has expired. Please sign in.'); return; }
     const { data, error } = await supabase.rpc('complete_affiliate_onboarding',
       { p_first_name: first, p_last_name: last, p_phone: phone, p_agree: true });
-    if (error) { setState('error'); setMsg(error.message); return; }  // keep saved state to allow retry
+    if (error) { setState('error'); setMsg(phoneErrorMessage(error.message)); return; }  // keep saved state to allow retry
     const res = data as any;
 
     // Definitive backend response — safe to clear the saved onboarding details.
@@ -79,6 +82,7 @@ const AffiliateVerifyPage: React.FC = () => {
   if (state === 'error') return (
     <AffiliateAuthShell title="Something went wrong">
       <p style={{ color: 'var(--danger)', fontSize: 13.5, marginBottom: 14 }}>{msg}</p>
+      <button className="btn btn-primary" style={{ width: '100%', marginBottom: 10 }} onClick={() => setState('need_details')}>Edit name or phone number</button>
       <Link to="/affiliate/login" className="btn btn-secondary" style={{ width: '100%' }}>Back to login</Link>
     </AffiliateAuthShell>
   );
@@ -86,6 +90,7 @@ const AffiliateVerifyPage: React.FC = () => {
   // need_details
   return (
     <AffiliateAuthShell title="Confirm your details" subtitle="Just a couple of details to finish">
+      {msg && <p role="alert" style={{ color: 'var(--danger)' }}>{msg}</p>}
       <Field label="First Name"><input className="input" value={f.first} onChange={e => setF({ ...f, first: e.target.value })} /></Field>
       <Field label="Last Name"><input className="input" value={f.last} onChange={e => setF({ ...f, last: e.target.value })} /></Field>
       <Field label="Phone Number"><PhoneInput value={f.phone} onChange={(e164) => setF({ ...f, phone: e164 })} /></Field>

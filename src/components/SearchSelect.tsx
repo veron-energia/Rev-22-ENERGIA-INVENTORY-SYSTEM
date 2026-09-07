@@ -153,7 +153,8 @@ export const CustomerSearchSelect: React.FC<{
         .is('deleted_at', null).order('full_name').limit(50);
       if (raw) {
         const like = `%${raw}%`;
-        q = q.or(`full_name.ilike.${like},phone.ilike.${like},email.ilike.${like},notes.ilike.${like}`);
+        const idFilter = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw) ? `,id.eq.${raw}` : '';
+        q = q.or(`full_name.ilike.${like},phone.ilike.${like},email.ilike.${like},notes.ilike.${like}${idFilter}`);
       }
       const { data } = await q;
       setRows(((data as any[]) ?? []).filter(c => c.id !== excludeId));
@@ -163,7 +164,7 @@ export const CustomerSearchSelect: React.FC<{
   }, [query, open, excludeId]);
 
   const label = selected
-    ? `${selected.full_name}${selected.phone ? ` (${selected.phone})` : ''}`
+    ? `${selected.full_name}${selected.phone ? ` (${selected.phone})` : ''} · ${selected.id}`
     : placeholder;
 
   return (
@@ -208,6 +209,7 @@ export const CustomerSearchSelect: React.FC<{
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 {[c.phone, c.email].filter(Boolean).join(' · ')}
                 {c.notes && /CUST-\d+/i.test(c.notes) ? ` · ${(c.notes.match(/CUST-\d+/i) || [])[0]}` : ''}
+                <div style={{ overflowWrap: 'anywhere' }}>Customer ID: {c.id}</div>
               </div>
             </div>
           ))}

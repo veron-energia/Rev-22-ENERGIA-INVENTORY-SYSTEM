@@ -1,3 +1,4 @@
+import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
@@ -33,7 +34,7 @@ const ReferralSignupPage: React.FC = () => {
       p_phone: f.phone.trim(), p_email: f.email.trim() || null, p_honeypot: hp || null,
     });
     setBusy(false);
-    if (error) { setErr(error.message); return; }
+    if (error) { setErr(phoneErrorMessage(error.message)); return; }
     const res = data as any;
     if (res?.ok === false) { setErr(res.message || 'Registration could not be completed.'); return; }
     setDone(res?.message || 'Registration successful.');
@@ -54,7 +55,7 @@ const ReferralSignupPage: React.FC = () => {
   if (done) return (
     <AffiliateAuthShell title="Registration Successful">
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        Thank you for registering with Energia. Your referral has been recorded successfully.
+        {done}
       </p>
     </AffiliateAuthShell>
   );

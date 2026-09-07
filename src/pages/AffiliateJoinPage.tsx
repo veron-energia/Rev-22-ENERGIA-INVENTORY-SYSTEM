@@ -1,3 +1,4 @@
+import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
@@ -18,6 +19,7 @@ const AffiliateJoinPage: React.FC = () => {
   const submit = async () => {
     setErr(null);
     if (!f.first.trim() || !f.phone.trim() || !f.email.trim()) { setErr('Please fill in your name, phone and email.'); return; }
+    if (!isPhoneValid(f.phone)) { setErr('Enter a valid international phone number.'); return; }
     if (f.password.length < 8) { setErr('Password must be at least 8 characters.'); return; }
     if (f.password !== f.confirm) { setErr('Passwords do not match.'); return; }
     if (!agree) { setErr('Please agree to the Affiliate terms to continue.'); return; }
@@ -57,7 +59,7 @@ const AffiliateJoinPage: React.FC = () => {
         <Field label="First Name"><input className="input" value={f.first} onChange={on('first')} /></Field>
         <Field label="Last Name"><input className="input" value={f.last} onChange={on('last')} /></Field>
       </div>
-      <Field label="Phone Number"><input className="input" value={f.phone} onChange={on('phone')} placeholder="+65…" /></Field>
+      <Field label="Phone Number"><PhoneInput value={f.phone} onChange={phone => setF(s => ({ ...s, phone }))} /></Field>
       <Field label="Email"><input className="input" type="email" value={f.email} onChange={on('email')} /></Field>
       <Field label="Password"><input className="input" type="password" value={f.password} onChange={on('password')} placeholder="At least 8 characters" /></Field>
       <Field label="Confirm Password"><input className="input" type="password" value={f.confirm} onChange={on('confirm')} /></Field>

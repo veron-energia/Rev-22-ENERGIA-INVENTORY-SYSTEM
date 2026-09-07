@@ -1,0 +1,12 @@
+[
+  {"id":"00000000-0000-4000-8000-000000001001","full_name":"Example Legacy A","phone":"91234567","deleted_at":null,"is_active":true},
+  {"id":"00000000-0000-4000-8000-000000001002","full_name":"Example Legacy B","phone":"6591234567","deleted_at":null,"is_active":true},
+  {"id":"00000000-0000-4000-8000-000000001003","full_name":"Example Inactive C","phone":"+65 9123 4567","deleted_at":null,"is_active":false},
+  {"id":"00000000-0000-4000-8000-000000001004","full_name":"Example Legacy D","phone":"+6591234567","deleted_at":null,"is_active":true},
+  {"id":"00000000-0000-4000-8000-000000001005","full_name":"Example Deleted","phone":"+6591234567","deleted_at":"2026-01-01T00:00:00Z","is_active":false},
+  {"id":"00000000-0000-4000-8000-000000001006","full_name":"Example Ambiguous","phone":"93234567","deleted_at":null,"is_active":true,"nationality":"Singaporean"},
+  {"id":"00000000-0000-4000-8000-000000001007","full_name":"Example MY Domestic","phone":"0123456789","deleted_at":null,"is_active":true},
+  {"id":"00000000-0000-4000-8000-000000001008","full_name":"Example Unconfirmed MY","phone":"123456789","deleted_at":null,"is_active":true},
+  {"id":"00000000-0000-4000-8000-000000001009","full_name":"Example Invalid","phone":"AFF-123","deleted_at":null,"is_active":true},
+  {"id":"00000000-0000-4000-8000-000000001010","full_name":"Example Explicit UK","phone":"+44 7911 123456","deleted_at":null,"is_active":true}
+]

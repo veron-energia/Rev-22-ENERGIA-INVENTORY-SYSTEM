@@ -1,8 +1,9 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   AsYouType, getCountries, getCountryCallingCode, parsePhoneNumberFromString,
-  isValidPhoneNumber, CountryCode,
-} from 'libphonenumber-js';
+  CountryCode,
+} from 'libphonenumber-js/max';
+import { inspectPhone, isValidE164 } from '../lib/customer-phones/normalize.mjs';
 
 // One reusable phone entry used by ReferralSignup, Public Health Survey and
 // Customers (add / change phone). Renders [Country ▼] [National number] and
@@ -27,18 +28,22 @@ interface Props {
 
 const PhoneInput: React.FC<Props> = ({ value, onChange, defaultCountry = 'SG', id, autoFocus }) => {
   // Derive initial country + national part from any stored E.164 value.
-  const parsedInit = value ? parsePhoneNumberFromString(value) : undefined;
-  const [country, setCountry] = useState<CountryCode>((parsedInit?.country as CountryCode) || defaultCountry);
-  const [national, setNational] = useState<string>(parsedInit ? parsedInit.formatNational() : '');
+  const initialNormalized = inspectPhone(value).normalized;
+  const parsedInit = initialNormalized ? parsePhoneNumberFromString(initialNormalized) : undefined;
+  const [country, setCountry] = useState<CountryCode | ''>(parsedInit?.country || (value && !initialNormalized ? '' : defaultCountry));
+  const emittedValue = useRef<string | null>(null);
+  const [national, setNational] = useState<string>(parsedInit ? parsedInit.formatNational() : value);
 
   // Keep in sync if an external value arrives (e.g. opening an edit modal).
   useEffect(() => {
-    if (!value) return;
-    const p = parsePhoneNumberFromString(value);
+    if (value === emittedValue.current) return;
+    if (!value) { setNational(''); setCountry(defaultCountry); return; }
+    const normalized = inspectPhone(value).normalized;
+    const p = normalized ? parsePhoneNumberFromString(normalized) : undefined;
     if (p) {
-      if (p.country) setCountry(p.country as CountryCode);
+      if (p.country) setCountry(p.country);
       setNational(p.formatNational());
-    }
+    } else { setNational(value); setCountry(''); }
   }, [value]);
 
   const countries = useMemo(() => {
@@ -47,22 +52,36 @@ const PhoneInput: React.FC<Props> = ({ value, onChange, defaultCountry = 'SG', i
     return [...PRIORITY.filter(c => all.includes(c)), ...rest];
   }, []);
 
-  const emit = (nextCountry: CountryCode, rawNational: string) => {
-    // Gracefully handle a pasted full international value in the national field.
-    if (rawNational.trim().startsWith('+')) {
-      const p = parsePhoneNumberFromString(rawNational.trim());
-      if (p) {
-        setCountry((p.country as CountryCode) || nextCountry);
-        setNational(p.formatNational());
-        onChange(p.number, p.isValid());
+  const notify = (nextValue: string, valid: boolean) => {
+    emittedValue.current = nextValue;
+    onChange(nextValue, valid);
+  };
+  const emit = (nextCountry: CountryCode | '', rawNational: string) => {
+    if (/[^0-9+\s().-]/.test(rawNational)) {
+      setNational(rawNational); notify(rawNational, false); return;
+    }
+    // Never reinterpret an explicit country code as a national number.
+    if (/^(\+|00)/.test(rawNational.trim()) || /^(65|60)[0-9 ()-]+$/.test(rawNational.trim())) {
+      const inspected = inspectPhone(rawNational);
+      if (inspected.normalized) {
+        const p = parsePhoneNumberFromString(inspected.normalized);
+        if (p?.country) setCountry(p.country);
+        setNational(p?.formatNational() ?? rawNational);
+        notify(inspected.normalized, true);
         return;
       }
+      if (/^(\+|00)/.test(rawNational.trim())) {
+        setNational(rawNational); notify(rawNational, false); return;
+      }
     }
+    if (!nextCountry) { setNational(rawNational); notify(rawNational, false); return; }
     const formatted = new AsYouType(nextCountry).input(rawNational);
     setNational(formatted);
     const p = parsePhoneNumberFromString(rawNational, nextCountry);
-    const e164 = p ? p.number : '';
-    onChange(e164, e164 ? isValidPhoneNumber(e164) : false);
+    const e164 = ['SG', 'MY'].includes(nextCountry)
+      ? inspectPhone(rawNational, nextCountry).normalized ?? ''
+      : p?.number ?? '';
+    notify(e164 || rawNational, e164 ? isValidE164(e164) : false);
   };
 
   return (
@@ -72,6 +91,7 @@ const PhoneInput: React.FC<Props> = ({ value, onChange, defaultCountry = 'SG', i
         value={country}
         onChange={e => { const c = e.target.value as CountryCode; setCountry(c); emit(c, national); }}
         className="input">
+        <option value="">Confirm phone country</option>
         {countries.map(c => (
           <option key={c} value={c}>{countryName(c)} (+{getCountryCallingCode(c)})</option>
         ))}
@@ -90,6 +110,6 @@ const PhoneInput: React.FC<Props> = ({ value, onChange, defaultCountry = 'SG', i
 };
 
 // Convenience validity check for callers that only hold the E.164 string.
-export const isPhoneValid = (e164: string) => !!e164 && isValidPhoneNumber(e164);
+export const isPhoneValid = (e164: string) => !!e164 && isValidE164(e164);
 
 export default PhoneInput;

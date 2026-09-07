@@ -215,7 +215,7 @@ const SurveysPage: React.FC = () => {
                     </tr></thead>
                     <tbody>{custRows.map(r => (
                       <tr key={r.customer_id}>
-                        <td style={{ fontWeight: 600 }}>{r.full_name}</td>
+                        <td style={{ fontWeight: 600 }}>{r.full_name}<div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>Customer ID: {r.customer_id}</div></td>
                         <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                           {[r.phone, r.email].filter(Boolean).join(' · ') || '—'}
                         </td>

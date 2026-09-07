@@ -11,7 +11,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:phase4": "node scripts/phase4_acceptance.mjs"
+    "test:phase4": "node scripts/phase4_acceptance.mjs",
+    "test:customer-phones": "node --test scripts/customer-phones/tests/*.test.mjs",
+    "test:customer-phones:db": "node scripts/customer-phones/tests/database.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
@@ -20,7 +22,7 @@
     "jsdom": "^30.0.1",
     "jspdf": "^4.2.1",
     "jszip": "^3.10.1",
-    "libphonenumber-js": "^1.13.12",
+    "libphonenumber-js": "1.13.12",
     "lucide-react": "^0.408.0",
     "papaparse": "^5.5.4",
     "qrcode": "^1.5.4",

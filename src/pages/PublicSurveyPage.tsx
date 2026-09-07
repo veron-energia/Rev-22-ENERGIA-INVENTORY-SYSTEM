@@ -1,3 +1,4 @@
+import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
@@ -151,14 +152,11 @@ const PublicSurveyPage: React.FC = () => {
     if (error) {
       const m = error.message;
       if (m.includes('HEALTH_SURVEY_ALREADY_EXISTS')) {
-        setErr('A Health Survey has already been submitted for this mobile number. Please speak to our staff if you need help updating your information.');
+        setErr('A Health Survey has already been submitted for this customer (phone number and name). Please speak to our staff if you need help updating your information.');
       } else if (m.includes('AMBIGUOUS_CUSTOMER_MATCH')) {
-        setErr('We found more than one record for this mobile number. Please speak to our staff and they will help you.');
-      } else if (m.includes('DUPLICATE_PHONE')) {
-        // Legacy guard (kept for safety); an existing customer without a survey is now allowed.
-        setErr('This mobile number is already registered with us. Please speak to our staff and they will help you.');
+        setErr('More than one customer has this phone number and name. Please ask staff to verify your identity and open the correct customer in Health Surveys.');
       } else {
-        setErr(m);
+        setErr(phoneErrorMessage(m));
       }
       return;
     }

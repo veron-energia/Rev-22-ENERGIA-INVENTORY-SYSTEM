@@ -15,7 +15,7 @@ interface DirRow {
   referral_code: string | null; portal_account: 'not_claimed' | 'claimed' | 'disabled';
   direct_referrals: number; tier2: number; lifetime: number; unpaid: number; blocked: number; last_commission: string | null;
 }
-interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; rejected_at?: string | null; rejection_reason?: string | null; }
+interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; entered_name?: string | null; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; rejected_at?: string | null; rejection_reason?: string | null; }
 
 const PORTAL: Record<string, { cls: string; label: string }> = {
   claimed: { cls: 'badge-success', label: 'Claimed' },
@@ -156,7 +156,7 @@ const AffiliatesPage: React.FC = () => {
                   const running = busy === c.claim_id;
                   return (
                     <tr key={c.claim_id}>
-                      <td>{c.verified_email}</td><td>{c.entered_phone}</td>
+                      <td>{c.verified_email}<br /><small>{c.entered_name}</small></td><td>{c.entered_phone}</td>
                       <td>{c.candidate_name ?? '—'}</td><td>{d(c.created_at)}</td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="btn btn-secondary btn-sm" disabled={running} title="Resolve" onClick={() => { setResolveFor(c); setResolveCust(c.candidate_customer_id ?? ''); setResolveNote(''); }} style={{ marginRight: 6, gap: 4 }}><ShieldCheck size={14} /> Resolve</button>
@@ -187,7 +187,7 @@ const AffiliatesPage: React.FC = () => {
               <tbody>
                 {rejected.map(c => (
                   <tr key={c.claim_id}>
-                    <td>{c.verified_email}</td><td>{c.entered_phone}</td>
+                    <td>{c.verified_email}<br /><small>{c.entered_name}</small></td><td>{c.entered_phone}</td>
                     <td>{c.candidate_name ?? '—'}</td><td>{d(c.rejected_at)}</td>
                     <td style={{ maxWidth: 220, whiteSpace: 'normal' }}>{c.rejection_reason ?? '—'}</td>
                     <td style={{ textAlign: 'right' }}>
@@ -282,6 +282,7 @@ const AffiliatesPage: React.FC = () => {
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
             After verifying identity, link this login ({resolveFor.verified_email}) to the correct existing customer. This does not change the customer's referrer or history.
           </p>
+          <p>Name entered: <strong>{resolveFor.entered_name ?? 'Not recorded'}</strong><br />Phone entered: <strong>{resolveFor.entered_phone}</strong></p>
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Customer to link</label>
           <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={resolveCust} onChange={setResolveCust} /></div>
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Verification note (required)</label>

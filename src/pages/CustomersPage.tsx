@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
+import DeletedCustomersModal from '../components/DeletedCustomersModal';
+import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
@@ -28,6 +30,8 @@ const blank = (c?: Customer) => ({
 const CustomersPage: React.FC = () => {
   const { profile } = useAuth();
   const canComplete = isOwnerOrManager(profile?.role);   // complete profile view: Owner/Manager only
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [originalPhone, setOriginalPhone] = useState('');
   const [rows, setRows] = useState<Customer[]>([]);
   const [delFor, setDelFor] = useState<Customer | null>(null);
   const [delName, setDelName] = useState('');
@@ -80,7 +84,7 @@ const CustomersPage: React.FC = () => {
     setPhoneBusy(true); setPhoneErr(null);
     const { error } = await supabase.rpc('change_customer_phone', { p_customer_id: phoneFor.id, p_new_phone: newPhone.trim(), p_reason: phoneReason.trim() });
     setPhoneBusy(false);
-    if (error) { setPhoneErr(error.message); return; }
+    if (error) { setPhoneErr(phoneErrorMessage(error.message)); return; }
     setPhoneFor(null); load();
   };
 
@@ -166,8 +170,8 @@ const CustomersPage: React.FC = () => {
     }
   };
 
-  const openAdd = () => { setForm(blank()); setEditId(null); setOrigReferrer(''); setErr(null); setModalOpen(true); };
-  const openEdit = (c: Customer) => { setForm(blank(c)); setEditId(c.id); setOrigReferrer((c as any)?.referred_by ?? ''); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm(blank()); setOriginalPhone(''); setEditId(null); setOrigReferrer(''); setErr(null); setModalOpen(true); };
+  const openEdit = (c: Customer) => { setForm(blank(c)); setOriginalPhone(c.phone); setEditId(c.id); setOrigReferrer((c as any)?.referred_by ?? ''); setErr(null); setModalOpen(true); };
 
   // Correct-referrer (Owner/Manager, audited) — first valid referral otherwise wins.
   const [origReferrer, setOrigReferrer] = useState('');
@@ -193,15 +197,15 @@ const CustomersPage: React.FC = () => {
     // raises 'A first name is required'. A last name is optional — plenty of
     // customers give only one name.
     if (!form.first_name.trim()) { setErr('First name is required.'); return; }
-    if (!form.phone.trim()) { setErr('Phone number is required (must be unique).'); return; }
-    if (!isPhoneValid(form.phone)) { setErr('Please enter a valid mobile/phone number.'); return; }
+    if ((!editId || form.phone !== originalPhone) && !form.phone.trim()) { setErr('Phone number is required. Up to 3 non-deleted customers may share a number.'); return; }
+    if ((!editId || form.phone !== originalPhone) && !isPhoneValid(form.phone)) { setErr('Please enter a valid mobile/phone number.'); return; }
     setSaving(true); setErr(null);
     const payload = {
       first_name: form.first_name.trim(),
       last_name: form.last_name.trim() || null,
       // Derived, never typed separately, so it cannot drift from the parts.
       full_name: joinPersonName(form.first_name, form.last_name),
-      phone: form.phone.trim(),
+      phone: editId && form.phone === originalPhone ? originalPhone : form.phone.trim(),
       email: form.email.trim() || null,
       date_of_birth: form.date_of_birth || null,
       gender: form.gender || null,
@@ -214,9 +218,7 @@ const CustomersPage: React.FC = () => {
       ? await supabase.from('customers').update(payload).eq('id', editId)
       : await supabase.from('customers').insert(payload);
     if (res.error) {
-      setErr(res.error.message.includes('duplicate') || res.error.message.includes('unique')
-        ? 'A customer with this phone number already exists. Phone numbers must be unique.'
-        : res.error.message);
+      setErr(phoneErrorMessage(res.error.message));
       setSaving(false); return;
     }
     setSaving(false); setModalOpen(false); load();
@@ -277,8 +279,9 @@ const CustomersPage: React.FC = () => {
 
   return (
     <div>
+      {showDeleted && <DeletedCustomersModal onClose={() => setShowDeleted(false)} onRestored={() => void load()} />}
       <div className="page-header">
-        <div><h2>Customers</h2><p>Customer database. Phone numbers are unique across all stores.</p></div>
+        <div><h2>Customers</h2><p>Customer database. Up to 3 non-deleted customers may share a phone number across all stores, including inactive customers.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
             rows={filtered} filename="customers" sheetName="Customers"
@@ -325,6 +328,7 @@ const CustomersPage: React.FC = () => {
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          {canComplete && <button className="btn btn-secondary" onClick={() => setShowDeleted(true)}>Deleted Customers</button>}
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Customer</button>
         </div>
       </div>
@@ -476,7 +480,7 @@ const CustomersPage: React.FC = () => {
                   Will be shown as <strong>{joinPersonName(form.first_name, form.last_name)}</strong>
                 </div>
               )}
-              <div className="form-group"><label>Phone * (unique)</label><PhoneInput value={form.phone} onChange={(e164) => setForm(f => ({ ...f, phone: e164 }))} /></div>
+              <div className="form-group"><label>Phone * (up to 3 customers)</label><PhoneInput value={form.phone} onChange={(e164) => setForm(f => ({ ...f, phone: e164 }))} /></div>
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
