@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test:phase4": "node scripts/phase4_acceptance.mjs",
     "test:customer-phones": "node --test scripts/customer-phones/tests/*.test.mjs",
+    "test:survey": "node --test --test-timeout=20000 scripts/survey/tests/*.test.mjs",
     "test:customer-phones:db": "node scripts/customer-phones/tests/database.mjs"
   },
   "dependencies": {

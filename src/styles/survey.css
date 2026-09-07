@@ -1,0 +1,288 @@
+/* =====================================================================
+   Public health‑survey form — scoped styles.
+   Everything here is namespaced under .survey-page (or the portalled
+   .survey-dialog*) so nothing leaks into the staff app or the affiliate
+   portal. Imported only by pages/PublicSurveyPage.tsx.
+   ===================================================================== */
+
+.survey-page {
+  min-height: 100vh;
+  background: var(--surface-2);
+  padding: 24px 16px calc(40px + env(safe-area-inset-bottom, 0px));
+}
+.survey-page * { box-sizing: border-box; }
+.survey-page .survey-shell { max-width: 720px; margin: 0 auto; }
+
+/* iOS Safari zooms in when it focuses an input under 16px. The staff app opts
+   out of this; the public form must not. */
+@media (max-width: 640px) {
+  .survey-page input,
+  .survey-page select,
+  .survey-page textarea {
+    font-size: 16px;
+  }
+}
+
+/* ---- Sections ---------------------------------------------------------- */
+.survey-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 14px;
+  margin-top: 16px;
+  background: var(--surface);
+}
+.survey-section:first-of-type { margin-top: 0; }
+.survey-section > h3 {
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+.survey-section > .survey-section-hint {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+.survey-section > .survey-section-hint:last-child { margin-bottom: 0; }
+
+/* ---- Labels: required / optional ------------------------------------- */
+.survey-page label .survey-req {
+  color: var(--danger);
+  margin-left: 2px;
+  font-weight: 700;
+}
+.survey-page label .survey-optional {
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-left: 6px;
+  font-size: 11.5px;
+}
+.survey-sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0;
+}
+
+/* ---- Inline field errors ------------------------------------------------ */
+.survey-field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #991b1b;
+}
+.survey-field-error svg { flex-shrink: 0; margin-top: 1px; }
+
+/* Invalid controls: not colour alone — thicker ring + left bar + the icon in
+   the message above. */
+.survey-page [aria-invalid='true'],
+.survey-page .survey-invalid input,
+.survey-page .survey-invalid select,
+.survey-page .survey-invalid textarea {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 3px var(--danger-light);
+}
+.survey-page .survey-invalid {
+  border-left: 3px solid var(--danger);
+  padding-left: 10px;
+  margin-left: -13px;
+}
+
+/* ---- Error summary + submit‑level error ------------------------------- */
+.survey-error-summary,
+.survey-form-error {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: var(--danger-light);
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.survey-error-summary { margin-bottom: 4px; }
+.survey-form-error { margin-top: 4px; }
+.survey-identity-alert {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  background: var(--warning-light);
+  color: #92400e;
+  border: 1px solid #fde68a;
+  margin-bottom: 12px;
+}
+.survey-error-summary svg,
+.survey-form-error svg,
+.survey-identity-alert svg { flex-shrink: 0; margin-top: 1px; }
+
+/* ---- Yes / No + choice groups --------------------------------------- */
+.survey-yesno {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.survey-yesno:last-child { border-bottom: none; }
+.survey-yesno > span { font-size: 13.5px; flex: 1; }
+.survey-yesno .survey-yesno-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.survey-yesno .btn { min-width: 56px; min-height: 40px; }
+
+.survey-choice-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.survey-choice-row .btn { min-height: 40px; }
+
+/* ---- Symptoms -------------------------------------------------------- */
+.survey-symptom-cat { margin-bottom: 14px; }
+.survey-symptom-cat > h4 {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+.survey-symptom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.survey-symptom-row > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 180px;
+  cursor: pointer;
+  font-size: 13.5px;
+  margin-bottom: 0;
+  min-height: 36px;
+}
+.survey-symptom-row input[type='checkbox'] {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.survey-symptom-row .survey-duration {
+  flex: 1 1 130px;
+  max-width: 180px;
+  font-size: 12.5px;
+  padding: 6px 8px;
+}
+
+/* ---- Consent checkboxes -------------------------------------------- */
+.survey-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13.5px;
+  cursor: pointer;
+  padding: 6px 0;
+  min-height: 36px;
+}
+.survey-consent input[type='checkbox'] {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ---- Signature ----------------------------------------------------- */
+.survey-signature-group:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+.survey-signature-group.survey-invalid {
+  border-left: 3px solid var(--danger);
+  padding-left: 10px;
+  margin-left: -13px;
+}
+
+/* Keep the DOB row and phone control from clipping on narrow screens.
+   Month needs the most room ("September"); year wraps under on tiny screens. */
+.survey-dob-row { display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 6px; }
+.survey-dob-row select { min-width: 0; width: 100%; }
+@media (max-width: 359px) {
+  .survey-dob-row { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 430px) {
+  .survey-page .phone-input { flex-direction: column; }
+  .survey-page .phone-input select { width: 100%; }
+}
+
+/* ---- Focus visibility --------------------------------------------- */
+.survey-page a:focus-visible,
+.survey-page button:focus-visible,
+.survey-page input:focus-visible,
+.survey-page select:focus-visible,
+.survey-page textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* ---- Submit ------------------------------------------------------- */
+.survey-submit {
+  padding: 14px;
+  font-size: 15px;
+  width: 100%;
+  min-height: 48px;
+}
+.survey-submitting-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 6px;
+}
+
+/* ---- Leave dialog (portalled to <body>) --------------------------- */
+.survey-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 28, 24, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 20px;
+}
+.survey-dialog {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  max-width: 420px;
+  width: 100%;
+  padding: 22px;
+}
+.survey-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--danger);
+  margin-bottom: 10px;
+}
+.survey-dialog-head h2 { font-size: 17px; }
+.survey-dialog p {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.survey-dialog-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.survey-dialog-actions .btn { flex: 1 1 auto; min-height: 44px; }
+
+/* ---- Reduced motion --------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .survey-page * { scroll-behavior: auto !important; }
+}
