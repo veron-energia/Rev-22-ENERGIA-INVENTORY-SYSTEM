@@ -161,9 +161,43 @@ export type ApprovalStatus =
   | 'in_transit' | 'received' | 'received_with_discrepancy' | 'completed';
 export type TransferType = 'warehouse_to_warehouse' | 'warehouse_to_store' | 'store_to_store';
 
+export type TransferLineKind = 'product' | 'manual';
+
 export interface TransferLine {
-  product_id: string;
+  line_id?: string | null;
+  line_kind: TransferLineKind;
+  product_id: string | null;
+  manual_item_name?: string | null;
+  manual_uom?: string | null;
   quantity: number;
+}
+
+export interface TransferSourceOption {
+  source_type: LocationType;
+  source_id: string;
+  source_name: string;
+  on_hand: number;
+  reserved: number;
+  available: number;
+  allocated?: number;
+}
+
+export interface TransferSourcingRow extends TransferSourceOption {
+  line_id: string;
+  product_id: string;
+  product_name: string;
+  product_sku: string;
+  requested: number;
+  approved: number;
+}
+
+export interface TransferRevision {
+  version: number;
+  reason: string;
+  changed_summary: Record<string, unknown> | null;
+  snapshot: Record<string, unknown> | null;
+  editor: string | null;
+  created_at: string;
 }
 
 export interface ApprovalRequest {
@@ -224,8 +258,8 @@ export const canRequestTransfer = (r?: UserRole) =>
 export interface TransferRequest {
   id: string;
   transfer_type: TransferType;
-  source_type: LocationType;
-  source_id: string;
+  source_type: LocationType | null;
+  source_id: string | null;
   dest_type: LocationType;
   dest_id: string;
   status: ApprovalStatus;
@@ -253,7 +287,12 @@ export interface TransferRequest {
 export interface TransferRequestLine {
   id: string;
   transfer_request_id: string;
-  product_id: string;
+  line_kind: TransferLineKind;
+  product_id: string | null;
+  manual_item_name?: string | null;
+  manual_uom?: string | null;
+  added_by_approver?: boolean;
+  added_by?: string | null;
   quantity: number;
   approved_quantity: number | null;
   created_at: string;
