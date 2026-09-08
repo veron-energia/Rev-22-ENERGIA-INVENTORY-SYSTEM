@@ -20,6 +20,10 @@ const CommissionsPage: React.FC = () => {
   const [commissions, setCommissions] = useState<Commission[]>([]);
   const [payouts, setPayouts] = useState<CommissionPayout[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  // Referrers the customers table cannot return, because a soft-deleted
+  // customer is hidden by RLS. Their commission rows survive the deletion, so
+  // without this the row shows an amount and a Mark Paid button but no name.
+  const [hiddenReferrers, setHiddenReferrers] = useState<Map<string, string>>(new Map());
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'earned' | 'payouts' | 'referrers'>('earned');
@@ -63,8 +67,25 @@ const CommissionsPage: React.FC = () => {
     // belonging to customers outside that set would show no name. Fetch the
     // ones actually referenced here.
     void (async () => {
-      const extra = await fetchCustomersByIds([...((co.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id]), ...((po.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id])]);
+      const referenced = [
+        ...((co.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id]),
+        ...((po.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id]),
+      ];
+      const extra = await fetchCustomersByIds(referenced);
       setCustomers(cur => mergeCustomers(cur, extra));
+
+      // Anything still unresolved is a customer RLS will not return at all —
+      // in practice a soft-deleted one. Ask the server for those names through
+      // a manager-only function so the payee is identifiable.
+      const known = new Set([...baseCustomers, ...extra].map(c => c.id));
+      const missing = [...new Set(referenced.filter(id => id && !known.has(id)))];
+      if (missing.length === 0) return;
+      const { data: names } = await supabase.rpc('commission_referrer_names', { p_ids: missing });
+      const found = new Map<string, string>();
+      for (const r of (names as any[]) ?? []) {
+        if (r?.id && r?.full_name) found.set(r.id, r.deleted_at ? `${r.full_name} (deleted)` : r.full_name);
+      }
+      if (found.size > 0) setHiddenReferrers(found);
     })();
     setMethods((pm.data as PaymentMethod[]) ?? []);
     if (st.data) {
@@ -100,7 +121,8 @@ const CommissionsPage: React.FC = () => {
     setExpandedBuyers(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
 
-  const cName = (id: string) => customers.find(c => c.id === id)?.full_name ?? '—';
+  const cName = (id: string) =>
+    customers.find(c => c.id === id)?.full_name ?? hiddenReferrers.get(id) ?? '—';
   const mName = (id: string | null) => id ? (methods.find(m => m.id === id)?.name ?? '—') : '—';
 
   // Group EARNED (unpaid) commissions by referrer + month.
