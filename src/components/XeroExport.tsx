@@ -35,11 +35,17 @@ export const XeroExportButton: React.FC<{
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [storeId, setStoreId] = useState(defaultStoreId);
-  const [accountCode, setAccountCode] = useState('200');
+  const [accountCode, setAccountCode] = useState('1011');
   // Xero REJECTS an invoice line whose InventoryItemCode is not already an item
   // in the Xero organisation. Energia's SKUs almost certainly are not, so the
   // column is left blank unless it is deliberately turned on — otherwise the
   // very first import fails on every line.
+  // Xero matches this against a tax rate in the organisation. "No Tax (0%)" is
+  // the name Energia's Xero shows for the zero rate; Xero also accepts its type
+  // code, NONE. Kept editable because which of the two a given organisation
+  // accepts is a fact about that organisation, not something to hardcode and
+  // then need a release to change.
+  const [taxType, setTaxType] = useState('No Tax (0%)');
   const [sendSkus, setSendSkus] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -206,8 +212,10 @@ export const XeroExportButton: React.FC<{
         // No separate due date is held: these are settled at point of sale.
         '*DueDate': xeroDate(inv.paid_at ?? inv.created_at),
         '*AccountCode': accountCode,
-        // Not GST-registered: NONE is Xero's no-tax type.
-        '*TaxType': 'NONE',
+        // Energia is not GST-registered, so every line carries the zero rate and
+        // no tax amount. This is deliberate, not a gap: an accountant seeing it
+        // blank would reasonably chase it.
+        '*TaxType': taxType,
         TaxAmount: 0,
         Currency: 'SGD',
       };
@@ -395,9 +403,18 @@ export const XeroExportButton: React.FC<{
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Xero account code</label>
                 <input value={accountCode} onChange={e => setAccountCode(e.target.value)}
-                  placeholder="200" />
+                  placeholder="1011" />
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                   Sales account in your Xero chart of accounts.
+                </div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>Xero tax rate</label>
+                <input value={taxType} onChange={e => setTaxType(e.target.value)}
+                  placeholder="No Tax (0%)" />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Must match a tax rate in your Xero. Try <code>NONE</code> if the import
+                  rejects this name.
                 </div>
               </div>
             </div>
