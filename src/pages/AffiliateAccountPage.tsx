@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { supabase } from '../lib/supabase';
 import { portalRpc, dateStr } from '../lib/affiliatePortal';
+import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
   <div className="affiliate-kv">
@@ -18,14 +18,19 @@ const AffiliateAccountPage: React.FC = () => {
 
   useEffect(() => { portalRpc('affiliate_portal_me').then(setMe).catch(e => setErr(e.message)); }, []);
 
+  // Goes through the auth-change-password Edge Function rather than
+  // supabase.auth.updateUser, so the "your password was changed" notification is
+  // sent by a server that saw Supabase confirm the change. A notification that
+  // fails to send does not make the password change a failure.
   const changePw = async () => {
+    if (pwBusy) return;
     setPwMsg(null);
     if (pw.length < 8) { setPwMsg('Password must be at least 8 characters.'); return; }
     if (pw !== confirm) { setPwMsg('Passwords do not match.'); return; }
     setPwBusy(true);
-    const { error } = await supabase.auth.updateUser({ password: pw });
+    const result = await changePassword(pw);
     setPwBusy(false);
-    if (error) { setPwMsg(error.message); return; }
+    if (!result.ok) { setPwMsg(result.message ?? AUTH_EMAIL_COPY.unavailable); return; }
     setPw(''); setConfirm(''); setPwMsg('Password updated.');
   };
 

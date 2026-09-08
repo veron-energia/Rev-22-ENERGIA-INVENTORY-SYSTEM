@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Leaf, LogIn } from 'lucide-react';
 
@@ -61,6 +62,10 @@ const LoginPage: React.FC = () => {
               <LogIn size={16} /> {submitting ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
+
+          <div style={{ textAlign: 'center', marginTop: 14 }}>
+            <Link to="/forgot-password" style={{ fontSize: 13, color: 'var(--text-muted)' }}>Forgot password?</Link>
+          </div>
         </div>
 
         <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)', marginTop: 18 }}>

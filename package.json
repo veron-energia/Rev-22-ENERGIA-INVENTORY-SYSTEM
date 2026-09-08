@@ -14,7 +14,12 @@
     "test:phase4": "node scripts/phase4_acceptance.mjs",
     "test:customer-phones": "node --test scripts/customer-phones/tests/*.test.mjs",
     "test:survey": "node --test --test-timeout=20000 scripts/survey/tests/*.test.mjs",
-    "test:customer-phones:db": "node scripts/customer-phones/tests/database.mjs"
+    "test:customer-phones:db": "node scripts/customer-phones/tests/database.mjs",
+    "test:auth-email": "node --test scripts/auth-email/tests/*.test.mjs",
+    "test:auth-email:edge": "deno test --allow-env --allow-read supabase/functions/_shared/auth-email/tests/",
+    "test:auth-email:db": "node scripts/auth-email/tests/database.mjs",
+    "check:auth-email": "deno check supabase/functions/auth-signup-request/index.ts supabase/functions/auth-resend-verification/index.ts supabase/functions/auth-request-recovery/index.ts supabase/functions/auth-change-password/index.ts",
+    "test:auth-email:delivery": "deno run --allow-net=127.0.0.1:8787 --allow-read --allow-write=scripts/auth-email/preview scripts/auth-email/local-delivery-check.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

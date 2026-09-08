@@ -44,6 +44,8 @@ import AffiliatePayoutsPage from './pages/AffiliatePayoutsPage';
 import AffiliateReferralPage from './pages/AffiliateReferralPage';
 import AffiliateAccountPage from './pages/AffiliateAccountPage';
 import ReferralSignupPage from './pages/ReferralSignupPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import { Leaf } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -108,6 +110,10 @@ const AppRoutes: React.FC = () => {
       <Route path="/affiliate/forgot-password" element={<AffiliateForgotPasswordPage />} />
       <Route path="/affiliate/reset-password" element={<AffiliateResetPasswordPage />} />
       <Route path="/r/:referralCode" element={<ReferralSignupPage />} />
+      {/* Public staff password recovery. The reset page needs no session of its
+          own: Supabase turns the emailed link into a recovery session on arrival. */}
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       {/* Authenticated affiliate portal */}
       <Route path="/affiliate/dashboard" element={<AffiliateProtected><AffiliateDashboardPage /></AffiliateProtected>} />
       <Route path="/affiliate/network" element={<AffiliateProtected><AffiliateNetworkPage /></AffiliateProtected>} />
