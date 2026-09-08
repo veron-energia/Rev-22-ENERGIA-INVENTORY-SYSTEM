@@ -2,6 +2,9 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
+import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
+import { settledDateSgt, reportingMonthFor, periodLabel } from '../lib/tiktok/settlementPeriod.mjs';
+import { classifyTransaction, CATEGORY } from '../lib/tiktok/classification.mjs';
 import { useAuth } from '../context/AuthContext';
 import { Store, Product, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
@@ -147,6 +150,10 @@ const TikTokImportPage: React.FC = () => {
   const [tabRows, setTabRows] = useState<any[]>([]);
   const [tabLoading, setTabLoading] = useState(false);
   // Phase 17 — settlement staging view.
+  // Reporting month for the settlement figures. Defaulted from Singapore time,
+  // not the browser's clock, so a laptop in another timezone still opens on the
+  // month the business is actually in.
+  const [reportMonth, setReportMonth] = useState(() => currentSgtMonth());
   const [settleBatch, setSettleBatch] = useState<any>(null);
   const [settleRows, setSettleRows] = useState<any[]>([]);
   const [settleSel, setSettleSel] = useState<Record<string, boolean>>({});
@@ -202,6 +209,33 @@ const TikTokImportPage: React.FC = () => {
   // no customer order to match, so it is complete rather than waiting for one.
   // Shown apart from both Matched and Pending so the pending queue means what
   // it says: rows that still need an order to arrive.
+  // Which reporting period a settled instant falls in. Shown per row so a
+  // transaction near a month boundary can be seen to be in the right one.
+  const periodOf = (value: any) => {
+    const d = settledDateSgt(value);
+    if (!d) return '—';
+    const rm = reportingMonthFor(d);
+    return rm ? periodLabel(rm.year, rm.month).replace(' (SGT)', '') : '—';
+  };
+
+  // The financial meaning of a row, which is finer than the stored txn_class:
+  // that cannot tell an advertising payment from a bank transfer.
+  const categoryBadge = (type: any, adjustment: any) => {
+    const cents = Math.round(Number(adjustment ?? 0) * 100);
+    const c = classifyTransaction(type, { adjustmentCents: Number.isFinite(cents) ? cents : 0 });
+    const look: Record<string, [string, string]> = {
+      [CATEGORY.SALE]: ['badge-success', 'Sale'],
+      [CATEGORY.SALE_REFUND]: ['badge-warning', 'Sale refund'],
+      [CATEGORY.FEE]: ['badge-muted', 'Fee'],
+      [CATEGORY.FEE_REVERSAL]: ['badge-muted', 'Fee reversal'],
+      [CATEGORY.AD_EXPENSE]: ['badge-danger', 'Advertising'],
+      [CATEGORY.EXPENSE_REVERSAL]: ['badge-muted', 'Ad reversal'],
+      [CATEGORY.BALANCE_MOVEMENT]: ['badge-muted', 'Balance movement'],
+    };
+    const [cls, label] = look[c] ?? ['badge-danger', 'Needs review'];
+    return <span className={'badge ' + cls}>{label}</span>;
+  };
+
   const matchBadge = (status?: string) =>
     status === 'matched'
       ? <span className="badge badge-success">Matched</span>
@@ -727,15 +761,30 @@ const TikTokImportPage: React.FC = () => {
           {/* Settlements */}
           {pageTab === 'settlements' && (
             <div className="card" style={{ padding: 16 }}>
-              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Settlement Transactions (current versions)</h3>
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Settlement Figures</h3>
+              <SettlementSummary
+                storeId={effectiveStore || null}
+                year={reportMonth.year}
+                month={reportMonth.month}
+                onChangeMonth={(year, month) => setReportMonth({ year, month })}
+              />
+
+              <h3 style={{ fontSize: 14.5, margin: '22px 0 8px' }}>Settlement Transactions (current versions)</h3>
+              <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                Every confirmed, current transaction for this store — including any settled outside the
+                selected reporting month. Amounts here are <strong>as imported from TikTok</strong>; the
+                figures above are calculated from them.
+              </p>
               {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
                 <table>
-                  <thead><tr><th>Date</th><th>Order/Adj ID</th><th>Type</th><th>Match</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>Reconciled</th></tr></thead>
+                  <thead><tr><th>Settled (SGT)</th><th>Period</th><th>Order/Adj ID</th><th>Type</th><th>Category</th><th>Match</th><th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>Reconciled</th></tr></thead>
                   <tbody>{tabRows.map(r => (
                     <tr key={r.row_id}>
-                      <td style={{ fontSize: 12 }}>{r.financial_date ? new Date(r.financial_date).toLocaleDateString() : '—'}</td>
+                      <td style={{ fontSize: 12 }}>{settledDateSgt(r.financial_date) ?? <span className="badge badge-danger">No settled date</span>}</td>
+                      <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{periodOf(r.financial_date)}</td>
                       <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_adjustment_id}{r.version_no > 1 ? ` (v${r.version_no})` : ''}</td>
-                      <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.txn_class}</td>
+                      <td style={{ fontSize: 12 }}>{r.transaction_type ?? r.txn_class}</td>
+                      <td>{categoryBadge(r.transaction_type, r.adjustment_amount)}</td>
                       <td>{matchBadge(r.match_status)}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}</td>
                       <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>

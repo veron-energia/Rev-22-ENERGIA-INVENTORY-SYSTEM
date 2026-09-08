@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, Store, Product, Commission, Customer,
@@ -55,7 +56,10 @@ const ReportsPage: React.FC = () => {
   const [ttSummary, setTtSummary] = useState<any>(null);
   // Phase 18 — extended reports (fetched when their tab opens).
   const [ttDaily, setTtDaily] = useState<any[]>([]);
-  const [ttBasis, setTtBasis] = useState<'created' | 'settled'>('created');
+  // The payment report is on the SETTLED-date basis only; the order-created
+  // basis was removed in migration 210 because a period struck on it can never
+  // tie to what TikTok actually paid.
+  const [ttMonth, setTtMonth] = useState(() => currentSgtMonth());
   const [ttByStore, setTtByStore] = useState<any[]>([]);
   const [ttQty, setTtQty] = useState<any[]>([]);
   const [ttByStatus, setTtByStatus] = useState<any[]>([]);
@@ -231,7 +235,7 @@ const ReportsPage: React.FC = () => {
     const fetchExtras = async () => {
       if (tab === 'r_tiktok') {
         const [d, bs, q, st] = await Promise.all([
-          supabase.rpc('report_tiktok_settlement_daily', { p_store_id: null, p_from: null, p_to: null, p_basis: ttBasis }),
+          supabase.rpc('report_tiktok_settlement_daily', { p_store_id: null, p_from: null, p_to: null }),
           supabase.rpc('report_tiktok_settlement_by_store', { p_from: null, p_to: null }),
           supabase.rpc('report_tiktok_qty_sold', { p_store_id: null, p_from: null, p_to: null }),
           supabase.rpc('report_tiktok_orders_by_status', { p_store_id: null }),
@@ -254,7 +258,7 @@ const ReportsPage: React.FC = () => {
       }
     };
     fetchExtras();
-  }, [tab, ttBasis]);
+  }, [tab, ttMonth]);
 
   // Grouping shown as a sublabel in the picker, so 21 reports are findable.
   const REPORT_GROUP: Record<string, string> = {
@@ -591,6 +595,17 @@ const ReportsPage: React.FC = () => {
                       </div>
                       <div className="card" style={{ padding: 14 }}>
                         <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Total Fees</div>
+                  <SettlementSummary
+                    storeId={null}
+                    year={ttMonth.year}
+                    month={ttMonth.month}
+                    onChangeMonth={(year, month) => setTtMonth({ year, month })}
+                  />
+                  <h3 style={{ fontSize: 14, margin: '22px 0 4px' }}>Imported source totals (all periods)</h3>
+                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8 }}>
+                    TikTok's own figures as imported, across every period — shown for reconciliation,
+                    not as the reporting-month result.
+                  </p>
                         <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_fees ?? 0))}</div>
                       </div>
                       <div className="card" style={{ padding: 14 }}>
@@ -627,20 +642,13 @@ const ReportsPage: React.FC = () => {
                         </tr>)}</tbody>
                   </table>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 4px' }}>
-                    <h3 style={{ fontSize: 14, flex: 1 }}>Settlement by Day</h3>
-                    {(['created', 'settled'] as const).map(b => (
-                      <button key={b} className={`btn btn-sm ${ttBasis === b ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTtBasis(b)}>
-                        {b === 'created' ? 'Order-created date' : 'Settled date'}</button>
-                    ))}
-                  </div>
+                  <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Settlement by Day (settled date, SGT)</h3>
                   <table>
-                    <thead><tr><th>Day</th><th style={{ textAlign: 'right' }}>Txns</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th></tr></thead>
-                    <tbody>{ttDaily.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No data</td></tr>
+                    <thead><tr><th>Day</th><th style={{ textAlign: 'right' }}>Txns</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th style={{ textAlign: 'right' }}>Expense</th><th style={{ textAlign: 'right' }}>Income</th><th style={{ textAlign: 'right' }}>TikTok settlement</th></tr></thead>
+                    <tbody>{ttDaily.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No data</td></tr>
                       : ttDaily.map((r, i) => <tr key={i}>
                           <td style={{ fontSize: 12 }}>{new Date(r.day).toLocaleDateString('en-GB')}</td>
                           <td style={{ textAlign: 'right' }}>{r.transactions}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.settlement))}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(r.revenue))}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(r.fees))}</td>
                         </tr>)}</tbody>
@@ -648,13 +656,15 @@ const ReportsPage: React.FC = () => {
 
                   <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Settlement by Store</h3>
                   <table>
-                    <thead><tr><th>Store</th><th style={{ textAlign: 'right' }}>Txns</th><th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th style={{ textAlign: 'right' }}>Pending</th><th style={{ textAlign: 'right' }}>⚠ Recon</th></tr></thead>
+                    <thead><tr><th>Store</th><th style={{ textAlign: 'right' }}>Txns</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th style={{ textAlign: 'right' }}>Expense</th><th style={{ textAlign: 'right' }}>Income</th><th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Pending</th><th style={{ textAlign: 'right' }}>⚠ Recon</th></tr></thead>
                     <tbody>{ttByStore.map((r, i) => <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{r.store_name}</td>
                         <td style={{ textAlign: 'right' }}>{r.transactions}</td>
-                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.settlement))}</td>
                         <td style={{ textAlign: 'right' }}>{money(Number(r.revenue))}</td>
                         <td style={{ textAlign: 'right' }}>{money(Number(r.fees))}</td>
+                          <td style={{ textAlign: 'right' }}>{money(Number(r.expense ?? 0))}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.income ?? 0))}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.settlement))}</td>
                         <td style={{ textAlign: 'right' }}>{r.pending_count}</td>
                         <td style={{ textAlign: 'right', color: Number(r.unreconciled_count) > 0 ? 'var(--danger)' : 'inherit' }}>{r.unreconciled_count}</td>
                       </tr>)}</tbody>
@@ -667,12 +677,20 @@ const ReportsPage: React.FC = () => {
                       : ttQty.map((r, i) => <tr key={i}>
                           <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.dimension}</td>
                           <td style={{ fontWeight: 600, fontSize: 12.5 }}>{r.item_name}</td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.expense ?? 0))}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.income ?? 0))}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.settlement))}</td>
                           <td style={{ textAlign: 'right' }}>{r.orders}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.net_units}</td>
                         </tr>)}</tbody>
                   </table>
 
                   <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Orders by Status</h3>
+                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                    Operational, from the order lifecycle — not settlement. It counts units on orders,
+                    which is a different question from money settled, and the two are <strong>not
+                    expected to reconcile</strong>: an order can ship in one period and settle in another.
+                  </p>
                   <table>
                     <thead><tr><th>Status</th><th style={{ textAlign: 'right' }}>Order Items</th><th style={{ textAlign: 'right' }}>Net Deducted</th></tr></thead>
                     <tbody>{ttByStatus.map((r, i) => <tr key={i}>
