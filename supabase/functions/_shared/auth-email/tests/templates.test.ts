@@ -64,12 +64,12 @@ Deno.test('templates are inline-styled and phone-width', () => {
 });
 
 Deno.test('the password-changed notice carries no link and no token', () => {
-  const email = renderPasswordChanged('Ada', '2026-09-08T04:05:06.000Z', 'stanley@rev22.com.sg');
+  const email = renderPasswordChanged('Ada', '2026-09-08T04:05:06.000Z', 'info@rev22.com.sg');
   assertFalse(email.html.includes('/auth/v1/verify'), 'nothing to click means nothing to phish');
   assertFalse(email.html.includes('token'));
   assertFalse(email.text.includes('http://'));
   // The only link is a mailto for reporting it, which is the point of the email.
-  assertStringIncludes(email.html, 'mailto:stanley@rev22.com.sg');
+  assertStringIncludes(email.html, 'mailto:info@rev22.com.sg');
   assertStringIncludes(email.text, '2026-09-08 04:05 UTC');
 });
 

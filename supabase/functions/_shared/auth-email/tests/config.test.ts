@@ -10,7 +10,7 @@ const REQUIRED = {
   PUBLIC_APP_URL: 'https://rev-22-energia-inventory-system.vercel.app/',
   PABBLY_AUTH_EMAIL_WEBHOOK_URL: 'https://connect.pabbly.test/hook',
   PABBLY_AUTH_EMAIL_SHARED_SECRET: 'shared-secret',
-  AUTH_EMAIL_FROM_ADDRESS: 'stanley@rev22.com.sg',
+  AUTH_EMAIL_FROM_ADDRESS: 'info@rev22.com.sg',
   AUTH_EMAIL_FROM_NAME: 'Rev 22 Global Energia',
   AUTH_EMAIL_RATE_LIMIT_HASH_SECRET: 'hash-secret',
 };
@@ -37,7 +37,7 @@ Deno.test('a complete environment loads, with sensible defaults', () => {
   withEnv(REQUIRED, () => {
     const config = loadConfig();
     assertEquals(config.publicAppUrl, 'https://rev-22-energia-inventory-system.vercel.app', 'trailing slash trimmed');
-    assertEquals(config.replyTo, 'stanley@rev22.com.sg', 'reply-to defaults to the sender');
+    assertEquals(config.replyTo, 'info@rev22.com.sg', 'reply-to defaults to the sender');
     assertEquals(config.callbackBaseUrls, [config.publicAppUrl], 'production only until test URLs are configured');
     assertEquals(config.trustedProxyHops, 1);
     assertEquals(config.pabblyTimeoutMs, 10_000, 'bounded at about ten seconds');

@@ -41,9 +41,9 @@ Deno.test('the payload carries the secret, the sender and the finished message',
     'reply_to', 'request_id', 'subject', 'text', 'to', 'recipient_role',
   ].sort());
   assertEquals(body.delivery_secret, config.pabblySharedSecret);
-  assertEquals(body.from_email, 'stanley@rev22.com.sg');
+  assertEquals(body.from_email, 'info@rev22.com.sg');
   assertEquals(body.from_name, 'Rev 22 Global Energia');
-  assertEquals(body.reply_to, 'stanley@rev22.com.sg');
+  assertEquals(body.reply_to, 'info@rev22.com.sg');
   assertEquals(body.to, 'ada@example.com');
   // No separate token or link field: the link is already in the message body.
   assertFalse('token' in body);

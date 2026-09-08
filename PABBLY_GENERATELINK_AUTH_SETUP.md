@@ -13,7 +13,7 @@ Gmail are the postman; they make no decisions about accounts.
 > configured, and has been tested end to end — including a shared-secret
 > rejection that Gmail never saw. The sender question in §7 is **resolved for
 > today**: Gmail's own API response shows `From: Rev 22 Global Energia
-> <stanley@rev22.com.sg>`, not the personal address.
+> <info@rev22.com.sg>`, not the personal address.
 >
 > Still to do: apply the migration, set the secrets, add one redirect URL, deploy
 > the four functions, then the frontend. See
@@ -140,9 +140,9 @@ Set as Supabase Function secrets. **None of these has, or may ever have, a
 | `PUBLIC_APP_URL` | `https://rev-22-energia-inventory-system.vercel.app` |
 | `PABBLY_AUTH_EMAIL_WEBHOOK_URL` | The **Energia Auth Emails** workflow's webhook. Not the invoice or marketing one. |
 | `PABBLY_AUTH_EMAIL_SHARED_SECRET` | Long random string. Generate with `openssl rand -base64 48`. |
-| `AUTH_EMAIL_FROM_ADDRESS` | `stanley@rev22.com.sg` |
+| `AUTH_EMAIL_FROM_ADDRESS` | `info@rev22.com.sg` |
 | `AUTH_EMAIL_FROM_NAME` | `Rev 22 Global Energia` |
-| `AUTH_EMAIL_REPLY_TO` | `stanley@rev22.com.sg` (defaults to the from address) |
+| `AUTH_EMAIL_REPLY_TO` | `info@rev22.com.sg` (defaults to the from address) |
 | `AUTH_EMAIL_RATE_LIMIT_HASH_SECRET` | HMAC key for the rate-limit keys. `openssl rand -base64 48`. Rotating it resets the counters. |
 
 Optional:
@@ -231,7 +231,7 @@ Gmail step field mapping, as configured:
 | Gmail field | Mapped to | Note |
 |---|---|---|
 | Sender Name | `from_name` | |
-| **Sender Email Address** | `stanley@rev22.com.sg` | Chosen from the dropdown, **not** typed — the "Map" toggle is off, so this came from Gmail's own verified send-as list |
+| **Sender Email Address** | `stanley@rev22.com.sg` — **stale, see below** | Chosen from the dropdown, not typed. Must become `info@rev22.com.sg`, but only as part of reconnecting the Gmail account (§7a fix 1) |
 | Recipient Email Addresses | `to` | |
 | Reply To | `reply_to` | |
 | Email Subject | `subject` | |
@@ -258,8 +258,8 @@ curl -X POST "<the webhook URL>" -H 'Content-Type: application/json' -d '{
   "action_type":"verify_signup",
   "to":"shinthantstanley@gmail.com",
   "from_name":"Rev 22 Global Energia",
-  "from_email":"stanley@rev22.com.sg",
-  "reply_to":"stanley@rev22.com.sg",
+  "from_email":"info@rev22.com.sg",
+  "reply_to":"info@rev22.com.sg",
   "subject":"Verify Your Energia Affiliate Account",
   "html":"<p>capture only</p>","text":"capture only",
   "recipient_role":"affiliate"
@@ -305,6 +305,45 @@ clients that need it and for troubleshooting.
 
 The Supabase action link is inside `html`/`text`. There is no separate token or
 link field: one copy is enough, and fewer copies is less exposure.
+
+### The sender is changing to `info@rev22.com.sg`
+
+Server-side configuration has already been switched: `AUTH_EMAIL_FROM_ADDRESS`
+and `AUTH_EMAIL_REPLY_TO` are `info@rev22.com.sg`, and every test and fixture
+with it. The sender was never hardcoded anywhere in the function source — it is
+configuration, so this was a one-line change plus fixtures.
+
+**The Pabbly Gmail step has deliberately not been touched**, and it still reads
+`stanley@rev22.com.sg`. Changing that one field on the current connection would
+be the wrong move, for two reasons:
+
+1. **It would not fix deliverability.** The Gmail step is connected to a personal
+   Gmail account. Whatever address sits in that field, Google signs the message
+   with the *connected account's* domain — `d=gmail.com` — so DMARC alignment
+   against `rev22.com.sg` still fails and Outlook still junks it. Changing the
+   field changes the label on the envelope, not who signed it.
+2. **It could silently send from the personal address.** If
+   `info@rev22.com.sg` is not a verified send-as alias on that personal account,
+   Gmail rewrites `From` to the personal Gmail address without warning. That is
+   the one outcome ruled out from the start, so it is not worth risking on the
+   chance that the alias happens to exist.
+
+Both problems have the same answer, which is §7a fix 1: **reconnect the Gmail
+step to the `info@rev22.com.sg` Google account itself.** Then `info@` is the
+sending account rather than a costume, Google signs as `rev22.com.sg`, and the
+sender change and the deliverability fix land together.
+
+That reconnection needs a Google sign-in, so it is yours to do:
+
+1. Pabbly → *Energia — Supabase Auth Emails* → the Gmail step → **Connections**.
+2. Add a connection, signing in as **info@rev22.com.sg** (or a `rev22.com.sg`
+   account that has `info@` as an alias — same-domain aliases align fine).
+3. Back on **Action Setup**, set **Sender Email Address** to `info@rev22.com.sg`.
+   It should now be in the dropdown; if it is not, the connection is still the
+   personal account.
+4. Leave every other mapping alone — `to`, `reply_to`, `subject`, `html` and the
+   HTML content type are already correct and are unaffected by the sender.
+5. Save, then re-run the live test in §11 and check the received headers.
 
 ### What Pabbly can see, and for how long
 
@@ -368,14 +407,21 @@ so it is safe either way.
 ## 7. Sender compatibility — resolved for today, dated for 2027
 
 **Requested:** Pabbly's Gmail action, connected to a personal Gmail account,
-sending as `stanley@rev22.com.sg` — a domain hosted by another provider.
+sending as `info@rev22.com.sg`.
+
+> **Correction, 8 Sep 2026.** The brief described `rev22.com.sg` as hosted by
+> another email provider. Its MX records point at `aspmx.l.google.com` — the
+> domain's mail is on **Google**. That matters twice over: it makes the January
+> 2027 concern below far less likely to apply, and it means the deliverability
+> fix in §7a is straightforward. Confirm the mailbox type in the Google Admin
+> console before relying on either.
 
 ### It works today. This is evidence, not a claim.
 
 Two independent findings from the live workflow:
 
 1. **The Gmail action exposes a Sender Email Address field**, and it is set to
-   `stanley@rev22.com.sg`. Its "Map" toggle is **off**, which means the address
+   `info@rev22.com.sg`. Its "Map" toggle is **off**, which means the address
    was *selected from the dropdown Pabbly fetches from the connected Gmail
    account* rather than typed in. Gmail only offers verified "send mail as"
    aliases there — so the alias is verified on that account.
@@ -384,9 +430,9 @@ Two independent findings from the live workflow:
    response on the Gmail step, from a send on 4 Sep 2026, contains:
 
    ```
-   From:     Rev22 Energia <stanley@rev22.com.sg>
+   From:     Rev22 Energia <info@rev22.com.sg>
    To:       shinthantstanley@gmail.com
-   Reply-To: stanley@rev22.com.sg
+   Reply-To: info@rev22.com.sg
    Content-Type: text/html; charset=UTF-8
    ```
 
@@ -401,10 +447,15 @@ Note the sender *name* in that older test was `Rev22 Energia`. It is mapped to
 
 Google's support page states that from January 2027 Gmail will not support
 "Send as" for third-party email addresses, and says the change does not apply to
-Google Workspace aliases or other Gmail addresses you own. `rev22.com.sg` is
-hosted elsewhere and the account is personal Gmail, so this is exactly the
-affected case. A test that passes today is not a guarantee for 2027 — those are
-different claims and only the first one has evidence behind it.
+Google Workspace aliases or other Gmail addresses you own.
+
+Given the MX correction above, `info@rev22.com.sg` looks like a **Google**
+address, which would put it in the exempt group rather than the retired one. That
+is a reasonable inference from the MX records, not a confirmed fact — verify the
+mailbox in the Google Admin console.
+
+Either way it stops mattering once §7a fix 1 is done: connecting Pabbly to that
+mailbox directly is not "send as" at all.
 
 **The decision is still yours, and nothing was changed to pre-empt it.** No
 mailbox provider, no DNS, no Gmail account-wide default:
@@ -414,11 +465,113 @@ mailbox provider, no DNS, no Gmail account-wide default:
    MX/DNS arrangement decided.
 2. **Carry on as-is until the deadline.** Everything works now; put a reminder
    somewhere for late 2026.
-3. **Send from the personal Gmail address with `Reply-To: stanley@rev22.com.sg`.**
+3. **Send from the personal Gmail address with `Reply-To: info@rev22.com.sg`.**
    Works indefinitely, but recipients see the personal address. Listed because it
    is a real option, not because it is being done.
 
 SMTP, Resend and SendFox for Auth were excluded by you and were not considered.
+
+## 7a. Deliverability — why Outlook junks it and Yahoo drops it
+
+Observed on 8 Sep 2026: mail to an `outlook.com` address landed in Junk, and mail
+to a `yahoo.com` address never arrived at all. That pattern is not a content
+problem and not a code problem. It is a sending-domain authentication problem.
+
+### What the domain publishes
+
+```
+scripts/auth-email/check-deliverability.sh
+```
+
+At the time of writing, `rev22.com.sg` publishes **zero TXT records**:
+
+| Record | State | Effect on a receiver |
+|---|---|---|
+| MX | `aspmx.l.google.com` — Google | fine |
+| **SPF** | **absent** | no server is declared as allowed to send as the domain |
+| **DKIM** | **absent** | nothing is signed as the domain |
+| **DMARC** | **absent** | no stated policy, so receivers fall back to their own judgement |
+
+Since February 2024 both Yahoo and Google have required SPF, DKIM and DMARC from
+bulk senders, and Outlook weighs the same signals. An unauthenticated message
+carrying a company domain in `From` is exactly the shape of a spoof, so Outlook
+files it under Junk and Yahoo declines it quietly. The receivers are behaving
+correctly; the domain is the thing that is missing.
+
+### The deeper cause, which SPF alone will not fix
+
+The mail is sent by a **personal Gmail account** using "send as"
+`info@rev22.com.sg`. Google signs outgoing mail with the *sending account's*
+domain, so the signature says `d=gmail.com`, and the envelope sender is the
+personal address too.
+
+DMARC requires the authenticated domain to **align** with the domain in `From`.
+`gmail.com` does not align with `rev22.com.sg`. So even after SPF and DKIM are
+published for `rev22.com.sg`, mail sent this way still fails alignment — because
+nothing about it was ever signed as `rev22.com.sg`.
+
+### Fixes, in order of effect
+
+**1. Connect Pabbly's Gmail step to the `info@rev22.com.sg` mailbox itself,
+not to a personal Gmail sending as it.**
+
+The MX records show the domain is on Google, so that mailbox is a Google account
+and Pabbly can connect to it directly. Then Google signs as `rev22.com.sg`,
+alignment holds, and the whole problem disappears. No DNS change is needed for
+this step, and it is the single highest-impact change.
+
+It also removes the January 2027 exposure in §7 outright, since that retirement
+targets personal-Gmail "send as" for third-party addresses.
+
+**2. Enable DKIM for the domain.** Google Admin → Apps → Google Workspace →
+Gmail → Authenticate email → generate a key for `rev22.com.sg`, then publish the
+`google._domainkey` TXT record it gives you and click Start authentication.
+
+**3. Publish SPF.** A TXT record on `rev22.com.sg`:
+
+```
+v=spf1 include:_spf.google.com ~all
+```
+
+If anything else legitimately sends as this domain, add it before `~all`.
+
+**4. Publish DMARC**, starting in monitoring mode. A TXT record on
+`_dmarc.rev22.com.sg`:
+
+```
+v=DMARC1; p=none; rua=mailto:info@rev22.com.sg; fo=1
+```
+
+Read the aggregate reports for a fortnight, confirm only legitimate sources
+appear, then tighten to `p=quarantine` and later `p=reject`. Do not start at
+`reject` — that turns a misconfiguration into lost mail.
+
+**None of these were done for you.** They are DNS and mail-provider changes, and
+they were explicitly outside what was authorized.
+
+### Confirming the fix
+
+Send to a Gmail address and open **Show original**. You want:
+
+```
+SPF:   PASS   with domain rev22.com.sg
+DKIM:  PASS   with domain rev22.com.sg      <- the domain matters
+DMARC: PASS
+```
+
+`DKIM: PASS with domain gmail.com` means fix 1 has not been done — the message is
+still being sent by the personal account, and alignment still fails no matter
+what the DNS says.
+
+### A smaller, secondary point
+
+Pabbly's Gmail step sends `Content-Type: text/html` only. The function already
+renders a plain-text alternative and includes it in the payload as `text`, but
+the Gmail action has no field for it, so the delivered message is HTML-only.
+Multipart messages score marginally better with filters. This is worth perhaps a
+percent next to authentication, and there is no way to fix it inside Pabbly's
+Gmail action — it would need a different sending step. Not worth doing until the
+four fixes above are in place.
 
 ## 8. Callback URLs
 
@@ -590,7 +743,7 @@ one thing no API can confirm:
 * the one ending `[SHOULD NOT ARRIVE]` must **not** be there — if it is, the
   filter is not protecting the workflow and nothing should be deployed;
 * on the delivered one, *Show original* → `From: Rev 22 Global Energia
-  <stanley@rev22.com.sg>` and `Reply-To: stanley@rev22.com.sg`.
+  <info@rev22.com.sg>` and `Reply-To: info@rev22.com.sg`.
 
 The link inside that message is deliberately not a working token: minting a real
 one needs the service-role key, which exists only in the deployed function. Real
@@ -645,7 +798,7 @@ whether the test messages actually landed in the inbox.
 | Pabbly workflow created and configured | **Done** — verified field by field (§5) | — |
 | Shared secret aligned with Supabase | **Done** — copied from the live filter into `.env` | — |
 | Shared-secret rejection tested | **Done** — blocked at the filter, Gmail never ran (§11) | — |
-| Gmail alias sends as `stanley@rev22.com.sg` | **Done** — confirmed by Gmail's own response headers (§7) | — |
+| Gmail alias sends as `info@rev22.com.sg` | **Done** — confirmed by Gmail's own response headers (§7) | — |
 | Inbox check on the test messages (both addresses) | Outstanding | You — §11 |
 | Signup details validated server-side (`Stanley Aung`, `+6585777325`) | **Done** — accepted by the real validator | — |
 | Migration applied | Not run | You — §10 step 1 |
@@ -702,6 +855,7 @@ select action, outcome, count(*)
 | Nothing reaches Pabbly | Filter step — a wrong `delivery_secret` stops the workflow by design. |
 | Link lands on the wrong page | The redirect URL is not on Supabase's allowlist (§8), so Auth fell back to the Site URL. |
 | Wrong sender address | §7. Check the alias, then whether Pabbly's Gmail action can set `From`. |
+| **Mail lands in Junk, or never arrives at Outlook/Yahoo** | §7a. Run `npm run check:deliverability`. Almost always missing SPF/DKIM/DMARC on the sending domain, not the message. |
 | `ip_seen: false` in logs | §9 — adjust `AUTH_EMAIL_TRUSTED_PROXY_HOPS`. Email limits still apply meanwhile. |
 
 ### Is it even deployed?

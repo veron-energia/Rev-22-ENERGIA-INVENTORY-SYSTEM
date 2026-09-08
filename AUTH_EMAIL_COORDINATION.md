@@ -48,7 +48,7 @@ email, the customer-phone work (mig 161–163), and the health-survey work.
 Code, tests and documentation are complete and green locally. The Pabbly workflow
 *Energia — Supabase Auth Emails* is verified and live-tested (shared-secret
 rejection blocked at the filter; Gmail confirmed sending as
-`stanley@rev22.com.sg`). Nothing is deployed and no production Auth setting has
+`info@rev22.com.sg`). Nothing is deployed and no production Auth setting has
 been changed. Remaining: apply migration 200, run
 `scripts/auth-email/deploy.sh`, add the `/reset-password` redirect URL, deploy the
 frontend. Details in `PABBLY_GENERATELINK_AUTH_SETUP.md` §10 and §12.

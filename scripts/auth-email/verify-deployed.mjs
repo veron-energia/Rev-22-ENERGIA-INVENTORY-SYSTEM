@@ -157,9 +157,9 @@ if (SEND_TEST) {
   console.log(`\n  request_id: ${r.json.request_id}`);
   console.log('  Now check, by hand:');
   console.log('    1. the email arrived;');
-  console.log('    2. Show original → From is "Rev 22 Global Energia <stanley@rev22.com.sg>",');
+  console.log('    2. Show original → From is "Rev 22 Global Energia <info@rev22.com.sg>",');
   console.log('       NOT the personal Gmail address;');
-  console.log('    3. Reply-To is stanley@rev22.com.sg;');
+  console.log('    3. Reply-To is info@rev22.com.sg;');
   console.log('    4. the link works, and still works in a different browser.');
   console.log('\n  A 200 here means Pabbly accepted the request. It is not proof an email arrived.');
 } else {

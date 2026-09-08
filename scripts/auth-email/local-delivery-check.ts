@@ -59,9 +59,9 @@ const config = (overrides: Partial<AuthEmailConfig> = {}): AuthEmailConfig => ({
   allowedOrigins: [APP_URL],
   pabblyWebhookUrl: 'http://127.0.0.1:8787/workflow/sendwebhookdata/local-check',
   pabblySharedSecret: SHARED_SECRET,
-  fromAddress: 'stanley@rev22.com.sg',
+  fromAddress: 'info@rev22.com.sg',
   fromName: 'Rev 22 Global Energia',
-  replyTo: 'stanley@rev22.com.sg',
+  replyTo: 'info@rev22.com.sg',
   hashSecret: 'local-hash-secret',
   trustedProxyHops: 1,
   pabblyTimeoutMs: 10_000,
@@ -132,8 +132,8 @@ try {
 
   const sent = received[0].body;
   check('the recipient is the account address', sent.to === RECIPIENT);
-  check('the sender is the company alias', sent.from_email === 'stanley@rev22.com.sg' && sent.from_name === 'Rev 22 Global Energia');
-  check('reply-to is set', sent.reply_to === 'stanley@rev22.com.sg');
+  check('the sender is the company alias', sent.from_email === 'info@rev22.com.sg' && sent.from_name === 'Rev 22 Global Energia');
+  check('reply-to is set', sent.reply_to === 'info@rev22.com.sg');
   check('the subject is the agreed wording', sent.subject === 'Verify Your Energia Affiliate Account');
   check('the action link is inside the message, not a separate field',
     String(sent.html).includes(ACTION_LINK.replace(/&/g, '&amp;')) && !('token' in sent) && !('action_link' in sent));
@@ -179,7 +179,7 @@ try {
   const previews = {
     'verify-signup': renderVerifySignup('Shin Thant', ACTION_LINK),
     'password-recovery': renderPasswordRecovery('Shin Thant', ACTION_LINK.replace('type=signup', 'type=recovery')),
-    'password-changed': renderPasswordChanged('Shin Thant', new Date().toISOString(), 'stanley@rev22.com.sg'),
+    'password-changed': renderPasswordChanged('Shin Thant', new Date().toISOString(), 'info@rev22.com.sg'),
   };
   for (const [name, email] of Object.entries(previews)) {
     await Deno.writeTextFile(`scripts/auth-email/preview/${name}.html`, email.html);
