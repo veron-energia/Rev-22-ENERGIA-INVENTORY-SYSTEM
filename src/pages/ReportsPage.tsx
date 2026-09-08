@@ -583,6 +583,17 @@ const ReportsPage: React.FC = () => {
               )}
               {tab === 'r_tiktok' && (
                 <>
+                  <SettlementSummary
+                    storeId={null}
+                    year={ttMonth.year}
+                    month={ttMonth.month}
+                    onChangeMonth={(year, month) => setTtMonth({ year, month })}
+                  />
+                  <h3 style={{ fontSize: 14, margin: '22px 0 4px' }}>Imported source totals (all periods)</h3>
+                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8 }}>
+                    TikTok's own figures as imported, across every period — shown for reconciliation,
+                    not as the reporting-month result.
+                  </p>
                   {ttSummary && (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
                       <div className="card" style={{ padding: 14 }}>
@@ -595,17 +606,6 @@ const ReportsPage: React.FC = () => {
                       </div>
                       <div className="card" style={{ padding: 14 }}>
                         <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Total Fees</div>
-                  <SettlementSummary
-                    storeId={null}
-                    year={ttMonth.year}
-                    month={ttMonth.month}
-                    onChangeMonth={(year, month) => setTtMonth({ year, month })}
-                  />
-                  <h3 style={{ fontSize: 14, margin: '22px 0 4px' }}>Imported source totals (all periods)</h3>
-                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8 }}>
-                    TikTok's own figures as imported, across every period — shown for reconciliation,
-                    not as the reporting-month result.
-                  </p>
                         <div style={{ fontSize: 19, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(Number(ttSummary.total_fees ?? 0))}</div>
                       </div>
                       <div className="card" style={{ padding: 14 }}>
@@ -651,6 +651,9 @@ const ReportsPage: React.FC = () => {
                           <td style={{ textAlign: 'right' }}>{r.transactions}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(r.revenue))}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(r.fees))}</td>
+                          <td style={{ textAlign: 'right' }}>{money(Number(r.expense ?? 0))}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.income ?? 0))}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.settlement))}</td>
                         </tr>)}</tbody>
                   </table>
 
@@ -662,35 +665,32 @@ const ReportsPage: React.FC = () => {
                         <td style={{ textAlign: 'right' }}>{r.transactions}</td>
                         <td style={{ textAlign: 'right' }}>{money(Number(r.revenue))}</td>
                         <td style={{ textAlign: 'right' }}>{money(Number(r.fees))}</td>
-                          <td style={{ textAlign: 'right' }}>{money(Number(r.expense ?? 0))}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.income ?? 0))}</td>
-                          <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.settlement))}</td>
+                        <td style={{ textAlign: 'right' }}>{money(Number(r.expense ?? 0))}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.income ?? 0))}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.settlement))}</td>
                         <td style={{ textAlign: 'right' }}>{r.pending_count}</td>
                         <td style={{ textAlign: 'right', color: Number(r.unreconciled_count) > 0 ? 'var(--danger)' : 'inherit' }}>{r.unreconciled_count}</td>
                       </tr>)}</tbody>
                   </table>
 
                   <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Quantity Sold (net of returns)</h3>
+                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                    Operational, from the order lifecycle — not settlement. It counts units on orders,
+                    which is a different question from money settled, and the two are <strong>not
+                    expected to reconcile</strong>: an order can ship in one period and settle in another.
+                  </p>
                   <table>
                     <thead><tr><th>Dimension</th><th>Item</th><th style={{ textAlign: 'right' }}>Orders</th><th style={{ textAlign: 'right' }}>Net Units</th></tr></thead>
                     <tbody>{ttQty.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No confirmed TikTok sales</td></tr>
                       : ttQty.map((r, i) => <tr key={i}>
                           <td style={{ fontSize: 12, textTransform: 'capitalize' }}>{r.dimension}</td>
                           <td style={{ fontWeight: 600, fontSize: 12.5 }}>{r.item_name}</td>
-                        <td style={{ textAlign: 'right' }}>{money(Number(r.expense ?? 0))}</td>
-                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.income ?? 0))}</td>
-                        <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(Number(r.settlement))}</td>
                           <td style={{ textAlign: 'right' }}>{r.orders}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.net_units}</td>
                         </tr>)}</tbody>
                   </table>
 
                   <h3 style={{ fontSize: 14, margin: '18px 0 4px' }}>Orders by Status</h3>
-                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
-                    Operational, from the order lifecycle — not settlement. It counts units on orders,
-                    which is a different question from money settled, and the two are <strong>not
-                    expected to reconcile</strong>: an order can ship in one period and settle in another.
-                  </p>
                   <table>
                     <thead><tr><th>Status</th><th style={{ textAlign: 'right' }}>Order Items</th><th style={{ textAlign: 'right' }}>Net Deducted</th></tr></thead>
                     <tbody>{ttByStatus.map((r, i) => <tr key={i}>
