@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import * as XLSX from 'xlsx';
 import { FileSpreadsheet } from 'lucide-react';
+import {
+  XERO_SALES_INVOICE_HEADERS, toXeroCsv, findMissingMandatory, xeroCsvFilename,
+} from '../lib/xero/salesInvoiceTemplate.mjs';
 import { supabase } from '../lib/supabase';
 import { Modal } from './ui';
 
@@ -176,12 +178,11 @@ export const XeroExportButton: React.FC<{
     }
     const customer = new Map((custRows ?? []).map(c => [c.id, c]));
 
-    const HEADERS = [
-      '*ContactName', 'EmailAddress', 'POAddressLine1', 'POCity', 'POPostalCode', 'POCountry',
-      '*InvoiceNumber', 'Reference', '*InvoiceDate', '*DueDate',
-      'InventoryItemCode', '*Description', '*Quantity', '*UnitAmount',
-      '*AccountCode', '*TaxType', 'TaxAmount', 'Currency',
-    ];
+    // Xero's own column list, in Xero's own order. Previously this was a
+    // hand-written subset: every mandatory field was there, but only 18 of the
+    // 29 columns, so held against the template it read as incomplete. The
+    // absent ones are all optional and simply come out empty.
+    const HEADERS = XERO_SALES_INVOICE_HEADERS;
 
     const body: Record<string, any>[] = [];
     let mismatches = 0;
@@ -292,12 +293,32 @@ export const XeroExportButton: React.FC<{
       if (Math.abs(lineSum - target) > 0.01) mismatches += 1;
     }
 
-    const ws = XLSX.utils.json_to_sheet(body, { header: HEADERS });
-    ws['!cols'] = HEADERS.map(h => ({ wch: Math.max(12, Math.min(h.length + 4, 28)) }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Xero Invoices');
+    // Xero's importer takes a CSV. A workbook is refused on file type before a
+    // single column is read, which is what made the earlier file unusable — the
+    // data in it was already right.
+    //
+    // Checked before the download rather than after: Xero stops on the first row
+    // with an empty mandatory field, so finding it here saves a round trip
+    // through someone else's import screen.
+    const missing = findMissingMandatory(body);
+    if (missing.length > 0) {
+      const first = missing[0];
+      setErr(`Row ${first.row} has no ${first.field}. Xero rejects a row with an empty `
+           + `mandatory field, so nothing was downloaded (${missing.length} row(s) affected).`);
+      setBusy(false);
+      return;
+    }
+
     const scope = storeId ? (stores.find(s => s.id === storeId)?.name ?? 'store') : 'all-stores';
-    XLSX.writeFile(wb, `xero-invoices-${scope}-${from}-to-${to}.xlsx`.replace(/\s+/g, '-'));
+    const blob = new Blob([toXeroCsv(body, HEADERS)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = xeroCsvFilename(scope, from, to);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
 
     setBusy(false);
     const notes: string[] = [];

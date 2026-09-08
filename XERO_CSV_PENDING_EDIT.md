@@ -1,9 +1,15 @@
 # Xero export — the accountant's feedback, and the change that answers it
 
-**Status: prepared, not applied.** `src/components/XeroExport.tsx` has uncommitted
-changes from agent one (they are moving it from `created_at` to `business_date`).
-The three edits below are held until that lands, so the two pieces of work do not
-entangle in one file. Everything else is done and tested.
+**Status: applied.** The three edits below are in `src/components/XeroExport.tsx`
+and the export now produces a CSV.
+
+Agent one's `created_at` → `business_date` change was still uncommitted in the
+same file when this landed, so only the three hunks below were staged — by
+building a patch of them and applying it with `git apply --cached`. Their five
+lines were left untouched in the working tree, which is why that file still shows
+as modified afterwards. That was not tidiness: their change depends on migration
+176, which is also uncommitted, so committing it would have shipped an export
+querying a column that may not exist yet.
 
 ---
 
@@ -47,7 +53,7 @@ and `TaxAmount` stays `0`. Nothing about the tax handling changes.
 
 ---
 
-## The three edits to `XeroExport.tsx`, once agent one has committed
+## The three edits to `XeroExport.tsx` (applied)
 
 ### 1. Import the module
 
