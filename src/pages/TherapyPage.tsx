@@ -6,6 +6,11 @@ import { Modal, DateModal, ReasonModal } from '../components/ui';
 import { RefreshCw, Plus, Sparkles, Search, CalendarClock, Play, Ban, Archive, Pencil } from 'lucide-react';
 import StorePriceEditor from '../components/StorePriceEditor';
 import { SearchSelect } from '../components/SearchSelect';
+import { CustomerTherapySummary } from '../components/therapy/CustomerTherapySummary';
+import { RewardChoice, ClaimConfirmation } from '../components/therapy/RewardChoice';
+import { HolidayAdmin, HolidayCountryField, suggestCountryFromPhone } from '../components/therapy/HolidayAdmin';
+import { RecalculationPreview, RewardMappingPreview } from '../components/therapy/TherapyDiagnostics';
+import '../components/therapy/therapy.css';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -236,17 +241,37 @@ const TherapyPage: React.FC = () => {
   const cName = (id: string) => customers.find(c => c.id === id)?.full_name ?? '—';
   const cPhone = (id: string) => customers.find(c => c.id === id)?.phone ?? '';
 
-  const openActivate = (e: PurchasedTherapyEntitlement) => { setActEnt(e); setActDate(sgToday()); setActReason(''); setErr(null); };
-  const doActivate = async (future: boolean) => {
+  const openActivate = (e: PurchasedTherapyEntitlement) => {
+    setActEnt(e); setActDate(sgToday()); setActReason(''); setErr(null);
+    setActOverlap(null); setActResult(null);
+    const suggested = suggestCountryFromPhone(cPhone(e.customer_id));
+    setActCountry(e.holiday_country ?? suggested.country); setActRegion(e.holiday_region ?? null);
+    if (holidayCountries.length === 0) {
+      void supabase.from('therapy_holiday_countries').select('*').order('name')
+        .then(({ data }) => setHolidayCountries((data as any[]) ?? []));
+    }
+  };
+
+  // activate_purchased_therapy returns a result now, and one of its answers is
+  // "no". It refuses to start a period on top of one the customer is already
+  // in, and returns requires_confirmation instead of raising — so reading only
+  // `error` would close the dialog on a refusal and look like success.
+  const doActivate = async (future: boolean, allowOverlap = false) => {
     if (!actEnt) return;
     setBusy(actEnt.id); setErr(null);
-    const { error } = await supabase.rpc('activate_purchased_therapy', {
+    const { data, error } = await supabase.rpc('activate_purchased_therapy', {
       p_entitlement_id: actEnt.id,
       p_activation_date: future ? actDate : null,
       p_reason: actReason || null,
+      p_holiday_country: actCountry || null,
+      p_holiday_region: actRegion || null,
+      p_allow_overlap: allowOverlap,
     });
     setBusy(null);
     if (error) { setErr(error.message); return; }
+    const result = data as any;
+    if (result && result.activated === false) { setActOverlap(result); return; }
+    setActOverlap(null); setActResult(result);
     setActEnt(null); load();
   };
   const doReschedule = (e: PurchasedTherapyEntitlement) => { setReschedEnt(e); setReschedDate(null); };
@@ -271,41 +296,26 @@ const TherapyPage: React.FC = () => {
   // duration (or is simply claimed, for a voucher reward).
   const [claimEnt, setClaimEnt] = useState<any | null>(null);
   const [claimDate, setClaimDate] = useState<string>('');
-  const [claimBusy, setClaimBusy] = useState(false);
-  const [claimErr, setClaimErr] = useState<string | null>(null);
   const [claimDone, setClaimDone] = useState<any | null>(null);
-  const [rewardOptions, setRewardOptions] = useState<any[]>([]);
-  const [chosenRule, setChosenRule] = useState<string>('');
-  const [voucherOptions, setVoucherOptions] = useState<any[]>([]);
-  const [basket, setBasket] = useState<Record<string, number>>({});
+  const [holidayCountries, setHolidayCountries] = useState<any[]>([]);
+  const [actCountry, setActCountry] = useState<string | null>(null);
+  const [actRegion, setActRegion] = useState<string | null>(null);
+  const [actOverlap, setActOverlap] = useState<any | null>(null);
+  const [actResult, setActResult] = useState<any | null>(null);
+  const [claimCountry, setClaimCountry] = useState<string | null>(null);
+  const [claimRegion, setClaimRegion] = useState<string | null>(null);
 
   const openClaim = async (e: any) => {
-    setClaimEnt(e); setClaimDate(sgToday()); setClaimErr(null); setClaimDone(null);
-    setBasket({}); setChosenRule('');
-    const { data: opts } = await supabase.rpc('legacy_reward_options', { p_entitlement_id: e.id });
-    const list = (opts as any[]) ?? [];
-    setRewardOptions(list);
-    // Default to the reward the entitlement already carries.
-    const match = list.find(o => o.entitlement_kind === e.entitlement_kind && o.name === e.package_name);
-    setChosenRule(match ? match.rule_id : (list.length === 1 ? list[0].rule_id : ''));
-    const { data: vo } = await supabase.rpc('legacy_reward_voucher_options', { p_store_id: e.store_id });
-    setVoucherOptions((vo as any[]) ?? []);
+    setClaimEnt(e); setClaimDate(sgToday()); setClaimDone(null);
+    // The phone only ever supplies a default. It is not proof of residence, so
+    // it fills the field in and can be changed before the claim freezes it.
+    const suggested = suggestCountryFromPhone(cPhone(e.customer_id));
+    setClaimCountry(suggested.country); setClaimRegion(null);
+    if (holidayCountries.length === 0) {
+      const { data: hc } = await supabase.from('therapy_holiday_countries').select('*').order('name');
+      setHolidayCountries((hc as any[]) ?? []);
+    }
   };
-  const submitClaim = async () => {
-    if (!claimEnt) return;
-    setClaimBusy(true); setClaimErr(null);
-    const sel = Object.entries(basket).filter(([, q]) => q > 0)
-      .map(([voucher_id, quantity]) => ({ voucher_id, quantity }));
-    const { data, error } = await supabase.rpc('claim_legacy_therapy', {
-      p_entitlement_id: claimEnt.id, p_activation_date: claimDate || null,
-      p_rule_id: chosenRule || null,
-      p_voucher_selections: sel.length ? sel : null,
-    });
-    setClaimBusy(false);
-    if (error) { setClaimErr(error.message); return; }
-    setClaimDone(data); setClaimEnt(null); load();
-  };
-
   const openPkg = (p: UnlimitedTherapyPackage | 'new') => {
     setPkgSku(p === 'new' ? '' : ((p as any).sku ?? ''));
     setPkgKind(p === 'new' ? 'unlimited' : (((p as any).entitlement_kind ?? 'unlimited') as any));
@@ -346,7 +356,7 @@ const TherapyPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Therapy</h2><p>Unlimited Therapy packages are purchased on an invoice. Target-based qualification has been retired; historical entitlements are read-only.</p></div>
+        <div><h2>Therapy</h2><p>Unlimited Therapy packages are purchased on an invoice. Qualification rewards are still earned and still claimable: an unclaimed entitlement can be claimed as unlimited therapy <em>or</em> as vouchers, whichever its tier offers.</p></div>
         <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
       </div>
       {err && <div className="alert alert-danger"><span>⚠</span><div>{err}</div></div>}
@@ -364,6 +374,22 @@ const TherapyPage: React.FC = () => {
 
       {tab === 'purchased' && (
         <>
+          {/* What customers actually hold, from the issued records. The
+              entitlement list below is still here — it answers a different
+              question, "what was sold", and both are needed. */}
+          <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+            <h3 style={{ fontSize: 14.5, marginBottom: 4 }}>Customer therapy holdings</h3>
+            <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 10 }}>
+              Vouchers and unlimited therapy per customer, from purchases, Legacy rewards,
+              promotions and premium bundles. Expand a customer to see where each came from.
+            </p>
+            <CustomerTherapySummary />
+          </div>
+
+          <h3 style={{ fontSize: 14.5, margin: '18px 0 8px' }}>Purchased entitlements</h3>
+          <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Unlimited therapy packages sold on an invoice — what was sold, rather than what is left.
+          </p>
           <div style={{ position: 'relative', marginBottom: 12, maxWidth: 380 }}>
             <Search size={15} style={{ position: 'absolute', left: 10, top: 10, opacity: 0.4 }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customer, phone, no. or package…" style={{ paddingLeft: 32 }} />
@@ -497,102 +523,55 @@ const TherapyPage: React.FC = () => {
       )}
 
       {claimEnt && (
-        <Modal title={`Claim — ${claimEnt.entitlement_no}`} maxWidth={430} onClose={() => setClaimEnt(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setClaimEnt(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={submitClaim} disabled={claimBusy}>{claimBusy ? 'Claiming…' : 'Claim'}</button></>}>
-          {(() => {
-            const opt = rewardOptions.find(o => o.rule_id === chosenRule);
-            const kind = opt ? opt.entitlement_kind : claimEnt.entitlement_kind;
-            const qty = opt ? (opt.voucher_qty ?? 0) : (claimEnt.voucher_qty ?? 0);
-            const chosenTotal = Object.values(basket).reduce((a, b) => a + (b || 0), 0);
-            return (
-              <div className="form-grid">
-                <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                  {cName(claimEnt.customer_id)} · qualified {money(claimEnt.qualified_value)}
-                  {claimEnt.earner_kind === 'affiliate' && <span className="badge badge-accent" style={{ marginLeft: 6 }}>Affiliate reward</span>}
-                </div>
+        <Modal title={`Claim — ${claimEnt.entitlement_no}`} maxWidth={520} onClose={() => setClaimEnt(null)}
+          footer={<button className="btn btn-secondary" onClick={() => setClaimEnt(null)}>Close</button>}>
+          <div className="form-grid">
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              {cName(claimEnt.customer_id)} · qualified {money(claimEnt.qualified_value)}
+              {claimEnt.earner_kind === 'affiliate' &&
+                <span className="badge badge-accent" style={{ marginLeft: 6 }}>Affiliate reward</span>}
+            </div>
 
-                {rewardOptions.length > 1 && (
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label>Choose the reward</label>
-                    {rewardOptions.map(o => (
-                      <label key={o.rule_id} style={{ display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 13, padding: '4px 0', cursor: 'pointer' }}>
-                        <input type="radio" name="rewardopt" style={{ width: 'auto', marginTop: 3 }}
-                          checked={chosenRule === o.rule_id}
-                          onChange={() => { setChosenRule(o.rule_id); setBasket({}); }} />
-                        <span>
-                          <strong>{o.name}</strong>
-                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-                            {o.entitlement_kind === 'voucher'
-                              ? `${o.voucher_qty ?? 0} voucher(s) — you pick which`
-                              : `Unlimited therapy${o.duration_months ? ` for ${o.duration_months} month(s)` : ''}`}
-                          </div>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                {kind === 'voucher' ? (
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label>Pick {qty} voucher(s) — {chosenTotal}/{qty} chosen</label>
-                    <div style={{ maxHeight: 210, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
-                      {voucherOptions.length === 0 && <div style={{ padding: 10, fontSize: 12, color: 'var(--text-muted)' }}>No reward-eligible vouchers at this store.</div>}
-                      {voucherOptions.map(v => {
-                        const cur = basket[v.voucher_id] ?? 0;
-                        const cap = v.available_qty == null ? qty : Math.min(qty, v.available_qty);
-                        return (
-                          <div key={v.voucher_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '6px 9px', borderBottom: '1px solid var(--border)' }}>
-                            <div style={{ fontSize: 12.5 }}>
-                              {v.name}
-                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                                {v.available_qty == null ? 'unlimited' : `${v.available_qty} in stock`}
-                              </div>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <button className="btn btn-secondary btn-sm" disabled={cur <= 0}
-                                onClick={() => setBasket(b => ({ ...b, [v.voucher_id]: Math.max(0, (b[v.voucher_id] ?? 0) - 1) }))}>−</button>
-                              <span style={{ minWidth: 18, textAlign: 'center', fontSize: 13 }}>{cur}</span>
-                              <button className="btn btn-secondary btn-sm"
-                                disabled={chosenTotal >= qty || cur >= cap}
-                                onClick={() => setBasket(b => ({ ...b, [v.voucher_id]: (b[v.voucher_id] ?? 0) + 1 }))}>+</button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                      You can mix voucher types. These are issued to {cName(claimEnt.customer_id)}, reduce store stock, and never expire.
-                    </div>
-                  </div>
-                ) : (
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label>Start date</label>
-                    <input type="date" value={claimDate} min={sgToday()} max={claimEnt.activation_deadline ?? undefined}
-                      onChange={e => setClaimDate(e.target.value)} />
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                      A future start date schedules it; today starts it immediately.
-                    </div>
-                  </div>
-                )}
-
-                <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span>
-                  <div>Must be claimed on or before {d(claimEnt.activation_deadline)}.</div>
-                </div>
-                {claimErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{claimErr}</div></div>}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label htmlFor="claim-date">Start date</label>
+              <input id="claim-date" type="date" value={claimDate} min={sgToday()}
+                     max={claimEnt.activation_deadline ?? undefined}
+                     onChange={e => setClaimDate(e.target.value)} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                A future start date schedules it; today starts it immediately. Used only for an
+                unlimited-therapy reward — claiming vouchers starts no therapy period.
               </div>
-            );
-          })()}
+            </div>
+
+            {/* The holiday calendar is frozen onto the entitlement when it is
+                claimed, so a later phone change cannot move the expiry. */}
+            <HolidayCountryField countries={holidayCountries} value={claimCountry} region={claimRegion}
+                                 phone={cPhone(claimEnt.customer_id)}
+                                 onChange={(c, r) => { setClaimCountry(c); setClaimRegion(r); }} />
+
+            <RewardChoice
+              entitlement={claimEnt}
+              claimDate={claimDate}
+              holidayCountry={claimCountry}
+              holidayRegion={claimRegion}
+              canManage={canManage}
+              onClaimed={(result) => { setClaimDone(result); setClaimEnt(null); load(); }} />
+
+            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span>
+              <div>Must be claimed on or before {d(claimEnt.activation_deadline)}.</div>
+            </div>
+          </div>
         </Modal>
       )}
 
       {claimDone && (
-        <Modal title="Claimed" maxWidth={400} onClose={() => setClaimDone(null)}
+        <Modal title="Claimed" maxWidth={460} onClose={() => setClaimDone(null)}
           footer={<button className="btn btn-primary" onClick={() => setClaimDone(null)}>Done</button>}>
           <div style={{ fontSize: 13 }}>
-            <div><strong>{claimDone.entitlement_no}</strong> is now {String(claimDone.status).replace('_',' ')}.</div>
-            {claimDone.activation_date && <div style={{ marginTop: 6 }}>Starts {d(claimDone.activation_date)}{claimDone.expiry_date ? ` and runs until ${d(claimDone.expiry_date)}` : ''}.</div>}
-            {claimDone.voucher_qty && <div style={{ marginTop: 6 }}>Issue {claimDone.voucher_qty} voucher(s) to the customer.</div>}
+            <div style={{ marginBottom: 8 }}>
+              <strong>{claimDone.entitlement_no}</strong> is now {String(claimDone.status).replace('_', ' ')}.
+            </div>
+            <ClaimConfirmation result={claimDone} />
           </div>
         </Modal>
       )}
@@ -1034,6 +1013,33 @@ const TherapyPage: React.FC = () => {
 
       {tab === 'qualification' && canManage && (
         <>
+          <details className="card" style={{ padding: 14, marginBottom: 12 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13.5 }}>
+              Unclaimed entitlements and their reward options
+            </summary>
+            <div style={{ marginTop: 10 }}>
+              <RewardMappingPreview canManage={canManage} onChanged={load} />
+            </div>
+          </details>
+
+          <details className="card" style={{ padding: 14, marginBottom: 12 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13.5 }}>
+              Holiday calendars and company closures
+            </summary>
+            <div style={{ marginTop: 10 }}>
+              <HolidayAdmin canManage={canManage} />
+            </div>
+          </details>
+
+          <details className="card" style={{ padding: 14, marginBottom: 12 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13.5 }}>
+              Expiry recalculation preview
+            </summary>
+            <div style={{ marginTop: 10 }}>
+              <RecalculationPreview canManage={canManage} />
+            </div>
+          </details>
+
           {setupStatus && Array.isArray(setupStatus.warnings) && setupStatus.warnings.length > 0 && (
             <div className="alert alert-warning" style={{ marginBottom: 12 }}>
               <span>⚠</span>
@@ -1208,10 +1214,76 @@ const TherapyPage: React.FC = () => {
               Must activate by <strong>{d(actEnt.activation_deadline)}</strong>.
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Activation date (for scheduling)</label>
-              <input type="date" value={actDate} min={sgToday()} max={actEnt.activation_deadline} onChange={e => setActDate(e.target.value)} />
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>"Activate now" starts today. "Schedule for date" uses the date above. Expiry = activation + {actEnt.duration_months} calendar months, locked on activation.</div>
+              <label htmlFor="act-date">Activation date (for scheduling)</label>
+              <input id="act-date" type="date" value={actDate} min={sgToday()} max={actEnt.activation_deadline} onChange={e => setActDate(e.target.value)} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                "Activate now" starts today. "Schedule for date" uses the date above.
+                Expiry = activation + {actEnt.duration_months} calendar months, then extended by
+                any public holidays or company closures inside that period. Locked on activation.
+              </div>
             </div>
+
+            {/* Frozen onto the entitlement here, so a later phone change cannot
+                move an expiry that has already been granted. */}
+            <div className="therapy-scope">
+              <HolidayCountryField countries={holidayCountries} value={actCountry} region={actRegion}
+                                   phone={cPhone(actEnt.customer_id)}
+                                   onChange={(c, r) => { setActCountry(c); setActRegion(r); }} />
+            </div>
+
+            {actOverlap && (
+              <div className="alert alert-warning" style={{ marginBottom: 0 }} role="status">
+                <span>⚠</span>
+                <div>
+                  <strong>Nothing has been activated.</strong> {actOverlap.reason}
+                  {Array.isArray(actOverlap.existing) && actOverlap.existing.length > 0 && (
+                    <ul style={{ margin: '6px 0 0 18px', fontSize: 12 }}>
+                      {actOverlap.existing.map((x: any, i: number) => (
+                        <li key={i}>{x.entitlement_no} — {x.status}, runs to {d(x.expiry_date)}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                    <button className="btn btn-primary btn-sm"
+                            onClick={() => { setActDate(actOverlap.suggested_start); setActOverlap(null); }}>
+                      Start on {d(actOverlap.suggested_start)} instead
+                    </button>
+                    <button className="btn btn-secondary btn-sm" disabled={busy === actEnt.id}
+                            onClick={() => doActivate(true, true)}>
+                      Overlap deliberately
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 6 }}>
+                    Overlapping means the customer pays for two periods covering the same days.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {actResult && (
+        <Modal title="Activated" maxWidth={430} onClose={() => setActResult(null)}
+          footer={<button className="btn btn-primary" onClick={() => setActResult(null)}>Done</button>}>
+          <div style={{ fontSize: 13 }}>
+            <div><strong>{actResult.status === 'scheduled' ? 'Scheduled' : 'Active'}</strong> from {d(actResult.activation_date)}.</div>
+            <div style={{ marginTop: 6 }}>
+              Runs until <strong>{d(actResult.expiry_date)}</strong>, inclusive
+              {actResult.closure_days_added > 0
+                ? <> — {actResult.closure_days_added} closure day{actResult.closure_days_added === 1 ? '' : 's'} added
+                    to a base expiry of {d(actResult.base_expiry)}.</>
+                : <> — no closures fell inside the period.</>}
+            </div>
+            {actResult.coverage && actResult.coverage.verified === false && (
+              <div className="alert alert-warning" style={{ marginTop: 8 }} role="status">
+                <span>⚠</span>
+                <div>
+                  This expiry is not fully verified.{' '}
+                  {(actResult.coverage.reasons ?? []).join(' ')}
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}

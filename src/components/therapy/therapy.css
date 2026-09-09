@@ -1,0 +1,92 @@
+/* Scoped to .therapy-* only. Nothing here changes a shared class, so invoice
+   work in progress elsewhere cannot be affected by it. */
+
+.therapy-summary-table { width: 100%; border-collapse: collapse; }
+.therapy-summary-table th { white-space: nowrap; }
+.therapy-summary-table td.therapy-num,
+.therapy-summary-table th.therapy-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.therapy-row-button {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; text-align: left; display: flex; align-items: center; gap: 6px;
+}
+.therapy-row-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+
+.therapy-detail { background: var(--surface-2); padding: 14px 16px; }
+.therapy-detail-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px;
+}
+
+.therapy-chip {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-secondary);
+}
+.therapy-chip-source { background: transparent; }
+.therapy-chip-warn { border-color: var(--danger); color: var(--danger); }
+
+.therapy-kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 12.5px; }
+.therapy-kv .k { color: var(--text-muted); }
+.therapy-kv .v { text-align: right; font-variant-numeric: tabular-nums; }
+
+.therapy-expiry-math {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.therapy-expiry-math .op { color: var(--text-muted); }
+.therapy-expiry-math .result { font-weight: 700; }
+
+.therapy-basket-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.therapy-basket-row:last-child { border-bottom: 0; }
+.therapy-basket-row input[type='number'] { width: 84px; text-align: right; }
+
+.therapy-remaining-hint { font-size: 12px; color: var(--text-muted); }
+.therapy-remaining-hint[data-over='true'] { color: var(--danger); font-weight: 600; }
+
+/* Cards instead of a wide table once a phone is too narrow for columns.
+   320px is the narrowest width this has to work at. */
+.therapy-cards { display: none; }
+@media (max-width: 720px) {
+  .therapy-desktop-only { display: none !important; }
+  .therapy-cards { display: block; }
+  .therapy-detail-grid { grid-template-columns: 1fr; }
+  .therapy-basket-row { grid-template-columns: 1fr auto; row-gap: 4px; }
+}
+
+.therapy-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 12px; margin-bottom: 10px;
+}
+.therapy-card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.therapy-card-name { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.therapy-card-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* Every tap target stays reachable on a phone. A 29px btn-sm is fine with a
+   mouse and fiddly with a thumb, so the small buttons grow at narrow widths
+   rather than everywhere — desktop density is left alone.
+
+   The radio and checkbox inputs stay their native size on purpose: the whole
+   label is the target (.therapy-inline), which is larger than any button here,
+   and resizing the control itself would misalign it with its text. */
+@media (max-width: 720px) {
+  .therapy-scope .btn { min-height: 38px; }
+  .therapy-scope .therapy-row-button { min-height: 38px; padding: 6px 0; }
+  .therapy-scope label.therapy-inline { min-height: 38px; align-items: center; }
+}
+
+/* globals.css gives every input width:100%, which is right for text fields and
+   wrong for a radio or a checkbox — it stretches the control across the row and
+   pushes its label away. Corrected inside this scope only, so no shared rule
+   changes and no other page is affected. */
+.therapy-scope input[type='radio'],
+.therapy-scope input[type='checkbox'] {
+  width: auto; flex: 0 0 auto; padding: 0; margin: 3px 0 0;
+}
+.therapy-scope label.therapy-inline {
+  display: flex; align-items: flex-start; gap: 8px; font-weight: 500;
+  margin-bottom: 0; cursor: pointer;
+}
+.therapy-scope label.therapy-inline > span { flex: 1 1 auto; min-width: 0; }

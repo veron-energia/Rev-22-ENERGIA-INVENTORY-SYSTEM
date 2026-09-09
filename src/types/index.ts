@@ -866,4 +866,13 @@ export interface PurchasedTherapyEntitlement {
   expiry_date: string | null;
   status: 'pending_activation' | 'scheduled' | 'active' | 'expired' | 'cancelled' | 'refunded';
   created_at: string;
+  // Added by migration 220. Optional so every existing query that selects a
+  // subset of columns still satisfies this type. expiry_date keeps its meaning
+  // — the inclusive last usable day — and is now base_expiry_date plus
+  // closure_days_added.
+  holiday_country?: string | null;
+  holiday_region?: string | null;
+  holiday_country_source?: string | null;
+  base_expiry_date?: string | null;
+  closure_days_added?: number;
 }
