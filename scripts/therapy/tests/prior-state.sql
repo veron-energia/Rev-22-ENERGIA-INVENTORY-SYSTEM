@@ -231,24 +231,18 @@ alter table public.customer_reward_vouchers
   add column if not exists source_type text,
   add column if not exists source_id uuid;
 
--- From migration 45, used by the 'purchased' expiry convention.
-create or replace function public.membership_anniversary(p_start date, p_months integer)
-returns date language sql immutable as $fn$
-  select (p_start + make_interval(months => p_months))::date
-$fn$;
-
-create or replace function public.membership_expiry(p_start date, p_months integer)
-returns date language sql immutable as $fn$
-  -- day before the anniversary; for a 29 Feb start the anniversary clamps to
-  -- 28 Feb, and we DO NOT subtract below it (that day is the full-period end).
-  select case
-    when extract(day from p_start) = 29 and extract(month from p_start) = 2
-     and extract(day from public.membership_anniversary(p_start, p_months)) = 28
-     and extract(month from public.membership_anniversary(p_start, p_months)) = 2
-    then public.membership_anniversary(p_start, p_months)
-    else public.membership_anniversary(p_start, p_months) - 1
-  end
-$fn$;
+-- membership_expiry() is deliberately NOT created here.
+--
+-- Phase 19 dropped it, and migration 72 exists because activate_purchased_therapy
+-- was still calling it: "function public.membership_expiry(date, integer) does
+-- not exist". That migration replaced the call with therapy_expiry(), so this
+-- system has ONE calendar-month convention, not two.
+--
+-- An earlier version of this fixture created membership_expiry by copying it out
+-- of migration 45 — a migration this database never ran. That made the fixture
+-- richer than production, the tests passed, and the real database raised the
+-- exact error migration 72 was written to fix. A fixture has to mirror what is
+-- installed, not what some superseded file says.
 
 create table if not exists public.voucher_store_stock (
   voucher_id uuid not null references public.vouchers(id),

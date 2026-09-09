@@ -75,36 +75,21 @@ export function baseExpiry(activationDate, months) {
 }
 
 /**
- * The other convention in this system, and the reason there are two.
+ * There is one calendar-month convention in this system, not two.
  *
- * Purchased therapy computes its expiry with membership_expiry(); Legacy
- * qualification uses therapy_expiry(). They agree everywhere except a start on
- * 29 February whose anniversary clamps to the 28th:
+ * An earlier version of this file carried a second one, mirroring
+ * membership_expiry(), on the strength of migration 53 calling it. That was
+ * wrong: Phase 19 dropped membership_expiry, and migration 72 exists because
+ * activating a purchased therapy then failed with "function
+ * public.membership_expiry(date, integer) does not exist" — it moved purchased
+ * therapy onto therapy_expiry(). Every purchased and Legacy expiry in this
+ * database was computed with the single rule above.
  *
- *   therapy    2024-02-29 + 12 months -> 2025-02-27
- *   membership 2024-02-29 + 12 months -> 2025-02-28
- *
- * membership_expiry treats the clamped 28 February as the full period and does
- * not subtract a day. Customers hold live entitlements computed both ways, so
- * neither can be quietly replaced by the other; the convention travels with the
- * entitlement and the closure extension is applied on top of whichever base it
- * was granted under.
+ * The database still accepts a convention argument so migrations 221-223 keep
+ * working unchanged; migration 225 makes both values identical, and the database
+ * test asserts they stay that way. If membership_expiry is ever reinstalled,
+ * that test fails and this is the file to revisit.
  */
-export function membershipBaseExpiry(activationDate, months) {
-  const m = Number(months);
-  if (!isDateOnly(activationDate) || !Number.isInteger(m) || m <= 0) return null;
-  const anniversary = addDays(baseExpiry(activationDate, m), 1);
-  const startsOn29Feb = activationDate.slice(5) === '02-29';
-  const clampedTo28Feb = anniversary.slice(5) === '02-28';
-  return startsOn29Feb && clampedTo28Feb ? anniversary : baseExpiry(activationDate, m);
-}
-
-/** 'purchased' | 'legacy' — the base for an entitlement of that kind. */
-export function baseExpiryFor(convention, activationDate, months) {
-  return convention === 'purchased'
-    ? membershipBaseExpiry(activationDate, months)
-    : baseExpiry(activationDate, months);
-}
 
 /**
  * Which closure dates earn a replacement day.
@@ -134,12 +119,11 @@ export function isEligibleClosureDate(date) {
  * @param {string} args.activationDate    'YYYY-MM-DD'
  * @param {number} args.months            calendar months sold
  * @param {Array<{date: string, kind?: string, name?: string, country?: string|null}>} args.closures
- * @param {'legacy'|'purchased'} [args.convention]  which base-expiry rule applies
  * @returns {{ baseExpiry: string|null, adjustedExpiry: string|null, addedDays: number,
  *             appliedDates: Array<object>, ignoredSundays: Array<object>, iterations: number }}
  */
-export function adjustedExpiry({ activationDate, months, closures = [], convention = 'legacy' }) {
-  const base = baseExpiryFor(convention, activationDate, months);
+export function adjustedExpiry({ activationDate, months, closures = [] }) {
+  const base = baseExpiry(activationDate, months);
   if (base === null) {
     return { baseExpiry: null, adjustedExpiry: null, addedDays: 0, appliedDates: [], ignoredSundays: [], iterations: 0 };
   }

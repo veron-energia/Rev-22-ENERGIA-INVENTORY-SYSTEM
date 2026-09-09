@@ -169,31 +169,19 @@ test('date arithmetic survives month, year and epoch boundaries', () => {
   assert.equal(addDays('1970-01-01', 0), '1970-01-01');
 });
 
-test('the two conventions are preserved, not merged', async () => {
-  const { membershipBaseExpiry, baseExpiryFor } = await import('../../../src/lib/therapy/expiry.mjs');
-  // A 29 February start has no anniversary in a non-leap year. Purchased
-  // therapy keeps the clamped 28th as a full period; Legacy subtracts a day.
-  assert.equal(baseExpiry('2024-02-29', 12), '2025-02-27', 'Legacy');
-  assert.equal(membershipBaseExpiry('2024-02-29', 12), '2025-02-28', 'purchased');
-  assert.notEqual(baseExpiry('2024-02-29', 12), membershipBaseExpiry('2024-02-29', 12));
-
-  // Everywhere else they agree, and no live entitlement moves.
-  for (const [d, m] of [['2026-01-15', 1], ['2026-01-31', 1], ['2024-02-29', 1], ['2026-03-01', 6]]) {
-    assert.equal(baseExpiry(d, m), membershipBaseExpiry(d, m), `${d} +${m}m`);
-  }
-  assert.equal(baseExpiryFor('purchased', '2024-02-29', 12), '2025-02-28');
-  assert.equal(baseExpiryFor('legacy', '2024-02-29', 12), '2025-02-27');
+test('there is one calendar-month convention, and 29 February follows it', () => {
+  // membership_expiry() would make this 2025-02-28. It is not installed — Phase
+  // 19 dropped it and migration 72 moved purchased therapy onto therapy_expiry —
+  // so the single rule applies to purchased and Legacy alike.
+  assert.equal(baseExpiry('2024-02-29', 12), '2025-02-27');
+  assert.equal(baseExpiry('2024-02-29', 1), '2024-03-28');
+  assert.equal(baseExpiry('2023-03-01', 12), '2024-02-29', 'a leap day can be the last day');
 });
 
-test('the closure extension is applied on top of whichever base applies', async () => {
-  const { adjustedExpiry: adj } = await import('../../../src/lib/therapy/expiry.mjs');
-  const closures = [{ date: '2024-06-03' }];          // a Monday inside both periods
-  const legacy = adj({ activationDate: '2024-02-29', months: 12, closures, convention: 'legacy' });
-  const purchased = adj({ activationDate: '2024-02-29', months: 12, closures, convention: 'purchased' });
-  assert.equal(legacy.baseExpiry, '2025-02-27');
-  assert.equal(purchased.baseExpiry, '2025-02-28');
-  assert.equal(legacy.addedDays, 1);
-  assert.equal(purchased.addedDays, 1);
-  assert.equal(legacy.adjustedExpiry, '2025-02-28');
-  assert.equal(purchased.adjustedExpiry, '2025-03-01', 'the one-day difference survives the extension');
+test('the closure extension is applied on top of that one base', () => {
+  const closures = [{ date: '2024-06-03' }];          // a Monday inside the period
+  const r = adjustedExpiry({ activationDate: '2024-02-29', months: 12, closures });
+  assert.equal(r.baseExpiry, '2025-02-27');
+  assert.equal(r.addedDays, 1);
+  assert.equal(r.adjustedExpiry, '2025-02-28');
 });

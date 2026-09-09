@@ -10,8 +10,7 @@
 
 import { execFileSync } from 'node:child_process';
 import {
-  baseExpiry, membershipBaseExpiry, adjustedExpiry, calendarDaysRemaining,
-  nextConsecutiveStart,
+  baseExpiry, adjustedExpiry, calendarDaysRemaining, nextConsecutiveStart,
 } from '../../../src/lib/therapy/expiry.mjs';
 
 process.env.PGHOST ??= '/tmp'; process.env.PGPORT ??= '55442';
@@ -50,11 +49,13 @@ apply('scripts/therapy/tests/prior-state.sql');
 sqlSafe(`delete from public.therapy_closure_dates;`);
 for (const f of ['220_therapy_holiday_calendars', '221_therapy_reward_choices',
                  '222_therapy_customer_summaries', '223_therapy_activation_and_sequencing',
-                 '224_therapy_singapore_calendar_seed']) {
+                 '224_therapy_singapore_calendar_seed',
+                 '225_therapy_expiry_base_correction',
+                 '226_therapy_historical_claims']) {
   apply(`supabase/${f}.sql`);
   apply(`supabase/${f}.sql`);            // idempotence is part of the contract
 }
-ok('migrations 220-224 apply over the pre-220 schema, and apply again, cleanly', true);
+ok('migrations 220-226 apply over the pre-220 schema, and apply again, cleanly', true);
 
 {
   // The seeded calendar, checked against the gazette this file was written from.
@@ -116,6 +117,17 @@ const closure = (date, kind, name, country = 'SG') =>
   closure('2026-02-05', 'company_closure', 'Stocktake');
   closure('2026-01-15', 'company_closure', 'Same day, second record');
 
+  // membership_expiry() is not installed — Phase 19 dropped it and migration 72
+  // moved purchased therapy onto therapy_expiry(). Both conventions therefore
+  // resolve to the same base here, including at 29 February, and the JS is
+  // asked for the 'legacy' rule for every case because that is the only rule.
+  ok('membership_expiry is absent, as it is in production',
+     sql(`select count(*) from pg_proc where proname = 'membership_expiry'
+           and pronamespace = 'public'::regnamespace;`) === '0');
+  ok('both conventions resolve to the same base, so no entitlement kind is treated differently',
+     sql(`select public.therapy_base_expiry('2024-02-29', 12, 'legacy')
+                 = public.therapy_base_expiry('2024-02-29', 12, 'purchased');`) === 't');
+
   const cases = [
     ['2026-01-05', 1, 'legacy'], ['2026-01-05', 1, 'purchased'],
     ['2026-01-31', 1, 'legacy'], ['2024-01-31', 1, 'legacy'],
@@ -128,7 +140,7 @@ const closure = (date, kind, name, country = 'SG') =>
   for (const [d, m, conv] of cases) {
     const s = sql(`select base_expiry || '|' || adjusted_expiry || '|' || added_days
                      from public.therapy_adjusted_expiry('${d}', ${m}, 'SG', null, '${conv}');`);
-    const j = adjustedExpiry({ activationDate: d, months: m, closures, convention: conv });
+    const j = adjustedExpiry({ activationDate: d, months: m, closures, convention: 'legacy' });
     const js = `${j.baseExpiry}|${j.adjustedExpiry}|${j.addedDays}`;
     if (s !== js) bad.push(`${d}+${m}m/${conv}: sql=${s} js=${js}`);
   }
@@ -339,8 +351,8 @@ const purchased = (customer, months, status, activation, expiry, country = null)
      sql(`select status from public.purchased_therapy_entitlements where id='${p2}';`) === 'pending_activation');
 
   const allowed = json(`select public.activate_purchased_therapy('${p2}', '${day(31)}', 'test', 'SG');`);
-  const expectedBase = sql(`select public.membership_expiry('${day(31)}'::date, 1);`);
-  ok('activating after the predecessor works, on the purchased convention',
+  const expectedBase = sql(`select public.therapy_expiry('${day(31)}'::date, 1);`);
+  ok('activating after the predecessor works, on the one calendar-month convention',
      allowed.activated === true && allowed.base_expiry === expectedBase,
      `base ${allowed.base_expiry}, expected ${expectedBase}`);
   ok('and its expiry is never earlier than its base — closures only ever add',
@@ -377,17 +389,82 @@ const purchased = (customer, months, status, activation, expiry, country = null)
 
   ok('a current entitlement offers both alternatives',
      sql(`select count(*) from public.legacy_reward_options('${curr}');`) === '2');
-  ok('a historical S$794 entitlement offers none — the reported defect',
-     sql(`select count(*) from public.legacy_reward_options('${hist}');`) === '0');
+  // A threshold change must not take back what was already earned. This
+  // entitlement has no rule to trace, so only its own snapshot is offered — but
+  // it IS offered, and it can be claimed.
+  const histOpts = json(`select jsonb_agg(to_jsonb(o)) from public.legacy_reward_options('${hist}') o;`);
+  ok('a historical S$794 entitlement is still claimable as what it was granted',
+     histOpts.length === 1 && histOpts[0].is_entitlement_snapshot === true
+       && histOpts[0].entitlement_kind === 'unlimited' && histOpts[0].rule_id === null,
+     JSON.stringify(histOpts.map(o => `${o.entitlement_kind}/${o.availability}`)));
 
   const diag = json(`select public.legacy_reward_options_diagnostic('${hist}');`);
-  ok('and the diagnostic says why instead of falling back to unlimited',
-     diag.option_count === 0 && diag.has_choice === false
-       && /S\$794/.test(JSON.stringify(diag.reasons)), JSON.stringify(diag.reasons));
+  ok('and the diagnostic says it is claimable but has no alternative to choose',
+     diag.claimable === true && diag.configured_option_count === 0 && diag.has_choice === false
+       && /S\$794/.test(JSON.stringify(diag.reasons)), JSON.stringify(diag.reasons).slice(0, 110));
 
   const affDiag = json(`select public.legacy_reward_options_diagnostic('${aff}');`);
-  ok('an affiliate with only a voucher rule is told which rule to add',
-     affDiag.option_count === 1 && /add an affiliate rule/.test(JSON.stringify(affDiag.reasons)));
+  ok('an affiliate with only a voucher rule configured is still told which rule to add',
+     /add an affiliate rule/.test(JSON.stringify(affDiag.reasons)),
+     JSON.stringify(affDiag.configured_option_kinds));
+
+  // The case the owner actually hits: the SAME rules, threshold raised. rule_id
+  // still points at them, so both alternatives come back with nothing to configure.
+  {
+    // The reward voucher has to exist before anything can be claimed with it.
+    sql(`insert into public.vouchers (id, name, voucher_kind, code, reward_eligible, qty_type)
+         values ('55555555-5555-5555-5555-555555555555','Therapy Session','normal','TS',true,'unlimited')
+         on conflict do nothing;`);
+
+    const traced = sql(`insert into public.therapy_entitlements
+      (entitlement_no, customer_id, store_id, rule_id, package_name, entitlement_kind,
+       duration_months, qualifying_amount, qualified_value, earner_kind, status, activation_deadline)
+      values ('T794','${B}','${STORE}',
+              (select id from public.therapy_package_rules where name='1 Month Unlimited (Customer)'),
+              '1 Month Unlimited','unlimited',1, 794, 794,'customer','pending_activation','2027-12-31')
+      returning id;`);
+    const opts = json(`select jsonb_agg(to_jsonb(o)) from public.legacy_reward_options('${traced}') o;`);
+    ok('an entitlement earned under a threshold that was later raised keeps BOTH alternatives',
+       opts.length === 2 && opts.every(o => o.is_entitlement_snapshot === false)
+         && opts.map(o => o.entitlement_kind).sort().join(',') === 'unlimited,voucher',
+       JSON.stringify(opts.map(o => `${o.entitlement_kind}/${o.availability}`)));
+    ok('and no manual mapping was needed to get there',
+       sql(`select coalesce(reward_tier_key, '(none)') from public.therapy_entitlements
+             where id = '${traced}';`) === '(none)');
+
+    // Retired alternatives from the earned tier are still offered, labelled.
+    sql(`update public.therapy_package_rules set is_active = false
+          where name = '10 Therapy Vouchers (Customer)';`);
+    const retired = json(`select jsonb_agg(to_jsonb(o)) from public.legacy_reward_options('${traced}') o;`);
+    ok('a retired alternative from that tier is still offered, flagged as no longer current',
+       retired.length === 2 && retired.some(o => o.availability === 'retired'),
+       JSON.stringify(retired.map(o => `${o.entitlement_kind}/${o.availability}`)));
+    sql(`update public.therapy_package_rules set is_active = true
+          where name = '10 Therapy Vouchers (Customer)';`);
+
+    // And it can actually be claimed as the alternative it was denied before.
+    const claimedAlt = json(`select public.claim_legacy_therapy('${traced}', null,
+      (select id from public.therapy_package_rules where name='10 Therapy Vouchers (Customer)'),
+      '[{"voucher_id":"55555555-5555-5555-5555-555555555555","quantity":10}]'::jsonb);`);
+    ok('a S$794 entitlement can be claimed as the voucher alternative it was earned with',
+       claimedAlt.kind === 'voucher' && claimedAlt.issued_vouchers[0].quantity === 10);
+    ok('and its qualifying amount is still S$794 — history is not rewritten',
+       sql(`select qualifying_amount from public.therapy_entitlements where id='${traced}';`) === '794.00');
+  }
+
+  // An entitlement with no rule and no matching amount is claimable from its
+  // snapshot, with no rule passed at all.
+  {
+    const orphan = sql(`insert into public.therapy_entitlements
+      (entitlement_no, customer_id, store_id, package_name, entitlement_kind, duration_months,
+       qualifying_amount, qualified_value, earner_kind, status, activation_deadline)
+      values ('ORPH','${B}','${STORE}','1 Month Unlimited','unlimited',1, 594, 594,
+              'customer','pending_activation','2027-12-31') returning id;`);
+    const res = json(`select public.claim_legacy_therapy('${orphan}', public.sg_today(), null, null, 'SG');`);
+    ok('an entitlement whose originating rule is gone entirely can still be claimed',
+       res.success === true && res.kind === 'unlimited' && res.status === 'active',
+       `${res.status} to ${res.expiry_date}`);
+  }
 
   const noReason = fails(`select public.therapy_map_entitlement_tier('${hist}','customer:994.00:${STORE}','');`,
                          s => sqlAs('owner', s));
@@ -484,12 +561,26 @@ const purchased = (customer, months, status, activation, expiry, country = null)
 
   const row = json(`select to_jsonb(s) from public.therapy_customer_summary(null, 50, 0, false) s
                      where s.customer_id = '${B}';`);
+  // Derived from the table rather than written down: earlier tests in this file
+  // claim rewards for the same customer, and a hardcoded total would only be
+  // testing that nobody added a row above.
+  const want = json(`select jsonb_build_object(
+      'issued',   coalesce(sum(crv.quantity) filter (where v.voucher_kind = 'normal'), 0),
+      'redeemed', coalesce(sum(crv.quantity) filter (where v.voucher_kind = 'normal' and crv.status = 'redeemed'), 0),
+      'held',     coalesce(sum(crv.quantity) filter (where v.voucher_kind = 'normal' and crv.status = 'held'), 0),
+      'money',    coalesce(sum(crv.quantity) filter (where v.voucher_kind <> 'normal' and crv.status = 'held'), 0),
+      'redemption_rows', (select count(*) from public.voucher_redemptions where customer_id = '${B}'))
+    from public.customer_reward_vouchers crv
+    join public.vouchers v on v.id = crv.voucher_id
+   where crv.customer_id = '${B}';`);
   ok('the balance comes from the issued rows, and a redemption record is not counted twice',
-     row.therapy_vouchers_issued === 16 && row.therapy_vouchers_redeemed === 3
-       && row.therapy_vouchers_remaining === 12,
-     `issued=${row.therapy_vouchers_issued} redeemed=${row.therapy_vouchers_redeemed} remaining=${row.therapy_vouchers_remaining}`);
+     row.therapy_vouchers_issued === want.issued && row.therapy_vouchers_redeemed === want.redeemed
+       && row.therapy_vouchers_remaining === want.held && want.redemption_rows > 0,
+     `issued=${row.therapy_vouchers_issued}/${want.issued} redeemed=${row.therapy_vouchers_redeemed}/${want.redeemed} `
+     + `remaining=${row.therapy_vouchers_remaining}/${want.held}, with ${want.redemption_rows} redemption record(s) present`);
   ok('money-off vouchers are counted in their own unit, not added to sessions',
-     row.money_vouchers_remaining === 4 && row.therapy_vouchers_remaining === 12);
+     row.money_vouchers_remaining === want.money && row.therapy_vouchers_remaining === want.held
+       && want.money !== want.held);
   ok('revoked vouchers are shown separately and are not spendable',
      row.vouchers_revoked === 1);
 

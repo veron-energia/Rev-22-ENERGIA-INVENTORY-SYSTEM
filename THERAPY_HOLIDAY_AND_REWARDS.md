@@ -73,19 +73,33 @@ Expiry is **inclusive** — the last day the benefit can be used. That is what
 preserved rather than reinterpreted. Activation, remaining duration, status and
 display all use it.
 
-### There are two conventions, and both are still live
+### One convention — a correction
 
-| Start | Months | `therapy_expiry` (Legacy) | `membership_expiry` (purchased) |
-|---|---|---|---|
-| 2024-02-29 | 12 | 2025-02-27 | **2025-02-28** |
-| everything else | — | identical | identical |
+An earlier version of this document said purchased and Legacy therapy used
+different calendar-month rules, and that a 29 February start differed by a day
+between them. **That was wrong**, and migration 225 corrects it.
 
-A 29 February start has no anniversary in a non-leap year. `membership_expiry`
-treats the clamped 28 February as the full period and does not subtract a day.
-Customers hold live entitlements computed both ways, so **neither was replaced**:
-the convention travels with the entitlement (`therapy_base_expiry(start, months,
-'legacy'|'purchased')`) and the extension is applied on top of whichever base it
-was granted under. Flattening these would have moved somebody's expiry by a day.
+`membership_expiry()` is not installed. Phase 19 dropped it, and migration 72
+exists precisely because activating a purchased therapy then failed with
+
+```
+function public.membership_expiry(date, integer) does not exist
+```
+
+— it replaced the call with `therapy_expiry()`. So every purchased and Legacy
+expiry in this database was computed with one rule: `start + months - 1 day`,
+inclusive.
+
+The claim survived my tests because the local fixture created
+`membership_expiry` by copying it out of migration 45 — a migration this
+database never ran. The fixture now mirrors what is installed, and reproduces
+the production error without migration 225.
+
+`therapy_adjusted_expiry` still accepts a convention argument so migrations
+221–223 keep working unchanged. It no longer selects anything, and a check in
+migration 225 plus a database test assert both values stay identical — if
+`membership_expiry` is ever reinstalled, that check fails and points at the
+function to revisit.
 
 ### The rules
 
@@ -162,10 +176,30 @@ shorten. Removing a calendar entry reports `skipped_would_shorten` and leaves th
 granted expiry standing; an Owner or Manager must pass `p_allow_shortening` with
 a reason, which is stored with both dates.
 
-**Mapping.** A S$794 entitlement is offered candidate tiers ranked by how close
-each is to what it already carries, with `threshold_differs` shown plainly.
-Mapping requires a reason. The qualifying amount is never rewritten — verified by
-a test that reads it back as `794.00` afterwards.
+**An earned entitlement stays claimable when the rules change** (migration 226).
+Raising a threshold changes who qualifies from then on; it does not take back
+what was already granted. Options resolve in this order:
+
+1. An explicit tier mapping, if someone made one.
+2. **The tier of the rule the entitlement was actually created from**
+   (`therapy_entitlements.rule_id`). This is a record, not a guess — it is the
+   rule that granted the entitlement, so its siblings are the alternatives that
+   were genuinely offered at the time, including any since retired, which are
+   returned flagged rather than hidden.
+3. Rules at the same qualifying amount, as before.
+4. **The entitlement's own snapshot, always**, so a claim is never blocked.
+
+In the ordinary case — raising S$794 to S$994 by editing the existing rules —
+`rule_id` still points at them, so **both alternatives come back with nothing to
+configure**. Where the originating rule is gone entirely, the entitlement is
+still claimable as exactly what it was granted, with no rule at all, which is
+what `claim_legacy_therapy` has always done when given no `p_rule_id`.
+
+**Mapping** remains for the case that genuinely needs a person: attaching an
+entitlement to a tier at a *different* threshold. A rule at a different
+threshold is a different promise, so that still requires a reason. The
+qualifying amount is never rewritten — verified by a test that reads it back as
+`794.00` after a claim.
 
 ---
 
@@ -213,13 +247,17 @@ moved automatically.
 3. `supabase/222_therapy_customer_summaries.sql`
 4. `supabase/223_therapy_activation_and_sequencing.sql`
 5. `supabase/224_therapy_singapore_calendar_seed.sql`
-6. **Read the previews before touching anything:**
+6. `supabase/225_therapy_expiry_base_correction.sql` — **required.** Without it
+   every expiry calculation raises `function public.membership_expiry(date,
+   integer) does not exist`.
+7. `supabase/226_therapy_historical_claims.sql`
+8. **Read the previews before touching anything:**
    ```sql
    select * from public.therapy_recalculation_preview(null, null);
    select * from public.therapy_reward_mapping_preview();
    ```
-7. Deploy the frontend.
-8. In the Therapy page, confirm the Singapore calendar for each year against the
+9. Deploy the frontend.
+10. In the Therapy page, confirm the Singapore calendar for each year against the
    gazette. Until then those expiries show as unverified — correctly.
 
 Order matters: the page calls functions these migrations create, so a
@@ -280,7 +318,7 @@ select entitlement_kind, entitlement_id, old_expiry, new_expiry, reason, created
 | Suite | Result |
 |---|---|
 | `npm run test:therapy` | 19 passed |
-| `npm run test:therapy:db` | 68 checks passed |
+| `npm run test:therapy:db` | 76 checks passed |
 | typecheck, build | clean |
 | Existing suites (tiktok 33, xero 8, survey 26, phones 9, auth-email 17; tiktok db 35) | unchanged |
 

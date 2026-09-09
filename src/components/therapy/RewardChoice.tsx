@@ -19,10 +19,20 @@ import './therapy.css';
  */
 
 export interface RewardOption {
-  rule_id: string; name: string; entitlement_kind: 'unlimited' | 'voucher';
+  // null for the entitlement's own snapshot — the reward as granted, claimable
+  // with no rule at all, which is what keeps a historical entitlement claimable
+  // after the qualification rules move.
+  rule_id: string | null;
+  name: string; entitlement_kind: 'unlimited' | 'voucher';
   duration_months: number | null; voucher_qty: number | null;
   tier_key: string | null; applies_to: string; is_current_choice: boolean;
+  is_entitlement_snapshot: boolean;
+  availability: 'available' | 'retired' | 'as_earned';
 }
+
+/** Radio values must be strings; the snapshot has no rule id to use as one. */
+const SNAPSHOT = '__as_earned__';
+const optionKey = (o: RewardOption) => o.rule_id ?? SNAPSHOT;
 interface VoucherOption { voucher_id: string; name: string; code: string; available_qty: number | null; }
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'failed';
@@ -59,7 +69,8 @@ export const RewardChoice: React.FC<{
     }
     const list = (opts as RewardOption[]) ?? [];
     setOptions(list); setDiagnostic(diag ?? null); setState('ready');
-    setChosen(list.find(o => o.is_current_choice)?.rule_id ?? (list.length === 1 ? list[0].rule_id : ''));
+    const preferred = list.find(o => o.is_current_choice) ?? (list.length === 1 ? list[0] : null);
+    setChosen(preferred ? optionKey(preferred) : '');
 
     const { data: vo } = await supabase.rpc('legacy_reward_voucher_options',
       { p_store_id: entitlement.store_id });
@@ -68,7 +79,7 @@ export const RewardChoice: React.FC<{
 
   useEffect(() => { void load(); }, [load]);
 
-  const selected = options.find(o => o.rule_id === chosen) ?? null;
+  const selected = options.find(o => optionKey(o) === chosen) ?? null;
   const required = selected?.entitlement_kind === 'voucher' ? (selected.voucher_qty ?? 0) : 0;
   const picked = useMemo(() => Object.values(basket).reduce((n, q) => n + (q || 0), 0), [basket]);
   const short = required - picked;
@@ -85,7 +96,9 @@ export const RewardChoice: React.FC<{
     const { data, error } = await supabase.rpc('claim_legacy_therapy', {
       p_entitlement_id: entitlement.id,
       p_activation_date: claimDate || null,
-      p_rule_id: chosen || null,
+      // The snapshot is claimed by sending no rule, which is what
+      // claim_legacy_therapy has always done with p_rule_id null.
+      p_rule_id: chosen === SNAPSHOT ? null : (chosen || null),
       p_voucher_selections: selections.length ? selections : null,
       p_holiday_country: holidayCountry || null,
       p_holiday_region: holidayRegion || null,
@@ -124,31 +137,36 @@ export const RewardChoice: React.FC<{
           Reward for this qualifying unit
         </legend>
 
-        {options.length === 0 && (
-          <div className="alert alert-warning" role="status">
+        {diagnostic?.configured_option_count === 0 && (
+          <div className="alert alert-info" role="status">
             <AlertTriangle size={15} aria-hidden="true" />
             <div>
-              <strong>No reward rule matches this entitlement, so there is nothing to choose.</strong>
-              <ul style={{ margin: '6px 0 0 18px' }}>
-                {(diagnostic?.reasons ?? []).map((r: string, i: number) => <li key={i}>{r}</li>)}
-              </ul>
-              {canManage
-                ? <p style={{ marginTop: 6 }}>
-                    An Owner or Manager can map this entitlement to a reward tier from the
-                    Qualification tab, or add the missing rule there.
-                  </p>
-                : <p style={{ marginTop: 6 }}>Ask an Owner or Manager to configure the matching reward rule.</p>}
+              <strong>This entitlement can still be claimed as what it was granted.</strong>{' '}
+              No current rule matches its qualifying amount, so there is no alternative to
+              choose between — but the reward it earned is unchanged and is offered above.
+              {canManage && (
+                <p style={{ marginTop: 6 }}>
+                  To offer the alternative as well, map it to a reward tier from the
+                  Qualification tab.
+                </p>
+              )}
             </div>
           </div>
         )}
 
         {options.map(o => (
-          <label key={o.rule_id} className="therapy-inline" style={{ padding: '7px 0' }}>
-            <input type="radio" name="reward-option" value={o.rule_id}
-                   checked={chosen === o.rule_id}
-                   onChange={() => { setChosen(o.rule_id); setBasket({}); }} />
+          <label key={optionKey(o)} className="therapy-inline" style={{ padding: '7px 0' }}>
+            <input type="radio" name="reward-option" value={optionKey(o)}
+                   checked={chosen === optionKey(o)}
+                   onChange={() => { setChosen(optionKey(o)); setBasket({}); }} />
             <span>
               <strong>{o.name}</strong>
+              {o.availability === 'as_earned' && (
+                <span className="therapy-chip" style={{ marginLeft: 6 }}>as earned</span>
+              )}
+              {o.availability === 'retired' && (
+                <span className="therapy-chip therapy-chip-warn" style={{ marginLeft: 6 }}>no longer offered</span>
+              )}
               <span className="therapy-remaining-hint">
                 {' '}— {o.entitlement_kind === 'unlimited'
                   ? `${o.duration_months} calendar month${o.duration_months === 1 ? '' : 's'} of unlimited therapy`

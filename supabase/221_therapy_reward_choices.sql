@@ -196,6 +196,11 @@ end $function$;
 -- and say yes. Candidates are ranked by how close the reward is to what the
 -- entitlement already carries — same kind and same duration or quantity first.
 -- ---------------------------------------------------------------------
+-- Migration 226 widens this function's returned columns. Dropping first is what
+-- lets this whole folder be re-applied in order afterwards, rather than failing
+-- with "cannot change return type of existing function" on the second pass.
+drop function if exists public.therapy_reward_mapping_preview();
+
 create or replace function public.therapy_reward_mapping_preview()
 returns table (entitlement_id uuid, entitlement_no text, customer_id uuid,
                customer_name text, recipient text, qualifying_amount numeric,
