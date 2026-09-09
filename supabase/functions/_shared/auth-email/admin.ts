@@ -32,6 +32,14 @@ export interface GeneratedLink {
   actionLink: string;
   email: string;
   displayName: string;
+  /**
+   * The Auth account this link belongs to.
+   *
+   * Optional because only the invitation path needs it — a recovery link is
+   * acted on by the recipient's own session, so nothing has to look the account
+   * up. The invitation path checks for it explicitly rather than assuming.
+   */
+  userId?: string | null;
 }
 
 export type GenerateOutcome =
@@ -86,6 +94,34 @@ export async function regenerateSignupLink(
 }
 
 /** Recovery link. Reports `no_such_user` rather than inventing an account. */
+/**
+ * Create the Auth account for an invited internal user and return its link.
+ *
+ * `generateLink({ type: 'invite' })` creates the account and hands the link
+ * back. It is deliberately not `inviteUserByEmail`, which would send the email
+ * through Supabase's own sender and bypass the Pabbly pipeline, the branded
+ * template and the configured From address entirely.
+ *
+ * No password is set here. The invited user has none until they choose one, so
+ * there is nothing for an administrator to see, send on, or accidentally log.
+ *
+ * The metadata is a display convenience only. Authority lives in the profiles
+ * row that invite_user_provisioned() writes; nothing reads a role from here.
+ */
+export async function generateInviteLink(
+  admin: SupabaseClient,
+  args: { email: string; redirectTo: string; fullName: string },
+): Promise<GenerateOutcome> {
+  return await runGenerate(admin, {
+    type: 'invite',
+    email: args.email,
+    options: {
+      redirectTo: args.redirectTo,
+      data: { full_name: args.fullName, invited_to: 'energia_internal' },
+    },
+  });
+}
+
 export async function generateRecoveryLink(
   admin: SupabaseClient,
   args: { email: string; redirectTo: string },
@@ -125,6 +161,11 @@ async function runGenerate(admin: SupabaseClient, params: any): Promise<Generate
 
   return {
     status: 'ok',
-    link: { actionLink, email: data.user?.email ?? params.email, displayName },
+    link: {
+      actionLink,
+      email: data.user?.email ?? params.email,
+      displayName,
+      userId: data.user?.id ?? null,
+    },
   };
 }

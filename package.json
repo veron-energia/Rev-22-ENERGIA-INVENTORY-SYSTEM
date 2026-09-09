@@ -25,7 +25,8 @@
     "test:tiktok": "node --test scripts/tiktok/tests/*.test.mjs",
     "test:tiktok:db": "node scripts/tiktok/tests/database.mjs",
     "test:therapy": "node --test scripts/therapy/tests/*.test.mjs",
-    "test:therapy:db": "node scripts/therapy/tests/database.mjs"
+    "test:therapy:db": "node scripts/therapy/tests/database.mjs",
+    "test:users:db": "node scripts/users/tests/database.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

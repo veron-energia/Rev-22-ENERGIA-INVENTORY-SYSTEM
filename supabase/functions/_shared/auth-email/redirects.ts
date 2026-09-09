@@ -10,6 +10,7 @@ export const CALLBACK_PATHS = {
   affiliate_signup: '/affiliate/verify',
   affiliate_recovery: '/affiliate/reset-password',
   staff_recovery: '/reset-password',
+  user_invitation: '/accept-invitation',
 } as const;
 
 export type CallbackFlow = keyof typeof CALLBACK_PATHS;

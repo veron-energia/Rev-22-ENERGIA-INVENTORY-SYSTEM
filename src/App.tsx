@@ -46,6 +46,7 @@ import AffiliateAccountPage from './pages/AffiliateAccountPage';
 import ReferralSignupPage from './pages/ReferralSignupPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
+import AcceptInvitationPage from './pages/AcceptInvitationPage';
 import { Leaf } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -114,6 +115,9 @@ const AppRoutes: React.FC = () => {
           own: Supabase turns the emailed link into a recovery session on arrival. */}
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      {/* Where an internal user's invitation link lands. Public, because they
+          have no account until they finish here. */}
+      <Route path="/accept-invitation" element={<AcceptInvitationPage />} />
       {/* Authenticated affiliate portal */}
       <Route path="/affiliate/dashboard" element={<AffiliateProtected><AffiliateDashboardPage /></AffiliateProtected>} />
       <Route path="/affiliate/network" element={<AffiliateProtected><AffiliateNetworkPage /></AffiliateProtected>} />

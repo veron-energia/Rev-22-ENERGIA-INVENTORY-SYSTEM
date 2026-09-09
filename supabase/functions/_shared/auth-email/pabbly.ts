@@ -20,7 +20,7 @@ import { safeDetail, type DeliveryOutcome } from './diagnostics.ts';
 
 export interface DeliveryRequest {
   requestId: string;
-  actionType: 'verify_signup' | 'password_recovery' | 'password_changed';
+  actionType: 'verify_signup' | 'password_recovery' | 'password_changed' | 'user_invitation';
   to: string;
   subject: string;
   html: string;

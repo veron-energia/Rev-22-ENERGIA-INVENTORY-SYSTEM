@@ -9,7 +9,10 @@ Deno.test('flows map to the production callbacks', () => {
   assertEquals(callbackUrl(config, 'affiliate_signup', null), `${APP_URL}/affiliate/verify`);
   assertEquals(callbackUrl(config, 'affiliate_recovery', null), `${APP_URL}/affiliate/reset-password`);
   assertEquals(callbackUrl(config, 'staff_recovery', null), `${APP_URL}/reset-password`);
-  assertEquals(Object.keys(CALLBACK_PATHS).length, 3, 'no speculative callbacks');
+  assertEquals(callbackUrl(config, 'user_invitation', null), `${APP_URL}/accept-invitation`);
+  // The count is asserted so a speculative callback cannot be added quietly.
+  // Four now: internal invitations landed one, and it has a route to match.
+  assertEquals(Object.keys(CALLBACK_PATHS).length, 4, 'no speculative callbacks');
 });
 
 Deno.test('an unlisted origin cannot nominate itself as the callback', () => {

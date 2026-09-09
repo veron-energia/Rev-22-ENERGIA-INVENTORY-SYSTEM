@@ -4,7 +4,30 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Profile, UserRole, ROLE_LABELS, isOwnerOrManager } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { Pencil, Users2, RefreshCw, UserPlus, Info } from 'lucide-react';
+import { Pencil, Users2, RefreshCw, UserPlus, Info, Search, Send, XCircle } from 'lucide-react';
+import { InviteUserForm } from '../components/users/InviteUserForm';
+import { cancelInvitation, resendInvitation } from '../lib/userInvitations';
+import '../components/users/users.css';
+
+/** One row of user_admin_list(): the account state and the invitation state, side by side. */
+interface AdminRow {
+  user_id: string; full_name: string; email: string; role: UserRole;
+  is_active: boolean; invitation_status: string | null;
+  state: 'active' | 'inactive' | 'pending_invitation' | 'cancelled_invitation';
+  work_phone: string | null; personal_phone: string | null; personal_email: string | null;
+  store_ids: string[]; store_names: string[];
+  invitation_id: string | null; invited_at: string | null; invited_by_name: string | null;
+  last_email_attempt_at: string | null; last_email_status: string | null; last_email_detail: string | null;
+  resend_count: number; cancelled_at: string | null; accepted_at: string | null;
+  can_manage: boolean;
+}
+
+const STATE_LABEL: Record<AdminRow['state'], string> = {
+  active: 'Active',
+  inactive: 'Inactive',
+  pending_invitation: 'Pending invitation',
+  cancelled_invitation: 'Cancelled invitation',
+};
 
 const ROLES: UserRole[] = ['owner', 'admin', 'manager', 'inventory_manager', 'staff'];
 
@@ -22,12 +45,30 @@ const UsersPage: React.FC = () => {
   });
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [adminRows, setAdminRows] = useState<AdminRow[]>([]);
+  const [search, setSearch] = useState('');
+  const [stateFilter, setStateFilter] = useState<'all' | AdminRow['state']>('all');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('profiles').select('*').is('deleted_at', null).order('created_at');
-    setRows((data as Profile[]) ?? []);
+    // user_admin_list() knows about invitations; the profiles table alone cannot
+    // tell "invited last week, never accepted" from "deactivated last year".
+    const [{ data: admin, error: adminError }, { data: profiles }] = await Promise.all([
+      supabase.rpc('user_admin_list'),
+      supabase.from('profiles').select('*').is('deleted_at', null).order('created_at'),
+    ]);
+    setRows((profiles as Profile[]) ?? []);
+    if (adminError) {
+      // The migration may not be applied yet. Say so rather than showing an
+      // empty page that looks like "no users".
+      setErr(`Invitation details are unavailable: ${adminError.message}`);
+      setAdminRows([]);
+    } else {
+      setAdminRows((admin as AdminRow[]) ?? []);
+    }
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -67,6 +108,73 @@ const UsersPage: React.FC = () => {
     load();
   };
 
+  const doResend = async (row: AdminRow) => {
+    if (!row.invitation_id || actingOn) return;
+    setActingOn(row.invitation_id); setErr(null); setNotice(null);
+    const result = await resendInvitation(row.invitation_id);
+    setActingOn(null);
+    if (result.kind === 'invited') {
+      setNotice(result.delivery === 'accepted_by_provider'
+        ? `The invitation to ${row.email} was accepted for delivery. That is the provider accepting `
+          + 'the request, not confirmation it reached their inbox.'
+        : `The invitation to ${row.email} could not be sent. ${result.detail ?? ''}`);
+      load();
+      return;
+    }
+    setErr(result.message);
+  };
+
+  const doCancel = async (row: AdminRow) => {
+    if (!row.invitation_id || actingOn) return;
+    const reason = window.prompt(
+      `Cancel the invitation for ${row.full_name} (${row.email})?\n\n`
+      + 'They will not be able to use the link that was emailed, even if they still have it.\n\n'
+      + 'Reason (recorded):');
+    if (reason === null) return;
+    setActingOn(row.invitation_id); setErr(null); setNotice(null);
+    const result = await cancelInvitation(row.invitation_id, reason);
+    setActingOn(null);
+    if (!result.ok) { setErr(result.message); return; }
+    setNotice(`The invitation for ${row.full_name} was cancelled.`);
+    load();
+  };
+
+  const visibleRows = adminRows.filter(r => {
+    if (stateFilter !== 'all' && r.state !== stateFilter) return false;
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return r.full_name.toLowerCase().includes(q)
+        || (r.email ?? '').toLowerCase().includes(q)
+        || (r.store_names ?? []).some(n => n.toLowerCase().includes(q));
+  });
+
+  const when = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+
+  const StateBadge: React.FC<{ row: AdminRow }> = ({ row }) => {
+    if (row.state === 'pending_invitation') return <span className="users-chip users-chip-pending">Pending invitation</span>;
+    if (row.state === 'cancelled_invitation') return <span className="users-chip users-chip-cancelled">Cancelled invitation</span>;
+    if (row.state === 'active') return <span className="badge badge-success">Active</span>;
+    return <span className="badge badge-muted">Inactive</span>;
+  };
+
+  const RowActions: React.FC<{ row: AdminRow }> = ({ row }) => {
+    if (!row.can_manage) return <span className="users-hint">Not yours to manage</span>;
+    if (row.state !== 'pending_invitation') return null;
+    return (
+      <span style={{ display: 'inline-flex', gap: 6 }}>
+        <button className="btn btn-secondary btn-sm" disabled={actingOn === row.invitation_id}
+                onClick={() => void doResend(row)}>
+          <Send size={13} aria-hidden="true" /> {actingOn === row.invitation_id ? 'Working…' : 'Resend'}
+        </button>
+        <button className="btn btn-secondary btn-sm" disabled={actingOn === row.invitation_id}
+                onClick={() => void doCancel(row)}>
+          <XCircle size={13} aria-hidden="true" /> Cancel
+        </button>
+      </span>
+    );
+  };
+
   if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage users and roles." />;
 
 
@@ -75,50 +183,152 @@ const UsersPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Users &amp; Roles</h2><p>Manage who can access the system and what they're allowed to do.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          {/* User-management fields only. There is deliberately no invitation
+              link or token column: the server never returns one, and an export
+              is the easiest place for a secret to end up on somebody's laptop. */}
           <ExcelExportButton
-            rows={rows} filename="users" sheetName="Users"
+            rows={adminRows.length ? adminRows : rows} filename="users" sheetName="Users"
             columns={[
               { header: 'Name', value: (u: any) => u.full_name ?? '' },
-              { header: 'Email', value: (u: any) => u.email ?? '' },
-              { header: 'Role', value: (u: any) => u.role ?? '' },
-              { header: 'Status', value: (u: any) => u.is_active ? 'Active' : 'Inactive' },
+              { header: 'Login email', value: (u: any) => u.email ?? '' },
+              { header: 'Role', value: (u: any) => ROLE_LABELS[u.role as UserRole] ?? u.role ?? '' },
+              { header: 'Status', value: (u: any) =>
+                  u.state ? STATE_LABEL[u.state as AdminRow['state']] : (u.is_active ? 'Active' : 'Inactive') },
+              { header: 'Stores', value: (u: any) => (u.store_names ?? []).join(', ') },
+              { header: 'Work phone', value: (u: any) => u.work_phone ?? '' },
+              { header: 'Invited on', value: (u: any) => u.invited_at ? new Date(u.invited_at).toLocaleDateString('en-GB') : '' },
+              { header: 'Invited by', value: (u: any) => u.invited_by_name ?? '' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          <button className="btn btn-primary" onClick={() => setHelpOpen(true)}><UserPlus size={16} /> Add User</button>
+          <button className="btn btn-primary" onClick={() => { setNotice(null); setInviteOpen(true); }}>
+            <UserPlus size={16} /> Invite User
+          </button>
         </div>
       </div>
 
       <div className="alert alert-info">
         <Info size={16} style={{ flexShrink: 0 }} />
-        <div>New users are created in two steps for security: first an Auth login in the Supabase dashboard, then their role here. Click <strong>Add User</strong> for the exact steps.</div>
+        <div>
+          Invite someone by email and they set their own password from the link. You never see or
+          set it. They stay <strong>Pending invitation</strong> — with no access at all — until they
+          have finished setting it up.
+        </div>
       </div>
 
-      <div className="card">
-        <div className="table-wrap">
+      {notice && <div className="alert alert-success" role="status"><span>✓</span><div>{notice}</div></div>}
+
+      <div className="users-scope" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', margin: '12px 0' }}>
+        <div className="form-group" style={{ marginBottom: 0, flex: '1 1 220px', minWidth: 0 }}>
+          <label htmlFor="user-search">Search</label>
+          <div className="users-search">
+            <Search size={14} aria-hidden="true" />
+            <input id="user-search" type="search" value={search} placeholder="Name, email or store"
+                   onChange={e => setSearch(e.target.value)} />
+          </div>
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label htmlFor="user-state">Status</label>
+          <select id="user-state" value={stateFilter} onChange={e => setStateFilter(e.target.value as never)}>
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="pending_invitation">Pending invitation</option>
+            <option value="inactive">Inactive</option>
+            <option value="cancelled_invitation">Cancelled invitation</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="card users-scope">
+        <div className="table-wrap users-desktop-only">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : rows.length === 0 ? (
-            <div className="empty-state"><Users2 size={34} style={{ opacity: 0.3, marginBottom: 10 }} /><p style={{ fontWeight: 600 }}>No users yet</p></div>
+          : visibleRows.length === 0 ? (
+            <div className="empty-state">
+              <Users2 size={34} style={{ opacity: 0.3, marginBottom: 10 }} />
+              <p style={{ fontWeight: 600 }}>{adminRows.length === 0 ? 'No users yet' : 'No user matches'}</p>
+            </div>
           ) : (
             <table>
-              <thead><tr><th>Name</th><th>Work Email</th><th>Work Phone</th><th>Role</th><th>Status</th><th></th></tr></thead>
+              <thead><tr>
+                <th scope="col">Name</th><th scope="col">Login email</th><th scope="col">Role</th>
+                <th scope="col">Stores</th><th scope="col">Status</th><th scope="col">Invitation</th>
+                <th scope="col"></th>
+              </tr></thead>
               <tbody>
-                {rows.map(u => (
-                  <tr key={u.id}>
-                    <td><strong>{u.full_name}</strong>{u.id === profile?.id && <span className="badge badge-primary" style={{ marginLeft: 8 }}>You</span>}</td>
-                    <td style={{ color: 'var(--text-secondary)' }}>{u.email}</td>
-                    <td style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{u.work_phone || '—'}</td>
-                    <td><span className="badge badge-primary">{ROLE_LABELS[u.role]}</span></td>
-                    <td>{u.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                {visibleRows.map(u => (
+                  <tr key={u.user_id}>
                     <td>
-                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(u)} disabled={u.id === profile?.id && profile?.role !== 'owner'}>
-                        <Pencil size={13} />
-                      </button>
+                      <strong>{u.full_name}</strong>
+                      {u.user_id === profile?.id && <span className="badge badge-primary" style={{ marginLeft: 8 }}>You</span>}
+                    </td>
+                    <td style={{ color: 'var(--text-secondary)' }}>{u.email}</td>
+                    <td><span className="badge badge-primary">{ROLE_LABELS[u.role]}</span></td>
+                    <td style={{ fontSize: 12 }}>
+                      {u.store_names.length ? u.store_names.join(', ') : <span className="users-hint">None</span>}
+                    </td>
+                    <td><StateBadge row={u} /></td>
+                    <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                      {u.state === 'pending_invitation' || u.state === 'cancelled_invitation' ? (
+                        <>
+                          Invited {when(u.invited_at)}
+                          {u.invited_by_name && <> by {u.invited_by_name}</>}
+                          {u.last_email_attempt_at && (
+                            <><br />Last email {when(u.last_email_attempt_at)} —{' '}
+                              {u.last_email_status === 'accepted_by_provider'
+                                ? 'accepted by the provider'
+                                : u.last_email_status === 'not_attempted' ? 'not attempted' : 'failed'}
+                            </>
+                          )}
+                          {u.resend_count > 0 && <><br />Resent {u.resend_count}×</>}
+                          {u.cancelled_at && <><br />Cancelled {when(u.cancelled_at)}</>}
+                        </>
+                      ) : u.accepted_at ? <>Accepted {when(u.accepted_at)}</> : '—'}
+                    </td>
+                    <td>
+                      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <RowActions row={u} />
+                        <button className="btn btn-secondary btn-sm btn-icon"
+                                aria-label={`Edit ${u.full_name}`}
+                                onClick={() => { const p = rows.find(r => r.id === u.user_id); if (p) openEdit(p); }}
+                                disabled={!u.can_manage || (u.user_id === profile?.id && profile?.role !== 'owner')}>
+                          <Pencil size={13} />
+                        </button>
+                      </span>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+        </div>
+
+        {/* One card per person once the table is too wide for the screen. */}
+        <div className="users-cards" style={{ padding: 12 }}>
+          {visibleRows.map(u => (
+            <div className="users-card" key={u.user_id}>
+              <div className="users-card-name">{u.full_name}</div>
+              <div className="users-hint">{u.email}</div>
+              <div className="users-card-stats">
+                <span className="users-chip">{ROLE_LABELS[u.role]}</span>
+                <StateBadge row={u} />
+                {u.store_names.slice(0, 3).map(n => <span className="users-chip" key={n}>{n}</span>)}
+              </div>
+              {(u.state === 'pending_invitation' || u.state === 'cancelled_invitation') && (
+                <div className="users-hint" style={{ marginTop: 6 }}>
+                  Invited {when(u.invited_at)}{u.invited_by_name && <> by {u.invited_by_name}</>}
+                  {u.last_email_status === 'accepted_by_provider' && <> · email accepted by the provider</>}
+                  {u.last_email_status === 'failed' && <> · email failed</>}
+                </div>
+              )}
+              <div className="users-actions">
+                <RowActions row={u} />
+                <button className="btn btn-secondary btn-sm"
+                        onClick={() => { const p = rows.find(r => r.id === u.user_id); if (p) openEdit(p); }}
+                        disabled={!u.can_manage || (u.user_id === profile?.id && profile?.role !== 'owner')}>
+                  <Pencil size={13} aria-hidden="true" /> Edit
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -156,34 +366,14 @@ const UsersPage: React.FC = () => {
         </Modal>
       )}
 
-      {/* Add user help modal */}
-      {helpOpen && (
-        <Modal title="Add a New User" maxWidth={520} onClose={() => setHelpOpen(false)}
-          footer={<button className="btn btn-primary" onClick={() => setHelpOpen(false)}>Got it</button>}>
-          <div style={{ fontSize: 13.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            <p style={{ marginBottom: 14 }}>For security, the frontend can't create login accounts directly. Create a user in two steps:</p>
-            <ol style={{ paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <li>
-                <strong>Create the login.</strong> In the Supabase dashboard go to <em>Authentication → Users → Add user</em>. Enter their email and a temporary password. Copy the new user's UUID.
-              </li>
-              <li>
-                <strong>Create their profile.</strong> In the Supabase <em>SQL Editor</em>, run:
-                <pre style={{ background: 'var(--surface-2)', padding: 12, borderRadius: 'var(--radius-sm)', fontSize: 11.5, overflowX: 'auto', marginTop: 6, fontFamily: 'var(--font-display)' }}>{`insert into public.profiles
-  (id, full_name, email, role)
-values
-  ('PASTE-UUID', 'Their Name',
-   'their@email.com', 'staff');`}</pre>
-              </li>
-              <li>
-                <strong>Set their role &amp; store.</strong> They'll appear in this list — edit to adjust role, then assign them to a store on the Stores page (for Manager, Inventory Manager, or Staff).
-              </li>
-            </ol>
-            <p style={{ marginTop: 14, fontSize: 12.5, color: 'var(--text-muted)' }}>
-              A future enhancement can automate this with a secure Edge Function, but the two-step flow keeps the service role key safely out of the browser.
-            </p>
-          </div>
+      {inviteOpen && (
+        <Modal title="Invite a User" maxWidth={620} onClose={() => setInviteOpen(false)}>
+          <InviteUserForm
+            onInvited={() => { setNotice('Invitation sent. They appear below as Pending invitation.'); load(); }}
+            onClose={() => setInviteOpen(false)} />
         </Modal>
       )}
+
     </div>
   );
 };

@@ -33,6 +33,10 @@ serve(async (req) => {
 
   const apiKey = Deno.env.get('RESEND_API_KEY');
   const from = Deno.env.get('INVOICE_FROM');
+  // Replies to an invoice should reach the same mailbox as everything else.
+  // Falls back to the From address, which is what happens today when no
+  // Reply-To is set, so an unconfigured project behaves exactly as before.
+  const replyTo = Deno.env.get('INVOICE_REPLY_TO') || from;
   if (!apiKey || !from) {
     return json({
       error: 'Email is not configured yet. Set RESEND_API_KEY and INVOICE_FROM '
@@ -80,6 +84,7 @@ serve(async (req) => {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from,
+        reply_to: replyTo,
         to: [to],
         subject: payload.subject ?? `${kind} ${docNo} — Energia`,
         text, html,

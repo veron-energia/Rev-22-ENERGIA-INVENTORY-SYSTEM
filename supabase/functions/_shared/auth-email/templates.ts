@@ -5,7 +5,7 @@
 // Every interpolated value goes through `escapeHtml`, and the action link is
 // checked against this project's Auth origin by the caller before it gets here.
 
-export type AuthEmailAction = 'verify_signup' | 'password_recovery' | 'password_changed';
+export type AuthEmailAction = 'verify_signup' | 'password_recovery' | 'password_changed' | 'user_invitation';
 
 export interface RenderedEmail {
   subject: string;
@@ -17,6 +17,7 @@ export const SUBJECTS: Record<AuthEmailAction, string> = {
   verify_signup: 'Verify Your Energia Affiliate Account',
   password_recovery: 'Reset Your Energia Password',
   password_changed: 'Your Energia Password Was Changed',
+  user_invitation: "You're Invited to Energia",
 };
 
 const BRAND = '#1f7a4d';
@@ -108,6 +109,60 @@ export function renderVerifySignup(name: string, actionLink: string): RenderedEm
       actionLink, '',
       'This link can only be used once and expires after a while.',
       'If you did not sign up for an Energia Affiliate account, you can ignore this email.', '',
+      'Rev 22 Global Energia',
+    ].join('\n'),
+  };
+}
+
+/**
+ * The invitation an internal user receives.
+ *
+ * No password, no temporary credential and no secret of any kind is in this
+ * email — the recipient chooses their own password on arrival, which is why
+ * there is nothing here for a forwarded message to leak.
+ *
+ * Expiry is described only as far as it is actually true. Supabase's link
+ * lifetime is a project setting, so this says the link is single-use and can be
+ * re-sent rather than naming a number of hours the configuration might not
+ * match.
+ *
+ * The role is deliberately absent. It is decided by the administrator and
+ * enforced on the server; printing it here would only invite a reply arguing
+ * about it, and would put internal structure into an email that may be
+ * forwarded.
+ */
+export function renderUserInvitation(name: string, actionLink: string, invitedBy?: string): RenderedEmail {
+  const from = invitedBy && invitedBy.trim()
+    ? ` by ${escapeHtml(invitedBy.trim())}`
+    : '';
+  const fromText = invitedBy && invitedBy.trim() ? ` by ${invitedBy.trim()}` : '';
+  return {
+    subject: SUBJECTS.user_invitation,
+    html: shell(
+      h("You're invited to Energia") +
+      p(escapeHtml(greeting(name))) +
+      p(`You have been invited${from} to use the Energia inventory and sales system. ` +
+        'Set up your account to get started — you will choose your own password, ' +
+        'and nobody else will know it.') +
+      button(actionLink, 'Set Up My Account') +
+      `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
+        This link can only be used once. If it stops working, ask whoever invited you to send a new one.
+      </p>` +
+      `<p style="margin:10px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
+        If you were not expecting this invitation, you can ignore this email — no account is active until
+        someone sets a password, and you can reply to this message to let us know.
+      </p>`,
+    ),
+    text: [
+      greeting(name), '',
+      `You have been invited${fromText} to use the Energia inventory and sales system.`,
+      'Set up your account here. You will choose your own password.', '',
+      actionLink, '',
+      'This link can only be used once. If it stops working, ask whoever invited',
+      'you to send a new one.', '',
+      'If you were not expecting this invitation you can ignore this email. No',
+      'account is active until someone sets a password, and you can reply to this',
+      'message to let us know.', '',
       'Rev 22 Global Energia',
     ].join('\n'),
   };

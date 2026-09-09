@@ -1,0 +1,53 @@
+/* Scoped to .users-* only, so nothing here can reach another page's markup. */
+
+.users-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.users-fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin: 14px 0; }
+.users-fieldset legend { font-size: 12px; font-weight: 700; color: var(--text-secondary); padding: 0 6px; }
+
+.users-hint { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+.users-field-error { font-size: 11.5px; color: var(--danger); margin-top: 4px; font-weight: 600; }
+
+.users-search { position: relative; display: flex; align-items: center; gap: 6px; }
+.users-search input { padding-left: 8px; }
+
+.users-store-list {
+  max-height: 210px; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 10px;
+}
+
+/* globals.css stretches every input to 100%, which is right for a text box and
+   wrong for a checkbox — it pushes the label away from the control. Corrected
+   in this scope only. */
+.users-scope input[type='checkbox'], .users-scope input[type='radio'] {
+  width: auto; flex: 0 0 auto; padding: 0; margin: 0;
+}
+.users-scope label.users-inline {
+  display: flex; align-items: center; gap: 8px; font-weight: 500;
+  margin-bottom: 0; padding: 5px 0; cursor: pointer; min-height: 32px;
+}
+
+.users-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
+.users-chip {
+  display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+  font-weight: 600; white-space: nowrap; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-secondary);
+}
+.users-chip-pending { border-color: var(--warning, #d97706); color: var(--warning, #b45309); }
+.users-chip-cancelled { border-color: var(--danger); color: var(--danger); }
+
+.users-cards { display: none; }
+@media (max-width: 720px) {
+  .users-desktop-only { display: none !important; }
+  .users-cards { display: block; }
+  .users-form-grid { grid-template-columns: 1fr; }
+  .users-actions .btn { flex: 1 1 auto; min-height: 40px; }
+  .users-scope .btn { min-height: 38px; }
+}
+
+.users-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); padding: 12px; margin-bottom: 10px;
+}
+.users-card-name { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.users-card-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
