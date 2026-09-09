@@ -43,6 +43,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/tiktok-import', label: 'TikTok Sales Import', icon: <Upload size={17} />, show: true },
     { to: '/exchanges', label: 'Exchanges', icon: <Repeat size={17} />, show: true },
     { to: '/therapy', label: 'Therapy', icon: <Sparkles size={17} />, show: true },
+    { to: '/therapy-services', label: 'Therapy Services', icon: <Sparkles size={17} />, show: isManagerOrAbove(role) },
     { to: '/surveys', label: 'Health Surveys', icon: <ClipboardList size={17} />, show: true },
     { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: true },
     { to: '/affiliates', label: 'Affiliates', icon: <UserPlus size={17} />, show: true },

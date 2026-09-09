@@ -23,6 +23,7 @@ import StaffCommissionsPage from './pages/StaffCommissionsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ExchangesPage from './pages/ExchangesPage';
 import TherapyPage from './pages/TherapyPage';
+import TherapyServicesPage from './pages/TherapyServicesPage';
 import PublicSurveyPage from './pages/PublicSurveyPage';
 import SurveysPage from './pages/SurveysPage';
 import TikTokImportPage from './pages/TikTokImportPage';
@@ -144,6 +145,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/staff-commissions" element={<Protected><StaffCommissionsPage /></Protected>} />
       <Route path="/exchanges" element={<Protected><ExchangesPage /></Protected>} />
       <Route path="/therapy" element={<Protected><TherapyPage /></Protected>} />
+      <Route path="/therapy-services" element={<Protected><TherapyServicesPage /></Protected>} />
       <Route path="/surveys" element={<Protected><SurveysPage /></Protected>} />
       <Route path="/tiktok-import" element={<Protected><TikTokImportPage /></Protected>} />
       <Route path="/affiliates" element={<Protected><AffiliatesPage /></Protected>} />

@@ -1,0 +1,44 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "energia-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "therapy-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.therapy-preview.config.mts"
+      ],
+      "port": 5199
+    },
+    {
+      "name": "users-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.users-preview.config.mts"
+      ],
+      "port": 5198
+    },
+    {
+      "name": "therapy-services-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.therapy-services-preview.config.mts"
+      ],
+      "port": 5197
+    }
+  ]
+}

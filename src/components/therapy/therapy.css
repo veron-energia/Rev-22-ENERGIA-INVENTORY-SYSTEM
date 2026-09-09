@@ -90,3 +90,91 @@
   margin-bottom: 0; cursor: pointer;
 }
 .therapy-scope label.therapy-inline > span { flex: 1 1 auto; min-width: 0; }
+
+/* --- Therapy Services page ------------------------------------------------
+   Same scoping rule as the rest of this file: every selector is .therapy-*, so
+   nothing here can reach a shared class being edited elsewhere. */
+
+.therapy-tabs {
+  display: flex; gap: 6px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--border); overflow-x: auto;
+}
+.therapy-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; background: none; border: 0; cursor: pointer;
+  white-space: nowrap; font-weight: 500; color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+}
+.therapy-tab.active { color: var(--primary); font-weight: 700; border-bottom-color: var(--primary); }
+
+.therapy-filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+.therapy-search { position: relative; flex: 1; min-width: 220px; max-width: 360px; }
+.therapy-search input { padding-left: 34px; width: 100%; }
+.therapy-search-icon {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--text-muted); pointer-events: none;
+}
+.therapy-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.therapy-cell-sub { font-size: 11.5px; color: var(--text-muted); }
+
+.therapy-preview {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 11px; font-size: 12.5px; color: var(--text-secondary);
+}
+
+.therapy-definition-current {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; font-size: 13px; margin-top: 12px;
+}
+
+.therapy-component {
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 10px;
+  background: var(--surface-2);
+}
+.therapy-component-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.therapy-component-body { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.therapy-component-reads { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
+
+.therapy-checkboxes { display: flex; flex-wrap: wrap; gap: 10px; }
+.therapy-checkbox {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.therapy-checkbox input { width: auto; margin: 0; }
+
+.therapy-inline-fields { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+
+.therapy-store-list { display: flex; flex-direction: column; gap: 8px; }
+.therapy-store-row {
+  display: grid; grid-template-columns: 1fr 130px; gap: 10px; align-items: center;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.therapy-store-row:last-child { border-bottom: 0; }
+
+/* On a phone the price sits under the store name rather than being squeezed
+   beside it, and the filter row stops competing for width. */
+@media (max-width: 640px) {
+  .therapy-store-row { grid-template-columns: 1fr; gap: 4px; }
+  .therapy-search { max-width: none; }
+  .therapy-component-body { flex-direction: column; }
+  .therapy-component-body .form-group { max-width: none !important; width: 100%; }
+  .therapy-inline-fields .form-group { max-width: none !important; width: 100%; }
+}
+
+/* Without a basis this sits in a flex row and takes every pixel the search box
+   leaves, which reads as a broken layout rather than a filter. */
+.therapy-store-select { flex: 0 1 auto; min-width: 180px; max-width: 260px; }
+@media (max-width: 640px) { .therapy-store-select { max-width: none; width: 100%; } }
+
+/* The service table has six columns and a phone has room for four. Rather than
+   leaving the frequency rule scrolled off the right — where nobody will look
+   for it — the two narrow columns are dropped and their content moves under the
+   service name. */
+.therapy-only-mobile { display: none; }
+.therapy-service-cell { min-width: 190px; }
+@media (max-width: 640px) {
+  .therapy-hide-mobile { display: none; }
+  .therapy-only-mobile { display: block; }
+}
