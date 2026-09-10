@@ -31,7 +31,17 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'stage_tiktok_settlement';
   if v_def is null then raise exception 'stage_tiktok_settlement not found'; end if;
-  if position('same type, related order AND amount' in v_def) > 0 then
+  -- Detect the RULE, not the sentence describing it. This guard used to look
+  -- for a comment phrase, and migration 66 now installs the same widened rule
+  -- worded differently ("Same order, type, related order AND amount"). The
+  -- guard therefore missed, this block fell through to a replace whose anchor
+  -- was long gone, and the migration raised "Could not widen the settlement
+  -- duplicate check" on every assembled database — recorded ever since as a
+  -- known baseline failure when in fact the fix was already present.
+  --
+  -- The condition below is code, not prose: it exists only in the widened
+  -- form, whichever migration installed it.
+  if position('r.related_order_id is not distinct from v_related' in v_def) > 0 then
     raise notice 'settlement duplicate detection already allows legitimate repeats'; return;
   end if;
 
@@ -51,7 +61,7 @@ begin
                 and r.related_order_id is not distinct from v_related
                 and coalesce(r.settlement_amount, 0) = coalesce(v_settle, 0));');
 
-  if position('same type, related order AND amount' in v_new) = 0 then
+  if position('r.related_order_id is not distinct from v_related' in v_new) = 0 then
     raise exception 'Could not widen the settlement duplicate check';
   end if;
   execute v_new;

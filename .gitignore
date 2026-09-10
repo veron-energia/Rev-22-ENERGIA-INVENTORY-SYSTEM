@@ -69,3 +69,7 @@ vite.config.ts.timestamp-*
 
 # Ignore uploaded files if needed
 uploads/
+# Disposable local test clusters and their logs. .invoice-test holds an entire
+# PostgreSQL data directory; neither belongs in the repository.
+.invoice-test/
+.integration-test/

@@ -105,7 +105,7 @@ const TherapyPage: React.FC = () => {
   };
   const [allVouchers, setAllVouchers] = useState<any[]>([]);
   const emptyPkg = { id: null as string | null, name: '', sku: '', grants_reward: false, customer_price: '', paid_credit_amount: '',
-    is_active: true, effective_from: '', effective_to: '', commission_classification: 'own',
+    is_active: true, effective_from: '', effective_to: '', commission_classification: 'third_party',
     staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', reward_qualifying_amount: '',
     store_ids: [] as string[], voucher_ids: [] as string[],
     // Phase 30: which categories this package's Paid Credit may buy, and the
@@ -599,7 +599,7 @@ const TherapyPage: React.FC = () => {
                         <td style={{ textAlign: 'right' }}>{money(b.paid_credit_amount)}</td>
                         <td style={{ textAlign: 'right' }}>{money(b.bonus_credit_amount)}</td>
                         <td style={{ textAlign: 'right', fontWeight: 600 }}>{b.free_voucher_qty}</td>
-                        <td style={{ fontSize: 12 }}>{b.commission_classification === 'third_party' ? 'Third-party' : 'Own'}</td>
+                        <td style={{ fontSize: 12 }}>Third-party</td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{b.tier1_rate ?? 'default'} / {b.tier2_rate ?? 'default'}</td>
                         <td>{b.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                         <td><button className="btn btn-secondary btn-sm btn-icon" onClick={async () => {
@@ -613,7 +613,7 @@ const TherapyPage: React.FC = () => {
                             free_voucher_qty: String(b.free_voucher_qty ?? ''),
                             reward_qualifying_amount: b.reward_qualifying_amount != null ? String(b.reward_qualifying_amount) : '',
                             is_active: b.is_active, effective_from: b.effective_from ?? '', effective_to: b.effective_to ?? '',
-                            commission_classification: b.commission_classification ?? 'third_party',
+                            commission_classification: 'third_party',
                             tier1_rate: b.tier1_rate != null ? String(b.tier1_rate) : '',
                             tier2_rate: b.tier2_rate != null ? String(b.tier2_rate) : '',
                             store_ids: ((st4 as any[]) ?? []).map(x => x.store_id),
@@ -665,10 +665,13 @@ const TherapyPage: React.FC = () => {
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Commission classification</label>
-                <select value={bundleForm.commission_classification} onChange={e => setBundleForm(f => f && ({ ...f, commission_classification: e.target.value }))}>
-                  <option value="third_party">Third-party rate</option>
-                  <option value="own">Own product rate</option>
-                </select>
+                {/* Not a choice any more. Migration 243 made the third-party
+                    rate mandatory for package and bundle sales and constrained
+                    the column, so a dropdown here would offer something the
+                    database refuses to store. */}
+                <div className="therapy-fixed-field">
+                  Third-party rate — fixed for all package and bundle sales.
+                </div>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Tier 1 rate (%)</label>
@@ -772,7 +775,7 @@ const TherapyPage: React.FC = () => {
                         <td>{p2.grants_reward ? <span className="badge badge-accent">Yes</span> : <span className="badge badge-muted">None</span>}</td>
                         <td style={{ textAlign: 'right' }}>{money(p2.customer_price)}</td>
                         <td style={{ textAlign: 'right' }}>{money(p2.paid_credit_amount)}</td>
-                        <td style={{ fontSize: 12 }}>{p2.commission_classification === 'third_party' ? 'Third-party' : 'Own'}</td>
+                        <td style={{ fontSize: 12 }}>Third-party</td>
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{p2.tier1_rate ?? 'default'} / {p2.tier2_rate ?? 'default'}</td>
                         <td style={{ fontSize: 12 }}>{d(p2.effective_from)}{p2.effective_to ? ` → ${d(p2.effective_to)}` : ''}</td>
                         <td>{p2.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
@@ -789,7 +792,7 @@ const TherapyPage: React.FC = () => {
       bonus_value: p2.bonus_value != null ? String(p2.bonus_value) : '', customer_price: String(p2.customer_price ?? ''),
                             paid_credit_amount: String(p2.paid_credit_amount ?? ''), is_active: p2.is_active,
                             effective_from: p2.effective_from ?? '', effective_to: p2.effective_to ?? '',
-                            commission_classification: p2.commission_classification ?? 'own',
+                            commission_classification: 'third_party',
                             staff_commission_enabled: p2.staff_commission_enabled ?? true,
                             tier1_rate: p2.tier1_rate != null ? String(p2.tier1_rate) : '',
                             tier2_rate: p2.tier2_rate != null ? String(p2.tier2_rate) : '',
@@ -831,10 +834,13 @@ const TherapyPage: React.FC = () => {
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Commission classification</label>
-                <select value={pkgForm.commission_classification} onChange={e => setPkgForm(f => f && ({ ...f, commission_classification: e.target.value }))}>
-                  <option value="own">Own product rate</option>
-                  <option value="third_party">Third-party rate</option>
-                </select>
+                {/* Not a choice any more. Migration 243 made the third-party
+                    rate mandatory for package and bundle sales and constrained
+                    the column, so a dropdown here would offer something the
+                    database refuses to store. */}
+                <div className="therapy-fixed-field">
+                  Third-party rate — fixed for all package and bundle sales.
+                </div>
               </div>
             </div>
 

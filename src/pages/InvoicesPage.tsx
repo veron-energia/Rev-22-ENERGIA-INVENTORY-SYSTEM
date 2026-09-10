@@ -1,3 +1,4 @@
+import { useSearchParams } from 'react-router-dom';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
@@ -15,9 +16,15 @@ import {
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
 import { PremiumBundleSplitPanel } from '../components/PremiumBundleSplitPanel';
-import { Modal, ReasonModal } from '../components/ui';
+import { Modal } from '../components/ui';
 import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail} from 'lucide-react';
+
+import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel';
+import { InstalmentFields } from '../components/invoices/InstalmentFields';
+import { singaporeToday, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
+import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
+import '../components/invoices/invoice-controls.css';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -28,9 +35,9 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle';
+interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup?: number; kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle';
   special_product_id?: string; rental_rate_type?: 'day' | 'week' | 'month' | 'year';
-  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string;
+  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; therapy_service_id?: string; therapy_service_name?: string;
   // Credit purchases bought directly on the invoice (Phase 31). The price and
   // every credit/reward snapshot come from the backend; these only carry the
   // chosen package/bundle and, for a bundle, the reward-voucher mix.
@@ -39,6 +46,7 @@ interface LineDraft { kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 's
 
 const InvoicesPage: React.FC = () => {
   const { profile } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -79,6 +87,8 @@ const InvoicesPage: React.FC = () => {
   const [myStores, setMyStores] = useState<{ store_id: string; store_name: string; is_default: boolean }[]>([]);
   const [therapyRules, setTherapyRules] = useState<TherapyPackageRule[]>([]);
   const [therapyPackages, setTherapyPackages] = useState<any[]>([]);
+  const [therapyServices, setTherapyServices] = useState<any[]>([]);
+  const [therapyServiceStores, setTherapyServiceStores] = useState<any[]>([]);
   const [cServiceStaff, setCServiceStaff] = useState<string[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
@@ -90,7 +100,15 @@ const InvoicesPage: React.FC = () => {
   // Create modal
   const [createOpen, setCreateOpen] = useState(false);
   const [cStore, setCStore] = useState('');
+  const [cBusinessDate, setCBusinessDate] = useState(singaporeToday);
+  const [cNotes, setCNotes] = useState('');
+  const [cInstalment, setCInstalment] = useState<InstalmentDetails>({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
+  const [expectedEditCount, setExpectedEditCount] = useState(0);
+  const [editRequestId, setEditRequestId] = useState(() => crypto.randomUUID());
   const [cCustomer, setCCustomer] = useState('');
+  const [issuedRecipientsConfirmed, setIssuedRecipientsConfirmed] = useState(false);
+  const [issuedHeaderBefore, setIssuedHeaderBefore] = useState<{ customer: string; store: string } | null>(null);
+  useEffect(() => { setIssuedRecipientsConfirmed(false); }, [cCustomer, cStore]);
   useEffect(() => { if (cCustomer) void ensureCustomers([cCustomer]); }, [cCustomer, ensureCustomers]);
   // Declared HERE, above lineUnit(), which reads it. A `const` is not hoisted:
   // declaring this further down put it in the temporal dead zone, so the first
@@ -98,6 +116,12 @@ const InvoicesPage: React.FC = () => {
   // the whole page went blank.
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
+  const [originalDrafts, setOriginalDrafts] = useState<LineDraft[]>([]);
+  const unchangedDraft = (l: LineDraft) => !!l.invoice_item_id && JSON.stringify(l) === JSON.stringify(originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id));
+  const unchangedBenefitDefinition = (l: LineDraft) => {
+    const original = originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id);
+    return !!original && JSON.stringify({ ...l, unit_price: undefined }) === JSON.stringify({ ...original, unit_price: undefined });
+  };
   const [cDiscountVoucher, setCDiscountVoucher] = useState('');
   const [cDiscount, setCDiscount] = useState(0);
   const [saveEarthOn, setSaveEarthOn] = useState(false);
@@ -114,6 +138,7 @@ const InvoicesPage: React.FC = () => {
   const [splitSummary, setSplitSummary] = useState<{ package_name: string; invoices: any[] } | null>(null);
 
   // Detail / payment modal
+  const [detailFinancial, setDetailFinancial] = useState<any>(null);
   const [detail, setDetail] = useState<Invoice | null>(null);
   const [detailItems, setDetailItems] = useState<InvoiceItem[]>([]);
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
@@ -127,6 +152,7 @@ const InvoicesPage: React.FC = () => {
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
   const [payErr, setPayErr] = useState<string | null>(null);
   const [payBusy, setPayBusy] = useState(false);
+  const [paymentRequestId, setPaymentRequestId] = useState(() => crypto.randomUUID());
   const [priceReview, setPriceReview] = useState<PriceReviewResult | null>(null);
   const [focReasons, setFocReasons] = useState<FocReason[]>([]);
   const [focBusy, setFocBusy] = useState(false);
@@ -182,14 +208,12 @@ const InvoicesPage: React.FC = () => {
   const [focReasonId, setFocReasonId] = useState('');
   const [focNote, setFocNote] = useState('');
   const [focErr, setFocErr] = useState<string | null>(null);
-  const [refundLine, setRefundLine] = useState<InvoiceItem | null>(null);
-  const [refundBusy, setRefundBusy] = useState(false);
   const [voucherStorePrices, setVoucherStorePrices] = useState<any[]>([]);
   const [promoStorePrices, setPromoStorePrices] = useState<any[]>([]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, allPays, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr] = await Promise.all([
+    const [inv, allPays, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
       supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       supabase.from('invoice_payments').select('invoice_id,payment_method_id,amount'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -214,6 +238,8 @@ const InvoicesPage: React.FC = () => {
       supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
       supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
       supabase.rpc('active_foc_reasons'),
+      supabase.from('therapy_services').select('*').eq('is_active', true).order('name'),
+      supabase.from('therapy_service_stores').select('*'),
     ]);
     setInvoices((inv.data as Invoice[]) ?? []);
 
@@ -251,6 +277,8 @@ const InvoicesPage: React.FC = () => {
     setSpecialProducts((specialRes.data as any[]) ?? []);
     setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
     setTherapyPackages((utpk?.data as any[]) ?? []);
+    setTherapyServices((services.data as any[]) ?? []);
+    setTherapyServiceStores((serviceStores.data as any[]) ?? []);
     setTherapyPrices((utsp?.data as any[]) ?? []);
     const se = aset?.data as any;
     if (se) setSaveEarthDefault({ label: se.save_earth_label ?? 'Save Earth Project', amount: Number(se.save_earth_amount ?? 1) });
@@ -387,9 +415,14 @@ const InvoicesPage: React.FC = () => {
     return r.selling_price ?? r.member_price ?? null;
   };
 
+  const sessionPrice = (id: string) => {
+    const service = therapyServices.find(s => s.id === id);
+    const store = therapyServiceStores.find(s => s.service_id === id && s.store_id === activeStore);
+    return service && store?.is_available ? Number(store.price_override ?? service.standard_price) : null;
+  };
   const lineMember = (_l: LineDraft): boolean => effMember;
   const lineUnit = (l: LineDraft): number | null =>
-    l.kind === 'special_product' ? (() => {
+    l.unit_price !== undefined ? l.unit_price : l.kind === 'special_product' ? (() => {
       const sp = specialProducts.find((x: any) => x.id === l.special_product_id);
       return sp ? Number(sp.sale_price) : null;
     })()
@@ -399,7 +432,7 @@ const InvoicesPage: React.FC = () => {
       const rate = Number(sp[`rate_${l.rental_rate_type ?? 'day'}`] ?? 0);
       return rate > 0 ? rate * Math.max(1, l.rental_periods ?? 1) : null;
     })()
-    : l.kind === 'therapy' ? (l.therapy_package_id ? therapyPrice(l.therapy_package_id, lineMember(l)) : null)
+    : l.kind === 'therapy' ? (l.therapy_service_id ? sessionPrice(l.therapy_service_id) : l.therapy_package_id ? therapyPrice(l.therapy_package_id, lineMember(l)) : null)
     : l.kind === 'credit_package' ? (() => {
       const p: any = creditPkgs.find(x => x.id === l.credit_package_id);
       return p ? Number(p.customer_price) : null;
@@ -495,6 +528,7 @@ const InvoicesPage: React.FC = () => {
     let sum = 0;
     for (const l of cLines) {
       if (l.kind !== 'promotion' || !l.promotion_id) continue;
+      if (unchangedDraft(l)) { sum += l.saved_topup || 0; continue; }
       const lm = effMember;
       for (const g of groupsFor(l.promotion_id)) {
         if (g.item_kind !== 'product') continue;
@@ -558,9 +592,9 @@ const InvoicesPage: React.FC = () => {
     discountVouchers.filter(v => v.voucher_kind !== 'fixed_discount' || (v.discount_amount ?? 0) < wholeVoucherBase),
     [discountVouchers, wholeVoucherBase]);
   useEffect(() => {
-    if (cDiscountVoucher && !eligibleWholeVouchers.some(v => v.id === cDiscountVoucher)) setCDiscountVoucher('');
+    if (!editingInvoiceId && cDiscountVoucher && !eligibleWholeVouchers.some(v => v.id === cDiscountVoucher)) setCDiscountVoucher('');
   }, [cDiscountVoucher, eligibleWholeVouchers]);
-  useEffect(() => { if (hasPromoLine && cDiscountVoucher) setCDiscountVoucher(''); }, [hasPromoLine, cDiscountVoucher]);
+  useEffect(() => { if (!editingInvoiceId && hasPromoLine && cDiscountVoucher) setCDiscountVoucher(''); }, [hasPromoLine, cDiscountVoucher]);
 
   const previewTotal = useMemo(() => {
     // Mirrors migration 99: a MANUAL discount applies to the whole invoice,
@@ -583,13 +617,20 @@ const InvoicesPage: React.FC = () => {
     // Blank when there is a real choice to make.
     setCStore(isStaff && myStores.length === 1
       ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : '');
-    setCCustomer('');
+    setCCustomer(''); setCBusinessDate(singaporeToday()); setCNotes('');
+    setIssuedRecipientsConfirmed(false); setIssuedHeaderBefore(null);
+    setCInstalment({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
+    setEditRequestId(crypto.randomUUID());
+    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setPayFix({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setSaveEarthOn(false); setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount);
   };
 
   const handleCreate = async () => {
+    if (!editingInvoiceId && !cBusinessDate) { setCErr('Choose the invoice business date.'); return; }
+    const instalmentError = validateInstalment(cInstalment);
+    if (instalmentError) { setCErr(instalmentError); return; }
     if (isStaff && myStores.length === 0) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
     const effectiveStore = isStaff
       ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
@@ -600,7 +641,7 @@ const InvoicesPage: React.FC = () => {
     const activeLines = cLines.filter(l => l.quantity > 0 && (
       l.kind === 'product' ? l.product_id
       : l.kind === 'voucher' ? l.voucher_id
-      : l.kind === 'therapy' ? l.therapy_package_id
+      : l.kind === 'therapy' ? (l.therapy_service_id || l.therapy_package_id)
       : (l.kind === 'special_product' || l.kind === 'rental') ? l.special_product_id
       : l.kind === 'credit_package' ? l.credit_package_id
       : l.kind === 'premium_bundle' ? l.premium_bundle_id
@@ -608,7 +649,7 @@ const InvoicesPage: React.FC = () => {
     if (activeLines.length === 0) { setCErr('Add at least one product, voucher, promotion, therapy, credit package or premium bundle line.'); return; }
     // Choice-group completeness check (client-side; server re-validates).
     for (const l of activeLines) {
-      if (l.kind !== 'promotion') continue;
+      if (l.kind !== 'promotion' || unchangedDraft(l)) continue;
       for (const g of groupsFor(l.promotion_id)) {
         const need = g.choose_qty * l.quantity;
         const got = selSum(l, g.id);
@@ -621,7 +662,7 @@ const InvoicesPage: React.FC = () => {
     // Reward-voucher completeness for Premium Bundles (server re-validates via
     // validate_bundle_voucher_selection). Only bundles that grant vouchers.
     for (const l of activeLines) {
-      if (l.kind !== 'premium_bundle') continue;
+      if (l.kind !== 'premium_bundle' || unchangedBenefitDefinition(l)) continue;
       const need = bundleGrants(l.premium_bundle_id);
       if (need <= 0) continue;
       const got = Object.values(l.bundle_voucher_selection ?? {}).reduce((a, c) => a + (c || 0), 0);
@@ -631,7 +672,7 @@ const InvoicesPage: React.FC = () => {
         return;
       }
     }
-    const ovr = (_l: LineDraft) => ({});
+    const ovr = (l: LineDraft) => ({ invoice_item_id: l.invoice_item_id || null, ...(l.unit_price !== undefined ? { unit_price: l.unit_price } : {}) });
     // Phase 12 — FOC travels with the line. `quantity` stays the full quantity;
     // the server derives the charged value from (quantity - foc_quantity).
     const foc = (l: LineDraft) => (l.foc_quantity ?? 0) > 0
@@ -642,29 +683,31 @@ const InvoicesPage: React.FC = () => {
       : l.kind === 'promotion'
       ? {
           kind: 'promotion', promotion_id: l.promotion_id, quantity: l.quantity,
-          selections: groupsFor(l.promotion_id).map(g => ({
-            group_id: g.id,
-            options: Object.entries(l.selections[g.id] ?? {})
+          selections: Object.keys(l.selections).map(groupId => {
+            const g = groupsFor(l.promotion_id).find(g => g.id === groupId);
+            const saved = detailSelections.find(s => s.invoice_item_id === l.invoice_item_id && s.group_id === groupId);
+            return ({
+            group_id: groupId,
+            options: Object.entries(l.selections[groupId] ?? {})
               .filter(([, q]) => (q || 0) > 0)
-              .map(([itemId, q]) => (g.item_kind === 'product'
+              .map(([itemId, q]) => ((g?.item_kind === 'product' || (!g && saved?.product_id))
                 ? { product_id: itemId, voucher_id: null, quantity: q }
                 : { product_id: null, voucher_id: itemId, quantity: q })),
-          })),
+          }); }),
           ...ovr(l), ...foc(l),
         }
       : l.kind === 'therapy'
-      ? { kind: 'therapy', therapy_package_id: l.therapy_package_id, quantity: 1, ...ovr(l), ...foc(l) }
+      ? { kind: 'therapy', therapy_package_id: l.therapy_service_id ? null : l.therapy_package_id, therapy_service_id: l.therapy_service_id || null, quantity: l.therapy_service_id ? l.quantity : 1, ...ovr(l), ...foc(l) }
       : l.kind === 'credit_package'
-      ? { kind: 'credit_package', credit_package_id: l.credit_package_id, quantity: 1 }
+      ? { kind: 'credit_package', credit_package_id: l.credit_package_id, quantity: 1, ...ovr(l), ...foc(l) }
       : l.kind === 'premium_bundle'
-      ? { kind: 'premium_bundle', premium_bundle_id: l.premium_bundle_id, quantity: 1,
-          // Only send a selection when the bundle actually grants vouchers, and
-          // only the chosen ones — matching validate_bundle_voucher_selection().
-          voucher_selection: bundleGrants(l.premium_bundle_id) > 0
-            ? Object.entries(l.bundle_voucher_selection ?? {})
+      ? { kind: 'premium_bundle', premium_bundle_id: l.premium_bundle_id, quantity: 1, ...ovr(l), ...foc(l),
+          // Saved selections remain evidence even if the current bundle's
+          // voucher quantity changed or the catalogue entry was retired.
+          voucher_selection: Object.entries(l.bundle_voucher_selection ?? {})
                 .filter(([, q]) => (q || 0) > 0)
                 .map(([voucher_id, quantity]) => ({ voucher_id, quantity }))
-            : [] }
+        }
       : l.kind === 'special_product'
       ? { kind: 'special_product', special_product_id: l.special_product_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
       : l.kind === 'rental'
@@ -688,88 +731,33 @@ const InvoicesPage: React.FC = () => {
     // Phase 13: the same payload edits an existing unpaid invoice in place —
     // update_invoice revalidates every rule exactly as create_invoice does.
     if (editingPaid && !editReason.trim()) {
-      setCErr('Give a reason for changing a paid invoice — it is kept in the revision history.');
+      setCErr('Give a reason for the invoice correction — it is kept in the revision history.');
       setCSaving(false); return;
     }
 
-    const { data: rpcId, error } = editingInvoiceId && editingPaid
-      ? await supabase.rpc('edit_paid_invoice', {
-          p_invoice_id: editingInvoiceId, p_lines: allItems,
-          p_reason: editReason.trim(), p_discount: cDiscount || 0,
-          p_service_staff: cServiceStaff?.length ? cServiceStaff : null,
-          // Correcting a sale rung up at the wrong till: the stock follows.
-          p_store_id: cStore || null,
-          // Only sent when the affiliate was actually touched, so an unrelated
-          // correction never clears one by omission.
-          p_affiliate_id: affTouched ? (cAffiliate || null) : null,
-          p_set_affiliate: affTouched,
-        })
-      : editingInvoiceId
-      ? await supabase.rpc('update_invoice', {
-          p_invoice_id: editingInvoiceId, p_customer_id: cCustomer, p_affiliate_id: null,
-          p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
-          p_discount_voucher_id: cDiscountVoucher || null,
-          p_service_staff: cServiceStaff, p_edit_reason: null,
-        })
-      : await supabase.rpc('create_invoice', {
-          p_store_id: effectiveStore, p_customer_id: cCustomer, p_affiliate_id: null,
-          p_items: allItems, p_discount_total: cDiscount || 0, p_notes: null,
-          p_discount_voucher_id: cDiscountVoucher || null,
-          p_service_staff: cServiceStaff,
-        });
-    if (error) { setCSaving(false); setCErr(error.message); return; }
-
-    // ---- Corrections that are separate RPCs, applied only when correcting a
-    //      settled invoice and only when the field was actually changed. ----
-    if (editingPaid && editingInvoiceId) {
-      // Who the invoice is attributed to (Owner only).
-      if (isOwner(profile?.role) && cCreatedBy
-          && cCreatedBy !== createdByBeforeEdit) {
-        const { error: aErr } = await supabase.rpc('correct_invoice_created_by', {
-          p_invoice_id: editingInvoiceId, p_staff_id: cCreatedBy,
-          p_reason: editReason.trim() || null,
-        });
-        if (aErr) {
-          setCSaving(false);
-          setCErr(`The invoice was corrected, but who it is attributed to could not be: ${aErr.message}`);
-          loadAll(); return;
-        }
-      }
-
-      // Payment methods: only the attribution, never the amounts.
-      const changedPayments = Object.entries(payFix)
-        .filter(([id, mid]) => paymentsBeforeEdit.find((p2: InvoicePayment) => p2.id === id)?.payment_method_id !== mid)
-        .map(([id, mid]) => ({ payment_id: id, payment_method_id: mid }));
-      if (changedPayments.length > 0) {
-        const { error: pErr } = await supabase.rpc('correct_invoice_payment_methods', {
-          p_invoice_id: editingInvoiceId, p_payments: changedPayments,
-          p_reason: editReason.trim() || null,
-        });
-        if (pErr) {
-          setCSaving(false);
-          setCErr(`The invoice was corrected, but the payment method could not be: ${pErr.message}`);
-          loadAll(); return;
-        }
-      }
-    }
-
+    const header = {
+      customer_id: cCustomer, store_id: effectiveStore, notes: cNotes || null,
+      preserve_issued_recipients: issuedRecipientsConfirmed,
+      manual_discount: cDiscount || 0, discount_voucher_id: cDiscountVoucher || null,
+      service_staff: cServiceStaff, business_date: cBusinessDate || null,
+      instalment_category: cInstalment.instalment_category || null,
+      instalment_method_id: cInstalment.instalment_method_id || null,
+      instalment_months: cInstalment.instalment_months || null,
+      save_earth_applied: saveEarthOn, save_earth_label: saveEarthLabel, save_earth_amount: saveEarthAmount,
+      ...(editingInvoiceId ? { expected_edit_count: expectedEditCount } : {}),
+      ...(affTouched ? { affiliate_id: cAffiliate || null } : {}),
+      ...(cCreatedBy && cCreatedBy !== createdByBeforeEdit ? { created_by: cCreatedBy } : {}),
+      payment_methods: Object.entries(payFix)
+        .filter(([id, mid]) => paymentsBeforeEdit.find(p => p.id === id)?.payment_method_id !== mid)
+        .map(([payment_id, payment_method_id]) => ({ payment_id, payment_method_id })),
+    };
+    const { error } = editingInvoiceId
+      ? await supabase.rpc('correct_invoice', { p_invoice_id: editingInvoiceId, p_items: allItems,
+          p_header: header, p_reason: editReason.trim() || null, p_request_id: editRequestId })
+      : await supabase.rpc('create_invoice_with_details', { p_store_id: effectiveStore, p_customer_id: cCustomer,
+          p_items: allItems, p_header: header });
     setCSaving(false);
-    const newInvId = editingInvoiceId ?? (rpcId as string | null);
-    // Save Earth (post-create; on edit this also handles switching it off).
-    if (newInvId && (saveEarthOn || editingInvoiceId)) {
-      await supabase.rpc('set_invoice_save_earth', {
-        p_invoice_id: newInvId, p_applied: saveEarthOn,
-        p_label: saveEarthLabel || null, p_amount: saveEarthAmount,
-      });
-    }
-    // E: record a create-time override audit + correct original_price per line.
-    if (false) {
-      const { data: createdItems } = await supabase.from('invoice_items')
-        .select('id').eq('invoice_id', newInvId).eq('price_overridden', true);
-      for (const it of (createdItems as any[]) ?? []) {
-        await supabase.rpc('audit_create_time_override', { p_item_id: it.id });
-      }
-    }
+    if (error) { setCErr(error.message); return; }
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
     setEditingPaid(false); setEditReason(''); loadAll();
   };
@@ -789,14 +777,14 @@ const InvoicesPage: React.FC = () => {
     }
     const lines: LineDraft[] = [];
     for (const it of detailItems) {
-      const ovr = {};
+      const ovr = { invoice_item_id: it.id, unit_price: Number(it.unit_price), saved_topup: Number((it as any).topup_amount ?? 0) };
       const foc = Number(it.foc_quantity ?? 0) > 0
-        ? { foc_quantity: Number(it.foc_quantity), foc_reason_id: (it as any).foc_reason_id ?? '', foc_reason: '' }
+        ? { foc_quantity: Number(it.foc_quantity), foc_reason_id: (it as any).foc_reason_id ?? '', foc_reason: it.foc_reason ?? '' }
         : {};
       if (it.line_kind === 'therapy') {
-        lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+        lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', therapy_service_id: (it as any).therapy_service_id ?? '', therapy_service_name: (it as any).therapy_service_name_snapshot ?? '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'credit_package') {
-        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {} });
+        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr });
       } else if (it.line_kind === 'premium_bundle') {
         // Rebuild the reward-voucher basket from the stored selection so editing
         // shows what was chosen and re-validates against the same rule.
@@ -804,7 +792,7 @@ const InvoicesPage: React.FC = () => {
         const raw = (it as any).bundle_voucher_selection;
         const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : []);
         for (const s of (arr as any[])) { if (s && s.voucher_id) basket[s.voucher_id] = (basket[s.voucher_id] ?? 0) + Number(s.quantity ?? 0); }
-        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {} });
+        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {}, ...ovr });
       } else if (it.line_kind === 'voucher') {
         lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'promotion') {
@@ -826,8 +814,15 @@ const InvoicesPage: React.FC = () => {
         lines.push({ kind: 'product', product_id: it.product_id ?? '', voucher_id: '', promotion_id: '', quantity: it.quantity, line_voucher_id: (it as any).line_voucher_id ?? '', selections: {}, ...ovr, ...foc });
       }
     }
+    setOriginalDrafts(lines);
     setCStore(detail.store_id);
+    setCBusinessDate((detail as any).business_date ?? ''); setCNotes((detail as any).notes ?? '');
+    setCInstalment({ instalment_category: (detail as any).instalment_category ?? '',
+      instalment_method_id: (detail as any).instalment_method_id ?? '', instalment_months: (detail as any).instalment_months ?? '' });
+    setExpectedEditCount((detail as any).edit_count ?? 0); setEditRequestId(crypto.randomUUID());
     setCCustomer(detail.customer_id);
+    setIssuedRecipientsConfirmed(false);
+    setIssuedHeaderBefore(detailItems.some(it => (it as any).credit_issued_at) ? { customer: detail.customer_id, store: detail.store_id } : null);
     setCLines(lines.length ? lines : [{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
     setCDiscount(Number((detail as any).manual_discount ?? 0));
     setCDiscountVoucher((detail as any).discount_voucher_id ?? '');
@@ -836,7 +831,7 @@ const InvoicesPage: React.FC = () => {
     setSaveEarthLabel((detail as any).save_earth_label ?? saveEarthDefault.label);
     setSaveEarthAmount(Number((detail as any).save_earth_amount ?? saveEarthDefault.amount));
     setEditingInvoiceId(detail.id);
-    setEditingPaid(['paid', 'partially_paid', 'completed_foc'].includes(String(detail.status)));
+    setEditingPaid(!['draft', 'unpaid'].includes(String(detail.status)) || detailPayments.length > 0);
     setEditReason('');
     setCAffiliate((detail as any).affiliate_id ?? '');
     setAffTouched(false);
@@ -892,7 +887,8 @@ const InvoicesPage: React.FC = () => {
   };
 
   const openDetail = async (inv: Invoice) => {
-    setDetail(inv);
+    setPaymentRequestId(crypto.randomUUID());
+    setDetail(inv); setDetailFinancial(null);
     setDetailTherapy(null);
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
@@ -913,11 +909,12 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('customer_credit_balances', { p_customer_id: inv.customer_id })
         .then(({ data }) => setPayWallet(data ?? null));
     } else { setPayWallet(null); }
-    const [items, pays, svc, ther] = await Promise.all([
+    const [items, pays, svc, ther, financial] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
       supabase.rpc('invoice_therapy_summary', { p_invoice_id: inv.id }),
+      supabase.rpc('invoice_financial_position', { p_invoice_id: inv.id }),
     ]);
     setDetailTherapy(ther.data ?? null);
     const its = (items.data as InvoiceItem[]) ?? [];
@@ -942,7 +939,8 @@ const InvoicesPage: React.FC = () => {
       .select('id, invoice_id, revision_no, edited_by, edit_reason, edited_at')
       .eq('invoice_id', inv.id).order('revision_no', { ascending: false });
     setDetailRevisions((revs as InvoiceRevision[]) ?? []);
-    const remaining = inv.total_amount - inv.paid_amount;
+    setDetailFinancial(financial.data);
+    const remaining = Number(financial.data?.outstanding ?? 0);
     setPayLines([{ payment_method_id: methods[0]?.id ?? '', amount: remaining > 0 ? remaining : 0 }]);
     setPayErr(null);
   };
@@ -950,6 +948,19 @@ const InvoicesPage: React.FC = () => {
   const payTotal = useMemo(() => payLines.reduce((s, p) => s + (p.amount || 0), 0), [payLines]);
 
   // Phase 12 — close a fully-FOC invoice with no payment.
+  useEffect(() => {
+    const review = searchParams.get('review');
+    if (!review) return;
+    let alive = true;
+    supabase.from('invoices').select('*').eq('id', review).single().then(({ data, error }) => {
+      if (!alive) return;
+      if (error) { setPayErr(error.message); return; }
+      void openDetail(data as Invoice);
+      const next = new URLSearchParams(searchParams); next.delete('review'); setSearchParams(next, { replace: true });
+    });
+    return () => { alive = false; };
+  }, [searchParams]);
+
   const handleConfirmFoc = async () => {
     if (!detail) return;
     setFocBusy(true); setFocErr(null);
@@ -996,7 +1007,7 @@ const InvoicesPage: React.FC = () => {
     const paidStore = detail.store_id, paidCustomer = detail.customer_id;
     // pay_invoice_with_wallet allocates any wallet credit lot-by-lot first,
     // then settles the invoice exactly as pay_invoice always did.
-    const { data, error } = await supabase.rpc('pay_invoice_with_wallet', { p_invoice_id: detail.id, p_payments: valid });
+    const { data, error } = await supabase.rpc('record_invoice_payment', { p_invoice_id: detail.id, p_payments: valid, p_request_id: paymentRequestId });
     setPayBusy(false);
     if (error) { setPayErr(error.message); return; }
     const res: any = data;
@@ -1106,11 +1117,11 @@ const InvoicesPage: React.FC = () => {
     if (!detail) return null;
     const store: any = stores.find(s2 => s2.id === detail.store_id) ?? {};
     const cust = customerOf(detail.customer_id);
-    const bal = Number(detail.total_amount ?? 0) - Number(detail.paid_amount ?? 0);
+    const bal = Number(detailFinancial?.outstanding ?? 0);
     return {
       kindLabel: 'Tax Invoice',
       docNo: detail.invoice_no,
-      date: new Date(detail.created_at).toLocaleDateString('en-GB'),
+      date: displayInvoiceDate(detail as any),
       status: String(INVOICE_STATUS_LABELS[detail.status as InvoiceStatus] ?? detail.status).toUpperCase(),
       storeName: store.name ?? null,
       storeAddress: store.address ?? null,
@@ -1137,10 +1148,11 @@ const InvoicesPage: React.FC = () => {
       ],
       grandTotal: ['Total', `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
       payments: detailPayments.map((pm: any) => [
-        methods.find(m => m.id === pm.payment_method_id)?.name ?? 'Payment',
-        `S$${Number(pm.amount ?? 0).toFixed(2)}`,
+        `${methods.find(m => m.id === pm.payment_method_id)?.name ?? 'Payment'} · ${new Date(pm.effective_at || pm.created_at).toLocaleDateString('en-SG')}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
+        `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
       ] as [string, string]),
       payDetails: [
+        instalmentText(detail as any, methods),
         store.paynow_uen ? `CIMB UEN: ${store.paynow_uen}` : '',
         store.bank_account ? `CIMB corporate account: ${store.bank_account}` : '',
       ].filter(Boolean),
@@ -1221,6 +1233,7 @@ const InvoicesPage: React.FC = () => {
       const nameOf = (x: any) => x.product_id ? (products.find(p => p.id === x.product_id)?.name ?? '')
         : x.voucher_id ? (vouchers.find(v => v.id === x.voucher_id)?.name ?? '')
         : x.child_promotion_id ? (promotions.find(p => p.id === x.child_promotion_id)?.name ?? '')
+        : x.therapy_service_id ? (x.therapy_service_name_snapshot || 'Therapy session')
         : x.therapy_package_id ? (therapyPackages.find((t: any) => t.id === x.therapy_package_id)?.name ?? 'Therapy')
         : x.credit_package_id ? 'Credit package'
         : (x.treatment_name ?? '');
@@ -1248,7 +1261,7 @@ const InvoicesPage: React.FC = () => {
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
-      `<tr><td>${esc(methods.find(m => m.id === p.payment_method_id)?.name ?? '')}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''}</td><td class="r">S$${Number(p.amount).toFixed(2)}</td></tr>`).join('');
+      `<tr><td>${esc(methods.find(m => m.id === p.payment_method_id)?.name ?? '')}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG'))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
 
     // Service Provided By = the invoice's service staff, each with their work phone.
     const staffRows = detailServiceStaff
@@ -1358,7 +1371,7 @@ const InvoicesPage: React.FC = () => {
             ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
             ${storePhone ? `<div class="mut">Tel: ${esc(storePhone)}</div>` : ''}
             ${st.whatsapp_phone ? `<div class="mut">Shop WhatsApp: ${esc(st.whatsapp_phone)}</div>` : ''}
-            <div class="mut">Date: ${new Date(detail.created_at).toLocaleDateString()}</div>
+            <div class="mut">Date: ${displayInvoiceDate(detail as any)}</div><div class="mut">${esc(instalmentText(detail as any, methods))}</div>
             <div class="mut">Status: <b class="statusword">${esc(String(detail.status).replace(/_/g, ' ').toUpperCase())}</b></div></div>
         </div>
         ${focStamp}
@@ -1433,14 +1446,15 @@ const InvoicesPage: React.FC = () => {
             defaultStoreId={activeStore ?? ''} />}
           {canExport && <ExcelExportButton
             rows={filtered} filename="invoices" sheetName="Invoices"
-            dateOf={(i: any) => i.created_at} dateLabel="Invoice date"
+            dateOf={(i: any) => i.business_date} dateLabel="Invoice business date"
             columns={[
               { header: 'Invoice', value: (i: any) => i.invoice_no },
-              { header: 'Date', value: (i: any) => new Date(i.created_at).toLocaleDateString('en-GB') },
+              { header: 'Date', value: (i: any) => displayInvoiceDate(i as any) },
               { header: 'Store', value: (i: any) => storeName(i.store_id) },
               { header: 'Customer', value: (i: any) => custName(i.customer_id) },
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
-              { header: 'Paid', value: (i: any) => Number(i.paid_amount ?? 0) },
+              { header: 'Net payments held', value: (i: any) => Number(i.paid_amount ?? 0) },
+              { header: 'Instalments', value: (i: any) => instalmentText(i, methods) },
               // Kept in step with the table: the export mirrors these columns,
               // and a sheet missing a column the screen shows is confusing.
               { header: 'Payment', value: (i: any) => (payMethodsByInvoice[i.id] ?? []).join(', ') },
@@ -1495,7 +1509,7 @@ const InvoicesPage: React.FC = () => {
                 {filtered.map(inv => (
                   <tr key={inv.id}>
                     <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong></td>
-                    <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{new Date(inv.created_at).toLocaleDateString()}</td>
+                    <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv as any)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
@@ -1524,17 +1538,19 @@ const InvoicesPage: React.FC = () => {
 
 
       {createOpen && (
-        <Modal title={editingPaid ? "Correct Paid Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}
+        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}
           footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}>Cancel</button>{!splitMode && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button>}</>}>
-          <div className="form-grid">
+          <div className="form-grid invoice-editor">
+            <label>Invoice business date<input type="date" value={cBusinessDate} onChange={e => setCBusinessDate(e.target.value)} /></label>
+            {editingInvoiceId && !cBusinessDate && <p>This legacy invoice’s business date is pending review.</p>}
+            <InstalmentFields value={cInstalment} onChange={setCInstalment} methods={methods} />
+            <label>Notes<textarea value={cNotes} onChange={e => setCNotes(e.target.value)} /></label>
             {editingPaid && (
               <div className="alert alert-warning" style={{ marginBottom: 0 }}>
                 <span>⚠</span>
                 <div>
-                  <strong>This invoice has already been paid.</strong> Saving will return the stock
-                  from the current lines and deduct it for the new ones, reverse the commission
-                  earned and re-earn it on the corrected total, and keep a full copy of the invoice
-                  as it stands now. The payment records themselves are never altered.
+                  <strong>Audited invoice correction.</strong> Unchanged lines keep their saved prices and FOC reasons.
+                  The balance uses payments less refunds. Correcting a cancelled or refunded invoice preserves its status.
                   <div style={{ marginTop: 8 }}>
                     <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Reason for the correction *</div>
                     <input value={editReason} onChange={e => setEditReason(e.target.value)}
@@ -1607,11 +1623,9 @@ const InvoicesPage: React.FC = () => {
                             {methods.find(m => m.id === p2.payment_method_id)?.name} — wallet credit, cannot be reattributed
                           </span>
                         ) : (
-                          <select style={{ flex: 1 }} value={payFix[p2.id] ?? p2.payment_method_id}
-                            onChange={e => setPayFix(m => ({ ...m, [p2.id]: e.target.value }))}>
-                            {methods.filter(m => !(m as any).is_wallet_credit)
-                              .map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                          </select>
+                          <InvoiceSearchSelect value={payFix[p2.id] ?? p2.payment_method_id}
+                            onChange={id => setPayFix(m => ({ ...m, [p2.id]: id }))}
+                            options={methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }))} />
                         )}
                       </div>
                     );
@@ -1643,9 +1657,9 @@ const InvoicesPage: React.FC = () => {
                     ?? stores.find(s => s.id === (assignedStoreId ?? ''))?.name
                     ?? 'No store assigned'} disabled style={{ background: 'var(--surface-2)' }} />
                 ) : (
-                  <select value={activeStore} disabled={!!editingInvoiceId}
+                  <select value={activeStore} disabled={!!editingInvoiceId && !isOwnerOrManager(profile?.role)}
                     title={editingInvoiceId ? "The store cannot be changed on an existing invoice" : undefined}
-                    onChange={e => { setCStore(e.target.value); setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
+                    onChange={e => { setCStore(e.target.value); if (!editingInvoiceId) setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); }}>
                     {(!isStaff || staffMustChooseStore) && <option value="">— Select store —</option>}
                     {storeOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
@@ -1662,6 +1676,10 @@ const InvoicesPage: React.FC = () => {
                 <CustomerSearchSelect value={cCustomer} onChange={v => { setCCustomer(v); setCLines(ls => ls); }} />
               </div>
             </div>
+            {issuedHeaderBefore && (issuedHeaderBefore.customer !== cCustomer || issuedHeaderBefore.store !== cStore) && <div className="alert alert-info">
+              <p>This invoice has issued benefits. Use “Correct unused benefit recipient” in invoice details first if any unused credit or vouchers need to move. Consumed benefits stay with their original recipients.</p>
+              <label><input type="checkbox" checked={issuedRecipientsConfirmed} onChange={e => setIssuedRecipientsConfirmed(e.target.checked)} /> I reviewed the actual recipients and confirm that their recorded benefits and benefit stores should stay as currently allocated.</label>
+            </div>}
             {cCustomer && (() => {
               const cust = customerOf(cCustomer);
               const referrer = cust?.referred_by ? customerOf(cust.referred_by) : null;
@@ -1744,15 +1762,15 @@ const InvoicesPage: React.FC = () => {
                     const price = lineUnit(line);
                     return (
                     <React.Fragment key={i}>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '',
+                      <div className="invoice-editor-line" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
                             credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
                             rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 130 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
                           <option value="promotion">Promotion</option>
-                          {therapyPackages.length > 0 && <option value="therapy">Therapy</option>}
+                          {(therapyPackages.length > 0 || therapyServices.length > 0) && <option value="therapy">Therapy</option>}
                           {creditPkgs.length > 0 && <option value="credit_package">Credit Package</option>}
                           {creditBundles.length > 0 && <option value="premium_bundle">Premium Bundle</option>}
                           {specialProducts.length > 0 && <option value="special_product">Special Product</option>}
@@ -1826,13 +1844,18 @@ const InvoicesPage: React.FC = () => {
                               label: `${v.name}${voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}`,
                               sublabel: (v as any).code, search: `${v.name} ${(v as any).code ?? ''}` }))} />
                         ) : line.kind === 'therapy' ? (
-                          <SearchSelect style={{ flex: 1 }} placeholder="Search therapy package…"
-                            value={line.therapy_package_id ?? ''}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, therapy_package_id: v } : l))}
-                            options={therapyPackages.map(p => { const pr = therapyPrice(p.id); return {
-                              value: p.id,
-                              label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`,
-                              search: p.name }; })} />
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search therapy package or session…"
+                            value={line.therapy_service_id ? `session:${line.therapy_service_id}` : line.therapy_package_id ?? ''}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l,
+                              therapy_service_id: v.startsWith('session:') ? v.slice(8) : '',
+                              therapy_package_id: v.startsWith('session:') ? '' : v, unit_price: undefined, quantity: 1 } : l))}
+                            options={[
+                              ...therapyPackages.map(p => { const pr = therapyPrice(p.id); return {
+                                value: p.id, label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`, search: p.name }; }),
+                              ...therapyServices.map(p => ({ value: `session:${p.id}`, label: `${p.name} — session${sessionPrice(p.id) != null ? ` · ${money(sessionPrice(p.id)!)}` : ' — unavailable'}`, search: p.name })),
+                              ...(line.therapy_service_id && !therapyServices.some(p => p.id === line.therapy_service_id)
+                                ? [{ value: `session:${line.therapy_service_id}`, label: `${line.therapy_service_name || 'Saved therapy session'} (saved)`, search: line.therapy_service_name }] : []),
+                            ]} />
                         ) : line.kind === 'credit_package' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search Credit Package…"
                             value={line.credit_package_id ?? ''}
@@ -1868,11 +1891,15 @@ const InvoicesPage: React.FC = () => {
                         <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
                         <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setCLines(ls => ls.filter((_, j) => j !== i))} disabled={cLines.length === 1}><X size={13} /></button>
                       </div>
+                      {editingInvoiceId && isOwnerOrManager(profile?.role) && <label className="invoice-finance-amount">Unit price
+                        <input aria-label={`Line ${i + 1} unit price`} type="number" min="0" step="0.01" value={line.unit_price ?? ''}
+                          onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, unit_price: Number(e.target.value) } : l))} />
+                      </label>}
                       {/* Phase 12 — FOC. Quantity stays full (stock still moves); only the charge drops.
                           Credit purchases don't take a product-style FOC. */}
                       {line.kind !== 'credit_package' && line.kind !== 'premium_bundle'
                         && (line.kind !== 'product' || line.product_id) && (line.quantity ?? 0) > 0 && (
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
+                        <div className="invoice-choice-group" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC:</span>
                           <select
                             value={String(line.foc_quantity ?? 0)}
@@ -1889,6 +1916,7 @@ const InvoicesPage: React.FC = () => {
                                 onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_reason_id: e.target.value } : l))}
                                 style={{ flex: 1, maxWidth: 220, fontSize: 12.5 }}>
                                 <option value="">— Reason (required) —</option>
+                                {line.foc_reason_id && !focReasons.some(r => r.id === line.foc_reason_id) && <option value={line.foc_reason_id}>{line.foc_reason || 'Saved FOC reason'} (historical)</option>}
                                 {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' *' : ''}</option>)}
                               </select>
                               <input type="text" placeholder="Note" value={line.foc_reason ?? ''}
@@ -1910,7 +1938,7 @@ const InvoicesPage: React.FC = () => {
                         </div>
                       )}
                       {line.kind === 'product' && line.product_id && !isThirdParty(line.product_id) && discountVouchers.length > 0 && (
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2 }}>
+                        <div className="invoice-choice-group" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2 }}>
                           <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Line voucher:</span>
                           <select value={line.line_voucher_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, line_voucher_id: e.target.value } : l))} style={{ flex: 1, maxWidth: 320, fontSize: 12.5 }}>
                             <option value="">— None —</option>
@@ -1927,7 +1955,7 @@ const InvoicesPage: React.FC = () => {
                         const need = bundleGrants(line.premium_bundle_id);
                         if (need <= 0) {
                           return (
-                            <div style={{ marginLeft: 28, marginTop: 4, fontSize: 11.5, color: 'var(--text-muted)' }}>
+                            <div className="invoice-choice-group" style={{ marginLeft: 28, marginTop: 4, fontSize: 11.5, color: 'var(--text-muted)' }}>
                               This bundle grants no reward vouchers.
                             </div>
                           );
@@ -1938,7 +1966,7 @@ const InvoicesPage: React.FC = () => {
                         const setBasket = (fn: (b: Record<string, number>) => Record<string, number>) =>
                           setCLines(ls => ls.map((l, j) => j === i ? { ...l, bundle_voucher_selection: fn(l.bundle_voucher_selection ?? {}) } : l));
                         return (
-                          <div style={{ marginLeft: 28, marginTop: 6, marginBottom: 6 }}>
+                          <div className="invoice-choice-group" style={{ marginLeft: 28, marginTop: 6, marginBottom: 6 }}>
                             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
                               Choose {need} reward voucher(s) — {chosen}/{need} selected
                             </div>
@@ -1952,7 +1980,7 @@ const InvoicesPage: React.FC = () => {
                                     <div style={{ fontSize: 12.5 }}>{v.name}
                                       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v.available_qty == null ? 'unlimited' : `${v.available_qty} in stock`}</div>
                                     </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <div className="invoice-choice-stepper" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                       <button className="btn btn-secondary btn-sm" disabled={cur <= 0}
                                         onClick={() => setBasket(bk => ({ ...bk, [v.voucher_id]: Math.max(0, (bk[v.voucher_id] ?? 0) - 10) }))}>−10</button>
                                       <span style={{ minWidth: 30, textAlign: 'center', fontSize: 13 }}>{cur}</span>
@@ -1970,7 +1998,7 @@ const InvoicesPage: React.FC = () => {
                         );
                       })()}
                       {line.kind === 'promotion' && line.promotion_id && includedFor(line.promotion_id).length > 0 && (
-                        <div style={{ marginLeft: 28, marginTop: 6, marginBottom: 6, border: '1px solid var(--border)',
+                        <div className="invoice-choice-group" style={{ marginLeft: 28, marginTop: 6, marginBottom: 6, border: '1px solid var(--border)',
                                       borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
                           <div style={{ padding: '6px 10px', background: 'var(--bg)', fontSize: 12, fontWeight: 700 }}>
                             Included in this bundle ({includedFor(line.promotion_id).length})
@@ -2030,9 +2058,9 @@ const InvoicesPage: React.FC = () => {
                             [g.id]: { ...current, [itemId]: Math.min(wanted, room) } } };
                         }));
                         return (
-                          <div key={g.id} style={{ marginLeft: 118, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--surface-2)' }}>
-                              <strong style={{ flex: 1, fontSize: 12.5 }}>{g.label}</strong>
+                          <div key={g.id} className="invoice-choice-group" style={{ marginLeft: 118, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+                            <div className="invoice-choice-header" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--surface-2)' }}>
+                              <strong className="invoice-choice-name" style={{ flex: 1, fontSize: 12.5 }}>{g.label}</strong>
                               {isProd && baseline != null && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>base {money(baseline)}</span>}
                               <span className={`badge ${done ? 'badge-success' : 'badge-danger'}`}>{got} / {need} chosen</span>
                             </div>
@@ -2043,27 +2071,27 @@ const InvoicesPage: React.FC = () => {
                                 const topup = isProd && !isListed && baseline != null && pr != null && pr > baseline ? pr - baseline : 0;
                                 const val = line.selections[g.id]?.[id] ?? 0;
                                 return (
-                                  <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', borderTop: '1px solid var(--border)' }}>
-                                    <span style={{ flex: 1, fontSize: 12.5, fontWeight: val > 0 ? 600 : 400 }}>{itemName(id)}</span>
+                                  <div key={id} className="invoice-choice-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', borderTop: '1px solid var(--border)' }}>
+                                    <span className="invoice-choice-name" style={{ flex: 1, fontSize: 12.5, fontWeight: val > 0 ? 600 : 400 }}>{itemName(id)}</span>
                                     <span style={{ fontSize: 11.5, color: 'var(--text-muted)', minWidth: 62, textAlign: 'right' }}>{pr != null ? money(pr) : '—'}</span>
                                     <span style={{ fontSize: 11, minWidth: 74, textAlign: 'right', color: topup > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
                                       {topup > 0 ? `+${money(topup)} top-up` : isProd ? (isListed ? 'included' : 'no top-up') : ''}
                                     </span>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                      <button className="btn btn-secondary btn-sm btn-icon" style={{ width: 26, height: 26, padding: 0 }} onClick={() => setQty(id, val - 1)} disabled={val <= 0}>−</button>
-                                      <input type="number" min={0} max={need} value={val === 0 ? '' : val}
+                                    <div className="invoice-choice-stepper" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                      <button className="btn btn-secondary btn-sm btn-icon" style={{ width: 26, height: 26, padding: 0 }} aria-label={`Remove ${itemName(id)}`} onClick={() => setQty(id, val - 1)} disabled={val <= 0}>−</button>
+                                      <input aria-label={`${itemName(id)} quantity`} type="number" min={0} max={need} value={val === 0 ? '' : val}
                                         placeholder="0"
                                         onChange={e => setQty(id, e.target.value === '' ? 0 : +e.target.value)}
                                         onFocus={e => e.currentTarget.select()}
                                         style={{ width: 54, textAlign: 'center', fontSize: 13, fontWeight: 600,
                                                  padding: '2px 4px', height: 26 }} />
-                                      <button className="btn btn-secondary btn-sm btn-icon" style={{ width: 26, height: 26, padding: 0 }} onClick={() => setQty(id, val + 1)} disabled={done}>+</button>
+                                      <button className="btn btn-secondary btn-sm btn-icon" style={{ width: 26, height: 26, padding: 0 }} aria-label={`Add ${itemName(id)}`} onClick={() => setQty(id, val + 1)} disabled={done}>+</button>
                                     </div>
                                   </div>
                                 );
                               })}
                               {isProd && (
-                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+                                <div className="invoice-choice-other" style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 12px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)' }}>
                                   <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Other product:</span>
                                   <select value="" onChange={e => { if (e.target.value) setQty(e.target.value, (line.selections[g.id]?.[e.target.value] ?? 0) + 1); }} style={{ flex: 1, fontSize: 12.5 }} disabled={done}>
                                     <option value="">— pick any product (top-up applies above base) —</option>
@@ -2162,10 +2190,10 @@ const InvoicesPage: React.FC = () => {
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
                   {isOwnerOrManager(profile?.role) && (
                     <button className="btn btn-secondary" onClick={openEdit}
-                      title="Correct this paid invoice — stock and commission are adjusted and a revision is kept">
+                      title="Correct this invoice with a reason and revision history">
                       <FileText size={14} /> Correct Invoice</button>
                   )}
-                  <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>{isOwnerOrManager(profile?.role) ? 'Refund/Cancel' : 'Request Refund'}</button></>
+                  {!isOwnerOrManager(profile?.role) && <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button>}</>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
@@ -2181,7 +2209,7 @@ const InvoicesPage: React.FC = () => {
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={openEdit}>Correct Invoice</button>}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
@@ -2240,6 +2268,15 @@ const InvoicesPage: React.FC = () => {
                     : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
           }>
           <div className="form-grid">
+            {isOwnerOrManager(profile?.role) && detail.status !== 'paid' && !['cancelled','refunded','cancellation_requested','refund_requested'].includes(detail.status) &&
+              <button className="btn btn-secondary" onClick={openEdit}>Correct Invoice</button>}
+            {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
+            <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
+              onChanged={async () => {
+                const { data, error } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+                if (error) throw error;
+                await openDetail(data as Invoice); await loadAll();
+              }} />
             {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
             {detailExchange?.found && (
               <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', background: 'var(--surface-2)', fontSize: 12.5 }}>
@@ -2415,7 +2452,7 @@ const InvoicesPage: React.FC = () => {
                     return (
                       <React.Fragment key={it.id}>
                         <tr>
-                          <td>{it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${creditLineName(it)}` : prodName(it.product_id ?? '')}
+                          <td>{it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${creditLineName(it)}` : it.line_kind === 'therapy' ? ((it as any).therapy_service_name_snapshot || (it as any).plan_name_snapshot || 'Therapy') : prodName(it.product_id ?? '')}
                             {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {Number(it.foc_quantity ?? 0) === 0 && detail.status !== 'paid' && detail.status !== 'completed_foc'
@@ -2479,8 +2516,9 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
                   {detailPayments.map(p => (
                     <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                      <span>{methodName(p.payment_method_id)}</span>
-                      <span style={{ fontWeight: 600 }}>{money(p.amount)}</span>
+                      <span>{methodName(p.payment_method_id)} · {new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG')}
+                        {(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</span>
+                      <span style={{ fontWeight: 600 }}>{money(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1))}</span>
                     </div>
                   ))}
                 </div>
@@ -2608,23 +2646,13 @@ const InvoicesPage: React.FC = () => {
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <select value={pl.payment_method_id} onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: e.target.value } : l))} style={{ flex: 1 }}>
-                        <option value="">— Method —</option>
-                        <optgroup label="Payment methods">
-                          {methods.filter((m: any) => !m.is_wallet_credit).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                        </optgroup>
-                        {!hasCreditLine && (
-                          <optgroup label="Wallet credit">
-                            {methods.filter((m: any) => m.is_wallet_credit).map((m: any) => {
-                              const bal = Number(payWallet?.categories?.[m.wallet_category] ?? 0);
-                              return <option key={m.id} value={m.id} disabled={bal <= 0}>
-                                {m.name} — {money(bal)} available
-                              </option>;
-                            })}
-                          </optgroup>
-                        )}
-                      </select>
+                    <div key={i} className="invoice-payment-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <InvoiceSearchSelect value={pl.payment_method_id}
+                        onChange={id => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: id } : l))}
+                        options={methods.filter((m: any) => !m.is_wallet_credit || !hasCreditLine).map((m: any) => ({
+                          value: m.id, label: m.name + (m.is_wallet_credit ? ` — ${money(Number(payWallet?.categories?.[m.wallet_category] ?? 0))} available` : ''),
+                          disabled: m.is_wallet_credit && Number(payWallet?.categories?.[m.wallet_category] ?? 0) <= 0,
+                        }))} />
                       <input type="number" min={0} step={0.01} value={pl.amount || ''} placeholder="Amount" style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setPayLines(ls => ls.filter((_, j) => j !== i))} disabled={payLines.length === 1}><X size={13} /></button>
@@ -2643,9 +2671,9 @@ const InvoicesPage: React.FC = () => {
                 )}
 
                 <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Remaining balance</span><strong>{money(detail.total_amount - detail.paid_amount)}</strong></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Remaining balance</span><strong>{money(Number(detailFinancial?.outstanding ?? 0))}</strong></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}><span>This payment</span><strong>{money(payTotal)}</strong></div>
-                  {payTotal >= (detail.total_amount - detail.paid_amount) - 0.001 && payTotal > 0 && (
+                  {payTotal >= Number(detailFinancial?.outstanding ?? 0) - 0.001 && payTotal > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: 'var(--success)', fontWeight: 600 }}>
                       <CheckCircle2 size={15} /> This completes the invoice — stock will be deducted.
                     </div>
@@ -2679,19 +2707,6 @@ const InvoicesPage: React.FC = () => {
         </Modal>
       )}
 
-      {refundLine && detail && (
-        <ReasonModal title={`Refund line`} label="Refund reason"
-          placeholder="Why is this line being refunded?"
-          confirmLabel="Refund line" onClose={() => setRefundLine(null)}
-          onSubmit={async (reason) => {
-            setRefundBusy(true);
-            const { error } = await supabase.rpc('refund_invoice_line', { p_invoice_item_id: refundLine.id, p_reason: reason, p_return_stock: refundLine.line_kind === 'product' });
-            setRefundBusy(false); setRefundLine(null);
-            if (error) { alert(error.message); return; }
-            const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
-            if (invRow) await openDetail(invRow as Invoice); await loadAll();
-          }} />
-      )}
       {priceReview && detail && (
         <PaymentPriceReview review={priceReview} busy={payBusy}
           onClose={() => setPriceReview(null)}

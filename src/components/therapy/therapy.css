@@ -178,3 +178,10 @@
   .therapy-hide-mobile { display: none; }
   .therapy-only-mobile { display: block; }
 }
+
+/* A field that used to be a control and is now a stated rule. Styled to read as
+   information rather than as a disabled input the user might try to enable. */
+.therapy-fixed-field {
+  padding: 8px 11px; border: 1px dashed var(--border); border-radius: 6px;
+  background: var(--surface-2); color: var(--text-secondary); font-size: 12.5px;
+}

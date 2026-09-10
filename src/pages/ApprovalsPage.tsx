@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
@@ -16,6 +17,7 @@ const TYPE_META: Record<string, { label: string; icon: React.ReactNode; cls: str
 
 const ApprovalsPage: React.FC = () => {
   const { profile } = useAuth();
+  const navigate = useNavigate();
   // Access is checked AFTER the hooks below. Returning early here would call
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
@@ -60,6 +62,7 @@ const ApprovalsPage: React.FC = () => {
   };
 
   const approve = async (req: AdjustmentRequest) => {
+    if (req.request_type === 'invoice_refund') { navigate(`/invoices?review=${req.related_record_id}`); return; }
     setBusy(req.id);
     const fn = req.request_type === 'adjustment' ? 'resolve_inventory_adjustment' : 'resolve_invoice_action';
     const { error } = await supabase.rpc(fn, { p_request_id: req.id, p_approve: true, p_note: null });
@@ -123,7 +126,7 @@ const ApprovalsPage: React.FC = () => {
                       <td style={{ fontSize: 12.5 }}>{uName(req.requested_by)}</td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-primary btn-sm" onClick={() => approve(req)} disabled={busy === req.id}><Check size={13} /> Approve</button>
+                          <button className="btn btn-primary btn-sm" onClick={() => approve(req)} disabled={busy === req.id}><Check size={13} /> {req.request_type === 'invoice_refund' ? 'Review refund' : 'Approve'}</button>
                           <button className="btn btn-danger btn-sm" onClick={() => { setRejectFor(req); setRejectNote(''); }} disabled={busy === req.id}><X size={13} /> Reject</button>
                         </div>
                       </td>

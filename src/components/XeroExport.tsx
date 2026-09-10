@@ -1,445 +1,214 @@
 import React, { useState } from 'react';
 import { FileSpreadsheet } from 'lucide-react';
-import {
-  XERO_SALES_INVOICE_HEADERS, toXeroCsv, findMissingMandatory, xeroCsvFilename,
-} from '../lib/xero/salesInvoiceTemplate.mjs';
+import { XERO_SALES_INVOICE_HEADERS, toXeroCsv, findMissingMandatory, xeroCsvFilename } from '../lib/xero/salesInvoiceTemplate.mjs';
 import { supabase } from '../lib/supabase';
+import { singaporeToday } from '../lib/invoices/business';
 import { Modal } from './ui';
 
+type SalesEvent = {
+  invoice_id: string; event_id: string; sales_date: string; amount: string | number;
+  event_kind: 'receipt' | 'correction_replacement' | 'correction_reversal' | 'refund';
+};
+type ExportInvoice = { id: string; invoice_no: string; customer_id: string | null; store_id: string };
+type ExportCustomer = { id: string; full_name: string; email?: string | null; address?: string | null };
+type SalesExportData = { events: SalesEvent[]; invoices: ExportInvoice[]; customers: ExportCustomer[] };
+
+const fetchAll = async <T,>(build: (offset: number, limit: number) => any): Promise<T[]> => {
+  const pageSize = 1000;
+  const rows: T[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await build(offset, pageSize);
+    if (error) throw new Error(error.message);
+    const page = (data as T[]) ?? [];
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+};
+
+/** Read the same dated, store-scoped external-money events used by Sales reports. */
+export async function loadXeroSalesEvents(db: typeof supabase, from: string, to: string, storeId = ''): Promise<SalesExportData> {
+  const events = await fetchAll<SalesEvent>((offset, limit) => db.rpc('invoice_sales_ledger')
+    .gte('sales_date', from).lte('sales_date', to)
+    .order('sales_date').order('event_id').order('event_kind').order('invoice_id')
+    .range(offset, offset + limit - 1));
+  const fetchByIds = async <T,>(table: string, columns: string, ids: string[]): Promise<T[]> => {
+    const uniqueIds = [...new Set(ids)].sort();
+    const rows: T[] = [];
+    for (let i = 0; i < uniqueIds.length; i += 200) {
+      const chunk = uniqueIds.slice(i, i + 200);
+      rows.push(...await fetchAll<T>((offset, limit) => db.from(table).select(columns)
+        .in('id', chunk).order('id').range(offset, offset + limit - 1)));
+    }
+    return rows;
+  };
+  // A refund in this period can belong to an older or cancelled invoice.
+  // Do not apply invoice status/date filters or substitute invoice.paid_amount.
+  const invoices = await fetchByIds<ExportInvoice>('invoices', 'id,invoice_no,customer_id,store_id', events.map(e => e.invoice_id));
+  const invoiceMap = new Map(invoices.map(i => [i.id, i]));
+  if (events.some(e => !invoiceMap.has(e.invoice_id))) {
+    throw new Error('An invoice referenced by the sales report could not be loaded. Reload before exporting.');
+  }
+  const scopedInvoices = storeId ? invoices.filter(i => i.store_id === storeId) : invoices;
+  const scopedIds = new Set(scopedInvoices.map(i => i.id));
+  const customers = await fetchByIds<ExportCustomer>('customers', 'id,full_name,email,address',
+    scopedInvoices.map(i => i.customer_id).filter((id): id is string => !!id));
+  return { events: events.filter(e => scopedIds.has(e.invoice_id)), invoices: scopedInvoices, customers };
+}
+
+// Decimal cents keep the CSV total exact. One unit per event avoids prorating.
+const amountCents = (amount: string | number): bigint => {
+  const match = /^(-?)(\d+)(?:\.(\d{1,2}))?$/.exec(String(amount));
+  if (!match) throw new Error('A sales event has an invalid currency amount. Review it before exporting.');
+  const cents = BigInt(match[2]) * 100n + BigInt((match[3] ?? '').padEnd(2, '0'));
+  return match[1] ? -cents : cents;
+};
+const formatCents = (cents: bigint) => {
+  const absolute = cents < 0n ? -cents : cents;
+  return `${cents < 0n ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
+};
+export function xeroSalesDate(day: string): string {
+  const parsed = new Date(`${day}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) {
+    throw new Error('A sales event needs a valid business or refund date before export.');
+  }
+  return day.split('-').reverse().join('/');
+}
+
 /**
- * Xero sales-invoice export.
+ * Recognized-sales export, not a second copy of the full billing document.
+ * One stable document per external receipt/refund keeps partial payments,
+ * corrections, overpayments and refund-only periods equal to the sales ledger.
+ * Original invoice identifiers stay in Reference and Description. Historical
+ * payments are not assigned fabricated product allocations or product SKUs.
  *
- * Produces the column set Xero expects for its Sales Invoice import, with ONE
- * ROW PER INVOICE LINE and the header fields (contact, invoice number, dates)
- * repeated on every line of the same invoice — which is how Xero groups lines
- * back into one invoice on import.
- *
- * TOTALS MUST RECONCILE. Two things are handled so the sum of the exported
- * lines equals the invoice total exactly:
- *
- *   * a line's own discount is netted off its unit amount;
- *   * an invoice-level discount (manual or voucher) belongs to no single line,
- *     so it is written as its own negative line. Spreading it across the lines
- *     would introduce rounding differences of a cent or two per invoice, which
- *     is exactly the kind of thing someone has to chase later.
- *
- * The invoice is exported at its FULL value even when part was settled with
- * wallet credit: credit is a payment method, and the invoice was still issued
- * for the whole amount. How it was paid is a separate matter in Xero.
+ * Xero uses the same 29-column template for draft customer credit notes:
+ * negative UnitAmount and a distinct credit-note number identify reductions.
+ * https://central.xero.com/0/article/Import-a-customer-credit-note-AU
  */
+export function buildXeroSalesRows(data: SalesExportData, accountCode: string, taxType: string) {
+  const invoices = new Map(data.invoices.map(i => [i.id, i]));
+  const customers = new Map(data.customers.map(c => [c.id, c]));
+  const seen = new Set<string>();
+  const rows: Record<string, unknown>[] = [];
+  let totalCents = 0n;
+  for (const event of data.events) {
+    const invoice = invoices.get(event.invoice_id);
+    if (!invoice?.invoice_no || !event.event_id) throw new Error('A sales event is missing its original invoice or event reference.');
+    const key = `${event.invoice_id}:${event.event_kind}:${event.event_id}`;
+    if (seen.has(key)) throw new Error('The sales report returned a duplicate event. Reload before exporting.');
+    seen.add(key);
+    const cents = amountCents(event.amount);
+    if (cents === 0n) continue; // Wallet-only refunds contribute zero external sales.
+    const reduction = event.event_kind === 'refund' || event.event_kind === 'correction_reversal';
+    if (!['receipt', 'correction_replacement', 'correction_reversal', 'refund'].includes(event.event_kind)
+      || (reduction ? cents > 0n : cents < 0n)) {
+      throw new Error('A sales event has an inconsistent payment or refund amount. Review it before exporting.');
+    }
+    const customer = invoice.customer_id ? customers.get(invoice.customer_id) : null;
+    if (invoice.customer_id && !customer) throw new Error(`The customer for invoice ${invoice.invoice_no} could not be loaded. Reload before exporting.`);
+    const date = xeroSalesDate(event.sales_date);
+    const prefix = { receipt: 'PAY', correction_replacement: 'ADJ', correction_reversal: 'REV', refund: 'REF' }[event.event_kind];
+    const description = {
+      receipt: 'Received payment', correction_replacement: 'Corrected received payment',
+      correction_reversal: 'Payment correction reversal', refund: 'Refund',
+    }[event.event_kind];
+    rows.push({
+      '*ContactName': customer ? customer.full_name : 'Walk-in customer',
+      EmailAddress: customer?.email ?? '', POAddressLine1: customer?.address ?? '',
+      '*InvoiceNumber': `${invoice.invoice_no}-${prefix}-${event.event_id.replace(/-/g, '')}`,
+      Reference: invoice.invoice_no, '*InvoiceDate': date, '*DueDate': date,
+      InventoryItemCode: '',
+      '*Description': `${description} for invoice ${invoice.invoice_no}. ENERGIA invoice ID: ${invoice.id}; event: ${event.event_id}.`,
+      '*Quantity': 1, '*UnitAmount': formatCents(cents),
+      '*AccountCode': accountCode.trim(), '*TaxType': taxType.trim(), TaxAmount: 0, Currency: 'SGD',
+    });
+    totalCents += cents;
+  }
+  const missing = findMissingMandatory(rows);
+  if (missing.length) throw new Error(`Row ${missing[0].row} has no ${missing[0].field}. Complete the required details before exporting.`);
+  return { rows, total: formatCents(totalCents) };
+}
+
 export const XeroExportButton: React.FC<{
-  stores: { id: string; name: string }[];
-  defaultStoreId?: string;
+  stores: { id: string; name: string }[]; defaultStoreId?: string;
 }> = ({ stores, defaultStoreId = '' }) => {
   const [open, setOpen] = useState(false);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [storeId, setStoreId] = useState(defaultStoreId);
   const [accountCode, setAccountCode] = useState('1011');
-  // Xero REJECTS an invoice line whose InventoryItemCode is not already an item
-  // in the Xero organisation. Energia's SKUs almost certainly are not, so the
-  // column is left blank unless it is deliberately turned on — otherwise the
-  // very first import fails on every line.
-  // Xero matches this against a tax rate in the organisation. "No Tax (0%)" is
-  // the name Energia's Xero shows for the zero rate; Xero also accepts its type
-  // code, NONE. Kept editable because which of the two a given organisation
-  // accepts is a fact about that organisation, not something to hardcode and
-  // then need a release to change.
   const [taxType, setTaxType] = useState('No Tax (0%)');
-  const [sendSkus, setSendSkus] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-
-  // Xero reads dates in the organisation's locale; dd/mm/yyyy is what a
-  // Singapore org expects, and writing it as text stops Excel reinterpreting it.
-  const xeroDate = (d?: string | null) => {
-    if (!d) return '';
-    const dt = new Date(d);
-    if (isNaN(dt.getTime())) return '';
-    const p = (n: number) => String(n).padStart(2, '0');
-    return `${p(dt.getDate())}/${p(dt.getMonth() + 1)}/${dt.getFullYear()}`;
-  };
-  const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-
-  // PostgREST caps a request at 1000 rows. Every fetch below was written as a
-  // single call, so anything larger was SILENTLY TRUNCATED:
-  //
-  //   * customers — Energia has far more than 1000, so an invoice whose customer
-  //     sat beyond the first page fell back to "Walk-in customer";
-  //   * invoice_items — worse: a month can easily exceed 1000 lines, and the
-  //     missing ones would have imported invoices into Xero with lines absent
-  //     and totals short;
-  //   * invoices themselves, for a long enough range.
-  //
-  // Nothing errors when this happens, which is why it looked like a naming bug.
-  const fetchAll = async <T,>(
-    build: (offset: number, limit: number) => any
-  ): Promise<T[]> => {
-    const PAGE = 1000;
-    const out: T[] = [];
-    for (let offset = 0; ; offset += PAGE) {
-      const { data, error } = await build(offset, PAGE);
-      if (error) throw new Error(error.message);
-      const batch = (data as T[]) ?? [];
-      out.push(...batch);
-      if (batch.length < PAGE) break;
-    }
-    return out;
-  };
-
-  // An "in" list is also limited by URL length, so ids are queried in chunks.
-  const fetchByIds = async <T,>(
-    table: string, columns: string, column: string, ids: string[]
-  ): Promise<T[]> => {
-    const CHUNK = 200;
-    const out: T[] = [];
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const slice = ids.slice(i, i + CHUNK);
-      const rows = await fetchAll<T>((offset, limit) =>
-        supabase.from(table).select(columns).in(column, slice).range(offset, offset + limit - 1));
-      out.push(...rows);
-    }
-    return out;
-  };
-
   const run = async () => {
     if (!from || !to) { setErr('Choose both a start and an end date.'); return; }
     if (to < from) { setErr('The end date cannot be before the start date.'); return; }
+    if (!accountCode.trim() || !taxType.trim()) { setErr('Enter the Xero account code and tax rate.'); return; }
     setBusy(true); setErr(null); setNote(null);
-
-    // Settled invoices only: a draft or unpaid invoice should not be posted to
-    // the accounts, and a cancelled or refunded one certainly should not.
-    let invoices: any[] = [];
     try {
-      invoices = await fetchAll<any>((offset, limit) => {
-        let q = supabase.from('invoices')
-          .select('*')
-          .is('deleted_at', null)
-          .in('status', ['paid', 'partially_paid', 'completed_foc'])
-          .gte('created_at', `${from}T00:00:00`)
-          .lte('created_at', `${to}T23:59:59`)
-          .order('created_at')
-          .range(offset, offset + limit - 1);
-        if (storeId) q = q.eq('store_id', storeId);
-        return q;
-      });
-    } catch (e: any) { setBusy(false); setErr(e.message); return; }
-    if (invoices.length === 0) {
-      setBusy(false);
-      setErr('No settled invoices in that range.');
-      return;
-    }
-
-    const ids = invoices.map(i => i.id);
-    // Only the customers these invoices actually reference — far lighter than
-    // reading the whole book, and immune to the row cap.
-    const custIds = Array.from(new Set(
-      invoices.map(i => i.customer_id).filter((x): x is string => !!x)));
-
-    let itemRows: any[] = [], custRows: any[] = [];
-    let prodRows: any[] = [], vouRows: any[] = [], promoRows: any[] = [];
-    let therRows: any[] = [], specRows: any[] = [];
-    try {
-      [itemRows, custRows, prodRows, vouRows, promoRows, therRows, specRows] = await Promise.all([
-        fetchByIds<any>('invoice_items', '*', 'invoice_id', ids),
-        fetchByIds<any>('customers', 'id,full_name,email,phone,address', 'id', custIds),
-        fetchAll<any>((o, l) => supabase.from('products').select('id,name,sku').range(o, o + l - 1)),
-        fetchAll<any>((o, l) => supabase.from('vouchers').select('id,name').range(o, o + l - 1)),
-        fetchAll<any>((o, l) => supabase.from('promotions').select('id,name').range(o, o + l - 1)),
-        fetchAll<any>((o, l) => supabase.from('unlimited_therapy_packages').select('id,name').range(o, o + l - 1)),
-        fetchAll<any>((o, l) => supabase.from('special_products').select('id,name,sku').range(o, o + l - 1)),
-      ]);
-    } catch (e: any) { setBusy(false); setErr(e.message); return; }
-
-
-    const nameMap = (rows: any[]) => new Map((rows ?? []).map(r => [r.id, r.name]));
-    const products = new Map((prodRows ?? []).map(r => [r.id, r]));
-    const vouchers = nameMap(vouRows);
-    const promotions = nameMap(promoRows);
-    const therapies = nameMap(therRows);
-    const specials = new Map((specRows ?? []).map(r => [r.id, r]));
-
-    const describe = (it: any): string => {
-      switch (it.line_kind) {
-        case 'voucher':        return vouchers.get(it.voucher_id) ?? 'Voucher';
-        case 'promotion':      return promotions.get(it.promotion_id) ?? 'Promotion';
-        case 'premium_bundle': return promotions.get(it.promotion_id) ?? 'Bundle';
-        case 'therapy':        return therapies.get(it.therapy_package_id) ?? 'Therapy package';
-        case 'credit_package': return 'Credit package';
-        case 'special_product':
-        case 'rental':         return specials.get(it.special_product_id)?.name
-                                      ?? (it.line_kind === 'rental' ? 'Rental' : 'Special product');
-        default:               return products.get(it.product_id)?.name ?? 'Item';
-      }
-    };
-    const itemCode = (it: any): string =>
-      products.get(it.product_id)?.sku ?? specials.get(it.special_product_id)?.sku ?? '';
-
-    const itemsByInvoice = new Map<string, any[]>();
-    for (const it of (itemRows ?? [])) {
-      const list = itemsByInvoice.get(it.invoice_id) ?? [];
-      list.push(it);
-      itemsByInvoice.set(it.invoice_id, list);
-    }
-    const customer = new Map((custRows ?? []).map(c => [c.id, c]));
-
-    // Xero's own column list, in Xero's own order. Previously this was a
-    // hand-written subset: every mandatory field was there, but only 18 of the
-    // 29 columns, so held against the template it read as incomplete. The
-    // absent ones are all optional and simply come out empty.
-    const HEADERS = XERO_SALES_INVOICE_HEADERS;
-
-    const body: Record<string, any>[] = [];
-    let mismatches = 0;
-
-    let skippedUnpaid = 0;
-    for (const inv of invoices) {
-      // Nothing received yet, so on a cash basis there is nothing to post. It
-      // would otherwise import as an invoice of zero, which is just noise in
-      // the accounts. It will appear once the customer pays.
-      if (round2(Number(inv.paid_amount ?? 0)) <= 0) { skippedUnpaid += 1; continue; }
-      const c = customer.get(inv.customer_id);
-      const lines = itemsByInvoice.get(inv.id) ?? [];
-      const head = {
-        '*ContactName': c?.full_name || 'Walk-in customer',
-        EmailAddress: c?.email ?? '',
-        POAddressLine1: c?.address ?? '',
-        POCity: '', POPostalCode: '', POCountry: 'Singapore',
-        '*InvoiceNumber': inv.invoice_no,
-        Reference: inv.notes ?? '',
-        '*InvoiceDate': xeroDate(inv.created_at),
-        // No separate due date is held: these are settled at point of sale.
-        '*DueDate': xeroDate(inv.paid_at ?? inv.created_at),
-        '*AccountCode': accountCode,
-        // Energia is not GST-registered, so every line carries the zero rate and
-        // no tax amount. This is deliberate, not a gap: an accountant seeing it
-        // blank would reasonably chase it.
-        '*TaxType': taxType,
-        TaxAmount: 0,
-        Currency: 'SGD',
-      };
-
-      // A partially paid invoice is exported at WHAT HAS BEEN PAID, not what was
-      // billed. Every line is scaled by the same proportion, so the descriptions
-      // and quantities still read correctly and the total ties to the money
-      // received. A fully paid invoice has a ratio of 1 and is untouched.
-      const billed = round2(Number(inv.total_amount ?? 0));
-      const received = round2(Number(inv.paid_amount ?? 0));
-      const paidRatio = billed > 0 ? Math.min(received / billed, 1) : 0;
-
-      let lineSum = 0;
-      for (const it of lines) {
-        const qty = Number(it.quantity ?? 0) || 0;
-        const gross = Number(it.line_total ?? 0);
-        const lineDisc = Number(it.line_discount ?? 0);
-        const net = round2((gross - lineDisc) * paidRatio);
-        // Xero multiplies Quantity by UnitAmount, so the unit amount carries the
-        // line's discount rather than the discount being lost.
-        const unit = qty > 0 ? round2(net / qty) : net;
-        lineSum = round2(lineSum + round2(unit * qty));
-
-        body.push({
-          ...head,
-          InventoryItemCode: sendSkus ? itemCode(it) : '',
-          '*Description': describe(it),
-          '*Quantity': qty || 1,
-          '*UnitAmount': unit,
-        });
-      }
-
-      // Invoice-level discount as its own line, so the totals agree exactly.
-      const invDisc = round2(Number(inv.discount_total ?? 0) * paidRatio);
-      if (invDisc > 0) {
-        body.push({
-          ...head,
-          InventoryItemCode: '',
-          '*Description': 'Invoice discount',
-          '*Quantity': 1,
-          '*UnitAmount': -invDisc,
-        });
-        lineSum = round2(lineSum - invDisc);
-      }
-
-      // A row with no lines at all would import as an empty invoice.
-      if (lines.length === 0 && invDisc === 0) {
-        body.push({
-          ...head,
-          InventoryItemCode: '',
-          '*Description': 'Invoice ' + inv.invoice_no,
-          '*Quantity': 1,
-          '*UnitAmount': received,
-        });
-        lineSum = received;
-      }
-
-      // Xero computes each line as Quantity x UnitAmount, so a line that does
-      // not divide evenly leaves a cent behind: 100.00 over 3 units becomes
-      // 33.33 x 3 = 99.99. Rather than let the invoice import a cent light, the
-      // difference is written as its own rounding line. It is visible in the
-      // accounts, which is the point — a silent penny is worse than a stated one.
-      // Reconcile against what is actually being exported. Where an invoice has
-      // been OVERPAID the ratio is clamped at 1, so the exported value is the
-      // billed amount and the excess is not invented as revenue — an overpayment
-      // is a credit owed to the customer, not a sale. Comparing against the
-      // received figure there would flag a mismatch that is not one.
-      const target = Math.min(received, billed > 0 ? billed : received);
-      const drift = round2(target - lineSum);
-      if (drift !== 0 && Math.abs(drift) <= 0.05) {
-        body.push({
-          ...head,
-          InventoryItemCode: '',
-          '*Description': 'Rounding',
-          '*Quantity': 1,
-          '*UnitAmount': drift,
-        });
-        lineSum = round2(lineSum + drift);
-      }
-
-      // Anything larger than a rounding cent is a real discrepancy and is
-      // reported rather than papered over.
-      if (Math.abs(lineSum - target) > 0.01) mismatches += 1;
-    }
-
-    // Xero's importer takes a CSV. A workbook is refused on file type before a
-    // single column is read, which is what made the earlier file unusable — the
-    // data in it was already right.
-    //
-    // Checked before the download rather than after: Xero stops on the first row
-    // with an empty mandatory field, so finding it here saves a round trip
-    // through someone else's import screen.
-    const missing = findMissingMandatory(body);
-    if (missing.length > 0) {
-      const first = missing[0];
-      setErr(`Row ${first.row} has no ${first.field}. Xero rejects a row with an empty `
-           + `mandatory field, so nothing was downloaded (${missing.length} row(s) affected).`);
-      setBusy(false);
-      return;
-    }
-
-    const scope = storeId ? (stores.find(s => s.id === storeId)?.name ?? 'store') : 'all-stores';
-    const blob = new Blob([toXeroCsv(body, HEADERS)], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = xeroCsvFilename(scope, from, to);
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
-    setBusy(false);
-    const notes: string[] = [];
-    if (skippedUnpaid > 0) {
-      notes.push(`${skippedUnpaid} invoice(s) with nothing paid yet were left out — they will appear once payment is taken.`);
-    }
-    if (mismatches > 0) {
-      // Reported rather than hidden: a total that does not tie out is something
-      // to look at before importing into the accounts.
-      notes.push(`${mismatches} invoice(s) did not tie to the amount paid — check those before importing.`);
-    }
-    if (notes.length > 0) {
-      setNote(notes.join(' '));
-    } else {
-      setOpen(false);
-    }
+      const data = await loadXeroSalesEvents(supabase, from, to, storeId);
+      const { rows, total } = buildXeroSalesRows(data, accountCode, taxType);
+      if (!rows.length) { setErr('No external payment or refund events in that range.'); return; }
+      const scope = storeId ? (stores.find(s => s.id === storeId)?.name ?? 'store') : 'all-stores';
+      const blob = new Blob([toXeroCsv(rows, XERO_SALES_INVOICE_HEADERS)], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = xeroCsvFilename(scope, from, to);
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+      const reductions = rows.filter(row => String(row['*UnitAmount']).startsWith('-')).length;
+      setNote(`Downloaded ${rows.length} event(s), including ${reductions} credit note(s). Net recognized sales: S$${total}. Review the drafts in Xero before approving them.`);
+    } catch (error: any) { setErr(error.message || 'Unable to prepare the complete sales export.'); }
+    finally { setBusy(false); }
   };
-
   const openDialog = () => {
-    const now = new Date();
-    const first = new Date(now.getFullYear(), now.getMonth(), 1);
-    setFrom(first.toISOString().slice(0, 10));
-    setTo(now.toISOString().slice(0, 10));
-    setStoreId(defaultStoreId);
-    setErr(null); setNote(null);
-    setOpen(true);
+    const today = singaporeToday();
+    setFrom(`${today.slice(0, 7)}-01`); setTo(today);
+    setStoreId(defaultStoreId); setErr(null); setNote(null); setOpen(true);
   };
-
-  return (
-    <>
-      <button className="btn btn-secondary" onClick={openDialog}>
-        <FileSpreadsheet size={15} /> Xero Export
-      </button>
-
-      {open && (
-        <Modal title="Export invoices for Xero" maxWidth={560} onClose={() => setOpen(false)}
-          footer={<>
-            <button className="btn btn-secondary" onClick={() => setOpen(false)}>Close</button>
-            <button className="btn btn-primary" onClick={run} disabled={busy}>
-              {busy ? 'Building…' : 'Export Excel'}
-            </button>
-          </>}>
-          <div className="form-grid">
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              Xero's Sales Invoice import layout — one row per invoice line, with the contact
-              and invoice details repeated on each line. Only <strong>settled</strong> invoices
-              are included; drafts, unpaid, cancelled and refunded invoices are left out.
-            </div>
-
-            {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}>
-              <span>⚠</span><div>{err}</div></div>}
-            {note && <div className="alert alert-warning" style={{ marginBottom: 0 }}>
-              <span>⚠</span><div>{note}</div></div>}
-
-            <div className="form-grid-2">
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>From *</label>
-                <input type="date" value={from} onChange={e => setFrom(e.target.value)} />
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>To *</label>
-                <input type="date" value={to} min={from} onChange={e => setTo(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="form-grid-2">
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Store</label>
-                <select value={storeId} onChange={e => setStoreId(e.target.value)}>
-                  <option value="">All stores</option>
-                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Xero account code</label>
-                <input value={accountCode} onChange={e => setAccountCode(e.target.value)}
-                  placeholder="1011" />
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Sales account in your Xero chart of accounts.
-                </div>
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Xero tax rate</label>
-                <input value={taxType} onChange={e => setTaxType(e.target.value)}
-                  placeholder="No Tax (0%)" />
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Must match a tax rate in your Xero. Try <code>NONE</code> if the import
-                  rejects this name.
-                </div>
-              </div>
-            </div>
-
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5 }}>
-              <input type="checkbox" style={{ width: 'auto', marginTop: 2 }}
-                checked={sendSkus} onChange={e => setSendSkus(e.target.checked)} />
-              <span>
-                Include product SKUs as Xero item codes
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  Leave this off unless the same codes already exist as items in Xero — Xero
-                  rejects a line whose item code it does not recognise.
-                </div>
-              </span>
-            </label>
-
-            <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-              Tax type is set to <strong>NONE</strong> (not GST-registered). An invoice-level
-              discount is written as its own negative line so the total ties out exactly.
-              Invoices are exported at full value — wallet credit is a way of paying, so how it
-              was settled is recorded separately in Xero.
-            </div>
+  return <>
+    <button className="btn btn-secondary" onClick={openDialog}><FileSpreadsheet size={15} /> Xero Export</button>
+    {open && <Modal title="Export recognized sales for Xero" maxWidth={560} onClose={() => { if (!busy) setOpen(false); }}
+      footer={<>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => setOpen(false)}>Close</button>
+        <button className="btn btn-primary" onClick={run} disabled={busy}>{busy ? 'Building…' : 'Export CSV'}</button>
+      </>}>
+      <div className="form-grid">
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+          Export external payments on the invoice business date and refunds on the date returned.
+          Wallet credit is excluded. Money still held on cancelled invoices remains included.
+        </div>
+        {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+        {note && <div className="alert alert-info" style={{ marginBottom: 0 }}><div>{note}</div></div>}
+        <div className="form-grid-2">
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>From *</label><input type="date" value={from} disabled={busy} onChange={e => setFrom(e.target.value)} />
           </div>
-        </Modal>
-      )}
-    </>
-  );
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>To *</label><input type="date" value={to} min={from} disabled={busy} onChange={e => setTo(e.target.value)} />
+          </div>
+        </div>
+        <div className="form-grid-2">
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Store</label><select value={storeId} disabled={busy} onChange={e => setStoreId(e.target.value)}>
+              <option value="">All stores</option>{stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Xero account code</label><input value={accountCode} disabled={busy} onChange={e => setAccountCode(e.target.value)} placeholder="1011" />
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Sales account in your Xero chart of accounts.</div>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Xero tax rate</label><input value={taxType} disabled={busy} onChange={e => setTaxType(e.target.value)} placeholder="No Tax (0%)" />
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Use your Xero zero-tax rate name or <code>NONE</code>.</div>
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+          The CSV has one draft document per payment or refund, with the original invoice reference.
+          Negative amounts import as credit notes. These rows match the Sales report; product item codes are omitted.
+          Historical receipts without a confirmed invoice date remain pending review.
+        </div>
+      </div>
+    </Modal>}
+  </>;
 };

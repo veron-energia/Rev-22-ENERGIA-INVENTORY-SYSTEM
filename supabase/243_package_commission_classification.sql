@@ -146,18 +146,31 @@ end $$;
 -- third-party package rather than a silently wrong one.
 -- ---------------------------------------------------------------------
 do $$
-declare f text; sig text;
+declare r record; f text; v_patched integer := 0; v_seen integer := 0;
 begin
-  foreach sig in array array[
-    'public.upsert_credit_package(uuid,text,numeric,numeric,boolean,date,date,text,boolean,numeric,numeric,numeric,numeric,text)',
-    'public.upsert_premium_bundle(uuid,text,numeric,numeric,numeric,integer,numeric,boolean,date,date,text,boolean,numeric,numeric,numeric,text)']
+  -- Found by NAME, across every overload. A hardcoded signature list was here
+  -- before and it silently matched nothing: migration 94 redefines
+  -- upsert_credit_package with twelve more arguments, and 96 does the same to
+  -- upsert_premium_bundle, so the signatures from 79 and 80 no longer exist by
+  -- the time this runs. The loop skipped both, the functions kept honouring the
+  -- caller's classification, and the check constraint added above then rejected
+  -- the save — so the Therapy page could not store a credit package at all.
+  --
+  -- Nothing here assumes a signature. Any overload that reads the parameter is
+  -- patched; anything else is left alone.
+  for r in
+    select p.oid, p.oid::regprocedure::text as sig, pg_get_functiondef(p.oid) as def
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.proname in ('upsert_credit_package', 'upsert_premium_bundle')
+     order by p.oid
   loop
-    begin
-      select pg_get_functiondef(sig::regprocedure) into f;
-    exception when undefined_function or invalid_text_representation then
-      continue;                       -- a project without that exact signature
-    end;
-    if position('p_commission_classification' in f) = 0 then continue; end if;
+    if position('p_commission_classification' in r.def) = 0 then continue; end if;
+    v_seen := v_seen + 1;
+    if position('public.package_commission_classification()' in r.def) > 0 then
+      continue;                                  -- already patched
+    end if;
+    f := r.def;
     -- Replace every read of the parameter with the fixed rule.
     f := replace(f, 'coalesce(p_commission_classification,''own'')',
                     'public.package_commission_classification()');
@@ -172,8 +185,19 @@ begin
     f := replace(f,
       'if p_commission_classification not in (''own'',''third_party'') then',
       'if false then');
+    if position('public.package_commission_classification()' in f) = 0 then
+      -- Refusing to leave a function that still writes a value the constraint
+      -- rejects: that combination is what broke saving a package.
+      raise exception 'Could not neutralise the classification parameter in % — patch it by hand', r.sig;
+    end if;
     execute f;
+    v_patched := v_patched + 1;
+    raise notice 'classification parameter neutralised in %', r.sig;
   end loop;
+
+  if v_seen = 0 then
+    raise notice 'No package upsert function takes a classification parameter here; nothing to neutralise.';
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------------

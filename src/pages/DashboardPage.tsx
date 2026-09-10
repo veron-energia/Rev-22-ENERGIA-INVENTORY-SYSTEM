@@ -130,15 +130,10 @@ const DashboardPage: React.FC = () => {
         .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
       setTransferAlerts((ta as any) ?? null);
 
-      // Today's paid sales.
-      const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-      const { data: paidToday } = await supabase.from('invoices')
-        .select('total_amount')
-        .eq('status', 'paid')
-        .gte('paid_at', startOfDay.toISOString());
-      const sales = (paidToday ?? []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
-      setTodaySales(sales);
-      setTodayCount((paidToday ?? []).length);
+      // Same eligible-receipt basis as the period charts and sales reports.
+      const { data: todaySummary } = await supabase.rpc('dashboard_sales', { p_period: 'day' });
+      setTodaySales(Number(todaySummary?.sales ?? 0));
+      setTodayCount(Number(todaySummary?.invoice_count ?? 0));
 
       // 5G-2 stats: unpaid commission, voucher redemptions, rentals.
       if (isManagerOrAbove(profile?.role)) {
