@@ -8,7 +8,7 @@ or deployed, and no production data was read or written.**
 | New migrations | `256`, `257` |
 | Combined history | **194 applied, 0 failures**, from an empty database |
 | Database tests | **14 files, 24 named assertions**, all passing |
-| Browser tests | 4 widths + **102 interface checks**, all passing |
+| Browser tests | 4 widths + **116 interface checks**, all passing |
 | `npm run typecheck` / `npm run build` | 0 errors / build succeeds |
 
 ---
@@ -159,13 +159,42 @@ reported as failed, and a second click cannot create a second invoice.
 **Correction form order**: audited notice and required reason, then the business
 date, then the rest. A missing historical date stays missing and says so.
 
-### A regression I introduced and fixed
+### Two defects I introduced and fixed
+
+**The evidence review was unreachable.** It rendered near the top of the
+correction form while the refusal it explains renders about a hundred lines
+below, beside Store. On a real invoice the panel opened **1543 pixels** above
+the error, so nobody scrolled up to find it and the refusal looked like a dead
+end. The review now renders directly under the error, scrolls itself into view,
+and a browser assertion fails if the two are ever more than 120px apart.
+
+It also now says so plainly when migration 256 has not been applied to the
+database being used, instead of surfacing "function ... does not exist".
+
+### A layout regression I introduced and fixed
 
 Adding the correction button to each payment row overflowed `.modal-body` at
 320px. Caught by agent one's browser test, which passes at HEAD and failed after
 my change. The row now wraps.
 
 ---
+
+## 3a. Coordination — another agent is active
+
+`supabase/270_stock_history_access_and_transfer_notes.sql` and
+`271_stock_history_search_and_balances.sql` appeared at 17:38 today, untracked,
+in the stock-history range. **They are not mine and I have not touched them.**
+
+`271` currently fails to apply:
+
+```
+ERROR: column reference "case" is ambiguous
+LINE 82: ... or p_filters->'locations' ? b."case" or p_filters->'locations' ? b.case_1)
+```
+
+It contains no reference to anything in this work, my migrations apply before it,
+and the invoice suites pass with it present. Whoever owns stock history should
+fix it; it is reported here rather than silently repaired or skipped.
 
 ## 4. Tests
 
@@ -174,7 +203,7 @@ my change. The row now wraps.
 | Combined migration build | **194 applied, 0 failed** |
 | Invoice + integration SQL (14 files) | **24 named assertions**, all passing |
 | `historical-stock-review.sql` (new) | refusal reproduced, review, rebuild, resumption, promotion confirmation, and a line with no evidence staying refused while writing nothing |
-| `invoice-actions-browser.mjs` (new) | **102 checks** at 375px and 320px |
+| `invoice-actions-browser.mjs` (new) | **116 checks** at 375px and 320px |
 | `browser.mjs` | 320 / 375 / 390 / 430 px |
 | `concurrency.mjs` · `benefit-review-browser.mjs` | 2 · 1 |
 | `report-helpers` + `xero-sales` | 18 |

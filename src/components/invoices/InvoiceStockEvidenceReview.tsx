@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
 type Evidence = {
@@ -34,13 +34,26 @@ export function InvoiceStockEvidenceReview({ invoiceId, onResolved, onCancel }: 
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [requestId] = useState(() => crypto.randomUUID());
+  const [notInstalled, setNotInstalled] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
+    // The refusal that opened this is usually further down a long form, so bring
+    // the way forward to where the person is looking.
+    root.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     supabase.rpc('invoice_stock_component_evidence', { p_invoice_id: invoiceId })
       .then(({ data, error }) => {
         if (!alive) return;
-        if (error) { setError(error.message); setRows([]); return; }
+        if (error) {
+          // Migration 256 is what provides this review. Saying so is more use
+          // than repeating "function ... does not exist".
+          if ((error as any).code === '42883' || /does not exist/i.test(error.message)) {
+            setNotInstalled(true);
+          } else setError(error.message);
+          setRows([]);
+          return;
+        }
         setRows((data as Evidence[]) ?? []);
       });
     return () => { alive = false; };
@@ -64,14 +77,26 @@ export function InvoiceStockEvidenceReview({ invoiceId, onResolved, onCancel }: 
   };
 
   return (
-    <div className="invoice-evidence-review" role="group" aria-label="Historical stock evidence review">
+    <div className="invoice-evidence-review" role="group" aria-label="Historical stock evidence review" ref={root}>
       <strong>This invoice predates stock records</strong>
       <p>
         Its store cannot change until what it consumed is on record. Below is what the
         original records actually say. Nothing is written until you confirm it.
       </p>
+      {notInstalled && (
+        <div role="alert" className="alert alert-warning">
+          <span>⚠</span>
+          <div>
+            This review is not available on this database yet. Apply migration
+            <strong> 256_invoice_historical_stock_review.sql</strong>, then reopen this
+            correction. Until then the store cannot be changed on invoices that
+            predate stock records — the refusal above is correct and nothing is wrong
+            with the invoice.
+          </div>
+        </div>
+      )}
       {error && <div role="alert" className="alert alert-danger">{error}</div>}
-      {!rows && <p role="status">Reading the original records…</p>}
+      {!rows && !notInstalled && <p role="status">Reading the original records…</p>}
       {rows?.map(r => (
         <div key={r.invoice_item_id} className="invoice-evidence-line">
           <div className="invoice-evidence-line-head">
@@ -110,7 +135,7 @@ export function InvoiceStockEvidenceReview({ invoiceId, onResolved, onCancel }: 
       <div className="invoice-evidence-actions">
         <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Back</button>
         <button className="btn btn-primary" onClick={rebuild}
-          disabled={busy || !rows || blocked.length > 0 || outstanding.length > 0}
+          disabled={busy || !rows || notInstalled || blocked.length > 0 || outstanding.length > 0}
           title={blocked.length > 0 ? 'Some lines have no evidence on record.'
             : outstanding.length > 0 ? 'Confirm the promotion contents first.' : undefined}>
           {busy ? 'Recording…' : 'Record this evidence and continue'}

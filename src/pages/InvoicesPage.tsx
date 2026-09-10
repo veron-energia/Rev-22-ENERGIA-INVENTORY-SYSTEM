@@ -1673,16 +1673,6 @@ const InvoicesPage: React.FC = () => {
                 </div>
               </div>
             )}
-            {stockReviewFor && editingInvoiceId === stockReviewFor && (
-              <InvoiceStockEvidenceReview invoiceId={stockReviewFor}
-                onCancel={() => setStockReviewFor(null)}
-                onResolved={() => {
-                  // The snapshot exists now. Clear the refusal and let the same
-                  // Save Changes go through the ordinary protected correction.
-                  setStockReviewFor(null);
-                  setCErr('The original records are now on file. Press Save Changes again to apply the correction.');
-                }} />
-            )}
             <label>Invoice business date<input type="date" value={cBusinessDate} onChange={e => setCBusinessDate(e.target.value)} /></label>
             {/* A missing historical date stays missing. Filling it with today to
                 silence this would invent the date the sale happened on. */}
@@ -1770,6 +1760,16 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
             {cErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
+            {stockReviewFor && editingInvoiceId === stockReviewFor && (
+              <InvoiceStockEvidenceReview invoiceId={stockReviewFor}
+                onCancel={() => setStockReviewFor(null)}
+                onResolved={() => {
+                  // The snapshot exists now. Clear the refusal and let the same
+                  // Save Changes go through the ordinary protected correction.
+                  setStockReviewFor(null);
+                  setCErr('The original records are now on file. Press Save Changes again to apply the correction.');
+                }} />
+            )}
             <div className="form-grid-2">
               <div className="form-group">
                 <label>Store *</label>

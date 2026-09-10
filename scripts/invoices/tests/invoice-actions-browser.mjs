@@ -72,6 +72,16 @@ const mock = `export const supabase={ from(table) {
  if(name==='invoice_financial_position')data=window.__financial;
  if(name==='invoice_refund_options')data={financial:window.__financial,sources:[],stock:[],benefits:[],lines:[],review_required:false};
  if(name==='invoice_benefit_review_options')data={lines:[]};
+ if(name==='invoice_stock_component_evidence')data=[
+   {invoice_item_id:'line',line_kind:'promotion',description:'Phone Width Bundle',
+    evidence_status:'needs_confirmation',evidence_source:"Recorded choices, plus this promotion's CURRENT fixed contents",
+    proposed:[{kind:'product',item_id:'socks',quantity:1,component_source:'fixed'}],
+    missing:'The fixed contents of this promotion as it stood on the sale date are not recorded.'}];
+ if(name==='rebuild_invoice_stock_components'){window.__rebuilt=args;data={success:true,component_rows:1};}
+ if(name==='correct_invoice' && window.__failCorrection){
+   const q=new Proxy({}, {get(_,key){if(key==='then')return (ok,bad)=>Promise.resolve({data:null,error:{message:'Historical component snapshots need review before changing stock or selections; metadata can still be corrected'}}).then(ok,bad);return()=>q;}});
+   return q;
+ }
  if(name==='create_invoice_with_details'){
    window.__tables.invoices=[...window.__tables.invoices,{...window.__tables.invoices[0],id:'created',invoice_no:'INV-NEW',status:'unpaid',paid_amount:0}];
    data='created';
@@ -314,6 +324,46 @@ try {
        && correction?.args?.p_header?.instalment_method_id === 'bank'
        && Number(correction?.args?.p_header?.instalment_months) === 6,
        JSON.stringify(correction?.args?.p_header ?? {}).slice(0, 120));
+
+    // --- a refused store change offers the review, where the error is -----
+    await mount(page, 'paid');
+    await page.evaluate(() => { window.__failCorrection = true; });
+    await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
+    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Move this invoice to the other store');
+    await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
+    const review = page.getByRole('group', { name: 'Historical stock evidence review' });
+    await review.waitFor();
+    ok('a refused store change opens the evidence review', await review.count() === 1);
+    // The bug this catches: the review rendered a hundred lines above the error,
+    // so nobody scrolled up to find it.
+    const gap = await page.evaluate(() => {
+      const err = Array.from(document.querySelectorAll('.alert-danger'))
+        .find(e => e.textContent.includes('Historical component snapshots need review'));
+      const panel = document.querySelector('.invoice-evidence-review');
+      if (!err || !panel) return null;
+      return Math.abs(panel.getBoundingClientRect().top - err.getBoundingClientRect().bottom);
+    });
+    ok('and it sits with the error rather than elsewhere in the form',
+       gap !== null && gap < 120, `${gap}px away`);
+    ok('the evidence names the line and where it came from',
+       await review.getByText('Phone Width Bundle', { exact: false }).count() > 0
+       && await review.getByText('CURRENT fixed contents', { exact: false }).count() > 0);
+    ok('a line needing confirmation blocks the rebuild until it is confirmed',
+       await review.getByRole('button', { name: /Record this evidence/ }).isDisabled());
+    await review.getByRole('checkbox').first().check();
+    await review.getByRole('textbox').first().fill('Checked against the original till record');
+    ok('once confirmed with a reason it can be recorded',
+       !(await review.getByRole('button', { name: /Record this evidence/ }).isDisabled()));
+    await review.getByRole('button', { name: /Record this evidence/ }).click();
+    const rebuilt = await page.evaluate(() => window.__rebuilt);
+    ok('the confirmation and reason reach the server',
+       rebuilt?.p_reason === 'Checked against the original till record'
+       && Array.isArray(rebuilt?.p_confirmations) && rebuilt.p_confirmations.length === 1,
+       JSON.stringify(rebuilt ?? {}).slice(0, 120));
+    ok('and the operator is told to save again rather than left guessing',
+       await page.getByText('Press Save Changes again', { exact: false }).count() > 0);
+    await page.evaluate(() => { window.__failCorrection = false; });
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
     // --- a refunded invoice must not look ordinary ------------------------
     await mount(page, 'refunded');
