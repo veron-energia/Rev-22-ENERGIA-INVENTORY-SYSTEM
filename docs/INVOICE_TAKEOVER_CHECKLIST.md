@@ -78,3 +78,24 @@ than accepted.
 | `npm run typecheck` / `npm run build` | 0 errors / build succeeds |
 
 A passing build is not production readiness. The unproven items are listed above.
+
+
+---
+
+## Continuation — 10 September 2026
+
+Interface consolidation and the INV-2026-0183 store-change investigation. See
+`INVOICE_ACTIONS_AND_STORE_CORRECTION.md` for the full account.
+
+| Requirement | Existing implementation | Verification evidence | Remaining gap | Next action |
+|---|---|---|---|---|
+| Store change on a pre-snapshot invoice | 172's guard, correctly refusing | Reproduced in fixture; cause proven — 177's DEFAULT bound new rows only | INV-2026-0183 itself unconfirmed (no production access) | Run the evidence report against the record |
+| `invoice_required_stock` on historical invoices | 177 | **Was broken for every pre-177 invoice** — `integer` declared, `bigint` returned | Fixed in 256 | — |
+| Historical stock review path | none | `historical-stock-review.sql`; in-app review in the correction form | Promotion fixed contents remain a genuine evidence gap | Confirm per invoice |
+| One Refund / Cancel footer action | standalone panel buttons | 102 browser checks at 375 and 320px | None | — |
+| One edit action per state | `paid_amount === 0` check | Refunded invoice no longer takes the unpaid path | None | — |
+| Payment correction with its payment | panel button row | Browser test asserts the old button is gone | None | — |
+| Instalments in Record Payment | top of creation form | Persisted with the payment in one transaction (257) | None | — |
+| Blank payment methods | first method defaulted | Blank first and split rows; incomplete rows refused | None | — |
+| Invoice stays open after payment | closed to the list | Part payment keeps it open with the refreshed balance | None | — |
+| Creation continues into payment | closed to the list | New invoice's detail opens; id kept if it cannot | Full creation-form drive not browser-tested | — |

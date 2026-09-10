@@ -21,6 +21,8 @@ import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail} from 'lucide-react';
 
 import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel';
+import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefundCancelChooser';
+import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { singaporeToday, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
@@ -139,6 +141,8 @@ const InvoicesPage: React.FC = () => {
 
   // Detail / payment modal
   const [detailFinancial, setDetailFinancial] = useState<any>(null);
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [financeRequest, setFinanceRequest] = useState<{ mode: 'refund' | 'cancel' | 'payment'; paymentId?: string } | null>(null);
   const [detail, setDetail] = useState<Invoice | null>(null);
   const [detailItems, setDetailItems] = useState<InvoiceItem[]>([]);
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
@@ -150,6 +154,16 @@ const InvoicesPage: React.FC = () => {
   const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
+  // The instalment arrangement is chosen where the money is taken now, not at
+  // the top of the creation form. It is still invoice-level metadata.
+  const [payInstalment, setPayInstalment] = useState<InstalmentDetails>({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
+  const [payOutcome, setPayOutcome] = useState<string | null>(null);
+  // A created invoice whose detail view could not be opened. Held so the id is
+  // never lost and the operator is never told to create it again.
+  const [createdPending, setCreatedPending] = useState<{ id: string; message: string } | null>(null);
+  // Set when a correction is refused because the invoice predates stock
+  // snapshots. The review replaces the bare error with the actual evidence.
+  const [stockReviewFor, setStockReviewFor] = useState<string | null>(null);
   const [payErr, setPayErr] = useState<string | null>(null);
   const [payBusy, setPayBusy] = useState(false);
   const [paymentRequestId, setPaymentRequestId] = useState(() => crypto.randomUUID());
@@ -628,6 +642,8 @@ const InvoicesPage: React.FC = () => {
   };
 
   const handleCreate = async () => {
+    // A second click while the first is in flight would create a second invoice.
+    if (cSaving) return;
     if (!editingInvoiceId && !cBusinessDate) { setCErr('Choose the invoice business date.'); return; }
     const instalmentError = validateInstalment(cInstalment);
     if (instalmentError) { setCErr(instalmentError); return; }
@@ -751,19 +767,69 @@ const InvoicesPage: React.FC = () => {
         .filter(([id, mid]) => paymentsBeforeEdit.find(p => p.id === id)?.payment_method_id !== mid)
         .map(([payment_id, payment_method_id]) => ({ payment_id, payment_method_id })),
     };
-    const { error } = editingInvoiceId
+    const { data, error } = editingInvoiceId
       ? await supabase.rpc('correct_invoice', { p_invoice_id: editingInvoiceId, p_items: allItems,
           p_header: header, p_reason: editReason.trim() || null, p_request_id: editRequestId })
       : await supabase.rpc('create_invoice_with_details', { p_store_id: effectiveStore, p_customer_id: cCustomer,
           p_items: allItems, p_header: header });
     setCSaving(false);
-    if (error) { setCErr(error.message); return; }
+    if (error) {
+      setCErr(error.message);
+      // This particular refusal has a way forward, so offer it rather than
+      // leaving a message the operator can do nothing with.
+      if (editingInvoiceId && /Historical component snapshots need review/i.test(error.message)) {
+        setStockReviewFor(editingInvoiceId);
+      }
+      return;
+    }
+    const newInvoiceId = editingInvoiceId ? null : (typeof data === 'string' ? data : (data as any)?.id ?? null);
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
-    setEditingPaid(false); setEditReason(''); loadAll();
+    setEditingPaid(false); setEditReason('');
+    if (newInvoiceId) {
+      // Creation succeeded. Continue into the invoice that was just made rather
+      // than dropping back to the list, and let its own detail view say what it
+      // needs — a payment, or an FOC confirmation, or nothing.
+      const { data: invRow, error: openError } = await supabase.from('invoices').select('*').eq('id', newInvoiceId).single();
+      if (openError || !invRow) {
+        // The invoice EXISTS. Saying creation failed here, or inviting another
+        // attempt, is how a duplicate gets made.
+        setCreatedPending({ id: newInvoiceId, message: 'The invoice was created but could not be opened just now. It is saved — open it to continue.' });
+      } else {
+        await openDetail(invRow as Invoice);
+      }
+    }
+    loadAll();
   };
 
   // Phase 13 — prefill the builder modal from an unpaid invoice and switch it
   // into edit mode. Store is shown but locked; number/date never change.
+  /* Which actions this invoice actually supports.
+   *
+   * Derived from the recorded financial and lifecycle state, not from
+   * paid_amount: a refunded invoice has its paid amount back at zero and must
+   * not fall into the ordinary unpaid-edit path because of it. The server
+   * enforces the same rules; this only decides what to offer. */
+  const financialState = detailFinancial as any;
+  const netReceived = Number(financialState?.net_received ?? 0);
+  const refundedAmount = Number(financialState?.refunded ?? 0);
+  const settledHistory = detailPayments.length > 0 || netReceived > 0 || refundedAmount > 0;
+  const auditedStatuses = ['paid', 'partially_paid', 'cancelled', 'refunded',
+    'cancellation_requested', 'refund_requested', 'completed_foc'];
+  const needsAuditedCorrection = Boolean(detail) && (
+    auditedStatuses.includes(String(detail?.status)) || settledHistory
+    || Boolean((detail as any)?.is_topup) || Boolean((detail as any)?.is_exchange));
+  const canEditOrdinary = Boolean(detail) && !needsAuditedCorrection
+    && ['draft', 'unpaid'].includes(String(detail?.status));
+  // Something is refundable only when money or credit is actually still held.
+  const hasRefundablePayment = netReceived > 0;
+  const cancellable = Boolean(detail) && !['cancelled', 'refunded'].includes(String(detail?.status));
+  const canManageInvoice = isOwnerOrManager(profile?.role);
+  const refundCancelButton = detail && canManageInvoice ? (
+    <button className="btn btn-secondary" onClick={() => setChooserOpen(true)}
+      title="Cancel this invoice, or record a refund">
+      <FileText size={14} /> Refund / Cancel</button>
+  ) : null;
+
   const openEdit = () => {
     if (!detail) return;
     const selByItem: Record<string, Record<string, Record<string, number>>> = {};
@@ -941,8 +1007,16 @@ const InvoicesPage: React.FC = () => {
     setDetailRevisions((revs as InvoiceRevision[]) ?? []);
     setDetailFinancial(financial.data);
     const remaining = Number(financial.data?.outstanding ?? 0);
-    setPayLines([{ payment_method_id: methods[0]?.id ?? '', amount: remaining > 0 ? remaining : 0 }]);
-    setPayErr(null);
+    // No method is chosen for the operator. Defaulting to the first method, or
+    // to whatever the previous customer used, is how the wrong one gets
+    // recorded without anyone noticing.
+    setPayLines([{ payment_method_id: '', amount: remaining > 0 ? remaining : 0 }]);
+    setPayInstalment({
+      instalment_category: (inv as any).instalment_category ?? '',
+      instalment_method_id: (inv as any).instalment_method_id ?? '',
+      instalment_months: (inv as any).instalment_months ?? '',
+    });
+    setPayErr(null); setPayOutcome(null);
   };
 
   const payTotal = useMemo(() => payLines.reduce((s, p) => s + (p.amount || 0), 0), [payLines]);
@@ -999,29 +1073,70 @@ const InvoicesPage: React.FC = () => {
     await loadAll();
   };
 
+  /* Why Record Payment is or is not available. Returned as a sentence so the
+   * reason can be shown rather than left to a disabled button. The server
+   * checks all of this again; this only stops an avoidable round trip. */
+  const paymentBlocker = (): string | null => {
+    if (!detail) return 'No invoice open.';
+    if (payBusy) return 'A payment is already being recorded.';
+    const filled = payLines.filter(p => p.amount > 0 || p.payment_method_id);
+    if (filled.length === 0) return 'Add at least one payment.';
+    // A row with money in it and no method is a mistake, not a row to skip.
+    if (filled.some(p => p.amount > 0 && !p.payment_method_id)) return 'Choose a payment method for every amount entered.';
+    if (filled.some(p => p.payment_method_id && !(p.amount > 0))) return 'Enter an amount for every selected payment method.';
+    if (filled.some(p => !Number.isFinite(p.amount) || p.amount <= 0)) return 'Amounts must be positive.';
+    const instalmentError = validateInstalment(payInstalment);
+    if (instalmentError) return instalmentError;
+    return null;
+  };
+  const payBlockedReason = paymentBlocker();
+
   const handlePay = async () => {
     if (!detail) return;
+    const blocked = paymentBlocker();
+    if (blocked) { setPayErr(blocked); return; }
     const valid = payLines.filter(p => p.payment_method_id && p.amount > 0);
-    if (valid.length === 0) { setPayErr('Add at least one payment.'); return; }
-    setPayBusy(true); setPayErr(null);
-    const paidStore = detail.store_id, paidCustomer = detail.customer_id;
-    // pay_invoice_with_wallet allocates any wallet credit lot-by-lot first,
-    // then settles the invoice exactly as pay_invoice always did.
-    const { data, error } = await supabase.rpc('record_invoice_payment', { p_invoice_id: detail.id, p_payments: valid, p_request_id: paymentRequestId });
+    setPayBusy(true); setPayErr(null); setPayOutcome(null);
+    const invoiceId = detail.id;
+    // The arrangement and the payment are written in one server call, so the
+    // invoice can never end up carrying an arrangement for a payment that
+    // failed, or a payment without the arrangement it was taken under.
+    const { data, error } = await supabase.rpc('record_invoice_payment_with_instalment', {
+      p_invoice_id: invoiceId, p_payments: valid, p_request_id: paymentRequestId,
+      p_instalment: payInstalment.instalment_category ? {
+        instalment_category: payInstalment.instalment_category,
+        instalment_method_id: payInstalment.instalment_method_id,
+        instalment_months: payInstalment.instalment_months,
+      } : null,
+    });
     setPayBusy(false);
-    if (error) { setPayErr(error.message); return; }
+    if (error) {
+      // A confirmed failure: the entered values stay for correction, and the
+      // request id stays the same so a retry cannot double-charge.
+      setPayErr(error.message);
+      return;
+    }
     const res: any = data;
     if (res?.review_required) {
       // Prices changed; nothing was charged. Refresh the (repriced) invoice
       // and show the review so staff confirm the new total with the customer.
-      const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
+      const { data: invRow } = await supabase.from('invoices').select('*').eq('id', invoiceId).single();
       if (invRow) await openDetail(invRow as Invoice);
       setPriceReview(res as PriceReviewResult);
       return;
     }
-    setDetail(null); await loadAll();
-    // Phase 6: target-based therapy qualification is retired. Unlimited Therapy
-    // is sold as an invoice line instead; no post-payment qualify prompt.
+    // Recorded. From here a failure is a DISPLAY failure, never a reason to pay
+    // again, so it is reported as exactly that.
+    const { data: invRow, error: refreshError } = await supabase.from('invoices').select('*').eq('id', invoiceId).single();
+    if (refreshError || !invRow) {
+      setPayOutcome('The payment was recorded. This invoice could not be reloaded just now — reopen it from the list to see its updated status. Do not record the payment again.');
+      void loadAll();
+      return;
+    }
+    // A fresh request id: this payment is done, the next one is a new request.
+    setPaymentRequestId(crypto.randomUUID());
+    await openDetail(invRow as Invoice);
+    await loadAll();
   };
 
   const handleDelete = async (inv: Invoice) => {
@@ -1538,13 +1653,12 @@ const InvoicesPage: React.FC = () => {
 
 
       {createOpen && (
-        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}
-          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); }}>Cancel</button>{!splitMode && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button>}</>}>
+        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}
+          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}>Cancel</button>{!splitMode && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button>}</>}>
           <div className="form-grid invoice-editor">
-            <label>Invoice business date<input type="date" value={cBusinessDate} onChange={e => setCBusinessDate(e.target.value)} /></label>
-            {editingInvoiceId && !cBusinessDate && <p>This legacy invoice’s business date is pending review.</p>}
-            <InstalmentFields value={cInstalment} onChange={setCInstalment} methods={methods} />
-            <label>Notes<textarea value={cNotes} onChange={e => setCNotes(e.target.value)} /></label>
+            {/* On a correction the audited notice and its required reason come
+                first, then the business date. Someone reading downwards learns
+                that this is a correction before they are asked to date it. */}
             {editingPaid && (
               <div className="alert alert-warning" style={{ marginBottom: 0 }}>
                 <span>⚠</span>
@@ -1559,6 +1673,25 @@ const InvoicesPage: React.FC = () => {
                 </div>
               </div>
             )}
+            {stockReviewFor && editingInvoiceId === stockReviewFor && (
+              <InvoiceStockEvidenceReview invoiceId={stockReviewFor}
+                onCancel={() => setStockReviewFor(null)}
+                onResolved={() => {
+                  // The snapshot exists now. Clear the refusal and let the same
+                  // Save Changes go through the ordinary protected correction.
+                  setStockReviewFor(null);
+                  setCErr('The original records are now on file. Press Save Changes again to apply the correction.');
+                }} />
+            )}
+            <label>Invoice business date<input type="date" value={cBusinessDate} onChange={e => setCBusinessDate(e.target.value)} /></label>
+            {/* A missing historical date stays missing. Filling it with today to
+                silence this would invent the date the sale happened on. */}
+            {editingInvoiceId && !cBusinessDate && <p>This legacy invoice’s business date is pending review. Enter the date the sale actually happened; it is not filled in for you.</p>}
+            {/* The instalment arrangement moved to Record Payment for a new
+                invoice. On a correction it stays here, in the payment part of
+                the form, so saved values can be seen and edited. */}
+            {editingPaid && <InstalmentFields value={cInstalment} onChange={setCInstalment} methods={methods} />}
+            <label>Notes<textarea value={cNotes} onChange={e => setCNotes(e.target.value)} /></label>
 
             {editingPaid && (
               <div className="form-grid-2">
@@ -2193,6 +2326,7 @@ const InvoicesPage: React.FC = () => {
                       title="Correct this invoice with a reason and revision history">
                       <FileText size={14} /> Correct Invoice</button>
                   )}
+                  {refundCancelButton}
                   {!isOwnerOrManager(profile?.role) && <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button>}</>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
@@ -2209,7 +2343,7 @@ const InvoicesPage: React.FC = () => {
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={openEdit}>Correct Invoice</button>}</>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={openEdit}>Correct Invoice</button>}{refundCancelButton}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
@@ -2229,9 +2363,11 @@ const InvoicesPage: React.FC = () => {
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button>
                   <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
                   <button className="btn btn-secondary" onClick={openEdit}><FileText size={14} /> Edit Invoice</button>
+                  {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
-                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
+                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy || Boolean(payBlockedReason)}
+                        title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
               : detail.status === 'completed_foc'
               ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
@@ -2263,15 +2399,23 @@ const InvoicesPage: React.FC = () => {
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+                  {canManageInvoice && needsAuditedCorrection &&
+                    <button className="btn btn-secondary" onClick={openEdit}
+                      title="Correct this invoice with a reason and revision history">
+                      <FileText size={14} /> Correct Invoice</button>}
+                  {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
-                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
+                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy || Boolean(payBlockedReason)}
+                        title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
           }>
           <div className="form-grid">
-            {isOwnerOrManager(profile?.role) && detail.status !== 'paid' && !['cancelled','refunded','cancellation_requested','refund_requested'].includes(detail.status) &&
-              <button className="btn btn-secondary" onClick={openEdit}>Correct Invoice</button>}
+            {/* Correction lives in the footer now, once, beside Refund / Cancel.
+                An ordinary unpaid invoice offers Edit Invoice there instead. */}
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
+              requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
+              onRequestHandled={() => setFinanceRequest(null)}
               onChanged={async () => {
                 const { data, error } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
                 if (error) throw error;
@@ -2515,13 +2659,28 @@ const InvoicesPage: React.FC = () => {
                 <label>Payments Recorded</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
                   {detailPayments.map(p => (
-                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                      <span>{methodName(p.payment_method_id)} · {new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG')}
+                    <div key={p.id} className="invoice-payment-record">
+                      <span className="invoice-payment-record-label">{methodName(p.payment_method_id)} · {new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG')}
                         {(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</span>
-                      <span style={{ fontWeight: 600 }}>{money(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1))}</span>
+                      <span className="invoice-payment-record-actions">
+                        <span style={{ fontWeight: 600 }}>{money(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1))}</span>
+                        {/* Payment correction belongs with the payment it corrects.
+                            It still opens the audited reversal-and-replacement
+                            workflow, with its required reason and role check. */}
+                        {canManageInvoice && (p as any).entry_kind !== 'correction_reversal'
+                          && !detailPayments.some(r => (r as any).corrects_payment_id === p.id && (r as any).entry_kind === 'correction_reversal') && (
+                          <button className="btn btn-secondary btn-sm"
+                            onClick={() => setFinanceRequest({ mode: 'payment', paymentId: p.id })}
+                            title="Correct this payment's amount or date, keeping the original receipt">
+                            Correct amount / date</button>
+                        )}
+                      </span>
                     </div>
                   ))}
                 </div>
+                <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>
+                  Correcting a payment records a reversal and a replacement. The original receipt stays in this history.
+                </p>
               </div>
             )}
 
@@ -2647,7 +2806,7 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
                     <div key={i} className="invoice-payment-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <InvoiceSearchSelect value={pl.payment_method_id}
+                      <InvoiceSearchSelect value={pl.payment_method_id} placeholder="Select payment method"
                         onChange={id => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: id } : l))}
                         options={methods.filter((m: any) => !m.is_wallet_credit || !hasCreditLine).map((m: any) => ({
                           value: m.id, label: m.name + (m.is_wallet_credit ? ` — ${money(Number(payWallet?.categories?.[m.wallet_category] ?? 0))} available` : ''),
@@ -2659,7 +2818,19 @@ const InvoicesPage: React.FC = () => {
                     </div>
                   ))}
                 </div>
-                <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setPayLines(ls => [...ls, { payment_method_id: methods[0]?.id ?? '', amount: 0 }])}><Plus size={13} /> Split Payment</button>
+                <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setPayLines(ls => [...ls, { payment_method_id: '', amount: 0 }])}><Plus size={13} /> Split Payment</button>
+                {/* The payment arrangement, chosen with the payment it applies to.
+                    It is still recorded against the invoice, and choosing it
+                    records nothing and marks nothing paid on its own. */}
+                <div style={{ marginTop: 12 }}>
+                  <InstalmentFields value={payInstalment} onChange={setPayInstalment} methods={methods} />
+                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
+                    An arrangement is saved with the invoice when this payment is recorded. It does not itself take money or settle the invoice.
+                  </p>
+                </div>
+                {payOutcome && <div role="status" className="alert alert-info" style={{ marginTop: 10 }}><span>ℹ️</span><div>{payOutcome}</div></div>}
+                {payBlockedReason && payLines.some(p => p.amount > 0 || p.payment_method_id) &&
+                  <p role="status" style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{payBlockedReason}</p>}
                 {!hasCreditLine && payWallet && Number(payWallet.available_total ?? 0) > 0 && (
                   <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--text-muted)' }}>
                     Wallet: <strong>{money(Number(payWallet.available_total))}</strong> available —
@@ -2687,6 +2858,40 @@ const InvoicesPage: React.FC = () => {
       )}
 
       {/* Refund / cancel request modal */}
+      {createdPending && (
+        <div role="alert" className="alert alert-warning" style={{ margin: '12px 0' }}>
+          <span>⚠</span>
+          <div>
+            {createdPending.message}
+            <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+              <button className="btn btn-secondary btn-sm" onClick={async () => {
+                const { data, error } = await supabase.from('invoices').select('*').eq('id', createdPending.id).single();
+                if (error || !data) return;
+                setCreatedPending(null);
+                await openDetail(data as Invoice);
+              }}>Open the invoice</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setCreatedPending(null)}>Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {detail && (
+        <InvoiceRefundCancelChooser
+          open={chooserOpen}
+          onClose={() => setChooserOpen(false)}
+          canRefund={hasRefundablePayment}
+          canCancel={cancellable}
+          refundBlockedReason="No refundable payment."
+          cancelBlockedReason="This invoice is already cancelled or refunded. Reopening is a separate action in the settlement section."
+          onChoose={choice => {
+            // Opening the chooser mutated nothing; choosing hands over to the
+            // existing workflow, which still asks for its own reason and preview.
+            setChooserOpen(false);
+            setFinanceRequest({ mode: choice });
+          }} />
+      )}
+
       {actionType && detail && (
         <Modal title={actionType === 'invoice_refund' ? 'Request Refund' : 'Request Cancellation'} maxWidth={440} onClose={() => setActionType(null)}
           footer={<><button className="btn btn-secondary" onClick={() => setActionType(null)}>Back</button><button className="btn btn-danger" onClick={submitAction} disabled={actionBusy}>{actionBusy ? 'Submitting…' : 'Submit Request'}</button></>}>

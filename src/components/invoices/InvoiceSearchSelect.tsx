@@ -3,8 +3,11 @@ import React, { useId, useMemo, useState } from 'react';
 type Option = { value: string; label: string; disabled?: boolean };
 /** Invoice-specific, keyboard-operable search. Results stay in document flow so
  * the invoice modal scrolls to them instead of clipping an absolute popup. */
-export function InvoiceSearchSelect({ options, value, onChange, label = 'Payment method' }: {
+export function InvoiceSearchSelect({ options, value, onChange, label = 'Payment method', placeholder }: {
   options: Option[]; value: string; onChange: (value: string) => void; label?: string;
+  /** Shown when nothing is selected. Blank means blank: no option is chosen for
+   *  the operator, and the control says so in words. */
+  placeholder?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -15,7 +18,7 @@ export function InvoiceSearchSelect({ options, value, onChange, label = 'Payment
   return <div className="invoice-search-select">
     <button type="button" aria-label={label} aria-expanded={open} aria-controls={id}
       onClick={() => { setOpen(!open); setQuery(''); setActive(0); }}>
-      {options.find(o => o.value === value)?.label || `Choose ${label.toLowerCase()}`} ▾
+      {options.find(o => o.value === value)?.label || placeholder || `Choose ${label.toLowerCase()}`} ▾
     </button>
     {open && <div className="invoice-search-results">
       <input autoFocus role="combobox" aria-label={`Search ${label.toLowerCase()}`} aria-controls={id}

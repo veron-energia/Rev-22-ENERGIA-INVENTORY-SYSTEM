@@ -15,8 +15,12 @@ type Options = { financial: Record<string, any>; sources: Source[]; benefits: Be
 
 /** All amounts are proposals: the locked database transaction rechecks capacity,
  * source ownership, benefit use and stock evidence before recording anything. */
-export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, stores = [], onChanged }: {
+export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, stores = [], onChanged,
+  requestedMode = null, requestedPaymentId = null, onRequestHandled }: {
   invoiceId: string; canManage: boolean; payments: any[]; methods: any[]; stores?: { id: string; name: string }[]; onChanged: () => Promise<void>;
+  /** Refund, cancel and payment correction are opened from the invoice footer and
+   *  the payments list now, not from this panel's own row of buttons. */
+  requestedMode?: Mode | null; requestedPaymentId?: string | null; onRequestHandled?: () => void;
 }) {
   const [options, setOptions] = useState<Options | null>(null);
   const [mode, setMode] = useState<Mode>('');
@@ -46,6 +50,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     });
     return () => { cancelled = true; };
   }, [invoiceId, payments]);
+  const close = () => { setMode(''); onRequestHandled?.(); };
   const open = async (next: Mode) => {
     setMode(next); setError(''); setReason(''); setRequestId(crypto.randomUUID()); setConfirmed(false); setBenefitOverpayment(false);
     setLineAmounts({}); setBenefitAmounts({}); setSourceAmounts({}); setStock({}); setPreview(null);
@@ -56,6 +61,22 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     }
   };
   const currentPayments = payments.filter(p => p.entry_kind !== 'correction_reversal' && !payments.some(r => r.corrects_payment_id === p.id && r.entry_kind === 'correction_reversal'));
+  useEffect(() => {
+    if (!requestedMode || !canManage) return;
+    let cancelled = false;
+    (async () => {
+      await open(requestedMode);
+      if (cancelled) return;
+      if (requestedMode === 'payment') {
+        const target = requestedPaymentId && currentPayments.some(p => p.id === requestedPaymentId)
+          ? requestedPaymentId : currentPayments[0]?.id;
+        if (target) choosePayment(target);
+      }
+      onRequestHandled?.();
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedMode, requestedPaymentId]);
   const choosePayment = (id: string) => {
     const p = currentPayments.find(p => p.id === id);
     setPaymentId(id); setAmount(Number(p.amount)); setMethodId(p.payment_method_id);
@@ -86,7 +107,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
           p_method_id: methodId, p_reason: reason.trim(), p_request_id: requestId });
       } else result = await supabase.rpc(mode === 'reopen' ? 'reopen_invoice' : 'cancel_invoice_recorded', common);
       if (result.error) throw result.error;
-      setMode(''); await onChanged();
+      close(); await onChanged();
     } catch (e: any) { setError(e.message || 'The request could not be completed. Your entered details have been kept.'); }
     finally { setBusy(false); }
   };
@@ -99,13 +120,13 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     {error && <div role="alert" className="alert alert-danger">{error}</div>}
     {options?.review_notes?.map(note => <p role="status" key={note}>{note}</p>)}
     {f && <p>Net payments held: <strong>{money(f.net_received)}</strong> · Outstanding: <strong>{money(f.outstanding)}</strong> · Refund due: <strong>{money(f.refund_due)}</strong> · Refunded: {money(f.refunded)}</p>}
+    {/* Refund and cancellation are one footer action now, and payment correction
+        sits with the payments it corrects. Only what has no other home remains. */}
     {canManage && !mode && <div className="invoice-finance-actions">
-      <button className="btn btn-secondary" onClick={() => open('refund')}>Record full / partial refund</button>
       {!!options?.benefits.some(b => Number(b.remaining_value) > 0) && !['cancelled', 'refunded', 'cancellation_requested', 'refund_requested'].includes(f?.status) &&
         <button className="btn btn-secondary" onClick={() => open('transfer')}>Correct unused benefit recipient</button>}
-      {currentPayments.length > 0 && <button className="btn btn-secondary" onClick={() => { open('payment'); choosePayment(currentPayments[0].id); }}>Correct payment amount / date</button>}
-      {['cancelled', 'refunded'].includes(f?.status) ? <button className="btn btn-secondary" onClick={() => open('reopen')}>Preview reopening</button>
-        : <button className="btn btn-danger" onClick={() => open('cancel')}>Cancel invoice</button>}
+      {['cancelled', 'refunded'].includes(f?.status) &&
+        <button className="btn btn-secondary" onClick={() => open('reopen')}>Preview reopening</button>}
     </div>}
     {mode && <div className="form-grid">
       <strong>{mode === 'refund' ? 'Record money or credit actually returned' : mode === 'payment' ? 'Correct a recorded payment' : mode === 'transfer' ? 'Move unused credit or vouchers' : mode === 'reopen' ? 'Reopen invoice' : 'Cancel invoice'}</strong>
@@ -169,7 +190,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       </> : <p>Loading reconciliation preview…</p>)}
       <label>Reason (required)<textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
       <div className="invoice-finance-actions">
-        <button className="btn btn-secondary" disabled={busy} onClick={() => setMode('')}>Back</button>
+        <button className="btn btn-secondary" disabled={busy} onClick={close}>Back</button>
         <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001))} onClick={submit}>
           {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'cancel' ? 'Confirm cancellation' : 'Record with audit history'}
         </button>

@@ -73,7 +73,11 @@ try {
   await checkChoices(page,width,'edit');
   await page.getByRole('button',{name:'Cancel',exact:true}).click();
   await page.getByRole('button',{name:'View',exact:true}).click();
-  await page.getByRole('button',{name:'Correct payment amount / date',exact:true}).click();
+  // Payment correction moved out of the finance panel's own button row and into
+  // the Payments Recorded list, beside the payment it corrects.
+  assert.equal(await page.getByRole('button',{name:'Correct payment amount / date',exact:true}).count(),0,
+    'The old panel-level payment correction button must be gone');
+  await page.getByRole('button',{name:'Correct amount / date',exact:true}).first().click();
   await page.getByLabel('Correct amount',{exact:true}).fill('75');
   await page.getByLabel('Actual payment date',{exact:true}).fill('2020-02-01');
   await page.getByRole('button',{name:'Payment method',exact:true}).click();

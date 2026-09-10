@@ -46,3 +46,77 @@
   .modal:has(.invoice-finance) table { table-layout: fixed; width: 100%; }
   .modal:has(.invoice-finance) th, .modal:has(.invoice-finance) td { padding: 6px; font-size: 11px; overflow-wrap: anywhere; white-space: normal; }
 }
+
+/* --- Refund / cancel chooser -------------------------------------------
+   Invoice-scoped, like the rest of this file: every selector is
+   .invoice-*, so nothing here reaches a shared class. */
+.invoice-chooser-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; z-index: 1200;
+}
+.invoice-chooser {
+  background: var(--surface); color: var(--text); border-radius: 10px;
+  width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
+  padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+}
+.invoice-chooser h3 { margin: 0 0 8px; font-size: 15.5px; }
+.invoice-chooser > p { margin: 0 0 14px; font-size: 12.5px; color: var(--text-secondary); }
+.invoice-chooser-options { display: flex; flex-direction: column; gap: 10px; }
+.invoice-chooser-option {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  text-align: left; padding: 12px 14px; height: auto; white-space: normal;
+}
+.invoice-chooser-option span { font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+.invoice-chooser-option:disabled { opacity: 0.55; cursor: not-allowed; }
+.invoice-chooser-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+
+/* The footer actions must stay reachable on a phone: they wrap rather than
+   running off the side, and the dialog never exceeds the viewport. */
+@media (max-width: 640px) {
+  .invoice-chooser { max-width: none; }
+  .invoice-chooser-option { padding: 12px; }
+}
+
+/* --- Payments Recorded rows --------------------------------------------
+   The row carries a method, a date, an amount and now a correction button.
+   At 320px that cannot sit on one line, so it wraps instead of pushing the
+   modal into a horizontal scroll. */
+.invoice-payment-record {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
+  justify-content: space-between; font-size: 13px; padding: 6px 10px;
+  background: var(--surface-2); border-radius: var(--radius-sm);
+}
+.invoice-payment-record-label { min-width: 0; overflow-wrap: anywhere; }
+.invoice-payment-record-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-left: auto;
+}
+@media (max-width: 420px) {
+  .invoice-payment-record-actions { width: 100%; justify-content: space-between; }
+}
+
+/* --- Historical stock evidence review ---------------------------------- */
+.invoice-evidence-review {
+  border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+  background: var(--surface-2); display: flex; flex-direction: column; gap: 10px;
+}
+.invoice-evidence-review > p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+.invoice-evidence-line {
+  border: 1px solid var(--border); border-radius: 6px; padding: 10px; background: var(--surface);
+}
+.invoice-evidence-line-head {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between;
+}
+.invoice-evidence-kind { font-size: 11px; color: var(--text-muted); }
+.invoice-evidence-status { font-size: 11px; font-weight: 700; white-space: nowrap; }
+.invoice-evidence-reconstructable, .invoice-evidence-captured { color: var(--success); }
+.invoice-evidence-needs_confirmation { color: var(--warning, #b26a00); }
+.invoice-evidence-missing { color: var(--danger); }
+.invoice-evidence-source { margin: 4px 0 0; font-size: 11.5px; color: var(--text-muted); }
+.invoice-evidence-components { margin: 6px 0 0 18px; font-size: 12px; }
+.invoice-evidence-confirm {
+  display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; font-size: 12px;
+}
+.invoice-evidence-confirm input { width: auto; margin-top: 2px; }
+.invoice-evidence-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
