@@ -149,6 +149,7 @@ export function ExcelExportButton<T>({
   };
 
   const [busy, setBusy] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   const collect = async (): Promise<T[]> => (fetchAll ? await fetchAll() : rows);
 
@@ -166,6 +167,7 @@ export function ExcelExportButton<T>({
   };
 
   const onClick = async () => {
+    setExportError('');
     if (hasTimeline || selectableColumns) {
       setFrom(''); setTo('');
       if (selectableColumns) {
@@ -175,7 +177,9 @@ export function ExcelExportButton<T>({
       setOpen(true); return;
     }
     setBusy(true);
-    try { write(await collect()); } finally { setBusy(false); }
+    try { write(await collect()); }
+    catch (error) { setExportError(error instanceof Error ? error.message : 'The export could not be completed. Please try again.'); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -184,6 +188,7 @@ export function ExcelExportButton<T>({
         title={rows.length === 0 ? 'Nothing to export' : `Export ${rows.length} row(s) to Excel`}>
         <Download size={15} /> {busy ? 'Preparing…' : label}
       </button>
+      {!open && exportError && <div className="alert alert-danger" role="alert">Export failed: {exportError}</div>}
 
       {open && (
         <Modal title={label} maxWidth={430} onClose={() => setOpen(false)}
@@ -192,13 +197,16 @@ export function ExcelExportButton<T>({
             <button className="btn btn-primary"
               disabled={busy || (selectableColumns && picked.length === 0)}
               onClick={async () => {
-                setBusy(true);
-                try { write(applyRange(await collect())); setOpen(false); } finally { setBusy(false); }
+                setBusy(true); setExportError('');
+                try { write(applyRange(await collect())); setOpen(false); }
+                catch (error) { setExportError(error instanceof Error ? error.message : 'The export could not be completed. Please try again.'); }
+                finally { setBusy(false); }
               }}>
               {busy ? 'Preparing…' : fetchAll ? 'Export' : `Export ${inRange.length} row(s)`}
             </button>
           </>}>
           <div className="form-grid">
+            {exportError && <div className="alert alert-danger" role="alert">Export failed: {exportError}</div>}
             {selectableColumns && (
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between',

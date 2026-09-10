@@ -1,3 +1,5 @@
+import { TransferNoteHistory } from '../components/stock-history/TransferNoteHistory';
+import '../components/stock-history/stock-history.css';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -138,7 +140,7 @@ const TransfersPage: React.FC = () => {
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('profiles').select('*'),
+      supabase.from('profiles').select('id,full_name'),
       supabase.rpc('my_assigned_store_id'),
       supabase.rpc('my_assigned_stores'),
       supabase.from('store_product_prices').select('store_id,product_id').is('deleted_at', null).eq('is_active', true),
@@ -509,7 +511,7 @@ const TransfersPage: React.FC = () => {
                         <td style={{ whiteSpace: 'nowrap', fontSize: 12.5 }}>{new Date(req.created_at).toLocaleDateString()}</td>
                         <td style={{ fontSize: 12.5 }}>{TRANSFER_TYPES.find(t => t.value === req.transfer_type)?.label ?? req.transfer_type}</td>
                         <td style={{ fontSize: 12.5 }}>{req.source_id ? locName(req.source_type, req.source_id) : <em>source deferred</em>} → {locName(req.dest_type, req.dest_id)}</td>
-                        <td>{reqLines.length} item{reqLines.length !== 1 ? 's' : ''}</td>
+                        <td>{reqLines.length ? <>{reqLines.length} item{reqLines.length !== 1 ? 's' : ''}</> : 'See assigned-store details'}</td>
                         <td>
                           <StatusBadge s={req.status} />
                           {(req.edit_count ?? 0) > 0 && <span className="badge badge-accent" style={{ marginLeft: 4, fontSize: 10 }}>edited</span>}
@@ -527,7 +529,7 @@ const TransfersPage: React.FC = () => {
                       </tr>
                       {isOpen && <tr><td></td><td colSpan={7} style={{ background: 'var(--surface-2)' }}>
                         <div style={{ padding: '4px 0' }}>
-                          <table style={{ width: 'auto', minWidth: 560 }}>
+                          {reqLines.length > 0 && <table style={{ width: 'auto', minWidth: 560 }}>
                             <thead><tr><th>Item</th><th style={{ textAlign: 'right' }}>Requested</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Received</th><th style={{ textAlign: 'right' }}>Diff</th></tr></thead>
                             <tbody>{reqLines.map(l => {
                               const manual = l.line_kind === 'manual' || !l.product_id;
@@ -551,11 +553,9 @@ const TransfersPage: React.FC = () => {
                                 <td style={{ textAlign: 'right', color: diff === 0 ? 'var(--text-muted)' : 'var(--danger)' }}>{l.received_quantity == null ? '—' : `${diff > 0 ? '+' : ''}${diff}`}{l.discrepancy_resolution ? ` · ${l.discrepancy_resolution}` : ''}</td>
                               </tr>;
                             })}</tbody>
-                          </table>
-                          {req.note && <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}><strong>Note:</strong> {req.note}</p>}
-                          {req.rejection_reason && <p style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}><strong>Rejected:</strong> {req.rejection_reason}</p>}
+                          </table>}
+                          <TransferNoteHistory requestId={req.id} showLines={!reqLines.length} />
                           {req.approved_at && <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>{req.dispatched_at ? 'Dispatched' : 'Approved'} by {userName(req.approved_by)} on {new Date(req.approved_at).toLocaleString()}</p>}
-                          {req.received_at && <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>Received by {userName(req.received_by)} on {new Date(req.received_at).toLocaleString()}{req.receipt_note ? ` — ${req.receipt_note}` : ''}</p>}
                         </div>
                       </td></tr>}
                     </React.Fragment>;
@@ -612,6 +612,7 @@ const TransfersPage: React.FC = () => {
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <TransferNoteHistory requestId={approveReq.id} />
             {reviewLines.map(line => {
               const sources = reviewSources[line.key] ?? [];
               const got = allocFor(line.key);
@@ -689,6 +690,7 @@ const TransfersPage: React.FC = () => {
         footer={<><button className="btn btn-secondary" onClick={() => setEditReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveEdit()} disabled={editBusy}>{editBusy ? 'Saving…' : 'Save Changes'}</button></>}>
         <div className="form-grid">
           {editErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{editErr}</div></div>}
+          <TransferNoteHistory requestId={editReq.id} />
           {!canApprove && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>You can edit Products, Manual Items and the note. An unsourced Staff request is not stock-validated until an Owner/Manager allocates a source during Review.</div></div>}
           {canApprove && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div className="form-group" style={{ marginBottom: 0 }}><label>Source</label><select value={editSourceId ? `${editSourceType}:${editSourceId}` : ''} onChange={e => { if (!e.target.value) return; const [ty, id] = e.target.value.split(':'); setEditSourceType(ty as LocationType); setEditSourceId(id); }}>
@@ -719,6 +721,7 @@ const TransfersPage: React.FC = () => {
 
       {receiveReq && <Modal title="Confirm Receipt" maxWidth={620} onClose={() => setReceiveReq(null)} footer={<><button className="btn btn-secondary" onClick={confirmAllReceived} disabled={receiveBusy}><Check size={14} /> Confirm All Received</button><button className="btn btn-primary" onClick={() => void saveReceive()} disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Confirm Receipt'}</button></>}>
         <div className="form-grid">
+          <TransferNoteHistory requestId={receiveReq.id} />
           {receiveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{receiveErr}</div></div>}
           <div className="alert alert-info" style={{ marginBottom: 0 }}><span><Truck size={15} /></span><div>Enter the actual received quantity for every line. Product inventory is added to the destination now. Manual items are recorded as received but never change inventory.</div></div>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>{receiveReq.source_id ? locName(receiveReq.source_type, receiveReq.source_id) : 'Multiple / non-inventory source'} → <strong>{locName(receiveReq.dest_type, receiveReq.dest_id)}</strong></p>
@@ -742,6 +745,7 @@ const TransfersPage: React.FC = () => {
 
       {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy}>{resolveBusy ? 'Saving…' : 'Resolve & Complete'}</button></>}>
         <div className="form-grid">
+          <TransferNoteHistory requestId={resolveReq.id} />
           {resolveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{resolveErr}</div></div>}
           <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Manual-item discrepancies are acknowledgement-only. Inventory correction options are available only for real Product lines.</div></div>
           {(linesByReq[resolveReq.id] ?? []).filter(l => (l.discrepancy_quantity ?? 0) !== 0 && !l.discrepancy_resolved_at).map(l => {

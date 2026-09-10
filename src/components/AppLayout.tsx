@@ -34,7 +34,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/warehouse-inventory', label: 'Warehouse Stock', icon: <Boxes size={17} />, show: isManagerOrAbove(role) || role === 'inventory_manager' },
     { to: '/store-inventory', label: 'Store Stock', icon: <PackageOpen size={17} />, show: true },
     { to: '/transfers', label: 'Transfers', icon: <ArrowLeftRight size={17} />, show: true },
-    { to: '/stock-movements', label: 'Stock History', icon: <History size={17} />, show: isManagerOrAbove(role) || role === 'inventory_manager' },
+    { to: '/stock-movements', label: 'Stock History', icon: <History size={17} />, show: isManagerOrAbove(role) || role === 'inventory_manager' || role === 'staff' },
     { to: '/special', label: 'Special & Rentals', icon: <KeyRound size={17} />, show: isOwnerOrManager(role) },
   ];
 

@@ -1,220 +1,77 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { ExcelExportButton } from '../components/ExcelExport';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import {
-  StockMovement, Product, Warehouse, Store, Profile,
-  MOVEMENT_LABELS, StockMovementType,
-} from '../types';
-import { RefreshCw, History, ArrowRight } from 'lucide-react';
-
-const MOVEMENT_TINTS: Partial<Record<StockMovementType, string>> = {
-  warehouse_stock_in: 'badge-success',
-  warehouse_to_store: 'badge-primary',
-  warehouse_to_warehouse: 'badge-primary',
-  store_to_store: 'badge-primary',
-  store_sale: 'badge-accent',
-  invoice_cancel_return: 'badge-muted',
-  invoice_refund_return: 'badge-muted',
-  inventory_adjustment: 'badge-accent',
-};
-
+import { ExcelExportButton } from '../components/ExcelExport';
+import { Modal } from '../components/ui';
+import { StockHistoryFilter, StockOption } from '../components/stock-history/StockHistoryFilter';
+import { TransferNoteHistory } from '../components/stock-history/TransferNoteHistory';
+import { collectStockReport, stockCell, stockMonth, StockFilters } from '../components/stock-history/report';
+import '../components/stock-history/stock-history.css';
+const kinds = ['products', 'locations', 'people', 'types'] as const;
+const labels = { products: 'Products', locations: 'Locations', people: 'Recorded by', types: 'Movement type' };
+const emptyOptions = () => ({ products: [], locations: [], people: [], types: [] } as Record<typeof kinds[number], StockOption[]>);
 const StockMovementsPage: React.FC = () => {
-  const [movements, setMovements] = useState<StockMovement[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-  const [stores, setStores] = useState<Store[]>([]);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [typeFilter, setTypeFilter] = useState<'all' | StockMovementType>('all');
-
-  // PostgREST caps a response at 1000 rows, so every lookup here has to page.
-  // The products list especially: a movement whose product sits beyond the
-  // first page renders with NO NAME, which reads as a missing record rather
-  // than a missing lookup. That is what made promotion products look absent.
-  const fetchAllRows = async <T,>(build: (from: number, to: number) => any): Promise<T[]> => {
-    const PAGE = 1000;
-    const out: T[] = [];
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await build(from, from + PAGE - 1);
-      if (error) throw new Error(error.message);
-      const batch = (data as T[]) ?? [];
-      out.push(...batch);
-      if (batch.length < PAGE) break;
-    }
-    return out;
-  };
-
-  const loadAll = useCallback(async () => {
-    setLoading(true);
-    // Movements are paged too, up to a visible ceiling — the old fixed
-    // limit(500) silently hid everything older, which on a busy month is most
-    // of the history.
-    const MOVEMENT_CAP = 5000;
-    const [mvRows, prod, wh, st, prof] = await Promise.all([
-      (async () => {
-        const rows: StockMovement[] = [];
-        const PAGE = 1000;
-        for (let from = 0; from < MOVEMENT_CAP; from += PAGE) {
-          const { data, error } = await supabase.from('stock_movements').select('*')
-            .order('created_at', { ascending: false })
-            .range(from, Math.min(from + PAGE, MOVEMENT_CAP) - 1);
-          if (error) return { data: rows, error } as any;
-          const batch = (data as StockMovement[]) ?? [];
-          rows.push(...batch);
-          if (batch.length < PAGE) break;
-        }
-        return { data: rows, error: null } as any;
-      })(),
-      fetchAllRows<Product>((f, t) => supabase.from('products').select('id,name,sku').range(f, t))
-        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
-      fetchAllRows<Warehouse>((f, t) => supabase.from('warehouses').select('id,name').range(f, t))
-        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
-      fetchAllRows<Store>((f, t) => supabase.from('stores').select('id,name').range(f, t))
-        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
-      fetchAllRows<Profile>((f, t) => supabase.from('profiles').select('id,full_name').range(f, t))
-        .then(d => ({ data: d, error: null } as any)).catch(e => ({ data: [], error: e } as any)),
-    ]);
-    const mv = mvRows;
-    if (mv.error) { console.error('stock_movements read failed:', mv.error); setLoadErr(mv.error.message); }
-    else setLoadErr(null);
-    setMovements((mv.data as StockMovement[]) ?? []);
-    setProducts((prod.data as Product[]) ?? []);
-    setWarehouses((wh.data as Warehouse[]) ?? []);
-    setStores((st.data as Store[]) ?? []);
-    setProfiles((prof.data as Profile[]) ?? []);
-    setLoading(false);
-  }, []);
-  useEffect(() => { loadAll(); }, [loadAll]);
-
-  // Shown when the list is at its ceiling, so an absent movement is never
-  // mistaken for one that was never written. The old fixed limit(500) gave no
-  // hint at all: older entries simply were not there.
-  const atCeiling = movements.length >= 5000;
-
-  const pName = (id: string) => products.find(p => p.id === id)?.name ?? 'Unknown';
-  const pSku = (id: string) => products.find(p => p.id === id)?.sku ?? '';
-  const uName = (id: string | null) => id ? (profiles.find(p => p.id === id)?.full_name ?? '—') : '—';
-  const locName = (whId: string | null, stId: string | null) => {
-    if (whId) return `🏭 ${warehouses.find(w => w.id === whId)?.name ?? '—'}`;
-    if (stId) return `🏪 ${stores.find(s => s.id === stId)?.name ?? '—'}`;
-    return null;
-  };
-
-  // Searches everything visible in a row: product name and SKU, either end of
-  // the movement, who made it, the type and the note — so "Emi", "P00201",
-  // "Adelphi" and "opening" all find what you would expect.
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return movements.filter(m => {
-      if (typeFilter !== 'all' && m.movement_type !== typeFilter) return false;
-      if (!q) return true;
-      const when = m.created_at ? new Date(m.created_at) : null;
-      return [
-        pName(m.product_id), pSku(m.product_id),
-        locName(m.from_warehouse_id, m.from_store_id),
-        locName(m.to_warehouse_id, m.to_store_id),
-        uName(m.created_by),
-        MOVEMENT_LABELS[m.movement_type], m.movement_type.replace(/_/g, ' '),
-        m.notes, String(m.quantity ?? ''),
-        when?.toLocaleDateString('en-GB'), when?.toLocaleDateString('en-CA'),
-      ].filter(Boolean).join(' ').toLowerCase().includes(q);
+  const [tab, setTab] = useState<'history' | 'table'>('history'), [search, setSearch] = useState(''), [query, setQuery] = useState('');
+  const [dates, setDates] = useState(stockMonth), [selected, setSelected] = useState(emptyOptions), [page, setPage] = useState(0), [refresh, setRefresh] = useState(0);
+  const [result, setResult] = useState<any>(null), [loading, setLoading] = useState(true), [error, setError] = useState(''), [transfer, setTransfer] = useState('');
+  const cutoff = useRef<string | null>(null);
+  useEffect(() => { const timer = setTimeout(() => { setQuery(search); setPage(0); }, 250); return () => clearTimeout(timer); }, [search]);
+  const filters = useMemo<StockFilters>(() => ({ ...dates, search: query, products: selected.products.map(o => o.value), locations: selected.locations.map(o => o.value), people: selected.people.map(o => o.value), types: selected.types.map(o => o.value) }), [dates, query, selected]);
+  useEffect(() => { cutoff.current = null; }, [filters, tab, refresh]);
+  useEffect(() => {
+    let live = true; setLoading(true); setError(''); setResult(null);
+    supabase.rpc(tab === 'history' ? 'stock_history_page' : 'stock_history_table', { p_filters: filters, p_limit: 100, p_offset: page * 100, p_as_of: cutoff.current }).then(({ data, error }) => {
+      if (!live) return;
+      if (error) setError(error.message || 'Stock History could not be loaded.'); else { cutoff.current = data.as_of; setResult(data); }
+      setLoading(false);
     });
-  }, [movements, typeFilter, search, products, warehouses, stores, profiles]);
-
-  const typeOptions: (StockMovementType | 'all')[] = ['all', 'warehouse_stock_in', 'warehouse_to_store', 'warehouse_to_warehouse', 'store_to_store', 'store_sale', 'inventory_adjustment'];
-
-  return (
-    <div>
-      <div className="page-header">
-        <div><h2>Stock Movement History</h2><p>Every stock change, newest first. Permanent and read-only.</p></div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <ExcelExportButton
-            rows={filtered} filename="stock-history" sheetName="Stock History"
-            dateOf={(r: any) => r.created_at} dateLabel="Movement date"
-            columns={[
-              { header: 'Date', value: (m: any) => new Date(m.created_at).toLocaleString('en-GB') },
-              { header: 'Type', value: (m: any) => m.movement_type },
-              { header: 'Product', value: (m: any) => pName(m.product_id) },
-              { header: 'SKU', value: (m: any) => pSku(m.product_id) },
-              { header: 'Quantity', value: (m: any) => Number(m.quantity ?? 0) },
-              { header: 'Reason', value: (m: any) => m.reason ?? '' },
-              { header: 'Reference', value: (m: any) => m.reference ?? '' },
-            ]} />
-        </div>
-        <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-      </div>
-
-      <div style={{ marginBottom: 12, maxWidth: 460 }}>
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search product, SKU, warehouse, store, person or note…" />
-        {search && (
-          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 6 }}>
-            {filtered.length} match{filtered.length === 1 ? '' : 'es'}
-            <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }}
-              onClick={() => setSearch('')}>Clear</button>
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-        {typeOptions.map(t => (
-          <button key={t} className={`btn btn-sm ${typeFilter === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTypeFilter(t)}>
-            {t === 'all' ? 'All' : MOVEMENT_LABELS[t]}
-          </button>
-        ))}
-      </div>
-
-      {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read stock history: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
-
-      {atCeiling && (
-        <div className="alert alert-warning">
-          <span>⚠</span>
-          <div>
-            Showing the most recent 5,000 movements. Older entries exist but are not listed —
-            use the search to find a specific product, or narrow by type.
-          </div>
-        </div>
-      )}
-
-      <div className="card">
-        <div className="table-wrap">
-          {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : filtered.length === 0 ? <div className="empty-state"><History size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No movements yet</p></div>
-          : (
-            <table>
-              <thead><tr><th>Date</th><th>Type</th><th>Product</th><th>Movement</th><th style={{ textAlign: 'right' }}>Qty</th><th>By</th><th>Notes</th></tr></thead>
-              <tbody>
-                {filtered.map(m => {
-                  const from = locName(m.from_warehouse_id, m.from_store_id);
-                  const to = locName(m.to_warehouse_id, m.to_store_id);
-                  return (
-                    <tr key={m.id}>
-                      <td style={{ whiteSpace: 'nowrap', fontSize: 12.5 }}>{new Date(m.created_at).toLocaleDateString()}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div></td>
-                      <td><span className={`badge ${MOVEMENT_TINTS[m.movement_type] ?? 'badge-muted'}`}>{MOVEMENT_LABELS[m.movement_type]}</span></td>
-                      <td><strong>{pName(m.product_id)}</strong><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{pSku(m.product_id)}</div></td>
-                      <td style={{ fontSize: 12.5 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          {from && <span>{from}</span>}
-                          {from && to && <ArrowRight size={12} style={{ color: 'var(--text-muted)' }} />}
-                          {to && <span>{to}</span>}
-                          {!from && !to && '—'}
-                        </div>
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{m.quantity}</td>
-                      <td style={{ fontSize: 12.5 }}>{uName(m.created_by)}</td>
-                      <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 240 }}>{m.notes || '—'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
+    return () => { live = false; };
+  }, [filters, tab, page, refresh]);
+  const change = (kind: typeof kinds[number], values: StockOption[]) => { setSelected(s => ({ ...s, [kind]: values })); setPage(0); };
+  const context = `${dates.from} to ${dates.to} · Asia/Singapore · Search: ${query || 'All'} · ${kinds.map(k => `${labels[k]}: ${selected[k].map(o => o.label).join(' OR ') || 'All permitted'}`).join(' · ')}`;
+  const filtered = !!query.trim() || !!selected.people.length || !!selected.types.length;
+  const showMovements = (r: any) => { setSelected(s => ({ ...s, products: [{ value: r.product_id, label: `${r.product_name} · ${r.product_sku}` }], locations: [{ value: r.location_key, label: r.location_name }] })); setTab('history'); setPage(0); };
+  const value = (n: unknown) => n == null ? 'Unknown' : Number(n).toLocaleString('en-SG');
+  const cols = tab === 'history' ? [
+    { header: 'Date/time (Asia/Singapore)', value: (r: any) => new Date(r.created_at).toLocaleString('en-GB', { timeZone: 'Asia/Singapore' }) },
+    ...[['Type', 'type_label'], ['Product', 'product_name'], ['SKU', 'product_sku'], ['Source', 'from_name'], ['Destination', 'to_name'], ['Quantity (units)', 'quantity'], ['Recorded by', 'by_name'], ['Notes', 'notes'], ['Transfer reference', 'transfer_request_id']].map(([header, key]) => ({ header, value: (r: any) => stockCell(r[key]) })),
+  ] : [
+    ...[['Product', 'product_name'], ['SKU', 'product_sku'], ['Location', 'location_name']].map(([header, key]) => ({ header, value: (r: any) => stockCell(r[key]) })),
+    ...[['Actual opening (units)', 'opening_balance'], [`${filtered ? 'Filtered' : 'All'} inbound (units)`, 'inbound'], [`${filtered ? 'Filtered' : 'All'} outbound (units)`, 'outbound'], ['Actual closing (units)', 'closing_balance'], ['Other movement net (units)', 'other_movement_net'], ['Incoming in transit (units)', 'in_transit_incoming'], ['Outgoing in transit (units)', 'in_transit_outgoing']].map(([header, key]) => ({ header, value: (r: any) => r[key] == null ? 'Unknown / not applicable' : Number(r[key]) })),
+    { header: 'Reconciliation warning', value: (r: any) => stockCell(r.warning) },
+  ];
+  return <div className="stock-history">
+    <div className="page-header"><div><h2>Stock Movement History</h2><p>Read-only stock movements and product balances for your permitted locations.</p></div>
+      <ExcelExportButton rows={result?.rows || []} columns={[...cols, { header: 'Report filters and dates', value: () => stockCell(context) }, { header: 'Balance basis', value: () => tab === 'table' ? 'Actual observed balances; movement filters affect inbound/outbound only. Transit is separate from sellable stock.' : 'Recorded movements, scoped to permitted locations.' }]} filename={`stock-${tab}`} sheetName={tab === 'history' ? 'Stock History' : 'Stock Table'} disabled={loading || !!error || !result?.has_access || !result.total || query !== search} fetchAll={() => collectStockReport(supabase, tab, filters)} />
+      <button className="btn btn-secondary" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
     </div>
-  );
+    <div className="stock-search"><label>Search stock history<input value={search} onChange={e => setSearch(e.target.value)} placeholder="Product, SKU, location, person, type, note, quantity or date…" /></label><button className="btn btn-secondary" disabled={!search} onClick={() => setSearch('')}>Clear search</button></div>
+    <div className="stock-filter-bar">{kinds.map(kind => <StockHistoryFilter key={kind} kind={kind} label={labels[kind]} selected={selected[kind]} onChange={v => change(kind, v)} />)}</div>
+    <div className="stock-dates"><label>From (Singapore)<input type="date" value={dates.from} max={dates.to} onChange={e => { setDates(d => ({ ...d, from: e.target.value })); setPage(0); }} /></label><label>Through (Singapore)<input type="date" value={dates.to} min={dates.from} max={stockMonth().to} onChange={e => { setDates(d => ({ ...d, to: e.target.value })); setPage(0); }} /></label><button className="btn btn-secondary" onClick={() => { setSelected(emptyOptions()); setDates(stockMonth()); setPage(0); }}>Clear filters</button></div>
+    <p aria-label="Active filter summary" style={{ fontSize: 12, overflowWrap: 'anywhere', marginTop: 10 }}>{context}</p>
+    <div className="stock-tabs" role="tablist" aria-label="Stock History views" onKeyDown={e => {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+        e.preventDefault(); const next = e.key === 'Home' ? 'history' : e.key === 'End' ? 'table' : tab === 'history' ? 'table' : 'history';
+        setTab(next); setPage(0); document.getElementById(`stock-tab-${next}`)?.focus();
+      }
+    }}>{(['history', 'table'] as const).map(t => <button key={t} id={`stock-tab-${t}`} role="tab" aria-controls="stock-results" tabIndex={tab === t ? 0 : -1} aria-selected={tab === t} className={`btn ${tab === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setTab(t); setPage(0); }}>{t === 'history' ? 'History' : 'Table'}</button>)}</div>
+    <section id="stock-results" role="tabpanel" aria-labelledby={`stock-tab-${tab}`}>
+    {tab === 'table' && <p>All quantities are product units. In Transit shows incoming / outgoing separately and is excluded from sellable Closing Balance.{filtered && ' Inbound and Outbound are filtered movements; actual balances stay unchanged. Other movements explain the difference.'}</p>}
+    {error ? <div className="alert alert-danger" role="alert">{error} <button className="btn btn-secondary" onClick={() => setRefresh(n => n + 1)}>Retry</button></div>
+      : loading || query !== search ? <p role="status">Loading Stock History…</p> : !result?.has_access ? <p role="status">You have no current store assignment. Ask your manager to assign a store before viewing Stock History.</p>
+      : <><p role="status">{result.total.toLocaleString()} matching {tab === 'history' ? 'movements' : 'product/location rows'} · {dates.from}–{dates.to} SGT</p>
+        {!result.rows.length ? <p>No results match these filters.</p> : <div className="card table-wrap" tabIndex={0} role="region" aria-label="Stock results; scroll horizontally for all columns"><table>
+          {tab === 'history' ? <><thead><tr>{['Date (SGT)', 'Type', 'Product', 'Movement', 'Qty (units)', 'By', 'Notes'].map(h => <th key={h}>{h}</th>)}</tr></thead><tbody>{result.rows.map((r: any) => <tr key={r.id}>
+            <td>{new Date(r.created_at).toLocaleString('en-GB', { timeZone: 'Asia/Singapore' })}</td><td>{r.type_label}</td><td><strong>{r.product_name}</strong><div>{r.product_sku}</div></td><td>{r.from_name || '—'} → {r.to_name || '—'}</td><td>{r.quantity}</td><td>{r.by_name || 'Author unavailable'}</td><td>{r.notes || '—'}{r.transfer_request_id && <div><button className="btn btn-secondary" onClick={() => setTransfer(r.transfer_request_id)}>Transfer details & notes</button></div>}</td>
+          </tr>)}</tbody></> : <><thead><tr>{['Location', 'Actual opening', filtered ? 'Filtered inbound' : 'Inbound', filtered ? 'Filtered outbound' : 'Outbound', 'Actual closing', 'In Transit (in / out)', 'Details'].map(h => <th key={h}>{h}</th>)}</tr></thead><tbody>{result.rows.map((r: any, index: number) => <React.Fragment key={`${r.product_id}:${r.location_key}`}>
+            {(index === 0 || result.rows[index - 1].product_id !== r.product_id) && <tr className="stock-product-heading"><th colSpan={7}><span>{r.product_name} · {r.product_sku} · units</span></th></tr>}
+            <tr><td>{r.location_name}</td><td>{value(r.opening_balance)}</td><td>{value(r.inbound)}</td><td>{value(r.outbound)}</td><td>{value(r.closing_balance)}</td><td>{value(r.in_transit_incoming)} / {value(r.in_transit_outgoing)}</td><td><button className="btn btn-secondary" onClick={() => showMovements(r)}>View movements</button>{filtered && <div>Other movement net: {value(r.other_movement_net)}</div>}{r.warning && <div className="stock-warning">{r.warning}</div>}</td></tr>
+          </React.Fragment>)}</tbody></>}
+        </table></div>}
+        <div className="stock-pagination"><button className="btn btn-secondary" disabled={!page} onClick={() => setPage(p => p - 1)}>Previous</button><span>Page {page + 1} of {Math.max(1, Math.ceil(result.total / 100))}</span><button className="btn btn-secondary" disabled={(page + 1) * 100 >= result.total} onClick={() => setPage(p => p + 1)}>Next</button></div>
+      </>}
+    </section>
+    {transfer && <Modal title="Transfer details and notes" onClose={() => setTransfer('')} maxWidth={720}><TransferNoteHistory requestId={transfer} showLines /></Modal>}
+  </div>;
 };
-
 export default StockMovementsPage;
