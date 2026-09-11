@@ -15,12 +15,17 @@ begin
  perform set_product_prices(st,pa,100,100,'available'); perform set_product_prices(st,pb,100,100,'available');
  inv:=create_invoice_with_details(st,c,jsonb_build_array(jsonb_build_object('kind','product','product_id',pa,'quantity',1),
   jsonb_build_object('kind','product','product_id',pb,'quantity',1)),jsonb_build_object('business_date','2020-01-10','manual_discount',20));
- perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',50)),gen_random_uuid());
+ -- Paid on 20 January against a 10 January invoice: the money belongs to the
+ -- day it was received (292). Both fall in the same month here, so the monthly
+ -- figure is unchanged; the daily attribution is what moved.
+ perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',50,'payment_date','2020-01-20')),gen_random_uuid());
  if invoice_received_sales_amount(inv)<>50 or _aff_settled_spend(c)<>50 then raise exception 'Affiliate summary reported billed instead of received'; end if;
- if sales_between('2020-01-01','2020-01-31',st)<>50 then raise exception 'Partial receipts not attributed to invoice date'; end if;
+ if sales_between('2020-01-01','2020-01-31',st)<>50 then raise exception 'Partial receipts missing from the month they were received'; end if;
+ if sales_between('2020-01-20','2020-01-20',st)<>50 then raise exception 'Partial receipt not attributed to the date it was received'; end if;
+ if sales_between('2020-01-10','2020-01-10',st)<>0 then raise exception 'Receipt still reported on the invoice date'; end if;
  if (select count(*) from report_pricing() where invoice_id=inv and paid_date='2020-01-10')<>2 then raise exception 'Pricing report missed partial invoice/business date'; end if;
  if not exists(select 1 from report_discounts() where invoice_id=inv and paid_date='2020-01-10' and total_discount=20) then raise exception 'Discount report missed partial invoice/business date'; end if;
- perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',130)),gen_random_uuid());
+ perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',130,'payment_date','2020-01-25')),gen_random_uuid());
  select id into ia from invoice_items where invoice_id=inv and product_id=pa;
  select id into ib from invoice_items where invoice_id=inv and product_id=pb;
  select id into pay from invoice_payments where invoice_id=inv and amount=50;
@@ -34,8 +39,12 @@ begin
  r:=dashboard_sales('all',null,null,st);
  if (r->>'sales')::numeric<>150 or (r->>'items_sold')::numeric<>2 or (r->>'discount_total')::numeric<>20 then raise exception 'All-time dashboard lost nullable-bound metrics: %',r; end if;
  x:=jsonb_build_array(jsonb_build_object('invoice_item_id',ia,'kind','product','product_id',pa,'quantity',1),jsonb_build_object('invoice_item_id',ib,'kind','product','product_id',pb,'quantity',1));
+ -- Correcting the invoice date is a document change. Money stays on the dates
+ -- it was received and refunded on, which is the whole point of 292.
  perform correct_invoice(inv,x,'{"business_date":"2020-02-10"}','Correct invoice business date',gen_random_uuid());
- if sales_between('2020-01-01','2020-01-31',st)<>0 or sales_between('2020-02-01','2020-02-29',st)<>180 or sales_between(sg_today(),sg_today(),st)<>-30 then raise exception 'Backdate correction moved refund or lost receipts'; end if;
+ if sales_between('2020-01-01','2020-01-31',st)<>180 then raise exception 'Correcting the invoice date moved receipts out of the month they arrived'; end if;
+ if sales_between('2020-02-01','2020-02-29',st)<>0 then raise exception 'Correcting the invoice date pulled receipts into February'; end if;
+ if sales_between(sg_today(),sg_today(),st)<>-30 then raise exception 'Refund moved off the refund date'; end if;
  perform cancel_invoice_recorded(inv,'Cancel after partial refund',gen_random_uuid());
  if sales_between(null,null,st)<>150 or _aff_settled_spend(c)<>150 then raise exception 'Cancellation subtracted held receipts'; end if;
  raise notice 'PASS: partial receipts, affiliate spend, invoice-date detail reports, date moves, refund-date reductions, cancellation and all-time dashboard metrics';

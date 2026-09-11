@@ -46,6 +46,18 @@ The effective pre-existing triggers were inspected in the complete local schema 
 
 ## Reporting reconciliation
 
+> **Superseded by migration 292.** Sales are now reported on the day the money
+> was received, not on the invoice's business date. Recovering a date therefore
+> **moves no money at all** — the section below describes the behaviour before
+> 292 and is kept for anyone reading batches recorded under the old rule. The
+> preview's `sales_to_add` is now always zero and says so; `eligible_received_amount`
+> still reports what the invoice has actually taken.
+>
+> This changes what recovery is *for*. An invoice with no business date already
+> reports its receipts correctly, because payments carry their own dates.
+> Recovering the date fixes the **document** — what the invoice shows, what the
+> date filter and sorting use — not the financial period.
+
 `invoice_sales_ledger()` reads existing eligible external receipts/reversal entries on the confirmed invoice business date. Refunds remain negative entries on their Singapore refund dates. `daily_payments_by_method()` retains actual effective/recorded payment dates. Wallet credit does not become cash sales. Thus recovering a S$300 invoice with S$150 received adds **S$150**, not S$300, to the recovered period; an existing S$10 refund stays on its refund date.
 
 Dashboard, store/staff reports, Xero, reconciliation and affiliate purchase reports already consume confirmed business dates/the shared ledger. No report SQL or TikTok settlement rule was changed. No stored sales aggregate requiring rebuild was found. Ordinary page refresh re-queries the ledger; already downloaded files must be regenerated. The existing send flow regenerates a document when explicitly re-sent; recovery itself does not resend anything or touch document storage.

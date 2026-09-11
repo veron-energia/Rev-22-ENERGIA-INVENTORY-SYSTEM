@@ -24,7 +24,7 @@ import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel'
 import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefundCancelChooser';
 import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
-import { singaporeToday, displayInvoiceDate, invoiceCreatedOn, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
+import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import '../components/invoices/invoice-controls.css';
 
@@ -165,6 +165,9 @@ const InvoicesPage: React.FC = () => {
   // the top of the creation form. It is still invoice-level metadata.
   const [payInstalment, setPayInstalment] = useState<InstalmentDetails>({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
   const [payOutcome, setPayOutcome] = useState<string | null>(null);
+  // The day the money actually arrived. Defaults to today in Singapore; a past
+  // date is allowed because payment often follows the invoice by days.
+  const [payDate, setPayDate] = useState<string>(singaporeToday);
   // A created invoice whose detail view could not be opened. Held so the id is
   // never lost and the operator is never told to create it again.
   const [createdPending, setCreatedPending] = useState<{ id: string; message: string } | null>(null);
@@ -1025,7 +1028,7 @@ const InvoicesPage: React.FC = () => {
       instalment_method_id: (inv as any).instalment_method_id ?? '',
       instalment_months: (inv as any).instalment_months ?? '',
     });
-    setPayErr(null); setPayOutcome(null);
+    setPayErr(null); setPayOutcome(null); setPayDate(singaporeToday());
   };
 
   const payTotal = useMemo(() => payLines.reduce((s, p) => s + (p.amount || 0), 0), [payLines]);
@@ -1096,6 +1099,8 @@ const InvoicesPage: React.FC = () => {
     if (filled.some(p => !Number.isFinite(p.amount) || p.amount <= 0)) return 'Amounts must be positive.';
     const instalmentError = validateInstalment(payInstalment);
     if (instalmentError) return instalmentError;
+    if (!payDate) return 'Choose the date this payment was received.';
+    if (payDate > singaporeToday()) return 'A payment cannot be dated in the future.';
     return null;
   };
   const payBlockedReason = paymentBlocker();
@@ -1104,7 +1109,8 @@ const InvoicesPage: React.FC = () => {
     if (!detail) return;
     const blocked = paymentBlocker();
     if (blocked) { setPayErr(blocked); return; }
-    const valid = payLines.filter(p => p.payment_method_id && p.amount > 0);
+    const valid = payLines.filter(p => p.payment_method_id && p.amount > 0)
+      .map(p => ({ ...p, payment_date: payDate || undefined }));
     setPayBusy(true); setPayErr(null); setPayOutcome(null);
     const invoiceId = detail.id;
     // The arrangement and the payment are written in one server call, so the
@@ -1243,7 +1249,6 @@ const InvoicesPage: React.FC = () => {
       kindLabel: 'Tax Invoice',
       docNo: detail.invoice_no,
       date: displayInvoiceDate(detail),
-      createdOn: !detail.business_date ? invoiceCreatedOn(detail) : undefined,
       status: String(INVOICE_STATUS_LABELS[detail.status as InvoiceStatus] ?? detail.status).toUpperCase(),
       storeName: store.name ?? null,
       storeAddress: store.address ?? null,
@@ -1493,7 +1498,7 @@ const InvoicesPage: React.FC = () => {
             ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
             ${storePhone ? `<div class="mut">Tel: ${esc(storePhone)}</div>` : ''}
             ${st.whatsapp_phone ? `<div class="mut">Shop WhatsApp: ${esc(st.whatsapp_phone)}</div>` : ''}
-            <div class="mut">Date: ${displayInvoiceDate(detail)}</div>${!detail.business_date && invoiceCreatedOn(detail) ? `<div class="mut">Created on: ${invoiceCreatedOn(detail)} (Singapore)</div>` : ''}<div class="mut">${esc(instalmentText(detail as any, methods))}</div>
+            <div class="mut">Date: ${displayInvoiceDate(detail)}</div><div class="mut">${esc(instalmentText(detail as any, methods))}</div>
             <div class="mut">Status: <b class="statusword">${esc(String(detail.status).replace(/_/g, ' ').toUpperCase())}</b></div></div>
         </div>
         ${focStamp}
@@ -1572,7 +1577,6 @@ const InvoicesPage: React.FC = () => {
             columns={[
               { header: 'Invoice', value: (i: any) => i.invoice_no },
               { header: 'Date', value: (i: Invoice) => displayInvoiceDate(i) },
-              { header: 'Created on (Singapore)', value: (i: Invoice) => invoiceCreatedOn(i) },
               { header: 'Store', value: (i: any) => storeName(i.store_id) },
               { header: 'Customer', value: (i: any) => custName(i.customer_id) },
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
@@ -1628,7 +1632,7 @@ const InvoicesPage: React.FC = () => {
           if (value === 'pending') { setDateFrom(''); setDateTo(''); }
         }}>
           <option value="all">All invoice dates</option><option value="confirmed">Confirmed dates</option>
-          <option value="pending">Date pending review ({invoices.filter(i => !i.business_date).length})</option>
+          <option value="pending">Date from creation only ({invoices.filter(i => !i.business_date).length})</option>
         </select></label>
         <label>Invoice date from<input aria-label="Invoice date from" type="date" value={dateFrom} max={dateTo || undefined}
           disabled={dateFilter === 'pending'} onChange={e => setDateFrom(e.target.value)} /></label>
@@ -1636,7 +1640,7 @@ const InvoicesPage: React.FC = () => {
           disabled={dateFilter === 'pending'} onChange={e => setDateTo(e.target.value)} /></label>
         <button className="btn btn-secondary btn-sm" onClick={() => { setDateFilter('all'); setDateFrom(''); setDateTo(''); }}>All dates</button>
       </div>
-      {dateFilter === 'pending' && <p>These invoices have no confirmed business date. Created on is shown separately for reference.
+      {dateFilter === 'pending' && <p>These invoices show the date they were created, because no separate invoice date was recorded. Received money is reported on the day it was received, so their reporting is unaffected.
         {isOwnerOrManager(profile?.role) && ' Open an invoice and use Edit Invoice or Correct Invoice to enter a verified date.'}</p>}
       <div className="card">
         <div className="table-wrap">
@@ -1649,7 +1653,7 @@ const InvoicesPage: React.FC = () => {
                 {filtered.map(inv => (
                   <tr key={inv.id}>
                     <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong></td>
-                    <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}{!inv.business_date && invoiceCreatedOn(inv) && <div className="text-muted" style={{ fontSize: 11 }}>Created on: {invoiceCreatedOn(inv)} (Singapore)</div>}</td>
+                    <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
@@ -2440,7 +2444,6 @@ const InvoicesPage: React.FC = () => {
             {/* Correction lives in the footer now, once, beside Refund / Cancel.
                 An ordinary unpaid invoice offers Edit Invoice there instead. */}
             <div data-testid="invoice-detail-date"><strong>Invoice date: {displayInvoiceDate(detail)}</strong>
-              {!detail.business_date && invoiceCreatedOn(detail) && <div>Created on: {invoiceCreatedOn(detail)} (Singapore)</div>}
             </div>
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
@@ -2849,6 +2852,12 @@ const InvoicesPage: React.FC = () => {
                   ))}
                 </div>
                 <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setPayLines(ls => [...ls, { payment_method_id: '', amount: 0 }])}><Plus size={13} /> Split Payment</button>
+                <div className="form-group" style={{ marginTop: 12, maxWidth: 220 }}>
+                  <label>Date received</label>
+                  <input type="date" value={payDate} max={singaporeToday()}
+                    onChange={e => setPayDate(e.target.value)} />
+                  <small>Sales are reported on this date. Defaults to today; set it back if the money arrived earlier.</small>
+                </div>
                 {/* The payment arrangement, chosen with the payment it applies to.
                     It is still recorded against the invoice, and choosing it
                     records nothing and marks nothing paid on its own. */}

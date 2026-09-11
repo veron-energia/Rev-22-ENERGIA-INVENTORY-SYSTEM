@@ -62,7 +62,11 @@ begin
  select jsonb_agg(x) into view_before from preview_invoice_date_recovery(ids) x;
  perform pg_temp.check(jsonb_array_length(view_before)=14,'exactly one preview row per invoice across multiple payments/revisions');
  select x into r from jsonb_array_elements(view_before) x where x->>'invoice_id'=ids[1]::text;
- perform pg_temp.check(r->>'proposed_date'='2020-02-01' and (r->>'sales_to_add')::numeric=150,'SG midnight + delayed payments + 300 total / 150 received');
+ -- The proposal is still 1 February from the Singapore creation date. Since 292
+ -- the receipts are already reported on the March days they arrived, so a
+ -- recovery adds nothing; eligible_received_amount still states what was taken.
+ perform pg_temp.check(r->>'proposed_date'='2020-02-01' and (r->>'eligible_received_amount')::numeric=150,'SG midnight + delayed payments + 300 total / 150 received');
+ perform pg_temp.check((r->>'sales_to_add')::numeric=0,'recovering a date is not predicted to move money');
  select x into r from jsonb_array_elements(view_before) x where x->>'invoice_id'=ids[2]::text;
  perform pg_temp.check(r->>'proposed_date'='2019-12-31','explicit date-only evidence is preserved without timezone conversion');
  select x into r from jsonb_array_elements(view_before) x where x->>'invoice_id'=ids[3]::text;
@@ -94,7 +98,12 @@ begin
  perform pg_temp.check((select business_date='2018-07-01' from invoices where invoices.id=ids[12]),'new manual date after preview preserved');
  perform pg_temp.check(exists(select 1 from jsonb_array_elements(saved_result) x where x->>'invoice_id'=ids[13]::text and x->>'outcome'='evidence_changed'),'new import evidence skipped');
  perform pg_temp.check(exists(select 1 from jsonb_array_elements(saved_result) x where x->>'invoice_id'=ids[14]::text and x->>'outcome'='evidence_changed'),'unrelated source change skipped for fresh review');
- perform pg_temp.check(invoice_net_sales_between(ids[1],'2020-02-01','2020-02-01')=150,'recovery attributes received 150, not invoice total 300');
+ -- Money stays where it arrived: 100 on 1 March, 50 on 2 March, never on the
+ -- recovered invoice date. The invoice total of 300 is still not sales.
+ perform pg_temp.check(invoice_net_sales_between(ids[1],'2020-02-01','2020-02-01')=0,'the recovered invoice date must not attract sales');
+ perform pg_temp.check(invoice_net_sales_between(ids[1],'2020-03-01','2020-03-01')=100,'first receipt stays on 1 March');
+ perform pg_temp.check(invoice_net_sales_between(ids[1],'2020-03-02','2020-03-02')=50,'second receipt stays on 2 March');
+ perform pg_temp.check(invoice_net_sales_between(ids[1],'2020-03-01','2020-03-31')=150,'received 150, not the 300 invoice total');
  perform pg_temp.check(invoice_net_sales_between(ids[1],'2020-04-01','2020-04-01')=-10,'refund stays on refund date');
  perform pg_temp.check((select sum(amount)=150 from daily_payments_by_method('2020-03-01','2020-03-31',st)),'collections remain on actual March payment dates');
  perform pg_temp.check((select count(*)=3 from invoice_sales_ledger() where invoice_id=ids[1]),'two existing receipts and one refund appear once each');

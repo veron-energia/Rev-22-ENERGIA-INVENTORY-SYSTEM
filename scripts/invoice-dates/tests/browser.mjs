@@ -92,12 +92,16 @@ try {
  ok('Excel exports recovered date in the correct range',exported.length===1&&exported[0].Date==='01/02/2020');
  await page.getByLabel('Invoice date status').selectOption('pending');
  ok('pending filter clears date bounds and keeps unresolved invoices visible',await page.locator('tbody tr').count()===1&&(await page.locator('tbody').textContent()).includes('DATE-pending'));
- ok('Created on is clearly separate for pending invoice',(await page.locator('tbody').textContent()).includes('Created on: 01/02/2020 (Singapore)'));
+ // An invoice with no recorded date now simply shows the day it was created,
+ // as one date. No second line, and no 'pending review' wording anywhere.
+ ok('an invoice with no recorded date shows its creation date as the date',(await page.locator('tbody').textContent()).includes('01/02/2020'));
+ ok('and shows no separate Created on line',!(await page.locator('tbody').textContent()).includes('Created on'));
+ ok('and is not described as pending review',!(await page.locator('tbody').textContent()).includes('pending review'));
  await page.getByRole('button',{name:'View',exact:true}).click();
- ok('unresolved details never substitute creation for business date',(await page.getByTestId('invoice-detail-date').textContent()).includes('Date pending review'));
+ ok('the detail shows that same date, not a pending-review message',(await page.getByTestId('invoice-detail-date').textContent()).includes('01/02/2020'));
  downloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'PDF',exact:true}).click();download=await downloadPromise;pdf=await readFile(await download.path());
- ok('pending PDF labels the separate Created on reference',pdf.toString('latin1').includes('Date pending review')&&pdf.toString('latin1').replace(/\\([()\\])/g,'$1').includes('Created on: 01/02/2020 (Singapore)'));
- ok('outgoing message retains a separate creation label',await page.evaluate(()=>window.__compose({kindLabel:'Invoice',docNo:'PENDING',date:'Date pending review',createdOn:'01/02/2020',lines:[],totals:[]}).includes('Created on: 01/02/2020 (Singapore)')));
+ ok('the PDF carries one date and no Created on reference',pdf.toString('latin1').replace(/\\([()\\])/g,'$1').includes('01/02/2020')&&!pdf.toString('latin1').includes('Date pending review'));
+ ok('an outgoing message carries one date and no creation label',await page.evaluate(()=>{const t=window.__compose({kindLabel:'Invoice',docNo:'PENDING',date:'01/02/2020',lines:[],totals:[]});return t.includes('01/02/2020')&&!t.includes('Created on');}));
  await page.getByRole('button',{name:'Edit Invoice',exact:true}).click();ok('unresolved Edit Invoice leaves the date blank',await page.getByLabel('Invoice business date',{exact:true}).inputValue()==='');
  await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.getByRole('button',{name:'All dates',exact:true}).click();
  await page.getByRole('button',{name:'New Invoice',exact:true}).click();

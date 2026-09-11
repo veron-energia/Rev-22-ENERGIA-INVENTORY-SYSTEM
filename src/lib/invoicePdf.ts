@@ -28,7 +28,6 @@ export interface PdfDoc {
   docNo: string;
   date: string;
   /** Separately labelled reference for unresolved invoice dates. */
-  createdOn?: string;
   status?: string;
   storeName?: string | null;
   storeAddress?: string | null;
@@ -69,7 +68,7 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); grey();
   let hy = y + 8;
   for (const t of [d.kindLabel, d.storeName, d.storeAddress, d.storePhone ? `Tel: ${d.storePhone}` : '',
-                   `Date: ${d.date}`, d.createdOn ? `Created on: ${d.createdOn} (Singapore)` : '', d.status ? `Status: ${d.status}` : '']) {
+                   `Date: ${d.date}`, d.status ? `Status: ${d.status}` : '']) {
     if (!t) continue;
     // Long addresses wrap rather than running off the page.
     for (const ln of doc.splitTextToSize(String(t), 80)) {

@@ -19,12 +19,16 @@ begin
  inv:=create_invoice_with_details(st,c,jsonb_build_array(jsonb_build_object('kind','product','product_id',p,'quantity',10)),
    jsonb_build_object('business_date','2020-01-02','instalment_category','in_house','instalment_method_id',pm,'instalment_months',6));
  if invoice_net_sales(inv)<>0 then raise exception 'Unpaid invoice counted as sales'; end if;
- r:=record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',200)),gen_random_uuid());
- if invoice_net_sales_between(inv,'2020-01-02','2020-01-02')<>200 then raise exception 'Partial receipt not on invoice date'; end if;
+ -- Received money is reported on the day it arrived (292), not the invoice
+ -- date. The payment is dated explicitly so the assertion states the rule
+ -- rather than depending on when the test happens to run.
+ r:=record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',200,'payment_date','2020-01-09')),gen_random_uuid());
+ if invoice_net_sales_between(inv,'2020-01-09','2020-01-09')<>200 then raise exception 'Partial receipt not on the date it was received'; end if;
+ if invoice_net_sales_between(inv,'2020-01-02','2020-01-02')<>0 then raise exception 'Receipt still reported on the invoice date'; end if;
  select id into pay1 from invoice_payments where invoice_id=inv;
  rid:=gen_random_uuid();
- perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',800)),rid);
- perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',800)),rid);
+ perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',800,'payment_date','2020-01-09')),rid);
+ perform record_invoice_payment(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',800,'payment_date','2020-01-09')),rid);
  if invoice_net_received(inv)<>1000 then raise exception 'Payment retry was counted twice'; end if;
  select id into pay2 from invoice_payments where invoice_id=inv and amount=800;
  select id,to_jsonb(i) into item,before_item from invoice_items i where invoice_id=inv;
@@ -36,7 +40,14 @@ begin
  update staff_commissions set status='paid',payout_id=gen_random_uuid() where invoice_id=inv and status='earned';
  r:=correct_invoice(inv,x,'{"manual_discount":200,"business_date":"2020-01-03"}','Discount correction');
  if (r->>'refund_due')::numeric is distinct from 200 then raise exception 'Expected refund due 200: %',r; end if;
- if invoice_net_sales_between(inv,'2020-01-02','2020-01-02')<>0 or invoice_net_sales_between(inv,'2020-01-03','2020-01-03')<>1000 then raise exception 'Business date did not move actual sales'; end if;
+ -- Since 292 the invoice's own date no longer decides where money is reported;
+ -- the receipt date does. Correcting the business date is a document change and
+ -- must leave the sales figures exactly where the payments put them.
+ if invoice_net_sales_between(inv,'2020-01-09','2020-01-09')<>1000 then raise exception 'The dated receipts left the day they were received'; end if;
+ if invoice_net_sales_between(inv,'2020-01-02','2020-01-02')<>0
+  or invoice_net_sales_between(inv,'2020-01-03','2020-01-03')<>0 then
+  raise exception 'Money is still being reported on the invoice date'; end if;
+ if invoice_net_sales_between(inv,null,null)<>1000 then raise exception 'Total received changed when the invoice date was corrected'; end if;
  select sum(commission_amount) into n from staff_commissions where invoice_id=inv and status='earned';
  if n is distinct from -10 then raise exception 'Paid-out commission adjustment expected -10, got %',n; end if;
  select * into orig from invoice_payments where id=pay1;

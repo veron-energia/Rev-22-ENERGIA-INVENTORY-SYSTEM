@@ -61,7 +61,7 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
   let hy = y + 3.4 * MM;
   for (const t of [d.kindLabel, d.storeName, d.storeAddress,
                    d.storePhone ? `Tel: ${d.storePhone}` : '',
-                   `Date: ${d.date}`, d.createdOn ? `Created on: ${d.createdOn} (Singapore)` : '', d.status ? `Status: ${d.status}` : '']) {
+                   `Date: ${d.date}`, d.status ? `Status: ${d.status}` : '']) {
     if (!t) continue;
     for (const ln of wrap(String(t), 80 * MM)) { right(ln, RIGHT, hy); hy += 3.9 * MM; }
   }

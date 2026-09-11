@@ -5,20 +5,36 @@ export type InstalmentDetails = {
   instalment_months: number | '';
 };
 export const singaporeToday = () => calendarDate(new Date(), 'Asia/Singapore');
-export function invoiceDate(invoice: { business_date?: string | null }) {
-  return invoice.business_date || '';
+/**
+ * The invoice's own date: what was recorded, or failing that the Singapore
+ * calendar date it was created on. One definition, so the list, the filters,
+ * the outputs and the exports cannot disagree.
+ */
+export function invoiceDate(invoice: { business_date?: string | null; created_at?: string | null }) {
+  return invoice.business_date || calendarDate(invoice.created_at, 'Asia/Singapore') || '';
 }
-export function displayInvoiceDate(invoice: { business_date?: string | null }) {
-  return invoice.business_date ? invoice.business_date.split('-').reverse().join('/') : 'Date pending review';
+/**
+ * The date an invoice shows.
+ *
+ * Where no business date was ever recorded, the Singapore calendar date the
+ * invoice was created on IS the invoice's date — that is the decision the
+ * business made, and it is what staff saw before the field existed. It is no
+ * longer a financial attribution: since 292, received money is reported on the
+ * day it was received, so this date describes the document, not the period the
+ * cash lands in.
+ */
+export function displayInvoiceDate(invoice: { business_date?: string | null; created_at?: string | null }) {
+  const day = invoiceDate(invoice);
+  return day ? day.split('-').reverse().join('/') : '—';
 }
-/** Informational only; never a substitute for the invoice business date. */
+/** The creation date on its own, for the rare places that need it explicitly. */
 export function invoiceCreatedOn(invoice: { created_at?: string | null }) {
   const day = calendarDate(invoice.created_at, 'Asia/Singapore');
   return day ? day.split('-').reverse().join('/') : '';
 }
-export function invoiceDateSearch(invoice: { business_date?: string | null }) {
+export function invoiceDateSearch(invoice: { business_date?: string | null; created_at?: string | null }) {
   const day = invoiceDate(invoice);
-  if (!day) return 'Date pending review';
+  if (!day) return '';
   const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(day.slice(5, 7)) - 1];
   return `${day} ${displayInvoiceDate(invoice)} ${day.slice(8)} ${month} ${day.slice(0, 4)}`;
 }
