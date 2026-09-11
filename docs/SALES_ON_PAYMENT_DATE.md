@@ -50,9 +50,42 @@ anyone relies on the new figures.
 between periods you now correct the *payment* date, which is the audited
 reversal-and-replacement workflow, not the invoice date.
 
+## A follow-up the first attempt got wrong (293)
+
+292 moved the money and left the tiles beside it behind. On the same dashboard,
+under the same period selector:
+
+| | before 293 |
+|---|---|
+| sales, invoice count | the day money arrived |
+| items sold, discount total | the invoice's business date |
+| today's discount | the invoice's business date |
+
+So an invoice raised in August and paid in September showed the sale in
+September and its items and discount in August. That is the reported wrong
+figure, and it was a defect in 292.
+
+The same metrics also required `business_date IS NOT NULL`, so an invoice whose
+date was never recorded vanished from them — while the invoice list showed it,
+dated by its creation day. The list said one thing and the reports another.
+
+**293** introduces two dates, because two different questions are being asked:
+
+- `invoice_sales_day()` — the day this invoice's money first arrived. Everything
+  sitting beside a money figure uses it, so a period's sales, count, items and
+  discounts describe the same sales.
+- `invoice_effective_date()` — the document's own date: what was recorded, or
+  failing that its Singapore creation day. It mirrors `invoiceDate()` in the
+  interface exactly, so a listing and a report cannot disagree.
+
+Dashboard tiles use the first. The detail reports — pricing, discounts, FOC,
+affiliate purchases — keep describing the document and use the second, which
+means an undated invoice now appears in them under its creation day instead of
+disappearing.
+
 ## Deployment
 
-Apply **`292_sales_on_payment_date.sql`** after 291.
+Apply **`292_sales_on_payment_date.sql`** then **`293_dashboard_sales_basis.sql`**, after 291. 293 requires 292.
 
 It requires 171. Where 290 is installed its preview is corrected too — that
 preview used to predict a sales movement which can no longer happen; where 290
@@ -73,8 +106,8 @@ workflow already stored dates that way.
 
 | | |
 |---|---|
-| Combined history | **203 migrations, 0 failures**, from an empty database |
-| Invoice SQL | 15 files, **25 assertions** |
+| Combined history | **204 migrations, 0 failures**, from an empty database |
+| Invoice SQL | 16 files, **26 assertions** |
 | Invoice-date suite | full run, **0 errors**, including the rich invoice and commission integrity fixtures and 5 concurrency checks |
 | Commission suite | regression, invoice-adjustments, legacy-check — all passing, including on a fixture without 290 |
 | Browser | 4 widths · 116 invoice-action checks · **23 invoice-date checks** |
