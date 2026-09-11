@@ -49,3 +49,40 @@ export function validateInstalment(value: InstalmentDetails) {
   if (!Number.isInteger(value.instalment_months) || Number(value.instalment_months) <= 0) return 'Instalment duration must be a positive whole number of months.';
   return null;
 }
+/**
+ * Order two invoice numbers the way a person reads them.
+ *
+ * Two formats are in use, and both have to sort sensibly:
+ *   INV-2026-0172                normal invoices, sequence padded to 4
+ *   SG-ADL-EX-INV-2026-00001     exchange invoices, padded to 5, per store
+ *
+ * A plain string comparison is right for almost all of this, and wrong in one
+ * place: once a year passes its padding width the number grows a digit, and
+ * "INV-2026-10000" would sort BEFORE "INV-2026-9999" because '1' < '9'. So
+ * digit runs are compared as numbers and everything else as text, which orders
+ * the sequence correctly at any length and still groups the two formats apart
+ * by their prefix.
+ */
+export function compareInvoiceNo(a: string, b: string) {
+  const parts = (s: string) => (s ?? '').match(/\d+|\D+/g) ?? [];
+  const left = parts(a), right = parts(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const x = left[i], y = right[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const bothNumeric = /^\d/.test(x) && /^\d/.test(y);
+    if (bothNumeric) {
+      // Number() is exact well past any realistic invoice sequence.
+      if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+/** Newest invoice number first, which is how the invoice list reads. */
+export function byInvoiceNoDesc(
+  a: { invoice_no?: string | null }, b: { invoice_no?: string | null },
+) {
+  return compareInvoiceNo(b.invoice_no ?? '', a.invoice_no ?? '');
+}

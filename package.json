@@ -22,6 +22,7 @@
     "test:auth-email:delivery": "deno run --allow-net=127.0.0.1:8787 --allow-read --allow-write=scripts/auth-email/preview scripts/auth-email/local-delivery-check.ts",
     "check:deliverability": "sh scripts/auth-email/check-deliverability.sh",
     "test:invoice-dates": "node scripts/invoice-dates/tests/dates.test.mjs",
+    "test:invoices": "node --test scripts/invoices/tests/*.test.mjs",
     "test:xero": "node --test scripts/xero/tests/*.test.mjs",
     "test:tiktok": "node --test scripts/tiktok/tests/*.test.mjs",
     "test:tiktok:db": "node scripts/tiktok/tests/database.mjs",
