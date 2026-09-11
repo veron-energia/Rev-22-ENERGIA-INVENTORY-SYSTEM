@@ -4,6 +4,7 @@ import { InvoiceSearchSelect } from './InvoiceSearchSelect';
 import { singaporeToday } from '../../lib/invoices/business';
 import { CustomerSearchSelect } from '../SearchSelect';
 import { InvoiceBenefitEvidenceReview } from './InvoiceBenefitEvidenceReview';
+import { InvoiceRewardResolution } from './InvoiceRewardResolution';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
 type Mode = '' | 'refund' | 'payment' | 'cancel' | 'reopen' | 'transfer';
@@ -42,6 +43,9 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   const [transferBenefit, setTransferBenefit] = useState('');
   const [transferCustomer, setTransferCustomer] = useState('');
   const [transferStore, setTransferStore] = useState('');
+  // Set when a refund or cancellation is refused because the package's
+  // qualification rewards are still outstanding. The review answers it.
+  const [rewardReview, setRewardReview] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setOptions(null);
@@ -108,7 +112,12 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       } else result = await supabase.rpc(mode === 'reopen' ? 'reopen_invoice' : 'cancel_invoice_recorded', common);
       if (result.error) throw result.error;
       close(); await onChanged();
-    } catch (e: any) { setError(e.message || 'The request could not be completed. Your entered details have been kept.'); }
+    } catch (e: any) {
+      const message = e.message || 'The request could not be completed. Your entered details have been kept.';
+      setError(message);
+      // This refusal has a way forward; offer it instead of a dead end.
+      if (/qualification reward entitlements/i.test(message)) setRewardReview(true);
+    }
     finally { setBusy(false); }
   };
   const f = options?.financial;
@@ -118,6 +127,12 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     <input aria-label={label} type="number" min="0" max={max} step="0.01" value={value || ''} placeholder="0.00" onChange={e => change(Number(e.target.value))} /></label>;
   return <section className="invoice-finance" aria-label="Invoice settlement and corrections">
     {error && <div role="alert" className="alert alert-danger">{error}</div>}
+    {rewardReview && <InvoiceRewardResolution invoiceId={invoiceId}
+      onCancel={() => setRewardReview(false)}
+      onResolved={() => {
+        setRewardReview(false);
+        setError('The reward entitlements are recorded. Confirm again to complete the refund or cancellation.');
+      }} />}
     {options?.review_notes?.map(note => <p role="status" key={note}>{note}</p>)}
     {f && <p>Net payments held: <strong>{money(f.net_received)}</strong> · Outstanding: <strong>{money(f.outstanding)}</strong> · Refund due: <strong>{money(f.refund_due)}</strong> · Refunded: {money(f.refunded)}</p>}
     {/* Refund and cancellation are one footer action now, and payment correction

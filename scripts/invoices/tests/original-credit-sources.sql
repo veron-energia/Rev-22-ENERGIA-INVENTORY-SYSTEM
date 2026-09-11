@@ -60,11 +60,18 @@ begin
   perform refund_invoice_recorded(inv,jsonb_build_array(jsonb_build_object('invoice_item_id',it,'amount',100,'benefits',jsonb_build_array(jsonb_build_object('benefit_id',b,'amount',100)))),
    jsonb_build_array(jsonb_build_object('payment_id',pay,'amount',100)),'[]','Unresolved qualification reward',gen_random_uuid());
   raise exception 'Refund bypassed qualification reward evidence';
- exception when others then if sqlerrm not like '%qualification rewards%' then raise; end if; end;
+ exception when others then if sqlerrm not like '%qualification reward entitlements%' then raise; end if; end;
  begin
   perform cancel_invoice_recorded(inv,'Unresolved qualification reward',gen_random_uuid());
   raise exception 'Cancellation bypassed qualification reward evidence';
- exception when others then if sqlerrm not like '%qualification rewards%' then raise; end if; end;
- raise notice 'PASS: true pre178 missing bonus link stays pending; explicit source/no-bonus review; full refund revokes paid and bonus credit; qualification rewards cannot bypass review';
+ exception when others then if sqlerrm not like '%qualification reward entitlements%' then raise; end if; end;
+ -- The block must be answerable, not permanent: resolving the rewards lets the
+ -- ordinary cancellation through, and the sale records that it was resolved.
+ perform resolve_invoice_credit_rewards(inv,'Reviewed the reward entitlements for this return');
+ perform cancel_invoice_recorded(inv,'Cancel after resolving the rewards',gen_random_uuid());
+ if (select status::text from invoices where id=inv)<>'cancelled' then
+  raise exception 'Cancellation still blocked after the rewards were resolved'; end if;
+
+ raise notice 'PASS: true pre178 missing bonus link stays pending; explicit source/no-bonus review; full refund revokes paid and bonus credit; qualification rewards cannot bypass review, and the review can actually be completed';
 end $$;
 rollback;
