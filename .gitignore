@@ -73,3 +73,6 @@ uploads/
 # PostgreSQL data directory; neither belongs in the repository.
 .invoice-test/
 .integration-test/
+
+# Affiliate payout test database and generated review/browser artifacts
+.commission-test/

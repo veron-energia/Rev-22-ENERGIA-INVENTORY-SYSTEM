@@ -204,9 +204,9 @@ try {
     ok('it offers cancellation explicitly',
        await dialog.getByRole('button', { name: /Cancel invoice/ }).count() === 1);
     ok('and a refund explicitly',
-       await dialog.getByRole('button', { name: /Full \/ partial refund/ }).count() === 1);
+       await dialog.getByRole('button', { name: /Full or partial refund/ }).count() === 1);
     ok('refund is unavailable when no payment is held, and says why',
-       await dialog.getByRole('button', { name: /Full \/ partial refund/ }).isDisabled()
+       await dialog.getByRole('button', { name: /Full or partial refund/ }).isDisabled()
        && (await dialog.getByText('No refundable payment.').count()) > 0);
     ok('opening the chooser changed nothing on the server',
        await page.evaluate(() => window.__calls.filter(c =>
@@ -291,7 +291,7 @@ try {
        await page.getByRole('button', { name: 'Edit Invoice', exact: true }).count() === 0);
     await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).click();
     ok('refund is offered when a payment is actually held',
-       !(await page.getByRole('dialog').getByRole('button', { name: /Full \/ partial refund/ }).isDisabled()));
+       !(await page.getByRole('dialog').getByRole('button', { name: /Full or partial refund/ }).isDisabled()));
     await page.keyboard.press('Escape');
 
     // Payment correction sits with the payment history.

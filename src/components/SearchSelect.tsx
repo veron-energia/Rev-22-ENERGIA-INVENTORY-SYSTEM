@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, ChevronDown, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { searchCatalogueOptions } from '../lib/cataloguePriceSearch';
 
 export type SearchOption = {
   value: string;
@@ -8,6 +9,8 @@ export type SearchOption = {
   sublabel?: string;
   /** Everything this option should be findable by (name, SKU, code…). */
   search?: string;
+  /** Opt-in selling prices; unrelated selectors retain text-only behavior. */
+  searchPrices?: readonly (number | string | null | undefined)[];
   disabled?: boolean;
 };
 
@@ -43,11 +46,7 @@ export const SearchSelect: React.FC<{
   }, []);
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return options
-      .filter(o => o.value === value || !exclude.includes(o.value))
-      .filter(o => !q || (o.search ?? o.label).toLowerCase().includes(q))
-      .slice(0, 200);
+    return searchCatalogueOptions(options.filter(o => o.value === value || !exclude.includes(o.value)), query).slice(0, 200);
   }, [options, query, exclude, value]);
 
   return (

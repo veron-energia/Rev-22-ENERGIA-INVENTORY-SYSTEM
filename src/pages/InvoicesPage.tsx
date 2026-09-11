@@ -337,6 +337,7 @@ const InvoicesPage: React.FC = () => {
   useEffect(() => {
     if (!createOpen || !activeStore) { setCreditPkgs([]); setCreditBundles([]); return; }
     let cancelled = false;
+    setCreditPkgs([]); setCreditBundles([]);
     (async () => {
       const [{ data: cp }, { data: pb }] = await Promise.all([
         supabase.rpc('credit_packages_for_store', { p_store_id: activeStore, p_day: null }),
@@ -825,7 +826,7 @@ const InvoicesPage: React.FC = () => {
   const cancellable = Boolean(detail) && !['cancelled', 'refunded'].includes(String(detail?.status));
   const canManageInvoice = isOwnerOrManager(profile?.role);
   const refundCancelButton = detail && canManageInvoice ? (
-    <button className="btn btn-secondary" onClick={() => setChooserOpen(true)}
+    <button className="btn invoice-refund-cancel" onClick={() => setChooserOpen(true)}
       title="Cancel this invoice, or record a refund">
       <FileText size={14} /> Refund / Cancel</button>
   ) : null;
@@ -1924,7 +1925,9 @@ const InvoicesPage: React.FC = () => {
                                   label: line.kind === 'special_product'
                                     ? `${sp.name} — ${money(Number(sp.sale_price))}`
                                     : sp.name,
-                                  sublabel: sp.sku, search: `${sp.name} ${sp.sku ?? ''}`,
+                                  sublabel: line.kind === 'rental' ? `${sp.sku ?? ''} · ${['day','week','month','year'].filter(k => Number(sp[`rate_${k}`]) > 0).map(k => `${k}: ${money(Number(sp[`rate_${k}`]))}`).join(' · ')}` : sp.sku,
+                                  search: `${sp.name} ${sp.sku ?? ''}`,
+                                  searchPrices: line.kind === 'special_product' ? [sp.sale_price] : ['day','week','month','year'].map(k => Number(sp[`rate_${k}`]) > 0 ? sp[`rate_${k}`] : null),
                                 }))} />
                             {line.kind === 'rental' && line.special_product_id && (
                               <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -1967,7 +1970,7 @@ const InvoicesPage: React.FC = () => {
                             onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: v } : l))}
                             options={storeProducts.map(p => { const a = productAvail(p.id); return {
                               value: p.id, label: `${p.name} — ${a.label}${a.needsOverride ? ' *' : ''}`,
-                              sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}` }; })} />
+                              sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}`, searchPrices: [priceFor(activeStore, p.id)] }; })} />
                         ) : line.kind === 'voucher' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search voucher name or code…"
                             value={line.voucher_id}
@@ -1975,7 +1978,7 @@ const InvoicesPage: React.FC = () => {
                             options={sellableVouchers.map(v => ({
                               value: v.id,
                               label: `${v.name}${voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}`,
-                              sublabel: (v as any).code, search: `${v.name} ${(v as any).code ?? ''}` }))} />
+                              sublabel: (v as any).code, search: `${v.name} ${(v as any).code ?? ''}`, searchPrices: [voucherPrice(v.id)] }))} />
                         ) : line.kind === 'therapy' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search therapy package or session…"
                             value={line.therapy_service_id ? `session:${line.therapy_service_id}` : line.therapy_package_id ?? ''}
@@ -1984,8 +1987,8 @@ const InvoicesPage: React.FC = () => {
                               therapy_package_id: v.startsWith('session:') ? '' : v, unit_price: undefined, quantity: 1 } : l))}
                             options={[
                               ...therapyPackages.map(p => { const pr = therapyPrice(p.id); return {
-                                value: p.id, label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`, search: p.name }; }),
-                              ...therapyServices.map(p => ({ value: `session:${p.id}`, label: `${p.name} — session${sessionPrice(p.id) != null ? ` · ${money(sessionPrice(p.id)!)}` : ' — unavailable'}`, search: p.name })),
+                                value: p.id, label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`, search: `${p.name} ${(p as any).code ?? ''}`, searchPrices: [pr] }; }),
+                              ...therapyServices.map(p => ({ value: `session:${p.id}`, label: `${p.name} — session${sessionPrice(p.id) != null ? ` · ${money(sessionPrice(p.id)!)}` : ' — unavailable'}`, search: `${p.name} ${p.code ?? ''}`, searchPrices: [sessionPrice(p.id)] })),
                               ...(line.therapy_service_id && !therapyServices.some(p => p.id === line.therapy_service_id)
                                 ? [{ value: `session:${line.therapy_service_id}`, label: `${line.therapy_service_name || 'Saved therapy session'} (saved)`, search: line.therapy_service_name }] : []),
                             ]} />
@@ -1996,7 +1999,7 @@ const InvoicesPage: React.FC = () => {
                             options={creditPkgs.map((p: any) => ({
                               value: p.id,
                               label: `💳 ${p.name} — ${money(Number(p.customer_price))}`,
-                              search: p.name }))} />
+                              search: `${p.name} ${p.code ?? ''}`, searchPrices: [p.customer_price] }))} />
                         ) : line.kind === 'premium_bundle' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search Premium Bundle…"
                             value={line.premium_bundle_id ?? ''}
@@ -2004,7 +2007,7 @@ const InvoicesPage: React.FC = () => {
                             options={creditBundles.map((b: any) => ({
                               value: b.id,
                               label: `💳 ${b.name} — ${money(Number(b.customer_payment_amount))}${b.grants_reward && (b.free_voucher_qty ?? 0) > 0 ? ` · ${b.free_voucher_qty} vouchers` : ''}`,
-                              search: b.name }))} />
+                              search: `${b.name} ${b.code ?? ''}`, searchPrices: [b.customer_payment_amount] }))} />
                         ) : (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search promotion name or code…"
                             value={line.promotion_id}
@@ -2012,7 +2015,7 @@ const InvoicesPage: React.FC = () => {
                             options={promotions.map(p => ({
                               value: p.id,
                               label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}`,
-                              sublabel: (p as any).code, search: `${p.name} ${(p as any).code ?? ''}` }))} />
+                              sublabel: (p as any).code, search: `${p.name} ${(p as any).code ?? ''}`, searchPrices: [promoPrice(p.id)] }))} />
                         )}
                         <input type="number" min={1} max={9999}
                           value={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 1 : (line.quantity || '')}
@@ -2879,6 +2882,7 @@ const InvoicesPage: React.FC = () => {
       {detail && (
         <InvoiceRefundCancelChooser
           open={chooserOpen}
+          invoiceNo={detail.invoice_no} status={detail.status} netReceived={netReceived} refundedAmount={refundedAmount}
           onClose={() => setChooserOpen(false)}
           canRefund={hasRefundablePayment}
           canCancel={cancellable}

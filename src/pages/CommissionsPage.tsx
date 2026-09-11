@@ -1,13 +1,13 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
+import React, { useEffect, useState, useCallback } from 'react';
+import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Commission, CommissionPayout, Customer, PaymentMethod, isManagerOrAbove, isOwnerOrManager } from '../types';
+import { isManagerOrAbove, isOwnerOrManager } from '../types';
 import { Modal, NoAccess } from '../components/ui';
-import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Download, Settings } from 'lucide-react';
+import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Settings } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
+import { AffiliatePayoutPanel } from '../components/commissions/AffiliatePayoutPanel';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
-const monthKey = (d: string) => (d || '').slice(0, 7); // YYYY-MM
 
 const CommissionsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -17,14 +17,6 @@ const CommissionsPage: React.FC = () => {
   const hasAccess = isManagerOrAbove(profile?.role);
   const canPay = isOwnerOrManager(profile?.role);
 
-  const [commissions, setCommissions] = useState<Commission[]>([]);
-  const [payouts, setPayouts] = useState<CommissionPayout[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  // Referrers the customers table cannot return, because a soft-deleted
-  // customer is hidden by RLS. Their commission rows survive the deletion, so
-  // without this the row shows an amount and a Mark Paid button but no name.
-  const [hiddenReferrers, setHiddenReferrers] = useState<Map<string, string>>(new Map());
-  const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'earned' | 'payouts' | 'referrers'>('earned');
 
@@ -43,61 +35,13 @@ const CommissionsPage: React.FC = () => {
   const [downline, setDownline] = useState<any[]>([]);
   const [expandedBuyers, setExpandedBuyers] = useState<Set<string>>(new Set());
 
-  const [payFor, setPayFor] = useState<{ referrer: string; month: string; t1: number; t2: number } | null>(null);
-  const [payMethod, setPayMethod] = useState('');
-  const [payRef, setPayRef] = useState('');
-  const [payNote, setPayNote] = useState('');
-  const [payBusy, setPayBusy] = useState(false);
-  const [payErr, setPayErr] = useState<string | null>(null);
-
   const load = useCallback(async () => {
     setLoading(true);
-    const [co, po, cu, pm, st] = await Promise.all([
-      supabase.from('commissions').select('*').order('invoice_paid_date', { ascending: false }),
-      supabase.from('commission_payouts').select('*').order('payout_month', { ascending: false }),
-      supabase.from('customers').select('id,full_name,phone').is('deleted_at', null),
-      supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true),
-      supabase.from('app_settings').select('commission_tier1_own_rate,commission_tier1_third_rate,commission_tier2_own_rate,commission_tier2_third_rate').eq('id', true).single(),
-    ]);
-    setCommissions((co.data as Commission[]) ?? []);
-    setPayouts((po.data as CommissionPayout[]) ?? []);
-    const baseCustomers = (cu.data as Customer[]) ?? [];
-    setCustomers(baseCustomers);
-    // The customer table is capped at 1000 rows per request, so records
-    // belonging to customers outside that set would show no name. Fetch the
-    // ones actually referenced here.
-    void (async () => {
-      const referenced = [
-        ...((co.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id]),
-        ...((po.data as any[]) ?? []).flatMap(x => [x.buyer_customer_id, x.referrer_customer_id]),
-      ];
-      const extra = await fetchCustomersByIds(referenced);
-      setCustomers(cur => mergeCustomers(cur, extra));
-
-      // Anything still unresolved is a customer RLS will not return at all —
-      // in practice a soft-deleted one. Ask the server for those names through
-      // a manager-only function so the payee is identifiable.
-      const known = new Set([...baseCustomers, ...extra].map(c => c.id));
-      const missing = [...new Set(referenced.filter(id => id && !known.has(id)))];
-      if (missing.length === 0) return;
-      const { data: names } = await supabase.rpc('commission_referrer_names', { p_ids: missing });
-      const found = new Map<string, string>();
-      for (const r of (names as any[]) ?? []) {
-        if (r?.id && r?.full_name) found.set(r.id, r.deleted_at ? `${r.full_name} (deleted)` : r.full_name);
-      }
-      if (found.size > 0) setHiddenReferrers(found);
-    })();
-    setMethods((pm.data as PaymentMethod[]) ?? []);
-    if (st.data) {
-      const d = st.data as any;
-      setRates({
-        t1_own: Number(d.commission_tier1_own_rate), t1_third: Number(d.commission_tier1_third_rate),
-        t2_own: Number(d.commission_tier2_own_rate), t2_third: Number(d.commission_tier2_third_rate),
-      });
-    }
+    const { data } = await supabase.from('app_settings').select('commission_tier1_own_rate,commission_tier1_third_rate,commission_tier2_own_rate,commission_tier2_third_rate').eq('id', true).single();
+    if (data) setRates({ t1_own: Number(data.commission_tier1_own_rate), t1_third: Number(data.commission_tier1_third_rate), t2_own: Number(data.commission_tier2_own_rate), t2_third: Number(data.commission_tier2_third_rate) });
     setLoading(false);
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (hasAccess) void load(); }, [load, hasAccess]);
 
   const loadReferrers = useCallback(async () => {
     setRefLoading(true);
@@ -121,46 +65,6 @@ const CommissionsPage: React.FC = () => {
     setExpandedBuyers(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
 
-  const cName = (id: string) =>
-    customers.find(c => c.id === id)?.full_name ?? hiddenReferrers.get(id) ?? '—';
-  const mName = (id: string | null) => id ? (methods.find(m => m.id === id)?.name ?? '—') : '—';
-
-  // Group EARNED (unpaid) commissions by referrer + month.
-  const earnedGroups = useMemo(() => {
-    const map = new Map<string, { referrer: string; month: string; t1: number; t2: number; count: number }>();
-    commissions.filter(c => c.status === 'earned').forEach(c => {
-      const m = monthKey(c.invoice_paid_date ?? '');
-      const key = `${c.referrer_customer_id}|${m}`;
-      const g = map.get(key) ?? { referrer: c.referrer_customer_id, month: m, t1: 0, t2: 0, count: 0 };
-      if (c.tier === 'tier1') g.t1 += Number(c.commission_amount); else g.t2 += Number(c.commission_amount);
-      g.count += 1;
-      map.set(key, g);
-    });
-    return Array.from(map.values()).sort((a, b) => b.month.localeCompare(a.month));
-  }, [commissions]);
-
-  const totalEarned = earnedGroups.reduce((s, g) => s + g.t1 + g.t2, 0);
-
-  const openPay = (g: { referrer: string; month: string; t1: number; t2: number }) => {
-    setPayFor(g); setPayMethod(methods[0]?.id ?? ''); setPayRef(''); setPayNote(''); setPayErr(null);
-  };
-
-  const submitPay = async () => {
-    if (!payFor) return;
-    setPayBusy(true); setPayErr(null);
-    const { error } = await supabase.rpc('create_commission_payout', {
-      p_referrer_customer_id: payFor.referrer,
-      p_month: payFor.month + '-01',
-      p_payment_method_id: payMethod || null,
-      p_reference: payRef.trim() || null,
-      p_notes: payNote.trim() || null,
-    });
-    setPayBusy(false);
-    if (error) { setPayErr(error.message); return; }
-    setPayFor(null); load();
-  };
-
-
   const saveRates = async () => {
     setRatesBusy(true); setRatesErr(null);
     const { error } = await supabase.rpc('set_commission_rates', {
@@ -178,79 +82,23 @@ const CommissionsPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns on each paid invoice; Tier 2 earns a share of Tier 1. Unpaid total: <strong style={{ color: 'var(--primary)' }}>{money(totalEarned)}</strong></p></div>
+        <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns on each paid invoice; Tier 2 earns a share of Tier 1.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <ExcelExportButton
-            rows={tab === 'earned' ? earnedGroups : tab === 'payouts' ? payouts : referrers}
-            filename={`commissions-${tab}`} sheetName="Commissions"
-            dateOf={tab === 'payouts' ? ((p: any) => p.created_at) : undefined}
-            dateLabel="Payout date"
-            columns={tab === 'earned' ? [
-              { header: 'Referrer', value: (g: any) => g.referrer_name ?? '' },
-              { header: 'Tier 1', value: (g: any) => Number(g.tier1_total ?? 0) },
-              { header: 'Tier 2', value: (g: any) => Number(g.tier2_total ?? 0) },
-              { header: 'Total', value: (g: any) => Number(g.total ?? 0) },
-            ] : tab === 'payouts' ? [
-              { header: 'Date', value: (p: any) => new Date(p.created_at).toLocaleDateString('en-GB') },
-              { header: 'Referrer', value: (p: any) => p.referrer_name ?? '' },
-              { header: 'Amount', value: (p: any) => Number(p.amount ?? 0) },
-              { header: 'Reference', value: (p: any) => p.reference ?? '' },
-            ] : [
-              { header: 'Referrer', value: (r: any) => r.full_name ?? '' },
-              { header: 'Phone', value: (r: any) => r.phone ?? '' },
-              { header: 'Referrals', value: (r: any) => Number(r.referral_count ?? 0) },
-            ]} />{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}<button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+          {tab === 'referrers' && <ExcelExportButton rows={referrers} filename="commission-referrers" sheetName="Referrers" columns={[
+            { header: 'Referrer', value: (r: any) => r.full_name || '' }, { header: 'Phone', value: (r: any) => r.phone || '' },
+            { header: 'Lifetime earned', value: (r: any) => Number(r.lifetime_earned) }, { header: 'Unpaid', value: (r: any) => Number(r.unpaid_earned) },
+          ]} />}{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}{tab === 'referrers' && <button className="btn btn-secondary" onClick={() => { void load(); void loadReferrers(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>}</div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
-        <button className={`btn btn-sm ${tab === 'earned' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('earned')}><Coins size={14} /> Unpaid (by referrer / month)</button>
+        <button className={`btn btn-sm ${tab === 'earned' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('earned')}><Coins size={14} /> Balances (by affiliate / month)</button>
         <button className={`btn btn-sm ${tab === 'payouts' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('payouts')}><Wallet size={14} /> Payout History</button>
         <button className={`btn btn-sm ${tab === 'referrers' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('referrers')}><Network size={14} /> Referrers</button>
       </div>
 
-      <div className="card">
+      {tab !== 'referrers' ? <AffiliatePayoutPanel mode={tab} canPay={canPay} userId={profile?.id || ''} onSaved={() => { void loadReferrers(); }} /> : <div className="card">
         <div className="table-wrap">
-          {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : tab === 'earned' ? (
-            earnedGroups.length === 0 ? <div className="empty-state"><Coins size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No unpaid commission</p></div>
-            : (
-              <table>
-                <thead><tr><th>Month</th><th>Referrer</th><th style={{ textAlign: 'right' }}>Tier 1</th><th style={{ textAlign: 'right' }}>Tier 2</th><th style={{ textAlign: 'right' }}>Total</th><th></th></tr></thead>
-                <tbody>
-                  {earnedGroups.map((g, i) => (
-                    <tr key={i}>
-                      <td style={{ fontFamily: 'var(--font-display)' }}>{g.month}</td>
-                      <td><strong>{cName(g.referrer)}</strong></td>
-                      <td style={{ textAlign: 'right' }}>{money(g.t1)}</td>
-                      <td style={{ textAlign: 'right' }}>{money(g.t2)}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(g.t1 + g.t2)}</td>
-                      <td style={{ textAlign: 'right' }}>{canPay && <button className="btn btn-primary btn-sm" onClick={() => openPay(g)}><Wallet size={13} /> Mark Paid</button>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
-          ) : tab === 'payouts' ? (
-            payouts.length === 0 ? <div className="empty-state"><Wallet size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No payouts yet</p></div>
-            : (
-              <table>
-                <thead><tr><th>Month</th><th>Referrer</th><th style={{ textAlign: 'right' }}>Tier 1</th><th style={{ textAlign: 'right' }}>Tier 2</th><th style={{ textAlign: 'right' }}>Total</th><th>Method</th><th>Paid</th></tr></thead>
-                <tbody>
-                  {payouts.map(p => (
-                    <tr key={p.id}>
-                      <td style={{ fontFamily: 'var(--font-display)' }}>{monthKey(p.payout_month)}</td>
-                      <td><strong>{cName(p.referrer_customer_id)}</strong></td>
-                      <td style={{ textAlign: 'right' }}>{money(Number(p.total_tier1))}</td>
-                      <td style={{ textAlign: 'right' }}>{money(Number(p.total_tier2))}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(p.total_amount))}</td>
-                      <td style={{ fontSize: 12.5 }}>{mName(p.payment_method_id)}{p.reference ? ` · ${p.reference}` : ''}</td>
-                      <td style={{ fontSize: 12 }}>{new Date(p.paid_at).toLocaleDateString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
-          ) : (
+          {
             refLoading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
             : referrers.length === 0 ? <div className="empty-state"><Network size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No referrers yet</p><p style={{ fontSize: 13 }}>Set a customer's "Referred by" on the Customers page.</p></div>
             : (
@@ -271,34 +119,9 @@ const CommissionsPage: React.FC = () => {
                 </tbody>
               </table>
             )
-          )}
+          }
         </div>
-      </div>
-
-      {payFor && (
-        <Modal title="Mark Commission Paid" maxWidth={420} onClose={() => setPayFor(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setPayFor(null)}>Cancel</button><button className="btn btn-primary" onClick={submitPay} disabled={payBusy}>{payBusy ? 'Processing…' : 'Confirm Payout'}</button></>}>
-          <div className="form-grid">
-            {payErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{payErr}</div></div>}
-            <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ fontSize: 13 }}><strong>{cName(payFor.referrer)}</strong> · {payFor.month}</div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 13 }}><span>Tier 1</span><span>{money(payFor.t1)}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}><span>Tier 2</span><span>{money(payFor.t2)}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, marginTop: 4, paddingTop: 4, borderTop: '1px solid var(--border)' }}><span>Total</span><span>{money(payFor.t1 + payFor.t2)}</span></div>
-            </div>
-            <div className="form-group">
-              <label>Payment Method</label>
-              <select value={payMethod} onChange={e => setPayMethod(e.target.value)}>
-                <option value="">— None —</option>
-                {methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-            </div>
-            <div className="form-group"><label>Reference</label><input value={payRef} onChange={e => setPayRef(e.target.value)} placeholder="Optional — e.g. PayNow ref" /></div>
-            <div className="form-group"><label>Notes</label><textarea rows={2} value={payNote} onChange={e => setPayNote(e.target.value)} placeholder="Optional" /></div>
-            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>This groups all unpaid commissions for this referrer in {payFor.month} into one payout and marks them paid.</div></div>
-          </div>
-        </Modal>
-      )}
+      </div>}
 
       {detailFor && (
         <Modal title={`Referrer — ${detailFor.full_name}`} maxWidth={680} onClose={() => setDetailFor(null)}
@@ -379,7 +202,7 @@ const CommissionsPage: React.FC = () => {
                                     <td style={{ fontSize: 11.5 }}>{l.product_type === 'third_party' ? '3rd party' : 'Own'}</td>
                                     <td style={{ textAlign: 'right', fontSize: 12 }}>{money(Number(l.line_amount))}</td>
                                     <td style={{ textAlign: 'right', fontSize: 12 }}>{Number(l.rate)}%</td>
-                                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{money(Number(l.commission_amount))}</td>
+                                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{money(Number(l.commission_amount))}<div style={{ fontSize: 11, fontWeight: 400 }}>Allocated: {money(Number(l.allocated_amount ?? 0))}</div></td>
                                     <td><span className={`badge ${l.status === 'paid' ? 'badge-success' : l.status === 'reversed' ? 'badge-danger' : 'badge-muted'}`}>{l.status}</span></td>
                                   </tr>
                                 ))}

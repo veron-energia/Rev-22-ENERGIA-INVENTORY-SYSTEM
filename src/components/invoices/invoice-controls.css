@@ -61,6 +61,11 @@
   padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,0.3);
 }
 .invoice-chooser h3 { margin: 0 0 8px; font-size: 15.5px; }
+.invoice-chooser-context { padding: 10px; margin-bottom: 12px; background: var(--surface-2); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.invoice-chooser button:focus-visible, .invoice-refund-cancel:focus-visible { outline: 3px solid #1b4d89; outline-offset: 3px; }
+.invoice-refund-cancel { background: #b42318; color: #fff; border-color: #b42318; }
+.invoice-refund-cancel:hover:not(:disabled) { background: #8f1c13; color: #fff; border-color: #8f1c13; }
+.invoice-refund-cancel:disabled { background: #786766; color: #fff; border-color: #786766; cursor: not-allowed; opacity: 1; }
 .invoice-chooser > p { margin: 0 0 14px; font-size: 12.5px; color: var(--text-secondary); }
 .invoice-chooser-options { display: flex; flex-direction: column; gap: 10px; }
 .invoice-chooser-option {
