@@ -361,6 +361,8 @@ export type InvoiceStatus =
   | 'completed_foc';
 
 export interface Invoice {
+  business_date?: string | null;
+  business_date_version?: number;
   id: string;
   invoice_no: string;
   store_id: string;

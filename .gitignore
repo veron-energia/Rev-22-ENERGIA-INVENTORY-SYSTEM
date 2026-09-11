@@ -76,3 +76,6 @@ uploads/
 
 # Affiliate payout test database and generated review/browser artifacts
 .commission-test/
+
+# Exclusive historical invoice-date test cluster and private reports
+.invoice-date-test/

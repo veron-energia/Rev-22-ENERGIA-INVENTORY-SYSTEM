@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Download } from 'lucide-react';
 import { Modal } from './ui';
+import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
 
 /**
  * Shared Excel export.
@@ -34,6 +35,8 @@ export interface ExcelExportProps<T> {
   dateOf?: (row: T) => string | Date | null | undefined;
   /** Label shown beside the date range, e.g. "Invoice date". */
   dateLabel?: string;
+  /** Zone for timestamp ranges and date shortcuts; date-only values never shift. */
+  dateTimeZone?: string;
   label?: string;
   disabled?: boolean;
   /**
@@ -55,7 +58,7 @@ function toDate(v: string | Date | null | undefined): Date | null {
 
 export function ExcelExportButton<T>({
   rows, columns, filename, sheetName = 'Sheet1',
-  dateOf, dateLabel = 'Date', label = 'Export Excel', disabled = false, fetchAll,
+  dateOf, dateLabel = 'Date', dateTimeZone, label = 'Export Excel', disabled = false, fetchAll,
   selectableColumns = false,
 }: ExcelExportProps<T>) {
   const [open, setOpen] = useState(false);
@@ -81,16 +84,8 @@ export function ExcelExportButton<T>({
   // committing to the download.
   const inRange = useMemo(() => {
     if (!dateOf || (!from && !to)) return rows;
-    const f = from ? new Date(from + 'T00:00:00') : null;
-    const t = to ? new Date(to + 'T23:59:59') : null;
-    return rows.filter(r => {
-      const d = toDate(dateOf(r));
-      if (!d) return false;
-      if (f && d < f) return false;
-      if (t && d > t) return false;
-      return true;
-    });
-  }, [rows, dateOf, from, to]);
+    return rows.filter(r => calendarDateInRange(dateOf(r), from, to, dateTimeZone));
+  }, [rows, dateOf, from, to, dateTimeZone]);
 
   const write = (data: T[]) => {
     const cols = activeColumns.length > 0 ? activeColumns : columns;
@@ -155,15 +150,7 @@ export function ExcelExportButton<T>({
 
   const applyRange = (data: T[]) => {
     if (!dateOf || (!from && !to)) return data;
-    const f = from ? new Date(from + 'T00:00:00') : null;
-    const t = to ? new Date(to + 'T23:59:59') : null;
-    return data.filter(r => {
-      const d = toDate(dateOf(r));
-      if (!d) return false;
-      if (f && d < f) return false;
-      if (t && d > t) return false;
-      return true;
-    });
+    return data.filter(r => calendarDateInRange(dateOf(r), from, to, dateTimeZone));
   };
 
   const onClick = async () => {
@@ -295,11 +282,11 @@ export function ExcelExportButton<T>({
                 .map(([lbl, days]) => (
                   <button key={lbl} className="btn btn-secondary btn-sm" onClick={() => {
                     const now = new Date();
-                    const end = now.toISOString().slice(0, 10);
+                    const end = calendarDate(now, dateTimeZone);
                     if (days === -1) {
-                      setFrom(`${now.getFullYear()}-01-01`); setTo(end);
+                      setFrom(`${end.slice(0, 4)}-01-01`); setTo(end);
                     } else {
-                      const s = new Date(now); s.setDate(s.getDate() - days);
+                      const s = new Date(end + 'T12:00:00Z'); s.setUTCDate(s.getUTCDate() - days);
                       setFrom(s.toISOString().slice(0, 10)); setTo(end);
                     }
                   }}>{lbl}</button>

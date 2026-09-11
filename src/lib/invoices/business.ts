@@ -1,14 +1,26 @@
+import { calendarDate } from '../calendarDates';
 export type InstalmentDetails = {
   instalment_category: '' | 'in_house' | 'provider_funded';
   instalment_method_id: string;
   instalment_months: number | '';
 };
-export const singaporeToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+export const singaporeToday = () => calendarDate(new Date(), 'Asia/Singapore');
 export function invoiceDate(invoice: { business_date?: string | null }) {
   return invoice.business_date || '';
 }
 export function displayInvoiceDate(invoice: { business_date?: string | null }) {
   return invoice.business_date ? invoice.business_date.split('-').reverse().join('/') : 'Date pending review';
+}
+/** Informational only; never a substitute for the invoice business date. */
+export function invoiceCreatedOn(invoice: { created_at?: string | null }) {
+  const day = calendarDate(invoice.created_at, 'Asia/Singapore');
+  return day ? day.split('-').reverse().join('/') : '';
+}
+export function invoiceDateSearch(invoice: { business_date?: string | null }) {
+  const day = invoiceDate(invoice);
+  if (!day) return 'Date pending review';
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(day.slice(5, 7)) - 1];
+  return `${day} ${displayInvoiceDate(invoice)} ${day.slice(8)} ${month} ${day.slice(0, 4)}`;
 }
 export function instalmentText(invoice: Partial<InstalmentDetails>, methods: { id: string; name: string }[]) {
   if (!invoice.instalment_category) return '';

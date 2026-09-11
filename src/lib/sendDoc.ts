@@ -49,6 +49,7 @@ export interface SendableDoc {
   kindLabel: string;
   docNo: string;
   date?: string;
+  createdOn?: string;
   customerName?: string | null;
   storeName?: string | null;
   lines: SendableLine[];
@@ -73,6 +74,7 @@ export function composeDocumentMessage(d: SendableDoc): string {
   if (d.customerName) parts.push(`For: ${d.customerName}`);
   if (d.storeName) parts.push(d.storeName);
   if (d.date) parts.push(`Date: ${d.date}`);
+  if (d.createdOn) parts.push(`Created on: ${d.createdOn} (Singapore)`);
   parts.push('');
 
   if (d.lines.length > 0) {

@@ -24,9 +24,12 @@ import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel'
 import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefundCancelChooser';
 import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
-import { singaporeToday, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
+import { singaporeToday, displayInvoiceDate, invoiceCreatedOn, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import '../components/invoices/invoice-controls.css';
+
+import { loadInvoiceList } from '../lib/invoices/loadInvoiceList';
+import { calendarDateInRange } from '../lib/calendarDates';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -96,7 +99,11 @@ const InvoicesPage: React.FC = () => {
   const [prices, setPrices] = useState<StoreProductPrice[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'all' | InvoiceStatus>('all');
-  // Free-text search across invoice number, customer, store and date/time.
+  const [dateFilter, setDateFilter] = useState<'all' | 'confirmed' | 'pending'>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [listError, setListError] = useState('');
+  // Free-text search includes the confirmed invoice business date.
   const [invSearch, setInvSearch] = useState('');
 
   // Create modal
@@ -228,7 +235,7 @@ const InvoicesPage: React.FC = () => {
   const loadAll = useCallback(async () => {
     setLoading(true);
     const [inv, allPays, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
-      supabase.from('invoices').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+      loadInvoiceList(),
       supabase.from('invoice_payments').select('invoice_id,payment_method_id,amount'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -255,7 +262,8 @@ const InvoicesPage: React.FC = () => {
       supabase.from('therapy_services').select('*').eq('is_active', true).order('name'),
       supabase.from('therapy_service_stores').select('*'),
     ]);
-    setInvoices((inv.data as Invoice[]) ?? []);
+    setListError(inv.error?.message ?? '');
+    if (!inv.error) setInvoices((inv.data as Invoice[]) ?? []);
 
     // Method NAMES per invoice, resolved once here rather than on every render.
     // Duplicates are collapsed: two cash payments on one invoice read as "Cash",
@@ -1196,26 +1204,23 @@ const InvoicesPage: React.FC = () => {
     const q = invSearch.trim().toLowerCase();
     return invoices.filter(i => {
       if (statusFilter !== 'all' && i.status !== statusFilter) return false;
+      if (dateFilter === 'pending' && i.business_date) return false;
+      if (dateFilter === 'confirmed' && !i.business_date) return false;
+      if (!calendarDateInRange(i.business_date, dateFrom, dateTo)) return false;
       if (!q) return true;
-      const when = i.created_at ? new Date(i.created_at) : null;
-      // Several date renderings are searched, so "11/08", "2026-08-11",
-      // "11 Aug" and a time such as "14:32" all find the same invoice.
       const haystack = [
         i.invoice_no,
         customerOf(i.customer_id)?.full_name,
         customerOf(i.customer_id)?.phone,
         stores.find(s2 => s2.id === i.store_id)?.name,
-        when?.toLocaleDateString('en-GB'),
-        when?.toLocaleDateString('en-CA'),
-        when?.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-        when?.toLocaleTimeString('en-GB'),
+        invoiceDateSearch(i),
         String(i.total_amount ?? ''),
         // So "Atome" or "cash" finds the invoices paid that way.
         ...(payMethodsByInvoice[i.id] ?? []),
       ].filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(q);
     });
-  }, [invoices, statusFilter, invSearch, customers, stores, payMethodsByInvoice]);
+  }, [invoices, statusFilter, dateFilter, dateFrom, dateTo, invSearch, customers, customerById, stores, payMethodsByInvoice]);
 
   // Shared by the printed document and the WhatsApp / email message.
   const lineName = (it: InvoiceItem) =>
@@ -1237,7 +1242,8 @@ const InvoicesPage: React.FC = () => {
     return {
       kindLabel: 'Tax Invoice',
       docNo: detail.invoice_no,
-      date: displayInvoiceDate(detail as any),
+      date: displayInvoiceDate(detail),
+      createdOn: !detail.business_date ? invoiceCreatedOn(detail) : undefined,
       status: String(INVOICE_STATUS_LABELS[detail.status as InvoiceStatus] ?? detail.status).toUpperCase(),
       storeName: store.name ?? null,
       storeAddress: store.address ?? null,
@@ -1487,7 +1493,7 @@ const InvoicesPage: React.FC = () => {
             ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
             ${storePhone ? `<div class="mut">Tel: ${esc(storePhone)}</div>` : ''}
             ${st.whatsapp_phone ? `<div class="mut">Shop WhatsApp: ${esc(st.whatsapp_phone)}</div>` : ''}
-            <div class="mut">Date: ${displayInvoiceDate(detail as any)}</div><div class="mut">${esc(instalmentText(detail as any, methods))}</div>
+            <div class="mut">Date: ${displayInvoiceDate(detail)}</div>${!detail.business_date && invoiceCreatedOn(detail) ? `<div class="mut">Created on: ${invoiceCreatedOn(detail)} (Singapore)</div>` : ''}<div class="mut">${esc(instalmentText(detail as any, methods))}</div>
             <div class="mut">Status: <b class="statusword">${esc(String(detail.status).replace(/_/g, ' ').toUpperCase())}</b></div></div>
         </div>
         ${focStamp}
@@ -1562,10 +1568,11 @@ const InvoicesPage: React.FC = () => {
             defaultStoreId={activeStore ?? ''} />}
           {canExport && <ExcelExportButton
             rows={filtered} filename="invoices" sheetName="Invoices"
-            dateOf={(i: any) => i.business_date} dateLabel="Invoice business date"
+            dateOf={(i: Invoice) => i.business_date} dateLabel="Invoice business date" dateTimeZone="Asia/Singapore"
             columns={[
               { header: 'Invoice', value: (i: any) => i.invoice_no },
-              { header: 'Date', value: (i: any) => displayInvoiceDate(i as any) },
+              { header: 'Date', value: (i: Invoice) => displayInvoiceDate(i) },
+              { header: 'Created on (Singapore)', value: (i: Invoice) => invoiceCreatedOn(i) },
               { header: 'Store', value: (i: any) => storeName(i.store_id) },
               { header: 'Customer', value: (i: any) => custName(i.customer_id) },
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
@@ -1596,7 +1603,7 @@ const InvoicesPage: React.FC = () => {
 
           <div style={{ marginBottom: 10 }}>
             <input value={invSearch} onChange={e => setInvSearch(e.target.value)}
-              placeholder="Search invoice number, customer, store, payment method, date or time…"
+              placeholder="Search invoice number, customer, store, payment method or invoice date…"
               style={{ maxWidth: 460 }} />
             {invSearch && (
               <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--text-muted)' }}>
@@ -1614,6 +1621,23 @@ const InvoicesPage: React.FC = () => {
         ))}
       </div>
 
+      {listError && <div className="alert alert-danger" role="alert">Invoices could not be refreshed: {listError}</div>}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14, alignItems: 'end' }}>
+        <label>Date status<select aria-label="Invoice date status" value={dateFilter} onChange={e => {
+          const value = e.target.value as typeof dateFilter; setDateFilter(value);
+          if (value === 'pending') { setDateFrom(''); setDateTo(''); }
+        }}>
+          <option value="all">All invoice dates</option><option value="confirmed">Confirmed dates</option>
+          <option value="pending">Date pending review ({invoices.filter(i => !i.business_date).length})</option>
+        </select></label>
+        <label>Invoice date from<input aria-label="Invoice date from" type="date" value={dateFrom} max={dateTo || undefined}
+          disabled={dateFilter === 'pending'} onChange={e => setDateFrom(e.target.value)} /></label>
+        <label>Invoice date to<input aria-label="Invoice date to" type="date" value={dateTo} min={dateFrom || undefined}
+          disabled={dateFilter === 'pending'} onChange={e => setDateTo(e.target.value)} /></label>
+        <button className="btn btn-secondary btn-sm" onClick={() => { setDateFilter('all'); setDateFrom(''); setDateTo(''); }}>All dates</button>
+      </div>
+      {dateFilter === 'pending' && <p>These invoices have no confirmed business date. Created on is shown separately for reference.
+        {isOwnerOrManager(profile?.role) && ' Open an invoice and use Edit Invoice or Correct Invoice to enter a verified date.'}</p>}
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
@@ -1625,7 +1649,7 @@ const InvoicesPage: React.FC = () => {
                 {filtered.map(inv => (
                   <tr key={inv.id}>
                     <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong></td>
-                    <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv as any)}</td>
+                    <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}{!inv.business_date && invoiceCreatedOn(inv) && <div className="text-muted" style={{ fontSize: 11 }}>Created on: {invoiceCreatedOn(inv)} (Singapore)</div>}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
@@ -2415,6 +2439,9 @@ const InvoicesPage: React.FC = () => {
           <div className="form-grid">
             {/* Correction lives in the footer now, once, beside Refund / Cancel.
                 An ordinary unpaid invoice offers Edit Invoice there instead. */}
+            <div data-testid="invoice-detail-date"><strong>Invoice date: {displayInvoiceDate(detail)}</strong>
+              {!detail.business_date && invoiceCreatedOn(detail) && <div>Created on: {invoiceCreatedOn(detail)} (Singapore)</div>}
+            </div>
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
               requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
