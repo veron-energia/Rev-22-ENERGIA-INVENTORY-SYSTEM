@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router-dom';
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
@@ -968,7 +968,39 @@ const InvoicesPage: React.FC = () => {
     await loadAll();
   };
 
+  // Every detail load takes a ticket. A slower, older load that finishes after
+  // a newer one must not write its results over the top, and must not reopen an
+  // invoice the user has already navigated away from.
+  const detailLoadSeq = useRef(0);
+  const detailIdRef = useRef<string | null>(null);
+  /**
+   * Reload the invoice that is open, by its own id.
+   *
+   * A refund or cancellation changes status, paid_amount, refunds, payments
+   * and benefits. loadAll() refreshes the LIST, but `detail` still holds the
+   * row as it was when the invoice was opened, so the screen went on saying
+   * "Paid · net S$15 · refunded S$0" after a S$15 refund had been recorded.
+   * Nothing was wrong with the money; the screen was reading a stale copy.
+   *
+   * Throws on failure so the caller can say the action was saved and offer a
+   * read-only retry, rather than presenting stale figures as current.
+   */
+  const refreshDetail = useCallback(async (invoiceId: string) => {
+    // Do not reopen an invoice the user has since navigated away from.
+    if (detailIdRef.current && detailIdRef.current !== invoiceId) return;
+    const { data, error } = await supabase.from('invoices')
+      .select('*').eq('id', invoiceId).is('deleted_at', null).maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error('The invoice could not be read back.');
+    if (detailIdRef.current && detailIdRef.current !== invoiceId) return;
+    await openDetail(data as Invoice);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const openDetail = async (inv: Invoice) => {
+    const seq = ++detailLoadSeq.current;
+    detailIdRef.current = inv.id;
+    const superseded = () => seq !== detailLoadSeq.current;
     setPaymentRequestId(crypto.randomUUID());
     setDetail(inv); setDetailFinancial(null);
     setDetailTherapy(null);
@@ -998,6 +1030,7 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('invoice_therapy_summary', { p_invoice_id: inv.id }),
       supabase.rpc('invoice_financial_position', { p_invoice_id: inv.id }),
     ]);
+    if (superseded()) return;
     setDetailTherapy(ther.data ?? null);
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
@@ -2924,7 +2957,13 @@ const InvoicesPage: React.FC = () => {
           invoiceId={detail.id}
           canApprove={isOwnerOrManager(profile?.role)}
           onClose={() => setGuidedOpen(false)}
-          onDone={async () => { await loadAll(); }} />
+          onDone={async () => {
+            // The open invoice first, so the figures behind the dialog are the
+            // ones the action just produced; then the list behind it.
+            const id = detail.id;
+            await refreshDetail(id);
+            void loadAll();
+          }} />
       )}
 
       {detail && (

@@ -237,6 +237,30 @@ afterwards to see exactly what it closed.
    `correct_invoice_payment`, `reopen_invoice` or a compensating refund.
 4. **Never** reinstate the pre-295 `complete_invoice_finance_request`.
 
+## Later corrections (see INVOICE_THREE_FIXES.md)
+
+Three defects found after this document was written change two of its claims:
+
+- **The review's credit figures were wrong.** The summary printed each
+  benefit's share of the PRICE (`paid_value`) under the label "credit removed".
+  A S$500 package granting S$500 paid + S$25 bonus previewed as S$476.19 /
+  S$23.81. Migration `303` separates money returned, accounting value, credit
+  removed and voucher units; the review now renders them as four sections. The
+  deductions themselves were always correct and are unchanged.
+- **`invoice_action_plan` now returns an `effects` block** alongside `summary`.
+  Any description here of the review as a single flat list is superseded.
+- **Completing an action now reloads the open invoice by id**, not just the
+  list. The dialog reported a refund while the invoice behind it still read
+  Paid; the stored money was always right.
+
+Migration `302` additionally repairs a live-database fault that no test
+environment could show: two `create_invoice` overloads, with the one the
+application calls missing its credit-package and premium-bundle branches
+because migration 151 patched the other one. Adds
+`scripts/invoices/check-create-invoice-overloads.sql`, read-only.
+
+The deployment order in this document gains `302` and `303` at the end.
+
 ## Still outstanding
 
 - **Browser testing against a real backend** — blocked by the environment above;

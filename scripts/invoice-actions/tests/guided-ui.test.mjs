@@ -44,13 +44,16 @@ for (const label of ['What happened', 'Which items', 'Why', 'Review']) {
 }
 
 // Step one offers the three actions the brief names, each with an explanation.
-for (const choice of ['Cancel the invoice', 'Refund everything', 'Refund some items']) {
+for (const choice of ['Cancel invoice', 'Full refund', 'Partial refund']) {
   assert.ok(html.includes(choice), `"${choice}" is offered`);
 }
 
+// A close control is reachable from the first step, not only by Escape.
+assert.match(html, /aria-label="Close without saving"/, 'the dialog has a visible close control');
+
 // Staff are told plainly that submitting changes nothing yet.
 const staff = render({ canApprove: false });
-assert.ok(!staff.includes('Confirm and record'),
-  'someone who cannot approve is never shown a confirm-and-record button on step one');
+assert.ok(!/Confirm S\$|Confirm cancellation/.test(staff),
+  'someone who cannot approve is never shown a confirm button on step one');
 
 console.log('PASS: guided dialog is a named modal with a labelled, machine-readable step list and the three offered actions');

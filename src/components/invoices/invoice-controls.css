@@ -200,3 +200,39 @@
 .invoice-guided-request .muted { margin: 2px 0 6px; }
 .invoice-guided-block label { display: block; margin-top: 8px; font-size: 12.5px; }
 .invoice-guided-block textarea { width: 100%; font-size: 16px; min-height: 44px; margin-top: 4px; }
+
+/* ---- guided review sections ---------------------------------------------
+   Money, benefits, stock and overrides are four different things, so they get
+   four visually distinct blocks rather than one undifferentiated list.     */
+.invoice-guided-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.invoice-guided-head h3 { flex: 1; }
+.invoice-guided-close {
+  border: 0; background: transparent; font-size: 22px; line-height: 1;
+  min-width: 44px; min-height: 44px; cursor: pointer; color: var(--text-muted);
+  border-radius: 6px;
+}
+.invoice-guided-close:hover { background: var(--surface-2); color: var(--text-primary); }
+.invoice-guided-close:focus-visible { outline: 3px solid #1b4d89; outline-offset: 2px; }
+.invoice-guided-status {
+  margin: 0 0 12px; font-size: 12.5px; color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.invoice-guided-section {
+  border: 1px solid var(--border); border-left: 3px solid #1b4d89;
+  border-radius: 6px; padding: 9px 11px; margin: 0 0 10px;
+}
+.invoice-guided-section h5 {
+  margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: #1b4d89;
+}
+.invoice-guided-section ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.invoice-guided-section li { overflow-wrap: anywhere; }
+.invoice-guided-section .muted { margin: 6px 0 0; }
+.invoice-guided-figure {
+  margin: 0 0 4px; font-size: 19px; font-weight: 600;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  .invoice-guided-figure { font-size: 17px; }
+  .invoice-guided-section { padding: 8px 10px; }
+}

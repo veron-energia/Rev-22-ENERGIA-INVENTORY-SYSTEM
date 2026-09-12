@@ -24,6 +24,7 @@
     "test:invoice-dates": "node scripts/invoice-dates/tests/dates.test.mjs",
     "test:invoices": "node --test scripts/invoices/tests/*.test.mjs",
     "test:invoice-actions": "node --test scripts/invoice-actions/tests/*.test.mjs",
+    "test:invoice-packages": "node --test scripts/invoice-packages/tests/*.test.mjs",
     "test:invoice-actions:concurrency": "node scripts/invoice-actions/tests/concurrency.mjs",
     "test:xero": "node --test scripts/xero/tests/*.test.mjs",
     "test:tiktok": "node --test scripts/tiktok/tests/*.test.mjs",

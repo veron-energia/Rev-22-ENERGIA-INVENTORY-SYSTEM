@@ -10,9 +10,18 @@ type Plan = {
   invoice_no: string; action: Action; refund_amount: number; refund_due: number;
   window: { created_on: string; deadline: string; within: boolean; days_remaining: number; override_required: boolean; creation_reliable: boolean; review_note?: string };
   lines: PlanLine[]; stock: PlanStock[]; sources: { payment_id: string; method: string; wallet: boolean; amount: number }[];
-  overrides_required: { code: string; message: string }[];
+  overrides_required: { code: string; message: string; amount_required?: boolean }[];
   blockers: { code: string; message: string }[];
   summary: string[]; requires_override: boolean; blocked: boolean; plan_hash: string;
+  status?: string;
+  /** Money, credits, stock and overrides kept apart — the review renders these
+   *  rather than inferring one quantity from another. */
+  effects?: {
+    money_returned: { total: number; destinations: { payment_id: string; method: string; wallet: boolean; amount: number }[] };
+    benefits: { kind: string; holder?: string; credit_removed?: number | null; units_revoked?: number | null; accounting_value?: number; line?: string }[];
+    stock_returned: PlanStock[];
+    overrides: { code: string; message: string }[];
+  };
 };
 
 /**
@@ -50,6 +59,10 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const reviewing = Boolean(reviewRequestId);
   const [detail, setDetail] = useState<any>(null);
   const [rejecting, setRejecting] = useState(false);
+  // A refresh that fails after a successful save must never look like a failed
+  // save, and retrying it must never resubmit the action.
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   // Rentals still with the customer when the invoice is cancelled. Receiving
   // them is a separate confirmed event with a destination and a condition.
   const [awaiting, setAwaiting] = useState<any[]>([]);
@@ -218,7 +231,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       if (rerr) { setError(`The invoice was saved. The rental return could not be recorded: ${rerr.message}`); break; }
     }
     // A save that worked must not be lost because the refresh failed.
-    try { await onDone(); } catch { setError('This was saved. The screen could not refresh — reopen the invoice to see it.'); }
+    try { setRefreshFailed(false); await onDone(); } catch { setRefreshFailed(true); }
   };
 
   const line = (id: string) => plan?.lines.find(l => l.invoice_item_id === id);
@@ -228,6 +241,20 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       <div className="invoice-chooser" role="dialog" aria-modal="true" aria-labelledby="ga-done" ref={dialog}>
         <h3 id="ga-done">Done</h3>
         <p>{done}</p>
+        {refreshFailed && (
+          <div className="invoice-guided-warn" role="status">
+            <strong>This was saved.</strong> The invoice on screen could not be reloaded, so what
+            you can see behind this message may be out of date. Retrying only re-reads the
+            invoice — it does not repeat the {action === 'cancel' ? 'cancellation' : 'refund'}.
+            <div className="invoice-chooser-actions">
+              <button className="btn" disabled={refreshing} onClick={async () => {
+                setRefreshing(true);
+                try { await onDone(); setRefreshFailed(false); } catch { /* still stale */ }
+                setRefreshing(false);
+              }}>{refreshing ? 'Reloading…' : 'Reload the invoice'}</button>
+            </div>
+          </div>
+        )}
         <div className="invoice-chooser-actions"><button className="btn btn-primary" onClick={onClose}>Close</button></div>
       </div>
     </div>
@@ -236,7 +263,18 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   return (
     <div className="invoice-chooser-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="invoice-chooser invoice-guided" role="dialog" aria-modal="true" aria-labelledby="ga-title" ref={dialog}>
-        <h3 id="ga-title">Refund or cancel {plan?.invoice_no ?? ''}</h3>
+        <div className="invoice-guided-head">
+          <h3 id="ga-title">Refund or cancel {plan?.invoice_no ?? ''}</h3>
+          <button type="button" className="invoice-guided-close" aria-label="Close without saving"
+            onClick={onClose}>&times;</button>
+        </div>
+        {plan && (
+          <p className="invoice-guided-status">
+            <strong>{plan.invoice_no}</strong>
+            {plan.status ? <> · {String(plan.status).replace(/_/g, ' ')}</> : null}
+            {plan.window ? <> · created {plan.window.created_on}</> : null}
+          </p>
+        )}
         <ol className="invoice-guided-steps" aria-label="Progress">
           {['What happened', 'Which items', 'Why', 'Review'].map((label, n) => (
             <li key={label} aria-current={step === n + 1 ? 'step' : undefined}
@@ -257,14 +295,17 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
           </div>
         )}
 
+        {step === 1 && plan?.blocked && (
+          <p className="muted">Every action is unavailable until the review above is resolved.</p>
+        )}
         {step === 1 && (
           <div className="invoice-guided-choices">
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('cancel')}>
-              <strong>Cancel the invoice</strong><span>It should not have been raised, or the customer is not taking it.</span></button>
+              <strong>Cancel invoice</strong><span>It should not have been raised, or the customer is not going ahead.</span></button>
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('refund_full')}>
-              <strong>Refund everything</strong><span>All items are coming back.</span></button>
+              <strong>Full refund</strong><span>Everything on this invoice is being reversed — goods, services, vouchers and credits alike.</span></button>
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('refund_partial')}>
-              <strong>Refund some items</strong><span>Only part of the invoice is coming back.</span></button>
+              <strong>Partial refund</strong><span>Only some of what was bought is being reversed.</span></button>
           </div>
         )}
 
@@ -348,7 +389,58 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
         {step === 4 && plan && !(reviewing && detail?.legacy) && (
           <div className="invoice-guided-review">
             <h4>What this will do</h4>
-            <ul className="invoice-guided-summary">{plan.summary.map((s, n) => <li key={n}>{s}</li>)}</ul>
+            {(() => {
+              const fx = plan.effects;
+              if (!fx) return <ul className="invoice-guided-summary">{plan.summary.map((s, n) => <li key={n}>{s}</li>)}</ul>;
+              const credits = (fx.benefits ?? []).filter(b => b.credit_removed != null || b.units_revoked != null);
+              return (<>
+                {Number(fx.money_returned?.total ?? 0) > 0 && (
+                  <section className="invoice-guided-section">
+                    <h5>Money returned</h5>
+                    <p className="invoice-guided-figure">{money(fx.money_returned.total)}</p>
+                    <ul>{(fx.money_returned.destinations ?? []).map(d => (
+                      <li key={d.payment_id}>{money(d.amount)} to {d.method}
+                        {d.wallet ? ' — restores the original credit' : ''}</li>))}</ul>
+                    <p className="muted">Recording this does not send money anywhere. It records that
+                      the money was returned; making the payment is a separate act.</p>
+                  </section>
+                )}
+                {action === 'cancel' && Number(plan.refund_due ?? 0) > 0 && !recordRefund && (
+                  <section className="invoice-guided-section">
+                    <h5>Refund due</h5>
+                    <p className="invoice-guided-figure">{money(plan.refund_due)}</p>
+                    <p className="muted">Nothing is recorded as returned until someone confirms it was.</p>
+                  </section>
+                )}
+                {credits.length > 0 && (
+                  <section className="invoice-guided-section">
+                    <h5>Credits and benefits cancelled</h5>
+                    <ul>{credits.map((b, n) => (
+                      <li key={n}>
+                        {b.credit_removed != null
+                          ? <>{money(b.credit_removed)} of {b.kind} credit</>
+                          : <>{b.units_revoked} unused voucher unit{Number(b.units_revoked) === 1 ? '' : 's'}</>}
+                        {b.holder ? <> — {b.holder}</> : null}
+                        {b.line ? <span className="muted"> ({b.line})</span> : null}
+                      </li>))}</ul>
+                  </section>
+                )}
+                {(fx.stock_returned ?? []).length > 0 && (
+                  <section className="invoice-guided-section">
+                    <h5>Stock returned</h5>
+                    <ul>{fx.stock_returned.map(st2 => (
+                      <li key={st2.movement_id}>{st2.proposed_sellable} × {st2.product_name} →{' '}
+                        {st2.store_name ?? 'the original store'} <span className="muted">(condition confirmed below)</span></li>))}</ul>
+                  </section>
+                )}
+                {(plan.overrides_required ?? []).length > 0 && (
+                  <section className="invoice-guided-section">
+                    <h5>Overrides required</h5>
+                    <ul>{plan.overrides_required.map(o => <li key={o.code}>{o.message}</li>)}</ul>
+                  </section>
+                )}
+              </>);
+            })()}
 
             {plan.stock.length > 0 && (
               <fieldset className="invoice-guided-stock">
@@ -447,7 +539,18 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                 ? <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Confirm rejection</button>
                 : <button className="btn btn-primary"
                     disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending')} onClick={submit}>
-                    {reviewing ? 'Approve and record' : canApprove ? 'Confirm and record' : 'Submit for approval'}
+                    {(() => {
+                      const amount = Number(plan.refund_amount ?? 0);
+                      if (!canApprove && !reviewing) {
+                        return action === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
+                      }
+                      if (action === 'cancel') {
+                        return recordRefund && Number(plan.refund_due ?? 0) > 0
+                          ? `Confirm cancellation and ${money(plan.refund_due)} refund`
+                          : 'Confirm cancellation';
+                      }
+                      return amount > 0 ? `Confirm ${money(amount)} refund` : 'Confirm refund';
+                    })()}
                   </button>}
             </div>
             {!canApprove && <p className="muted">This will be sent to an Owner or Manager. Nothing changes until they approve it.</p>}
