@@ -125,3 +125,78 @@
 }
 .invoice-evidence-confirm input { width: auto; margin-top: 2px; }
 .invoice-evidence-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+/* ---- guided refund / cancellation ---------------------------------------
+   Shares the chooser's dialog shell. Everything here is sized so the whole
+   flow stays usable one-handed on a phone: full-width controls, 16px inputs
+   so iOS does not zoom on focus, and targets that clear 44px.            */
+.invoice-guided { max-width: 560px; max-height: 88vh; overflow-y: auto; }
+.invoice-guided-steps {
+  display: flex; gap: 6px; list-style: none; margin: 0 0 14px; padding: 0;
+  font-size: 11.5px; color: var(--text-muted); flex-wrap: wrap;
+}
+.invoice-guided-steps li { padding: 3px 8px; border-radius: 999px; background: var(--surface-2); }
+.invoice-guided-steps li.current { background: #1b4d89; color: #fff; font-weight: 600; }
+.invoice-guided-steps li.done { color: var(--text-secondary); }
+.invoice-guided-choices { display: flex; flex-direction: column; gap: 10px; }
+.invoice-guided-choices .btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  text-align: left; padding: 12px; min-height: 44px; width: 100%;
+}
+.invoice-guided-choices .btn span { font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+.invoice-guided-lines, .invoice-guided-stock, .invoice-guided-overrides {
+  border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin: 0 0 12px;
+}
+.invoice-guided-lines legend, .invoice-guided-stock legend, .invoice-guided-overrides legend {
+  font-size: 12px; font-weight: 600; padding: 0 4px;
+}
+.invoice-guided-lines label {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.invoice-guided-lines label:last-of-type { border-bottom: 0; }
+.invoice-guided-lines input { width: 84px; min-height: 44px; font-size: 16px; text-align: right; }
+.invoice-guided-why label, .invoice-guided-overrides label { display: block; font-size: 12.5px; margin-bottom: 10px; }
+.invoice-guided-why textarea, .invoice-guided-overrides input {
+  display: block; width: 100%; margin-top: 4px; font-size: 16px; min-height: 44px;
+}
+.invoice-guided-summary { margin: 0 0 14px; padding-left: 18px; font-size: 13px; line-height: 1.55; }
+.invoice-guided-summary li { margin-bottom: 4px; }
+.invoice-guided-stock-row {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+  padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.invoice-guided-stock-row:last-child { border-bottom: 0; }
+.invoice-guided-stock-row > span { flex: 1 1 100%; }
+.invoice-guided-stock-row label { display: flex; flex-direction: column; font-size: 11px; gap: 2px; }
+.invoice-guided-stock-row input { width: 72px; min-height: 44px; font-size: 16px; text-align: right; }
+.invoice-guided-refunddue {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px;
+  padding: 10px; background: var(--surface-2); border-radius: 6px; margin-bottom: 12px;
+}
+.invoice-guided-refunddue input { width: auto; min-width: 20px; min-height: 20px; margin-top: 2px; }
+.invoice-guided-warn {
+  margin: 0 0 12px; padding: 9px 10px; border-radius: 6px; font-size: 12.5px;
+  background: #fff4e5; color: #7a4100; border: 1px solid #ffcc80;
+}
+.invoice-guided-block {
+  margin: 0 0 12px; padding: 9px 10px; border-radius: 6px; font-size: 12.5px;
+  background: #fdecea; color: #7f1d1d; border: 1px solid #f5b3ad;
+}
+.invoice-guided-block ul { margin: 6px 0 0; padding-left: 18px; }
+.invoice-guided .muted { font-size: 11.5px; color: var(--text-muted); margin: 0 0 10px; }
+@media (max-width: 560px) {
+  .invoice-guided { max-width: 100%; }
+  .invoice-guided-lines label { flex-direction: column; align-items: stretch; }
+  .invoice-guided-lines input, .invoice-guided-stock-row input { width: 100%; }
+  .invoice-chooser-actions { flex-direction: column-reverse; }
+  .invoice-chooser-actions .btn { width: 100%; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .invoice-guided * { transition: none !important; } }
+.invoice-guided-request {
+  padding: 10px; margin-bottom: 12px; border-radius: 6px;
+  background: var(--surface-2); font-size: 12.5px; line-height: 1.6;
+}
+.invoice-guided-request .muted { margin: 2px 0 6px; }
+.invoice-guided-block label { display: block; margin-top: 8px; font-size: 12.5px; }
+.invoice-guided-block textarea { width: 100%; font-size: 16px; min-height: 44px; margin-top: 4px; }

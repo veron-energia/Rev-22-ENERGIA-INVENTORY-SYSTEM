@@ -6,6 +6,13 @@ port and project-owned data directory; never targets another test or live DB.
 import os, pathlib, re, subprocess, sys, json, argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--through", type=int, default=999999)
+# Bring an ALREADY bootstrapped fixture forward without wiping it. The legacy
+# commission checks need a database pinned at 272; the current integration
+# tests need the complete migration set. Both can be had from one fixture by
+# bootstrapping to 272, running the historical checks, then upgrading with
+# --from 273 --no-reset and running the current tests on the result.
+parser.add_argument("--from", dest="start", type=int, default=0)
+parser.add_argument("--no-reset", dest="reset", action="store_false", default=True)
 args = parser.parse_args()
 
 DB = 'energia_commission_test'
@@ -23,7 +30,7 @@ if r.returncode:
 if pathlib.Path(r.stdout.strip()).resolve() != pathlib.Path('.commission-test/data').resolve():
     sys.exit('Server is not a project-owned isolated cluster: ' + r.stdout.strip())
 
-r = sql("""drop schema if exists public cascade; create schema public;
+reset_sql = """drop schema if exists public cascade; create schema public;
 drop schema if exists auth cascade; create schema auth;
 do $$ begin create role anon; exception when duplicate_object then null; end $$;
 do $$ begin create role authenticated; exception when duplicate_object then null; end $$;
@@ -36,13 +43,16 @@ create table auth.users(id uuid primary key,email text,email_confirmed_at timest
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
 create function auth.role() returns text language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claim.role',true),''),'authenticated') $$;
 create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb $$;
-""")
-if r.returncode:
-    sys.exit(r.stderr)
+"""
+if args.reset:
+    r = sql(reset_sql)
+    if r.returncode:
+        sys.exit(r.stderr)
 
 files = [p for p in pathlib.Path('supabase').glob('*.sql') if re.match(r'^[0-9]', p.name)]
 files.sort(key=lambda p: (int(re.match(r'\d+', p.name)[0]), p.name))
-files.insert(1, pathlib.Path('supabase/UPGRADE_to_current.sql'))
+if args.reset:
+    files.insert(1, pathlib.Path('supabase/UPGRADE_to_current.sql'))
 
 logs = pathlib.Path('.commission-test')
 logs.mkdir(exist_ok=True)
@@ -54,9 +64,9 @@ for p in files:
     n = int(m[0]) if m else 0
     # 1-23 are folded into 00_complete_setup + UPGRADE_to_current, exactly as
     # agent one's fixture has it.
-    if n > args.through:
+    if n > args.through or n < args.start:
         continue
-    if 1 <= n <= 23:
+    if args.reset and 1 <= n <= 23:
         continue
     r = sql(p.read_text())
     (logs / (p.stem + '.log')).write_text(r.stdout + r.stderr)

@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
 import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
@@ -61,11 +62,20 @@ const ApprovalsPage: React.FC = () => {
     return p.invoice_no ?? '—';
   };
 
+  // Invoice requests open the same guided review the invoice page uses, so an
+  // approval reached from here obeys identical rules: current effects
+  // re-derived, five-day window, override reasons, confirmed goods. The old
+  // path called resolve_invoice_action directly and skipped all of it.
+  const [reviewing, setReviewing] = useState<{ requestId: string; invoiceId: string } | null>(null);
+
   const approve = async (req: AdjustmentRequest) => {
-    if (req.request_type === 'invoice_refund') { navigate(`/invoices?review=${req.related_record_id}`); return; }
+    if (req.request_type === 'invoice_refund' || req.request_type === 'invoice_cancel') {
+      if (!req.related_record_id) { alert('This request is not linked to an invoice.'); return; }
+      setReviewing({ requestId: req.id, invoiceId: req.related_record_id });
+      return;
+    }
     setBusy(req.id);
-    const fn = req.request_type === 'adjustment' ? 'resolve_inventory_adjustment' : 'resolve_invoice_action';
-    const { error } = await supabase.rpc(fn, { p_request_id: req.id, p_approve: true, p_note: null });
+    const { error } = await supabase.rpc('resolve_inventory_adjustment', { p_request_id: req.id, p_approve: true, p_note: null });
     setBusy(null);
     if (error) { alert(error.message); return; }
     load();
@@ -74,7 +84,9 @@ const ApprovalsPage: React.FC = () => {
   const doReject = async () => {
     if (!rejectFor) return;
     setBusy(rejectFor.id);
-    const fn = rejectFor.request_type === 'adjustment' ? 'resolve_inventory_adjustment' : 'resolve_invoice_action';
+    // Rejection changes no money, so it stays a direct call; invoice requests
+    // go through the validated workflow, inventory adjustments through theirs.
+    const fn = rejectFor.request_type === 'adjustment' ? 'resolve_inventory_adjustment' : 'resolve_invoice_action_v2';
     const { error } = await supabase.rpc(fn, { p_request_id: rejectFor.id, p_approve: false, p_note: rejectNote.trim() || null });
     setBusy(null);
     if (error) { alert(error.message); return; }
@@ -86,6 +98,14 @@ const ApprovalsPage: React.FC = () => {
 
   return (
     <div>
+      {reviewing && (
+        <InvoiceGuidedAction
+          invoiceId={reviewing.invoiceId}
+          requestId={reviewing.requestId}
+          canApprove
+          onClose={() => setReviewing(null)}
+          onDone={async () => { load(); }} />
+      )}
       <div className="page-header">
         <div><h2>Approvals</h2><p>Pending refund, cancellation, and inventory-adjustment requests awaiting your decision.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
@@ -126,7 +146,7 @@ const ApprovalsPage: React.FC = () => {
                       <td style={{ fontSize: 12.5 }}>{uName(req.requested_by)}</td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-primary btn-sm" onClick={() => approve(req)} disabled={busy === req.id}><Check size={13} /> {req.request_type === 'invoice_refund' ? 'Review refund' : 'Approve'}</button>
+                          <button className="btn btn-primary btn-sm" onClick={() => approve(req)} disabled={busy === req.id}><Check size={13} /> {req.request_type === 'invoice_refund' || req.request_type === 'invoice_cancel' ? 'Review' : 'Approve'}</button>
                           <button className="btn btn-danger btn-sm" onClick={() => { setRejectFor(req); setRejectNote(''); }} disabled={busy === req.id}><X size={13} /> Reject</button>
                         </div>
                       </td>

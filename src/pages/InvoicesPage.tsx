@@ -22,6 +22,7 @@ import {
 
 import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel';
 import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefundCancelChooser';
+import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
 import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
@@ -149,6 +150,9 @@ const InvoicesPage: React.FC = () => {
   // Detail / payment modal
   const [detailFinancial, setDetailFinancial] = useState<any>(null);
   const [chooserOpen, setChooserOpen] = useState(false);
+  // The guided flow replaces the old two-step chooser: it derives the whole
+  // effect set itself, so staff never pick ledger rows.
+  const [guidedOpen, setGuidedOpen] = useState(false);
   const [financeRequest, setFinanceRequest] = useState<{ mode: 'refund' | 'cancel' | 'payment'; paymentId?: string } | null>(null);
   const [detail, setDetail] = useState<Invoice | null>(null);
   const [detailItems, setDetailItems] = useState<InvoiceItem[]>([]);
@@ -837,7 +841,7 @@ const InvoicesPage: React.FC = () => {
   const cancellable = Boolean(detail) && !['cancelled', 'refunded'].includes(String(detail?.status));
   const canManageInvoice = isOwnerOrManager(profile?.role);
   const refundCancelButton = detail && canManageInvoice ? (
-    <button className="btn invoice-refund-cancel" onClick={() => setChooserOpen(true)}
+    <button className="btn invoice-refund-cancel" onClick={() => setGuidedOpen(true)}
       title="Cancel this invoice, or record a refund">
       <FileText size={14} /> Refund / Cancel</button>
   ) : null;
@@ -2913,6 +2917,14 @@ const InvoicesPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {detail && guidedOpen && (
+        <InvoiceGuidedAction
+          invoiceId={detail.id}
+          canApprove={isOwnerOrManager(profile?.role)}
+          onClose={() => setGuidedOpen(false)}
+          onDone={async () => { await loadAll(); }} />
       )}
 
       {detail && (

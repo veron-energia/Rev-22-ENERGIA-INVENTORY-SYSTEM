@@ -7,6 +7,7 @@ begin;
 do $$
 declare o uuid:=gen_random_uuid(); st uuid; wh uuid; c uuid; pm uuid; sp uuid;
  inv uuid; sale_it uuid; rent_it uuid; pay uuid; x jsonb; blockers jsonb;
+ qty_before int; rent_id uuid;
 begin
  insert into auth.users(id,email) values(o,'rental@tests.invalid');
  insert into profiles(id,full_name,email,role) values(o,'Owner','rental@tests.invalid','owner');
@@ -49,20 +50,56 @@ begin
  if (select coalesce(sum(amount),0) from invoice_refunds where invoice_id=inv)<>200 then
   raise exception 'Special-product refund was not recorded'; end if;
 
- -- An OUTSTANDING rental blocks cancellation, correction and reopening.
- foreach x in array array['"active"'::jsonb,'"paid"'::jsonb,'"overdue"'::jsonb] loop
-  update rentals set status=(x#>>'{}')::rental_status where invoice_id=inv;
-  begin
-   perform cancel_invoice_recorded(inv,'Cancel with the item out',gen_random_uuid());
-   raise exception 'Cancelled while the rental was still %', x#>>'{}';
-  exception when others then
-   if sqlerrm like 'Cancelled while the rental%' then raise; end if;
-   if sqlerrm not like '%outstanding rental%' then raise; end if; end;
-  begin
-   perform correct_invoice(inv,x,'{"customer_id":null}','Move it',gen_random_uuid());
-  exception when others then null; end;
- end loop;
+ -- 300: an OUTSTANDING rental no longer blocks cancellation. A customer may
+ -- cancel while the item is still with them; what must not happen is the item
+ -- silently reappearing in stock because a contract was cancelled.
  if not rental_is_outstanding('overdue') then raise exception 'Overdue is not treated as outstanding'; end if;
+ update rentals set status='active',fulfilled_at=now(),stock_returned=false where invoice_id=inv;
+ qty_before:=(select current_qty from special_product_stock where special_product_id=sp and warehouse_id=wh);
+ perform cancel_invoice_recorded(inv,'Cancel with the item still out',gen_random_uuid());
+ if (select status::text from rentals where invoice_id=inv)<>'cancelled' then
+  raise exception 'Cancelling did not cancel the outstanding rental'; end if;
+ if not rental_awaiting_return((select id from rentals where invoice_id=inv)) then
+  raise exception 'A rental cancelled while out must read as awaiting return'; end if;
+ if (select current_qty from special_product_stock where special_product_id=sp and warehouse_id=wh)<>qty_before then
+  raise exception 'Cancelling a live rental put the item back in stock without anyone returning it'; end if;
+ if jsonb_array_length(invoice_rentals_awaiting_return(inv))<>1 then
+  raise exception 'The invoice does not report the rental as awaiting return'; end if;
+ if not exists(select 1 from audit_logs where table_name='rentals' and action='rental_cancelled_awaiting_return') then
+  raise exception 'Cancelling a live rental was not audited as awaiting return'; end if;
+
+ -- Receiving it is a separate, confirmed event with a destination and a condition.
+ rent_id:=(select id from rentals where invoice_id=inv);
+ begin
+  perform receive_returned_rental(rent_id,gen_random_uuid(),'good','Back today',gen_random_uuid());
+  raise exception 'Accepted an unknown warehouse as the destination';
+ exception when others then
+  if sqlerrm not like '%active warehouse%' then raise; end if; end;
+ begin
+  perform receive_returned_rental(rent_id,wh,'melted','Back today',gen_random_uuid());
+  raise exception 'Accepted a condition that is not good, damaged or lost';
+ exception when others then
+  if sqlerrm not like '%good, damaged or lost%' then raise; end if; end;
+ if (select current_qty from special_product_stock where special_product_id=sp and warehouse_id=wh)<>qty_before then
+  raise exception 'A refused return changed stock'; end if;
+
+ -- Damaged goods are resolved but never made available again.
+ if (receive_returned_rental(rent_id,wh,'damaged','Came back cracked',gen_random_uuid())->>'made_available')::boolean then
+  raise exception 'A damaged rental was made available for sale'; end if;
+ if (select coalesce(current_qty,0) from warehouse_inventory wi
+      join special_products spx on spx.product_id=wi.product_id
+     where spx.id=sp and wi.warehouse_id=wh)>0 then
+  raise exception 'A damaged rental was added to warehouse stock'; end if;
+ -- and the same asset cannot be taken back a second time by any route.
+ if not (receive_returned_rental(rent_id,wh,'good','Trying again',gen_random_uuid())->>'already_returned')::boolean then
+  raise exception 'The same rental asset was received twice'; end if;
+ if return_rental_to_warehouse(rent_id)<>0 then
+  raise exception 'Rental completion returned an asset that cancellation had already resolved'; end if;
+
+ -- Back to an unfulfilled rental for the remaining assertions.
+ update rentals set status='awaiting_fulfilment',stock_returned=false,returned_at=null,
+   return_condition=null,cancelled_at=null where invoice_id=inv;
+ update invoices set status='paid' where id=inv;
 
  -- An UNFULFILLED rental is cancelled with the invoice instead of blocking it.
  update rentals set status='awaiting_fulfilment' where invoice_id=inv;
@@ -78,6 +115,6 @@ begin
  if cancel_invoice_rentals(inv,'Again')<>0 then
   raise exception 'Rental cancellation repeated on an already cancelled rental'; end if;
 
- raise notice 'PASS: special product and rental price, correct and refund; an outstanding rental (including overdue) blocks cancellation, correction and reopening; an unfulfilled rental is cancelled with its invoice, audited and once only';
+ raise notice 'PASS: special product and rental price, correct and refund; a live rental is cancelled with its invoice and left awaiting return without touching stock; receiving it needs a real warehouse and a valid condition; damaged goods never return to sale; no asset is received twice by either route; an unfulfilled rental is cancelled with its invoice, audited and once only';
 end $$;
 rollback;
