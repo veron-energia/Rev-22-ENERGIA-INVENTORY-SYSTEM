@@ -46,7 +46,16 @@ begin
  if sales_between('2020-02-01','2020-02-29',st)<>0 then raise exception 'Correcting the invoice date pulled receipts into February'; end if;
  if sales_between(sg_today(),sg_today(),st)<>-30 then raise exception 'Refund moved off the refund date'; end if;
  perform cancel_invoice_recorded(inv,'Cancel after partial refund',gen_random_uuid());
- if sales_between(null,null,st)<>150 or _aff_settled_spend(c)<>150 then raise exception 'Cancellation subtracted held receipts'; end if;
+ -- 294: a cancelled invoice is not a sale, so its held receipts leave Sales.
+ -- The money itself is untouched and is surfaced for follow-up instead of
+ -- disappearing quietly.
+ if sales_between(null,null,st)<>0 then raise exception 'Cancellation left its receipts in Sales'; end if;
+ if (select coalesce(sum(retained),0) from report_cancelled_retained_receipts(st))<>150 then
+  raise exception 'Money held on a cancelled invoice was not reported'; end if;
+ -- Affiliate settled spend deliberately does NOT follow. It measures what the
+ -- customer actually paid the business and drives commission and tiers, so it
+ -- is not changed by a reporting rule about Sales.
+ if _aff_settled_spend(c)<>150 then raise exception 'Cancellation changed affiliate settled spend'; end if;
  raise notice 'PASS: partial receipts, affiliate spend, invoice-date detail reports, date moves, refund-date reductions, cancellation and all-time dashboard metrics';
 end $$;
 rollback;

@@ -18,7 +18,9 @@ with params as (
 ),
 
 -- The same ledger the dashboard uses: external receipts on the day the money
--- arrived, refunds on the refund date, wallet credit excluded from both.
+-- arrived, refunds on the refund date, wallet credit excluded from both, and
+-- (294) only invoices whose money is a sale. A cancelled or fully refunded
+-- invoice contributes nothing; draft and unpaid never did.
 ledger as (
   select i.id as invoice_id,
          (coalesce(p.effective_at, p.created_at) at time zone 'Asia/Singapore')::date as sales_date,
@@ -28,6 +30,8 @@ ledger as (
     join public.invoices i on i.id = p.invoice_id
     join public.payment_methods m on m.id = p.payment_method_id
    where i.deleted_at is null
+     and i.status in ('paid','partially_paid','completed_foc',
+                      'cancellation_requested','refund_requested')
      and not coalesce(m.is_wallet_credit, false)
   union all
   select i.id,
@@ -37,6 +41,8 @@ ledger as (
     from public.invoice_refunds r
     join public.invoices i on i.id = r.invoice_id
    where i.deleted_at is null
+     and i.status in ('paid','partially_paid','completed_foc',
+                      'cancellation_requested','refund_requested')
      and r.payment_id is not null
 ),
 in_period as (
