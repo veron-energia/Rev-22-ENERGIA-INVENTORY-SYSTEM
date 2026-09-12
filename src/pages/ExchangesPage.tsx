@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
+import { singaporeToday } from '../lib/invoices/business';
+import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
+         type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { useAuth } from '../context/AuthContext';
 import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion, isManagerOrAbove } from '../types';
 import { Modal, NoAccess } from '../components/ui';
@@ -16,6 +19,10 @@ const ExchangesPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  /** The customer on the invoice being exchanged, read by id rather than
+   *  hoped for in the page's bounded customer list. */
+  const [invoiceCustomer, setInvoiceCustomer] = useState<any | null>(null);
+  const [customerUnavailable, setCustomerUnavailable] = useState(false);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [prices, setPrices] = useState<{ store_id: string; product_id: string; selling_price: number; is_active: boolean }[]>([]);
   const [storeInv, setStoreInv] = useState<{ store_id: string; product_id: string; current_qty: number }[]>([]);
@@ -89,9 +96,21 @@ const ExchangesPage: React.FC = () => {
   const [eligMsg, setEligMsg] = useState<string | null>(null);
   const [returnIds, setReturnIds] = useState<string[]>([]);
   const [repl, setRepl] = useState<{ product_id: string; quantity: number }[]>([{ product_id: '', quantity: 1 }]);
-  const [pays, setPays] = useState<{ payment_method_id: string; amount: number; reference: string }[]>([]);
+  const [pays, setPays] = useState<{ payment_method_id: string; amount: number; reference: string; instalment?: InstalmentPortion }[]>([]);
   const [reason, setReason] = useState('');
   const [notes, setNotes] = useState('');
+  // ---- who handled THIS exchange, kept apart from who served the original ----
+  const [exStaff, setExStaff] = useState<string[]>([]);
+  const [exAffiliate, setExAffiliate] = useState<'' | 'none' | string>('');
+  const [exRaisedBy, setExRaisedBy] = useState('');
+  const [exDate, setExDate] = useState('');
+  /** The original sale's own attribution, shown beside the exchange as
+   *  reference. Never used as a default for the exchange's own fields. */
+  const [originalContext, setOriginalContext] = useState<any | null>(null);
+  /** Additional charge / received / outstanding / terms for the open exchange. */
+  const [detailPosition, setDetailPosition] = useState<any | null>(null);
+  const [profilesList, setProfilesList] = useState<any[]>([]);
+  const [affiliateOptions, setAffiliateOptions] = useState<{ value: string; label: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -112,8 +131,54 @@ const ExchangesPage: React.FC = () => {
   };
   const openWizard = () => { resetWizard(); setWizard(true); };
 
+  // Everyone who could serve or raise an exchange, and every eligible
+  // affiliate. Loaded once; the server checks both again on save.
+  useEffect(() => {
+    supabase.from('profiles').select('id, full_name, role, is_active')
+      .is('deleted_at', null).eq('is_active', true).order('full_name')
+      .then(({ data }) => setProfilesList((data as any[]) ?? []));
+    supabase.from('customer_affiliates')
+      .select('id, customer_id, status, manually_suspended')
+      .is('deleted_at', null)
+      .then(async ({ data }) => {
+        const rows = ((data as any[]) ?? []).filter(r => !r.manually_suspended);
+        const people = await fetchCustomersByIds(rows.map(r => r.customer_id));
+        const byId = new Map(people.map((c: any) => [c.id, c]));
+        setAffiliateOptions(rows.map(r => ({
+          value: r.id,
+          label: byId.get(r.customer_id)?.full_name ?? 'Affiliate',
+          search: `${byId.get(r.customer_id)?.full_name ?? ''} ${byId.get(r.customer_id)?.phone ?? ''}`,
+        }) as any));
+      });
+  }, []);
+
+  // Staff eligible for the store processing this exchange. Owners and managers
+  // reach every store; staff must be assigned to it.
+  const [storeStaff, setStoreStaff] = useState<any[]>([]);
+  useEffect(() => {
+    if (!effectiveStore) { setStoreStaff([]); return; }
+    supabase.rpc('store_commission_staff', { p_store_id: effectiveStore })
+      .then(({ data }) => setStoreStaff((data as any[]) ?? []));
+  }, [effectiveStore]);
+  const eligibleExchangeStaff = useMemo(() => {
+    const assigned = storeStaff.map(s2 => ({ id: s2.staff_id, full_name: s2.staff_name }));
+    const seniors = profilesList
+      .filter(p => ['owner', 'manager'].includes(p.role))
+      .map(p => ({ id: p.id, full_name: `${p.full_name} (${p.role})` }));
+    return [...assigned, ...seniors];
+  }, [storeStaff, profilesList]);
+  const raisedByOptions = useMemo(() => profilesList
+    .filter(p => ['owner', 'admin', 'manager', 'staff'].includes(p.role))
+    .map(p => ({ value: p.id, label: p.full_name })), [profilesList]);
+
   const findInvoice = async () => {
+    // Looking up a different invoice must not leave anything from the last one
+    // on screen: its items, its returns, its staff, its affiliate or its
+    // customer.
     setErr(null); setInvoice(null); setInvItems([]); setEligMsg(null); setReturnIds([]);
+    setInvoiceCustomer(null); setCustomerUnavailable(false); setOriginalContext(null);
+    setBundleLineId(''); setBundleComps([]); setComponentPid(''); setComponentQty(1);
+    setExStaff([]); setExAffiliate(''); setPays([]);
     const q = invSearch.trim();
     if (!q) return;
     const { data: inv } = await supabase.from('invoices').select('*').eq('invoice_no', q).maybeSingle();
@@ -124,6 +189,24 @@ const ExchangesPage: React.FC = () => {
     const { data: items } = await supabase.from('invoice_items').select('*').eq('invoice_id', (inv as Invoice).id);
     setInvoice(inv as Invoice);
     setInvItems((items as InvoiceItem[]) ?? []);
+
+    // The page's customer list is one page of rows and excludes deleted ones,
+    // so an invoice belonging to any customer outside it showed "Customer: —"
+    // even though the invoice named them perfectly well. Fetch this invoice's
+    // own customer by id, which also reaches historical records.
+    const cid = (inv as Invoice).customer_id;
+    if (!cid) { setCustomerUnavailable(true); return; }
+    supabase.rpc('exchange_original_context', { p_invoice_id: (inv as Invoice).id })
+      .then(({ data }) => setOriginalContext(data ?? null));
+    setExDate(singaporeToday());
+    const found = await fetchCustomersByIds([cid]);
+    if (found.length > 0) {
+      setInvoiceCustomer(found[0]);
+      setCustomers(cur => mergeCustomers(cur, found));
+    } else {
+      // Never guess from a similar name or number: say it plainly instead.
+      setCustomerUnavailable(true);
+    }
   };
 
   const productLines = invItems.filter(i => i.line_kind === 'product');
@@ -161,6 +244,12 @@ const ExchangesPage: React.FC = () => {
   // Mode-aware credit (component mode uses the selected component's store price).
   const modeCredit = mode === 'component' ? (priceAt(effectiveStore, componentPid) ?? 0) * componentQty : creditTotal;
   const compTopup = mode === 'bundle' ? 0 : Math.max(0, +(replTotal - modeCredit).toFixed(2));
+  // Money actually received now, kept apart from what an arrangement merely
+  // covers. An in-house promise is not a receipt.
+  const receivedNow = pays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
+  const instalmentCovered = pays.reduce((a, p) =>
+    a + (p.payment_method_id === INSTALMENT_METHOD ? (Number(p.instalment?.covered_amount) || 0) : 0), 0);
+  const outstandingNow = Math.max(0, +(compTopup - receivedNow).toFixed(2));
   const compNonref = mode === 'bundle' ? 0 : Math.max(0, +(modeCredit - replTotal).toFixed(2));
 
   // replacement products must match returned type (own/third)
@@ -175,7 +264,12 @@ const ExchangesPage: React.FC = () => {
       if (returnIds.length === 0) return 'Select at least one item to return.';
       if (returnedType === 'MIXED') return 'All returned items must be the same product type.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
-      if (compTopup > 0 && Math.abs(paySum - compTopup) > 0.001) return `Top-up payment must total ${money(compTopup)}.`;
+      if (compTopup > 0 && receivedNow - compTopup > 0.001) return `Payments (${money(receivedNow)}) exceed the additional charge of ${money(compTopup)}.`;
+      if (compTopup > 0 && receivedNow + instalmentCovered - compTopup < -0.001) {
+        return `${money(compTopup - receivedNow - instalmentCovered)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
+      }
+      { const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
+        if (bad) return bad; }
     } else if (mode === 'bundle') {
       if (!bundleLineId) return 'Select the bundle being returned.';
       if (!newPromoId) return 'Select the replacement bundle.';
@@ -184,12 +278,21 @@ const ExchangesPage: React.FC = () => {
       if (!componentPid) return 'Select the component to exchange.';
       if (componentQty <= 0) return 'Component quantity must be greater than zero.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
-      if (compTopup > 0 && Math.abs(paySum - compTopup) > 0.001) return `Top-up payment must total ${money(compTopup)}.`;
+      if (compTopup > 0 && receivedNow - compTopup > 0.001) return `Payments (${money(receivedNow)}) exceed the additional charge of ${money(compTopup)}.`;
+      if (compTopup > 0 && receivedNow + instalmentCovered - compTopup < -0.001) {
+        return `${money(compTopup - receivedNow - instalmentCovered)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
+      }
+      { const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
+        if (bad) return bad; }
     }
     return null;
   };
 
   const openConfirm = () => {
+    if (exStaff.length === 0) {
+      setErr('Choose the staff who handled this exchange. The original sale\u2019s staff are not carried over.');
+      return;
+    }
     const v = validate();
     if (v) { setErr(v); return; }
     setErr(null); setAttestName(''); setConfirming(true);
@@ -201,28 +304,53 @@ const ExchangesPage: React.FC = () => {
     if (v) { setErr(v); setConfirming(false); return; }
     if (!invoice) return;
     setBusy(true);
-    const payPayload = (compTopup > 0 || mode === 'bundle') ? pays.filter(p => p.payment_method_id && Number(p.amount) > 0).map(p => ({ payment_method_id: p.payment_method_id, amount: p.amount, reference: p.reference })) : [];
-    let data: any, error: any;
-    if (mode === 'product') {
-      ({ data, error } = await supabase.rpc('create_product_exchange', {
-        p_original_invoice_id: invoice.id, p_processing_store_id: effectiveStore,
-        p_returned: returnedItems.map(i => ({ invoice_item_id: i.id, quantity: i.quantity })),
-        p_replacement: replLines, p_payments: payPayload,
-        p_reason: reason.trim() || null, p_notes: notes.trim() || null,
+    // An instalment line carries the arrangement; any money taken under it goes
+    // in as a receipt through the REAL method, never as "Instalment".
+    const active = (compTopup > 0 || mode === 'bundle') ? pays : [];
+    const payPayload = active
+      .filter(p => Number(p.amount) > 0 && (p.payment_method_id === INSTALMENT_METHOD
+        ? !!p.instalment?.method_id : !!p.payment_method_id))
+      .map(p => ({
+        payment_method_id: p.payment_method_id === INSTALMENT_METHOD ? p.instalment!.method_id : p.payment_method_id,
+        amount: p.amount, reference: p.reference,
       }));
-    } else if (mode === 'bundle') {
-      ({ data, error } = await supabase.rpc('create_bundle_exchange', {
-        p_original_invoice_id: invoice.id, p_processing_store_id: effectiveStore,
-        p_original_invoice_item_id: bundleLineId, p_new_promotion_id: newPromoId,
-        p_payments: payPayload, p_reason: reason.trim() || null, p_notes: notes.trim() || null,
+    const arrangementPayload = active
+      .filter(p => p.payment_method_id === INSTALMENT_METHOD && p.instalment)
+      .map((p, i) => ({
+        key: `exchange-plan-${i}`,
+        category: p.instalment!.category, method_id: p.instalment!.method_id,
+        months: Number(p.instalment!.months), covered_amount: p.instalment!.covered_amount,
       }));
-    } else {
-      ({ data, error } = await supabase.rpc('create_bundle_component_exchange', {
-        p_original_invoice_id: invoice.id, p_processing_store_id: effectiveStore,
-        p_original_invoice_item_id: bundleLineId, p_component_product_id: componentPid, p_component_qty: componentQty,
-        p_replacement: replLines, p_payments: payPayload, p_reason: reason.trim() || null, p_notes: notes.trim() || null,
-      }));
-    }
+    // One call: the exchange and who handled it are written together, so an
+    // exchange can never exist without its own attribution. The three original
+    // creators are called unchanged underneath.
+    const common = {
+      original_invoice_id: invoice.id, processing_store_id: effectiveStore,
+      payments: payPayload,
+      arrangements: arrangementPayload,
+      reason: reason.trim() || null, notes: notes.trim() || null,
+      served_by: exStaff,
+      // "None" is a decision, not an absence: it is sent explicitly so the
+      // server cannot fall back to the customer's referrer.
+      affiliate: exAffiliate === 'none' ? { mode: 'none' }
+               : exAffiliate ? { mode: 'set', id: exAffiliate }
+               : { mode: 'inherit' },
+      raised_by: exRaisedBy || null,
+      exchange_date: exDate || null,
+    };
+    const payload = mode === 'product'
+      ? { ...common,
+          returned: returnedItems.map(i => ({ invoice_item_id: i.id, quantity: i.quantity })),
+          replacement: replLines }
+      : mode === 'bundle'
+      ? { ...common, original_invoice_item_id: bundleLineId, new_promotion_id: newPromoId }
+      : { ...common, original_invoice_item_id: bundleLineId,
+          component_product_id: componentPid, component_qty: componentQty,
+          replacement: replLines };
+    const { data, error } = await supabase.rpc('create_exchange_with_details', {
+      p_kind: mode === 'product' ? 'product' : mode === 'bundle' ? 'bundle' : 'bundle_component',
+      p_payload: payload,
+    });
     setBusy(false);
     if (error) { setErr(error.message); setConfirming(false); return; }
     setConfirming(false); setWizard(false); load();
@@ -233,7 +361,11 @@ const ExchangesPage: React.FC = () => {
   const [detail, setDetail] = useState<ProductExchange | null>(null);
   const [detailItems, setDetailItems] = useState<ProductExchangeItem[]>([]);
   const openDetail = async (e: ProductExchange) => {
-    setDetail(e); setDetailItems([]);
+    setDetail(e); setDetailItems([]); setDetailPosition(null);
+    // What is charged, what arrived and what is still owed — read from the
+    // server rather than inferred from the charge alone.
+    supabase.rpc('exchange_payment_position', { p_exchange_id: e.id })
+      .then(({ data }) => setDetailPosition(data ?? null));
     const { data } = await supabase.from('product_exchange_items').select('*').eq('exchange_id', e.id);
     setDetailItems((data as ProductExchangeItem[]) ?? []);
   };
@@ -296,7 +428,7 @@ const ExchangesPage: React.FC = () => {
         <table class="totals"><tbody>
           <tr><td>Returned value (credit)</td><td class="r">S$${Number(detail.returned_credit_total).toFixed(2)}</td></tr>
           <tr><td>Replacement total</td><td class="r">S$${Number(detail.replacement_total).toFixed(2)}</td></tr>
-          ${Number(detail.topup_amount) > 0 ? `<tr class="grand"><td>Top-up paid</td><td class="r">S$${Number(detail.topup_amount).toFixed(2)}</td></tr>` : ''}
+          ${Number(detail.topup_amount) > 0 ? `<tr class="grand"><td>Additional charge</td><td class="r">S$${Number(detail.topup_amount).toFixed(2)}</td></tr>` : ''}
           ${Number(detail.nonrefundable_amount) > 0 ? `<tr class="grand"><td>Unused value (non-refundable)</td><td class="r">S$${Number(detail.nonrefundable_amount).toFixed(2)}</td></tr>` : ''}
         </tbody></table>
         <div class="signrow">
@@ -341,7 +473,7 @@ const ExchangesPage: React.FC = () => {
           : exchanges.length === 0 ? <div className="empty-state"><ArrowLeftRight size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No exchanges yet</p></div>
           : (
             <table>
-              <thead><tr><th>Exchange</th><th>Date</th><th>Customer</th><th>Store</th><th style={{ textAlign: 'right' }}>Credit</th><th style={{ textAlign: 'right' }}>Replacement</th><th style={{ textAlign: 'right' }}>Top-up</th><th style={{ textAlign: 'right' }}>Non-ref.</th><th></th></tr></thead>
+              <thead><tr><th>Exchange</th><th>Date</th><th>Customer</th><th>Store</th><th style={{ textAlign: 'right' }}>Credit</th><th style={{ textAlign: 'right' }}>Replacement</th><th style={{ textAlign: 'right' }}>Additional</th><th style={{ textAlign: 'right' }}>Non-ref.</th><th></th></tr></thead>
               <tbody>
                 {exchanges.map(e => (
                   <tr key={e.id}>
@@ -392,7 +524,15 @@ const ExchangesPage: React.FC = () => {
 
             {invoice && !eligMsg && (
               <>
-                <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Customer: <strong>{cName(invoice.customer_id)}</strong> · Paid {invoice.paid_at ? new Date(invoice.paid_at).toLocaleDateString() : '—'}</div>
+                <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Customer:{' '}
+                  {invoiceCustomer
+                    ? <strong>{invoiceCustomer.full_name}{invoiceCustomer.phone ? ` · ${invoiceCustomer.phone}` : ''}</strong>
+                    : customerUnavailable
+                      ? <em title="The invoice keeps its link to this customer; only the customer record could not be read.">
+                          Customer record unavailable
+                        </em>
+                      : <span>Loading…</span>}
+                  {' '}· Paid {invoice.paid_at ? new Date(invoice.paid_at).toLocaleDateString() : '—'}</div>
 
                 <div style={{ display: 'flex', gap: 6 }}>
                   {([['product', 'Product'], ['bundle', 'Whole bundle'], ['component', 'Bundle component']] as const).map(([v, lbl]) => (
@@ -495,7 +635,7 @@ const ExchangesPage: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (returned)</span><strong>{money(mode === 'component' ? (priceAt(effectiveStore, componentPid) ?? 0) * componentQty : creditTotal)}</strong></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Replacement total</span><strong>{money(replTotal)}</strong></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
-                    {compTopup > 0 ? <><span>Top-up to collect</span><strong style={{ color: 'var(--primary)' }}>{money(compTopup)}</strong></>
+                    {compTopup > 0 ? <><span>Additional charge</span><strong style={{ color: 'var(--primary)' }}>{money(compTopup)}</strong></>
                       : compNonref > 0 ? <><span>Unused value (non-refundable)</span><strong style={{ color: 'var(--danger)' }}>{money(compNonref)}</strong></>
                       : <><span>Even exchange</span><strong>{money(0)}</strong></>}
                   </div>
@@ -507,20 +647,42 @@ const ExchangesPage: React.FC = () => {
 
                 {(compTopup > 0 || mode === 'bundle') && (
                   <div className="form-group">
-                    <label>Top-up payment {mode !== 'bundle' ? `(${money(compTopup)})` : ''} — add one or more methods</label>
+                    <label>Additional payment {mode !== 'bundle' ? `(${money(compTopup)} due)` : ''} — one or more methods, or an instalment</label>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {pays.map((p, i) => (
                         <div key={i} style={{ display: 'flex', gap: 6 }}>
                           <select value={p.payment_method_id} style={{ flex: 1 }} onChange={e => setPays(ps => ps.map((x, j) => j === i ? { ...x, payment_method_id: e.target.value } : x))}>
-                            <option value="">— Method —</option>{methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            <option value="">— Method —</option>
+                            <option value={INSTALMENT_METHOD}>Instalment — pay over time</option>
+                            {methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                           </select>
-                          <input type="number" min={0} step="0.01" value={p.amount} style={{ width: 90 }} onChange={e => setPays(ps => ps.map((x, j) => j === i ? { ...x, amount: +e.target.value } : x))} />
+                          <input type="number" min={0} step="0.01" value={p.amount} style={{ width: 90 }}
+                            placeholder={p.payment_method_id === INSTALMENT_METHOD ? 'Now' : 'Amount'}
+                            onChange={e => setPays(ps => ps.map((x, j) => j === i ? { ...x, amount: +e.target.value } : x))} />
                           <input value={p.reference} placeholder="Ref" style={{ width: 80 }} onChange={e => setPays(ps => ps.map((x, j) => j === i ? { ...x, reference: e.target.value } : x))} />
                           <button className="btn btn-secondary btn-sm btn-icon" type="button" onClick={() => setPays(ps => ps.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
                         </div>
                       ))}
+                      {pays.map((p, i) => p.payment_method_id === INSTALMENT_METHOD ? (
+                        <InstalmentPortionFields key={`inst-${i}`}
+                          value={p.instalment ?? emptyPortion}
+                          onChange={v => setPays(ps => ps.map((x, j) => j === i ? { ...x, instalment: v } : x))}
+                          methods={methods}
+                          receivedNow={p.amount || 0}
+                          onReceivedNow={n => setPays(ps => ps.map((x, j) => j === i ? { ...x, amount: n } : x))}
+                          error={portionProblem(p.instalment, p.amount || 0)} />
+                      ) : null)}
                       <button className="btn btn-secondary btn-sm" type="button" style={{ alignSelf: 'flex-start' }} onClick={() => setPays(ps => [...ps, { payment_method_id: methods[0]?.id ?? '', amount: mode !== 'bundle' && +(compTopup - paySum).toFixed(2) > 0 ? +(compTopup - paySum).toFixed(2) : 0, reference: '' }])}><Plus size={13} /> Add payment</button>
-                      {mode !== 'bundle' && <div style={{ fontSize: 12, color: Math.abs(paySum - compTopup) < 0.001 ? 'var(--success)' : 'var(--text-muted)' }}>Entered: {money(paySum)} / {money(compTopup)}</div>}
+                      {mode !== 'bundle' && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                          <div>Additional charge: <strong>{money(compTopup)}</strong></div>
+                          <div>Received now: <strong>{money(receivedNow)}</strong></div>
+                          <div>Covered by instalment: <strong>{money(instalmentCovered)}</strong></div>
+                          <div>Outstanding: <strong style={{ color: outstandingNow > 0 ? 'var(--accent)' : 'var(--success)' }}>{money(outstandingNow)}</strong></div>
+                          {outstandingNow > 0 && instalmentCovered === 0 && (
+                            <div className="muted">The balance stays owed on the replacement invoice.</div>)}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -528,6 +690,74 @@ const ExchangesPage: React.FC = () => {
                 <div className="form-grid-2">
                   <div className="form-group"><label>Reason *</label><input value={reason} onChange={e => setReason(e.target.value)} placeholder="Required" /></div>
                   <div className="form-group"><label>Notes</label><input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" /></div>
+
+                  {/* ---- who handled THIS exchange -----------------------------
+                      Deliberately empty to begin with. The original sale's staff
+                      are shown below as context and are never copied in: an
+                      exchange done today by different people must say so. */}
+                  <div className="form-group exchange-attribution">
+                    <label id="ex-staff-label">Served by *</label>
+                    <div className="exchange-staff" role="group" aria-labelledby="ex-staff-label">
+                      {eligibleExchangeStaff.length === 0 && (
+                        <span className="muted">No staff are assigned to this store.</span>)}
+                      {eligibleExchangeStaff.map(p => (
+                        <label key={p.id} className={exStaff.includes(p.id) ? 'chosen' : ''}>
+                          <input type="checkbox" checked={exStaff.includes(p.id)}
+                            onChange={e => setExStaff(cur => e.target.checked
+                              ? [...cur, p.id] : cur.filter(x => x !== p.id))} />
+                          {p.full_name}
+                        </label>
+                      ))}
+                    </div>
+                    <small>Who served this exchange, not the original sale.</small>
+                  </div>
+
+                  <div className="form-group">
+                    <label>Referrer / affiliate</label>
+                    <SearchSelect value={exAffiliate}
+                      onChange={v => setExAffiliate(v as any)}
+                      placeholder="Search affiliate…"
+                      options={[
+                        { value: 'none', label: 'None — no affiliate for this exchange' },
+                        ...affiliateOptions,
+                      ]} />
+                    <small>
+                      {originalContext?.affiliate
+                        ? `Original sale: ${originalContext.affiliate}${originalContext.affiliate_still_eligible === false ? ' (no longer eligible)' : ''}.`
+                        : 'The original sale had no affiliate.'}
+                      {' '}Choosing None records None; it does not fall back to the customer’s referrer.
+                    </small>
+                  </div>
+
+                  <div className="form-group">
+                    <label>Raised by</label>
+                    <SearchSelect value={exRaisedBy} onChange={v => setExRaisedBy(v)}
+                      placeholder="Who is issuing this exchange"
+                      options={raisedByOptions} />
+                    <small>Who issues the document. Kept separate from Served by — it earns no commission.</small>
+                  </div>
+
+                  <div className="form-group">
+                    <label>Exchange date</label>
+                    <input type="date" value={exDate} max={singaporeToday()}
+                      onChange={e => setExDate(e.target.value)} />
+                    <small>Defaults to today in Singapore. The original invoice’s date is not changed.</small>
+                  </div>
+
+                  {originalContext && (
+                    <div className="form-group exchange-original">
+                      <label>Original sale</label>
+                      <div>
+                        <strong>{originalContext.invoice_no}</strong> · {originalContext.invoice_date}
+                        <div>Customer: {originalContext.customer ?? 'Customer record unavailable'}</div>
+                        <div>Served by: {(originalContext.served_by ?? []).length > 0
+                          ? (originalContext.served_by as any[]).map((x: any) => x.name).join(', ')
+                          : '—'}</div>
+                        <div>Affiliate: {originalContext.affiliate ?? '—'}</div>
+                      </div>
+                      <small>Shown for reference. This exchange keeps its own attribution.</small>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -598,7 +828,23 @@ const ExchangesPage: React.FC = () => {
             <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 12, fontSize: 13 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Credit</span><span>{money(detail.returned_credit_total)}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Replacement</span><span>{money(detail.replacement_total)}</span></div>
-              {detail.topup_amount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Top-up paid</span><strong>{money(detail.topup_amount)}</strong></div>}
+              {detail.topup_amount > 0 && (<>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Additional charge</span><strong>{money(detail.topup_amount)}</strong></div>
+                {detailPosition && (<>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Received</span><strong>{money(detailPosition.received)}</strong></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Outstanding</span>
+                    <strong style={{ color: Number(detailPosition.outstanding) > 0 ? 'var(--accent)' : 'var(--success)' }}>
+                      {money(detailPosition.outstanding)}</strong></div>
+                  {(detailPosition.arrangements ?? []).map((a: any) => (
+                    <div key={a.arrangement_id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <span>{a.category === 'in_house' ? 'In-house' : 'Provider-funded'} instalment · {a.months} months · {a.method}</span>
+                      <span>{money(a.covered_amount)} covered · {money(a.remaining)} left</span>
+                    </div>))}
+                </>)}
+              </>)}
               {detail.nonrefundable_amount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--danger)' }}><span>Unused value (non-refundable)</span><strong>{money(detail.nonrefundable_amount)}</strong></div>}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>This exchange is locked. No further exchange is allowed on the returned items.</div>

@@ -71,6 +71,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const [rentalReturn, setRentalReturn] = useState<Record<string, { warehouse_id: string; condition: string }>>({});
   const dialog = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(null);
+  // Kept in a ref so the key handler, bound once, always sees the current one.
+  const closeRef = useRef<() => void>(() => onClose());
 
   // Keyboard and screen-reader behaviour: trap Tab, close on Escape, and put
   // focus back where it came from.
@@ -78,7 +80,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     opener.current = document.activeElement;
     dialog.current?.querySelector<HTMLElement>('button:not([disabled]), input, select, textarea')?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeRef.current(); return; }
       if (e.key !== 'Tab') return;
       const list = Array.from(dialog.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])') ?? []);
@@ -236,6 +238,23 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
 
   const line = (id: string) => plan?.lines.find(l => l.invoice_item_id === id);
 
+  /** Anything the person has actually typed or chosen and would lose. */
+  const hasUnsavedInput = () =>
+    (!reviewing && reason.trim().length > 0)
+    || returnNotes.trim().length > 0
+    || Object.values(quantities).some(q => q > 0)
+    || Object.values(overrideReasons).some(r => (r ?? '').trim().length > 0);
+
+  // The project's existing pattern for abandoning work is a confirm(); a
+  // finished success message closes straight away, with nothing to lose.
+  const requestClose = () => {
+    if (done || !hasUnsavedInput()
+        || confirm('Discard what you have entered for this refund or cancellation?')) {
+      onClose();
+    }
+  };
+  closeRef.current = requestClose;
+
   if (done) return (
     <div className="invoice-chooser-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="invoice-chooser" role="dialog" aria-modal="true" aria-labelledby="ga-done" ref={dialog}>
@@ -261,12 +280,12 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   );
 
   return (
-    <div className="invoice-chooser-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="invoice-chooser-backdrop" onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
       <div className="invoice-chooser invoice-guided" role="dialog" aria-modal="true" aria-labelledby="ga-title" ref={dialog}>
         <div className="invoice-guided-head">
           <h3 id="ga-title">Refund or cancel {plan?.invoice_no ?? ''}</h3>
           <button type="button" className="invoice-guided-close" aria-label="Close without saving"
-            onClick={onClose}>&times;</button>
+            onClick={requestClose}>&times;</button>
         </div>
         {plan && (
           <p className="invoice-guided-status">
@@ -276,12 +295,13 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
           </p>
         )}
         <ol className="invoice-guided-steps" aria-label="Progress">
-          {['What happened', 'Which items', 'Why', 'Review'].map((label, n) => (
+          {['Action', 'Items', 'Reason', 'Review'].map((label, n) => (
             <li key={label} aria-current={step === n + 1 ? 'step' : undefined}
               className={step === n + 1 ? 'current' : step > n + 1 ? 'done' : ''}>{label}</li>
           ))}
         </ol>
 
+        <div className="invoice-guided-body">
         {plan?.window && !plan.window.within && (
           <p className="invoice-guided-warn" role="status">
             Outside the five-day window — created {plan.window.created_on}, open through {plan.window.deadline}.
@@ -321,11 +341,6 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                   onChange={e => setQuantities({ ...quantities, [l.invoice_item_id]: Math.max(0, Math.min(l.quantity, Number(e.target.value))) })} />
               </label>
             ))}
-            <div className="invoice-chooser-actions">
-              <button className="btn" onClick={() => setStep(1)}>Back</button>
-              <button className="btn btn-primary" disabled={busy || !Object.values(quantities).some(q => q > 0)}
-                onClick={async () => { await derive('refund_partial', quantities); setStep(3); }}>Continue</button>
-            </div>
           </fieldset>
         )}
 
@@ -340,10 +355,6 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               <textarea value={returnNotes} onChange={e => setReturnNotes(e.target.value)} rows={2}
                 placeholder="Condition, who is bringing it back, when" />
             </label>
-            <div className="invoice-chooser-actions">
-              <button className="btn" onClick={() => setStep(action === 'refund_partial' ? 2 : 1)}>Back</button>
-              <button className="btn btn-primary" disabled={!reason.trim()} onClick={() => setStep(4)}>Review</button>
-            </div>
           </div>
         )}
 
@@ -527,37 +538,57 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               <label className="invoice-guided-why">Reason for rejecting
                 <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} autoFocus /></label>
             )}
-            <div className="invoice-chooser-actions">
-              {reviewing
-                ? <button className="btn" onClick={() => rejecting ? setRejecting(false) : onClose()}>
-                    {rejecting ? 'Back' : 'Close'}</button>
-                : <button className="btn" onClick={() => setStep(3)}>Back</button>}
-              {reviewing && !rejecting && (
-                <button className="btn btn-danger" disabled={busy || detail?.status !== 'pending'}
-                  onClick={() => setRejecting(true)}>Reject</button>)}
-              {reviewing && rejecting
-                ? <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Confirm rejection</button>
-                : <button className="btn btn-primary"
-                    disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending')} onClick={submit}>
-                    {(() => {
-                      const amount = Number(plan.refund_amount ?? 0);
-                      if (!canApprove && !reviewing) {
-                        return action === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
-                      }
-                      if (action === 'cancel') {
-                        return recordRefund && Number(plan.refund_due ?? 0) > 0
-                          ? `Confirm cancellation and ${money(plan.refund_due)} refund`
-                          : 'Confirm cancellation';
-                      }
-                      return amount > 0 ? `Confirm ${money(amount)} refund` : 'Confirm refund';
-                    })()}
-                  </button>}
-            </div>
             {!canApprove && <p className="muted">This will be sent to an Owner or Manager. Nothing changes until they approve it.</p>}
           </div>
         )}
         {error && step !== 4 && <p className="invoice-guided-warn" role="alert">{error}</p>}
-        {step === 1 && <div className="invoice-chooser-actions"><button className="btn" onClick={onClose}>Close</button></div>}
+        </div>
+
+        {/* One footer, outside the scrolling body, so Back and the
+            confirming action stay reachable however long the review gets. */}
+        <div className="invoice-guided-foot">
+          {step === 1 && (
+            <button type="button" className="btn" onClick={requestClose}>Close</button>
+          )}
+          {step === 2 && (<>
+            <button type="button" className="btn" onClick={() => setStep(1)}>Back</button>
+            <button type="button" className="btn btn-primary"
+              disabled={busy || !Object.values(quantities).some(q => q > 0)}
+              onClick={async () => { await derive('refund_partial', quantities); setStep(3); }}>Continue</button>
+          </>)}
+          {step === 3 && (<>
+            <button type="button" className="btn" onClick={() => setStep(action === 'refund_partial' ? 2 : 1)}>Back</button>
+            <button type="button" className="btn btn-primary" disabled={!reason.trim()}
+              onClick={() => setStep(4)}>Continue</button>
+          </>)}
+          {step === 4 && plan && !(reviewing && detail?.legacy) && (<>
+            {reviewing
+              ? <button className="btn" onClick={() => rejecting ? setRejecting(false) : onClose()}>
+                  {rejecting ? 'Back' : 'Close'}</button>
+              : <button className="btn" onClick={() => setStep(3)}>Back</button>}
+            {reviewing && !rejecting && (
+              <button className="btn btn-danger" disabled={busy || detail?.status !== 'pending'}
+                onClick={() => setRejecting(true)}>Reject</button>)}
+            {reviewing && rejecting
+              ? <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Confirm rejection</button>
+              : <button className="btn btn-primary"
+                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending')} onClick={submit}>
+                  {(() => {
+                    const amount = Number(plan.refund_amount ?? 0);
+                    if (!canApprove && !reviewing) {
+                      return action === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
+                    }
+                    if (action === 'cancel') {
+                      return recordRefund && Number(plan.refund_due ?? 0) > 0
+                        ? `Confirm cancellation and ${money(plan.refund_due)} refund`
+                        : 'Confirm cancellation';
+                    }
+                    return amount > 0 ? `Confirm ${money(amount)} refund` : 'Confirm refund';
+                  })()}
+                </button>}
+          </>)}
+        </div>
+
       </div>
     </div>
   );

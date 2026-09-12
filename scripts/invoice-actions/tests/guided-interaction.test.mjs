@@ -140,9 +140,9 @@ planNow = () => basePlan({ action: 'refund_partial', refund_amount: 100,
              overrides: [] } });
 await click(byText('button', 'Continue'));
 check('asks for a reason', text().includes('Reason'));
-check('review is refused without a reason', byText('button', 'Review').disabled);
+check('review is refused without a reason', byText('button', 'Continue').disabled);
 await type(document.querySelector('.invoice-guided-why textarea'), 'Customer returned one');
-await click(byText('button', 'Review'));
+await click(byText('button', 'Continue'));
 check('shows the money returned as its own section', text().includes('Money returned'));
 check('and the figure', text().includes('S$100.00'));
 check('credits are a separate section from the money',
@@ -174,7 +174,7 @@ stub.resolveResult = { confirmation_required: true, revised_plan: basePlan({ ref
 await render({ canApprove: true });
 await click(byText('button', 'Full refund'));
 await type(document.querySelector('.invoice-guided-why textarea'), 'All back');
-await click(byText('button', 'Review'));
+await click(byText('button', 'Continue'));
 check('an approver sees the amount in the button', text().includes('Confirm S$200.00 refund'));
 await click(byText('button', 'Confirm S$200.00 refund'));
 check('a changed plan is explained rather than silently applied', text().includes('has changed since the request was raised'));
@@ -201,7 +201,7 @@ stub.resolveResult = { status: 'approved', refund_recorded: false, refunded_amou
 await render({ canApprove: true });
 await click(byText('button', 'Cancel invoice'));
 await type(document.querySelector('.invoice-guided-why textarea'), 'Customer pulled out');
-await click(byText('button', 'Review'));
+await click(byText('button', 'Continue'));
 check('offers the money-actually-returned choice', text().includes('has actually gone back to the customer now'));
 check('and defaults to NOT claiming the money moved',
   document.querySelector('.invoice-guided-refunddue input').checked === false);
@@ -210,6 +210,41 @@ await click(byText('button', 'Confirm cancellation'));
 check('reports the cancellation', text().includes('Invoice cancelled.'));
 check('does not claim a refund that was not recorded', !text().includes('Refund of'));
 check('and keeps the follow-up visible', text().includes('S$200.00 is still due back'));
+
+// ---------------------------------------------------------------------
+// Layout, and abandoning a half-filled form.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = () => basePlan();
+let closed = 0;
+await render({ canApprove: true, onClose: () => { closed += 1; } });
+check('header, scrolling body and footer are separate',
+  !!document.querySelector('.invoice-guided-head')
+  && !!document.querySelector('.invoice-guided-body')
+  && !!document.querySelector('.invoice-guided-foot'));
+check('the confirming action lives in the footer, not the scrolling body',
+  !document.querySelector('.invoice-guided-body .invoice-guided-foot'));
+check('the invoice number is shown once, prominently',
+  document.querySelectorAll('.invoice-guided-status strong').length === 1
+  && text().includes('INV-2026-0207'));
+check('with status beneath it', text().includes('paid'));
+check('the four steps are labelled',
+  ['Action', 'Items', 'Reason', 'Review'].every(l => text().includes(l)));
+
+// Nothing typed yet: closing is immediate.
+let confirmed = 0;
+dom.window.confirm = () => { confirmed += 1; return true; };
+globalThis.confirm = dom.window.confirm;
+await click(document.querySelector('.invoice-guided-close'));
+check('closing an untouched form asks nothing', confirmed === 0 && closed === 1);
+
+// Something typed: the project's confirm() guards it.
+await render({ canApprove: true, onClose: () => { closed += 1; } });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Half-written reason');
+await click(document.querySelector('.invoice-guided-close'));
+check('abandoning typed input asks first', confirmed === 1, String(confirmed));
+check('and closes when confirmed', closed === 2, String(closed));
 
 // ---------------------------------------------------------------------
 // The action saved, but reloading the invoice failed.
@@ -226,7 +261,7 @@ await render({ canApprove: true, onDone: async () => {
 } });
 await click(byText('button', 'Full refund'));
 await type(document.querySelector('.invoice-guided-why textarea'), 'All back');
-await click(byText('button', 'Review'));
+await click(byText('button', 'Continue'));
 await click(byText('button', 'Confirm S$200.00 refund'));
 check('a failed reload still reports the refund as recorded', text().includes('Refund of S$200.00 recorded.'));
 check('and says plainly that it was saved', text().includes('This was saved'));
@@ -242,6 +277,9 @@ check('retrying re-reads only — it does not resubmit',
   `${beforeRetry} -> ${calls.filter(c => c.name === 'resolve_invoice_action_v2').length}`);
 check('a successful retry clears the warning', !text().includes('This was saved'));
 check('and the outcome is still shown', text().includes('Refund of S$200.00 recorded.'));
+const beforeDoneClose = confirmed;
+await click(byText('button', 'Close'));
+check('closing a finished success message asks nothing', confirmed === beforeDoneClose);
 
 // ---------------------------------------------------------------------
 // A blocked invoice offers nothing to click.

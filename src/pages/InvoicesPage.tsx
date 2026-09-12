@@ -25,6 +25,8 @@ import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefund
 import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
 import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
+import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
+         type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import '../components/invoices/invoice-controls.css';
@@ -164,7 +166,9 @@ const InvoicesPage: React.FC = () => {
   const [payMethodsByInvoice, setPayMethodsByInvoice] = useState<Record<string, string[]>>({});
   const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
-  const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number }[]>([]);
+  const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number; instalment?: InstalmentPortion }[]>([]);
+  /** Per-line instalment problems, shown beside the line they belong to. */
+  const [payLineErrors, setPayLineErrors] = useState<Record<number, string>>({});
   // The instalment arrangement is chosen where the money is taken now, not at
   // the top of the creation form. It is still invoice-level metadata.
   const [payInstalment, setPayInstalment] = useState<InstalmentDetails>({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
@@ -1132,8 +1136,22 @@ const InvoicesPage: React.FC = () => {
     if (filled.length === 0) return 'Add at least one payment.';
     // A row with money in it and no method is a mistake, not a row to skip.
     if (filled.some(p => p.amount > 0 && !p.payment_method_id)) return 'Choose a payment method for every amount entered.';
-    if (filled.some(p => p.payment_method_id && !(p.amount > 0))) return 'Enter an amount for every selected payment method.';
-    if (filled.some(p => !Number.isFinite(p.amount) || p.amount <= 0)) return 'Amounts must be positive.';
+    // An instalment line is an arrangement, and an in-house one usually
+    // receives nothing today: a zero there is the normal case, not a gap. Every
+    // OTHER selected method still needs an amount.
+    const isArrangement = (p: typeof payLines[number]) => p.payment_method_id === INSTALMENT_METHOD;
+    if (filled.some(p => p.payment_method_id && !isArrangement(p) && !(p.amount > 0))) {
+      return 'Enter an amount for every selected payment method.';
+    }
+    if (filled.some(p => !isArrangement(p) && (!Number.isFinite(p.amount) || p.amount <= 0))) {
+      return 'Amounts must be positive.';
+    }
+    if (filled.some(p => isArrangement(p) && (!Number.isFinite(p.amount) || p.amount < 0))) {
+      return 'The amount received now cannot be negative.';
+    }
+    const badPortion = filled.map((p, i) => isArrangement(p)
+      ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
+    if (badPortion) return badPortion;
     const instalmentError = validateInstalment(payInstalment);
     if (instalmentError) return instalmentError;
     if (!payDate) return 'Choose the date this payment was received.';
@@ -1146,20 +1164,63 @@ const InvoicesPage: React.FC = () => {
     if (!detail) return;
     const blocked = paymentBlocker();
     if (blocked) { setPayErr(blocked); return; }
-    const valid = payLines.filter(p => p.payment_method_id && p.amount > 0)
-      .map(p => ({ ...p, payment_date: payDate || undefined }));
+    // An instalment line is an arrangement, and may or may not carry money
+    // received today. Everything else is a plain receipt. The two are built
+    // separately because the database keeps them separate: only real money
+    // becomes an invoice_payments row.
+    const lineErrors: Record<number, string> = {};
+    payLines.forEach((p, i) => {
+      if (p.payment_method_id !== INSTALMENT_METHOD) return;
+      const problem = portionProblem(p.instalment, p.amount || 0);
+      if (problem) lineErrors[i] = problem;
+    });
+    setPayLineErrors(lineErrors);
+    if (Object.keys(lineErrors).length > 0) {
+      setPayErr('Check the instalment details below.');
+      return;
+    }
+
+    const receipts: any[] = [];
+    const arrangements: any[] = [];
+    // Every receipt and portion carries a key that is stable for this request,
+    // so a retry finds what it already wrote instead of writing again, and an
+    // arrangement points at its receipt by name rather than by position.
+    payLines.forEach((p, i) => {
+      if (p.payment_method_id === INSTALMENT_METHOD) {
+        const inst = p.instalment!;
+        const receiptKey = `line-${i}`;
+        // Money taken today goes in under the REAL method, never "Instalment".
+        if ((p.amount || 0) > 0) {
+          receipts.push({ key: receiptKey, payment_method_id: inst.method_id,
+                          amount: p.amount, payment_date: payDate || undefined });
+        }
+        arrangements.push({
+          key: `plan-${i}`,
+          category: inst.category, method_id: inst.method_id,
+          months: Number(inst.months), covered_amount: inst.covered_amount,
+          ...((p.amount || 0) > 0 ? { receipt_key: receiptKey } : {}),
+        });
+        return;
+      }
+      if (p.payment_method_id && p.amount > 0) {
+        receipts.push({ key: `line-${i}`, payment_method_id: p.payment_method_id,
+                        amount: p.amount, payment_date: payDate || undefined });
+      }
+    });
+    if (receipts.length === 0 && arrangements.length === 0) {
+      setPayErr('Choose a payment method and an amount, or set up an instalment arrangement.');
+      return;
+    }
+
     setPayBusy(true); setPayErr(null); setPayOutcome(null);
     const invoiceId = detail.id;
-    // The arrangement and the payment are written in one server call, so the
-    // invoice can never end up carrying an arrangement for a payment that
-    // failed, or a payment without the arrangement it was taken under.
-    const { data, error } = await supabase.rpc('record_invoice_payment_with_instalment', {
-      p_invoice_id: invoiceId, p_payments: valid, p_request_id: paymentRequestId,
-      p_instalment: payInstalment.instalment_category ? {
-        instalment_category: payInstalment.instalment_category,
-        instalment_method_id: payInstalment.instalment_method_id,
-        instalment_months: payInstalment.instalment_months,
-      } : null,
+    // Receipts and arrangements are written in one server call, so the invoice
+    // can never end up carrying an arrangement for a payment that failed, or a
+    // payment without the arrangement it was taken under.
+    const { data, error } = await supabase.rpc('record_invoice_settlement', {
+      p_invoice_id: invoiceId,
+      p_payload: { receipts, arrangements },
+      p_request_id: paymentRequestId,
     });
     setPayBusy(false);
     if (error) {
@@ -2875,17 +2936,34 @@ const InvoicesPage: React.FC = () => {
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
-                    <div key={i} className="invoice-payment-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <React.Fragment key={i}>
+                    <div className="invoice-payment-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <InvoiceSearchSelect value={pl.payment_method_id} placeholder="Select payment method"
                         onChange={id => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: id } : l))}
-                        options={methods.filter((m: any) => !m.is_wallet_credit || !hasCreditLine).map((m: any) => ({
-                          value: m.id, label: m.name + (m.is_wallet_credit ? ` — ${money(Number(payWallet?.categories?.[m.wallet_category] ?? 0))} available` : ''),
-                          disabled: m.is_wallet_credit && Number(payWallet?.categories?.[m.wallet_category] ?? 0) <= 0,
-                        }))} />
-                      <input type="number" min={0} step={0.01} value={pl.amount || ''} placeholder="Amount" style={{ width: 110 }}
+                        options={[
+                          // An arrangement, offered beside the methods because
+                          // that is where a person looks for it — but it is
+                          // never sent as a payment method.
+                          { value: INSTALMENT_METHOD, label: 'Instalment — pay over time' },
+                          ...methods.filter((m: any) => !m.is_wallet_credit || !hasCreditLine).map((m: any) => ({
+                            value: m.id, label: m.name + (m.is_wallet_credit ? ` — ${money(Number(payWallet?.categories?.[m.wallet_category] ?? 0))} available` : ''),
+                            disabled: m.is_wallet_credit && Number(payWallet?.categories?.[m.wallet_category] ?? 0) <= 0,
+                          }))]} />
+                      <input type="number" min={0} step={0.01} value={pl.amount || ''}
+                        placeholder={pl.payment_method_id === INSTALMENT_METHOD ? 'Received now' : 'Amount'} style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setPayLines(ls => ls.filter((_, j) => j !== i))} disabled={payLines.length === 1}><X size={13} /></button>
                     </div>
+                    {pl.payment_method_id === INSTALMENT_METHOD && (
+                      <InstalmentPortionFields
+                        value={pl.instalment ?? emptyPortion}
+                        onChange={v => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, instalment: v } : l))}
+                        methods={methods}
+                        receivedNow={pl.amount || 0}
+                        onReceivedNow={n => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: n } : l))}
+                        error={payLineErrors[i] ?? null} />
+                    )}
+                    </React.Fragment>
                   ))}
                 </div>
                 <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => setPayLines(ls => [...ls, { payment_method_id: '', amount: 0 }])}><Plus size={13} /> Split Payment</button>
@@ -2895,15 +2973,10 @@ const InvoicesPage: React.FC = () => {
                     onChange={e => setPayDate(e.target.value)} />
                   <small>Sales are reported on this date. Defaults to today; set it back if the money arrived earlier.</small>
                 </div>
-                {/* The payment arrangement, chosen with the payment it applies to.
-                    It is still recorded against the invoice, and choosing it
-                    records nothing and marks nothing paid on its own. */}
-                <div style={{ marginTop: 12 }}>
-                  <InstalmentFields value={payInstalment} onChange={setPayInstalment} methods={methods} />
-                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
-                    An arrangement is saved with the invoice when this payment is recorded. It does not itself take money or settle the invoice.
-                  </p>
-                </div>
+                {/* The instalment checkbox that used to sit here imposed ONE
+                    arrangement on the whole invoice, so a part-cash,
+                    part-instalment settlement could not be recorded. Instalment
+                    is now a choice on the payment line it belongs to. */}
                 {payOutcome && <div role="status" className="alert alert-info" style={{ marginTop: 10 }}><span>ℹ️</span><div>{payOutcome}</div></div>}
                 {payBlockedReason && payLines.some(p => p.amount > 0 || p.payment_method_id) &&
                   <p role="status" style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{payBlockedReason}</p>}

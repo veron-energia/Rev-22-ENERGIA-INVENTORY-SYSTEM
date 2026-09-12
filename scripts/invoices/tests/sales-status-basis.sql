@@ -46,7 +46,9 @@ begin
  if not exists(select 1 from invoice_payments where invoice_id=inv) then
   raise exception 'Cancelling must not remove the payment record'; end if;
  -- and money kept on a cancelled invoice is surfaced rather than quietly lost.
- if (select coalesce(sum(retained),0) from report_cancelled_retained_receipts())<>100 then
+ -- Scoped to this fixture's own store: the report covers every store the
+ -- caller can see, and an owner can see them all.
+ if (select coalesce(sum(retained),0) from report_cancelled_retained_receipts(st))<>100 then
   raise exception 'Money kept on a cancelled invoice must be reported'; end if;
 
  -- Fully refunded: gone from the month it was received as well as the refund

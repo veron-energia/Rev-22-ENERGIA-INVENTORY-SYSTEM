@@ -127,112 +127,186 @@
 .invoice-evidence-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
 /* ---- guided refund / cancellation ---------------------------------------
-   Shares the chooser's dialog shell. Everything here is sized so the whole
-   flow stays usable one-handed on a phone: full-width controls, 16px inputs
-   so iOS does not zoom on focus, and targets that clear 44px.            */
-.invoice-guided { max-width: 560px; max-height: 88vh; overflow-y: auto; }
+   Header and footer are fixed; only the middle scrolls, so Back and the
+   confirming action are reachable however long the review runs. Colours come
+   from the app's own teal, not a second palette.                          */
+.invoice-guided {
+  max-width: 520px; width: 100%;
+  max-height: min(86vh, 720px);
+  display: flex; flex-direction: column; padding: 0; overflow: hidden;
+}
+.invoice-guided-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 6px; padding: 12px 14px 0;
+}
+.invoice-guided-head h3 { flex: 1; margin: 0; font-size: 15px; line-height: 1.3; }
+.invoice-guided-close {
+  /* A normal-sized glyph inside a finger-sized target. */
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; margin: -4px -4px 0 0;
+  border: 0; background: transparent; border-radius: 6px;
+  font-size: 15px; line-height: 1; color: var(--text-muted); cursor: pointer;
+}
+.invoice-guided-close::before { content: ''; position: absolute; width: 44px; height: 44px; }
+.invoice-guided-close:hover { background: var(--surface-2); color: var(--text-primary); }
+.invoice-guided-status {
+  margin: 2px 14px 8px; font-size: 12px; color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.invoice-guided-status strong { font-size: 13.5px; color: var(--text-primary); }
 .invoice-guided-steps {
-  display: flex; gap: 6px; list-style: none; margin: 0 0 14px; padding: 0;
-  font-size: 11.5px; color: var(--text-muted); flex-wrap: wrap;
+  display: flex; gap: 4px; list-style: none; margin: 0 14px 10px; padding: 0;
+  font-size: 11px; color: var(--text-muted); flex-wrap: wrap;
 }
-.invoice-guided-steps li { padding: 3px 8px; border-radius: 999px; background: var(--surface-2); }
-.invoice-guided-steps li.current { background: #1b4d89; color: #fff; font-weight: 600; }
-.invoice-guided-steps li.done { color: var(--text-secondary); }
-.invoice-guided-choices { display: flex; flex-direction: column; gap: 10px; }
+.invoice-guided-steps li { padding: 2px 7px; border-radius: 999px; background: var(--surface-2); }
+.invoice-guided-steps li.current { background: var(--primary); color: #fff; font-weight: 600; }
+.invoice-guided-steps li.done { color: var(--primary); background: var(--primary-light); }
+
+.invoice-guided-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: 0 14px 12px; -webkit-overflow-scrolling: touch;
+}
+.invoice-guided-foot {
+  flex: 0 0 auto; display: flex; gap: 8px; justify-content: flex-end;
+  flex-wrap: wrap; padding: 10px 14px; border-top: 1px solid var(--border);
+  background: var(--surface); position: sticky; bottom: 0;
+}
+.invoice-guided-foot .btn { min-height: 36px; }
+
+/* ---- the three actions, as compact cards -------------------------------- */
+.invoice-guided-choices { display: flex; flex-direction: column; gap: 6px; }
 .invoice-guided-choices .btn {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  text-align: left; padding: 12px; min-height: 44px; width: 100%;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  text-align: left; padding: 9px 11px; min-height: 44px; width: 100%;
+  border: 1px solid var(--border); background: var(--surface);
+  font-size: 13px; font-weight: 600; border-radius: 7px;
 }
-.invoice-guided-choices .btn span { font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+.invoice-guided-choices .btn span {
+  font-size: 11.5px; font-weight: 400; color: var(--text-muted); line-height: 1.35;
+}
+.invoice-guided-choices .btn:hover:not(:disabled) {
+  border-color: var(--primary); background: var(--primary-light);
+}
+.invoice-guided-choices .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---- fields -------------------------------------------------------------- */
 .invoice-guided-lines, .invoice-guided-stock, .invoice-guided-overrides {
-  border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin: 0 0 12px;
+  border: 1px solid var(--border); border-radius: 7px; padding: 9px; margin: 0 0 9px;
 }
 .invoice-guided-lines legend, .invoice-guided-stock legend, .invoice-guided-overrides legend {
-  font-size: 12px; font-weight: 600; padding: 0 4px;
+  font-size: 11.5px; font-weight: 600; padding: 0 4px;
 }
 .invoice-guided-lines label {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid var(--border);
 }
 .invoice-guided-lines label:last-of-type { border-bottom: 0; }
-.invoice-guided-lines input { width: 84px; min-height: 44px; font-size: 16px; text-align: right; }
-.invoice-guided-why label, .invoice-guided-overrides label { display: block; font-size: 12.5px; margin-bottom: 10px; }
+.invoice-guided-lines input { width: 76px; min-height: 36px; font-size: 16px; text-align: right; }
+.invoice-guided-why label, .invoice-guided-overrides label { display: block; font-size: 12px; margin-bottom: 8px; }
 .invoice-guided-why textarea, .invoice-guided-overrides input {
-  display: block; width: 100%; margin-top: 4px; font-size: 16px; min-height: 44px;
+  display: block; width: 100%; margin-top: 3px; font-size: 16px; min-height: 38px;
 }
-.invoice-guided-summary { margin: 0 0 14px; padding-left: 18px; font-size: 13px; line-height: 1.55; }
-.invoice-guided-summary li { margin-bottom: 4px; }
+.invoice-guided-summary { margin: 0 0 10px; padding-left: 17px; font-size: 12.5px; line-height: 1.5; }
 .invoice-guided-stock-row {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
-  padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+  display: flex; flex-wrap: wrap; gap: 7px; align-items: flex-end;
+  padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px;
 }
 .invoice-guided-stock-row:last-child { border-bottom: 0; }
 .invoice-guided-stock-row > span { flex: 1 1 100%; }
-.invoice-guided-stock-row label { display: flex; flex-direction: column; font-size: 11px; gap: 2px; }
-.invoice-guided-stock-row input { width: 72px; min-height: 44px; font-size: 16px; text-align: right; }
-.invoice-guided-refunddue {
-  display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px;
-  padding: 10px; background: var(--surface-2); border-radius: 6px; margin-bottom: 12px;
+.invoice-guided-stock-row label { display: flex; flex-direction: column; font-size: 10.5px; gap: 2px; }
+.invoice-guided-stock-row input, .invoice-guided-stock-row select {
+  width: 84px; min-height: 36px; font-size: 16px;
 }
-.invoice-guided-refunddue input { width: auto; min-width: 20px; min-height: 20px; margin-top: 2px; }
+.invoice-guided-refunddue {
+  display: flex; gap: 7px; align-items: flex-start; font-size: 12px;
+  padding: 8px 9px; background: var(--surface-2); border-radius: 7px; margin-bottom: 9px;
+}
+.invoice-guided-refunddue input { width: auto; min-width: 18px; min-height: 18px; margin-top: 2px; }
+.invoice-guided-request {
+  padding: 8px 9px; margin: 0 0 9px; border-radius: 7px;
+  background: var(--surface-2); font-size: 12px; line-height: 1.5;
+}
+.invoice-guided-request .muted { margin: 2px 0 4px; }
 .invoice-guided-warn {
-  margin: 0 0 12px; padding: 9px 10px; border-radius: 6px; font-size: 12.5px;
+  margin: 0 0 9px; padding: 7px 9px; border-radius: 7px; font-size: 12px;
   background: #fff4e5; color: #7a4100; border: 1px solid #ffcc80;
 }
 .invoice-guided-block {
-  margin: 0 0 12px; padding: 9px 10px; border-radius: 6px; font-size: 12.5px;
+  margin: 0 0 9px; padding: 7px 9px; border-radius: 7px; font-size: 12px;
   background: #fdecea; color: #7f1d1d; border: 1px solid #f5b3ad;
 }
-.invoice-guided-block ul { margin: 6px 0 0; padding-left: 18px; }
-.invoice-guided .muted { font-size: 11.5px; color: var(--text-muted); margin: 0 0 10px; }
-@media (max-width: 560px) {
-  .invoice-guided { max-width: 100%; }
-  .invoice-guided-lines label { flex-direction: column; align-items: stretch; }
-  .invoice-guided-lines input, .invoice-guided-stock-row input { width: 100%; }
-  .invoice-chooser-actions { flex-direction: column-reverse; }
-  .invoice-chooser-actions .btn { width: 100%; min-height: 44px; }
-}
-@media (prefers-reduced-motion: reduce) { .invoice-guided * { transition: none !important; } }
-.invoice-guided-request {
-  padding: 10px; margin-bottom: 12px; border-radius: 6px;
-  background: var(--surface-2); font-size: 12.5px; line-height: 1.6;
-}
-.invoice-guided-request .muted { margin: 2px 0 6px; }
-.invoice-guided-block label { display: block; margin-top: 8px; font-size: 12.5px; }
-.invoice-guided-block textarea { width: 100%; font-size: 16px; min-height: 44px; margin-top: 4px; }
+.invoice-guided-block ul { margin: 5px 0 0; padding-left: 17px; }
+.invoice-guided-block label { display: block; margin-top: 6px; font-size: 12px; }
+.invoice-guided-block textarea { width: 100%; font-size: 16px; min-height: 38px; margin-top: 3px; }
+.invoice-guided .muted { font-size: 11px; color: var(--text-muted); margin: 0 0 8px; }
 
-/* ---- guided review sections ---------------------------------------------
-   Money, benefits, stock and overrides are four different things, so they get
-   four visually distinct blocks rather than one undifferentiated list.     */
-.invoice-guided-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.invoice-guided-head h3 { flex: 1; }
-.invoice-guided-close {
-  border: 0; background: transparent; font-size: 22px; line-height: 1;
-  min-width: 44px; min-height: 44px; cursor: pointer; color: var(--text-muted);
-  border-radius: 6px;
-}
-.invoice-guided-close:hover { background: var(--surface-2); color: var(--text-primary); }
-.invoice-guided-close:focus-visible { outline: 3px solid #1b4d89; outline-offset: 2px; }
-.invoice-guided-status {
-  margin: 0 0 12px; font-size: 12.5px; color: var(--text-secondary);
-  overflow-wrap: anywhere;
-}
+/* ---- review sections: four different things, four blocks ---------------- */
+.invoice-guided-review h4 { margin: 2px 0 8px; font-size: 13px; }
 .invoice-guided-section {
-  border: 1px solid var(--border); border-left: 3px solid #1b4d89;
-  border-radius: 6px; padding: 9px 11px; margin: 0 0 10px;
+  border: 1px solid var(--border); border-left: 3px solid var(--primary);
+  border-radius: 7px; padding: 8px 10px; margin: 0 0 8px;
 }
 .invoice-guided-section h5 {
-  margin: 0 0 6px; font-size: 11.5px; text-transform: uppercase;
-  letter-spacing: 0.04em; color: #1b4d89;
+  margin: 0 0 4px; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--primary);
 }
-.invoice-guided-section ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.invoice-guided-section ul { margin: 0; padding-left: 17px; font-size: 12.5px; line-height: 1.5; }
 .invoice-guided-section li { overflow-wrap: anywhere; }
-.invoice-guided-section .muted { margin: 6px 0 0; }
+.invoice-guided-section .muted { margin: 5px 0 0; }
 .invoice-guided-figure {
-  margin: 0 0 4px; font-size: 19px; font-weight: 600;
+  margin: 0 0 3px; font-size: 17px; font-weight: 600;
   font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
 }
-@media (max-width: 560px) {
-  .invoice-guided-figure { font-size: 17px; }
-  .invoice-guided-section { padding: 8px 10px; }
+
+/* A clear focus ring, in the app's own colour, without a heavy halo. */
+.invoice-guided :focus-visible, .invoice-guided-close:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 5px;
 }
+
+@media (max-width: 560px) {
+  .invoice-guided { max-width: 100%; max-height: 92vh; }
+  .invoice-guided-lines label { flex-direction: column; align-items: stretch; }
+  .invoice-guided-lines input, .invoice-guided-stock-row input,
+  .invoice-guided-stock-row select { width: 100%; }
+  .invoice-guided-foot { flex-direction: column-reverse; }
+  .invoice-guided-foot .btn { width: 100%; min-height: 44px; }
+  .invoice-guided-figure { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .invoice-guided * { transition: none !important; } }
+
+/* ---- instalment portion --------------------------------------------------- */
+.instalment-portion {
+  border: 1px solid var(--border); border-left: 3px solid var(--primary);
+  border-radius: 7px; padding: 9px 11px; margin: 8px 0 0; min-width: 0;
+}
+.instalment-portion legend { font-size: 11.5px; font-weight: 600; color: var(--primary); padding: 0 4px; }
+.instalment-portion label { display: block; font-size: 12px; margin-bottom: 8px; }
+.instalment-portion label > select,
+.instalment-portion label > input { display: block; width: 100%; margin-top: 3px; min-height: 38px; font-size: 16px; }
+.instalment-portion small { display: block; margin-top: 3px; font-size: 11px; color: var(--text-muted); }
+.instalment-months { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 3px; }
+.instalment-months .btn { min-width: 42px; min-height: 36px; }
+.instalment-months input { width: 92px; min-height: 36px; font-size: 16px; }
+.instalment-months .muted { font-size: 11.5px; color: var(--text-muted); }
+.instalment-problem {
+  margin: 4px 0 0; font-size: 11.5px; color: #7f1d1d;
+  background: #fdecea; border: 1px solid #f5b3ad; border-radius: 6px; padding: 6px 8px;
+}
+@media (max-width: 560px) { .instalment-months input { width: 100%; } }
+
+/* ---- exchange attribution ------------------------------------------------ */
+.exchange-staff { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.exchange-staff label {
+  display: inline-flex; align-items: center; gap: 5px; margin: 0;
+  padding: 6px 9px; min-height: 36px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 999px; cursor: pointer;
+  background: var(--surface);
+}
+.exchange-staff label.chosen { border-color: var(--primary); background: var(--primary-light); color: var(--primary); font-weight: 600; }
+.exchange-staff input { width: auto; min-width: 16px; min-height: 16px; margin: 0; }
+.exchange-staff .muted { font-size: 12px; color: var(--text-muted); }
+.exchange-original {
+  background: var(--surface-2); border-radius: 7px; padding: 8px 10px; font-size: 12px;
+}
+.exchange-original strong { font-size: 13px; }
+.exchange-original div { line-height: 1.55; }

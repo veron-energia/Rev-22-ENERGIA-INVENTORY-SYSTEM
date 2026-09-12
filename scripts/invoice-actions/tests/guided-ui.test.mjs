@@ -39,7 +39,7 @@ assert.match(html, /id="ga-title"/, 'the heading carrying that name exists');
 // not colour alone.
 assert.match(html, /aria-label="Progress"/, 'the step list is labelled');
 assert.match(html, /aria-current="step"/, 'the current step is marked for screen readers');
-for (const label of ['What happened', 'Which items', 'Why', 'Review']) {
+for (const label of ['Action', 'Items', 'Reason', 'Review']) {
   assert.ok(html.includes(label), `step "${label}" is present`);
 }
 
