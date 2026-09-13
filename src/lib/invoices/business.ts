@@ -86,3 +86,104 @@ export function byInvoiceNoDesc(
 ) {
   return compareInvoiceNo(b.invoice_no ?? '', a.invoice_no ?? '');
 }
+
+/* ---- invoice sorting ------------------------------------------------------
+   The list loader pages through EVERY accessible invoice before the page
+   renders, so ordering the loaded set is ordering all matching records — the
+   sort is never applied to just one page. Fields are a closed union rather
+   than a string, so nothing a person types can reach a query.            */
+
+export type InvoiceSortField =
+  | 'invoice_no' | 'created_at' | 'business_date'
+  | 'customer' | 'store' | 'total' | 'outstanding' | 'status';
+export type SortDirection = 'asc' | 'desc';
+
+export const INVOICE_SORT_FIELDS: { value: InvoiceSortField; label: string }[] = [
+  { value: 'created_at', label: 'Created' },
+  { value: 'invoice_no', label: 'Invoice no.' },
+  { value: 'business_date', label: 'Invoice date' },
+  { value: 'customer', label: 'Customer' },
+  { value: 'store', label: 'Store' },
+  { value: 'total', label: 'Total' },
+  { value: 'outstanding', label: 'Outstanding' },
+  { value: 'status', label: 'Status' },
+];
+
+const SORT_FIELD_SET = new Set<string>(INVOICE_SORT_FIELDS.map(f => f.value));
+/** Only a field this list knows about is ever used. */
+export function isInvoiceSortField(v: unknown): v is InvoiceSortField {
+  return typeof v === 'string' && SORT_FIELD_SET.has(v);
+}
+
+/** What the comparator needs that an invoice row does not carry itself. */
+export type InvoiceSortContext = {
+  customerName: (id: string | null | undefined) => string;
+  storeName: (id: string | null | undefined) => string;
+  outstanding: (invoice: any) => number;
+};
+
+const text = (s: unknown) => String(s ?? '').trim().toLowerCase();
+
+/**
+ * Order two invoices by one field.
+ *
+ * Two deliberate choices:
+ *
+ *  - a row with no recorded business date always sorts LAST, in both
+ *    directions. Those are the invoices still awaiting date review, and
+ *    flipping the direction should not bury them in the middle of the list;
+ *  - the tie-break is always invoice_no, which is NOT NULL and UNIQUE, so
+ *    equal values never reorder between renders or pages.
+ */
+export function compareInvoices(
+  a: any, b: any, field: InvoiceSortField, dir: SortDirection, ctx: InvoiceSortContext,
+): number {
+  const sign = dir === 'asc' ? 1 : -1;
+  let d = 0;
+  switch (field) {
+    case 'invoice_no':
+      d = compareInvoiceNo(a.invoice_no ?? '', b.invoice_no ?? '');
+      break;
+    case 'created_at':
+      d = text(a.created_at) < text(b.created_at) ? -1 : text(a.created_at) > text(b.created_at) ? 1 : 0;
+      break;
+    case 'business_date': {
+      const av = a.business_date ?? null, bv = b.business_date ?? null;
+      // Undated rows keep to the bottom whichever way the column is sorted.
+      if (!av && !bv) { d = 0; break; }
+      if (!av) return 1;
+      if (!bv) return -1;
+      d = av < bv ? -1 : av > bv ? 1 : 0;
+      break;
+    }
+    case 'customer': {
+      const av = text(ctx.customerName(a.customer_id)), bv = text(ctx.customerName(b.customer_id));
+      d = av < bv ? -1 : av > bv ? 1 : 0;
+      break;
+    }
+    case 'store': {
+      const av = text(ctx.storeName(a.store_id)), bv = text(ctx.storeName(b.store_id));
+      d = av < bv ? -1 : av > bv ? 1 : 0;
+      break;
+    }
+    case 'total':
+      d = Number(a.total_amount ?? 0) - Number(b.total_amount ?? 0);
+      break;
+    case 'outstanding':
+      d = ctx.outstanding(a) - ctx.outstanding(b);
+      break;
+    case 'status':
+      d = text(a.status) < text(b.status) ? -1 : text(a.status) > text(b.status) ? 1 : 0;
+      break;
+  }
+  if (d !== 0) return d * sign;
+  // Stable, unique tie-break so rows never swap places on a re-render.
+  return compareInvoiceNo(b.invoice_no ?? '', a.invoice_no ?? '');
+}
+
+/** Sort a copy; the caller's array is left alone. */
+export function sortInvoices<T>(
+  rows: T[], field: InvoiceSortField, dir: SortDirection, ctx: InvoiceSortContext,
+): T[] {
+  return [...rows].sort((a, b) => compareInvoices(a, b, field, dir, ctx));
+}

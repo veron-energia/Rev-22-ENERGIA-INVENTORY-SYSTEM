@@ -62,6 +62,22 @@ begin
   raise exception 'The original-policy bonus lot did not fund the allowed product'; end if;
  if (select remaining_amount from customer_credit_lots where id=final_paid)<>120 then raise exception 'Disallowed purchase consumed package paid credit'; end if;
  insert into vouchers(name,code,qty_type,voucher_kind) values('Transferred Policy Session Voucher','CP-SESSION','unlimited','normal') returning id into session_voucher;
+ -- 309: a therapy voucher is no longer in the approved DEFAULT for paid credit,
+ -- so a twice-transferred lot must refuse it while still resolving its origin.
+ begin
+  perform consume_customer_credit(c,5,'manual_use',null,st2,'paid','Policy test direct voucher spend','voucher',session_voucher);
+  raise exception 'Paid package credit bought a therapy voucher under the default policy';
+ exception when others then
+  if sqlerrm like 'Paid package credit bought%' then raise; end if;
+  if sqlerrm not like '%Insufficient credit%' then raise; end if; end;
+ if (select remaining_amount from customer_credit_lots where id=final_paid)<>120 then
+  raise exception 'A refused voucher purchase still consumed credit'; end if;
+
+ -- The Owner enabling vouchers reaches this transferred balance too, which is
+ -- what proves the policy is resolved from the ORIGIN package, not the copy.
+ perform set_credit_package_spending_rules(package_id,
+   array['therapy_session','session_voucher'],array['own_product','third_party_product'],
+   'Test: owner enables therapy vouchers on paid credit');
  perform consume_customer_credit(c,5,'manual_use',null,st2,'paid','Policy test direct voucher spend','voucher',session_voucher);
  if (select remaining_amount from customer_credit_lots where id=final_paid)<>115 then
   raise exception 'Direct spending failed to resolve the original policy of a twice-transferred lot'; end if;

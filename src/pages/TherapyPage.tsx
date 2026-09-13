@@ -10,6 +10,7 @@ import { CustomerTherapySummary } from '../components/therapy/CustomerTherapySum
 import { RewardChoice, ClaimConfirmation } from '../components/therapy/RewardChoice';
 import { HolidayAdmin, HolidayCountryField, suggestCountryFromPhone } from '../components/therapy/HolidayAdmin';
 import { RecalculationPreview, RewardMappingPreview } from '../components/therapy/TherapyDiagnostics';
+import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
 import '../components/therapy/therapy.css';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
@@ -28,6 +29,10 @@ const PSTATUS: Record<string, { cls: string; label: string }> = {
 const TherapyPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
+  // Spending rules are the Owner's alone. Managers and Staff still open the
+  // panel, read-only, because they are asked what a balance covers.
+  const isOwner = profile?.role === 'owner';
+  const [rulesFor, setRulesFor] = useState<{ id: string; name: string } | null>(null);
   const [tab, setTab] = useState<'purchased' | 'legacy' | 'packages' | 'qualification' | 'credit' | 'bundles'>('purchased');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -779,7 +784,9 @@ const TherapyPage: React.FC = () => {
                         <td style={{ textAlign: 'right', fontSize: 12 }}>{p2.tier1_rate ?? 'default'} / {p2.tier2_rate ?? 'default'}</td>
                         <td style={{ fontSize: 12 }}>{d(p2.effective_from)}{p2.effective_to ? ` → ${d(p2.effective_to)}` : ''}</td>
                         <td>{p2.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
-                        <td><button className="btn btn-secondary btn-sm btn-icon" onClick={async () => {
+                        <td><button className="btn btn-secondary btn-sm" title="What this package's credit may buy"
+                          onClick={() => setRulesFor({ id: p2.id, name: p2.name ?? 'Credit package' })}>Rules</button>
+                        <button className="btn btn-secondary btn-sm btn-icon" onClick={async () => {
                           const { data: st3 } = await supabase.from('credit_package_stores').select('store_id').eq('package_id', p2.id);
                           const { data: vs } = await supabase.from('credit_package_vouchers').select('voucher_id').eq('package_id', p2.id);
                           setPkgErr(null);
@@ -1367,6 +1374,10 @@ const TherapyPage: React.FC = () => {
       {priceFor && (
         <StorePriceEditor kind="therapy" targetId={priceFor.id} targetName={priceFor.name}
           stores={stores} onClose={() => setPriceFor(null)} />
+      )}
+      {rulesFor && (
+        <CreditSpendingRules packageId={rulesFor.id} packageName={rulesFor.name}
+          canEdit={isOwner} onClose={() => setRulesFor(null)} />
       )}
     </div>
   );

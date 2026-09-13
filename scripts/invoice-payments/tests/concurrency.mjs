@@ -129,6 +129,10 @@ const check = (name, cond, detail) => {
   check('the race created no extra arrangement', cov === 900, String(cov));
 }
 
+// These fixtures are committed, not rolled back, so the shared database is
+// put back as the bootstrap left it — every other suite assumes that.
+await ok(`\\i ${resolve('scripts/integration/cleanup-concurrency-fixtures.sql')}`);
+
 console.log(failures === 0
   ? '\nPASS: concurrent identical submissions settle once, competing coverage never exceeds what is owed, and a later receipt racing a cancellation leaves the money and the terms consistent — with no deadlocks'
   : `\nFAILED: ${failures} check(s)`);

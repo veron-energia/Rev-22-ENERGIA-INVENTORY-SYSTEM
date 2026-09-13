@@ -2,6 +2,14 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
+/** 2026-09-12 -> 12 Sep 2026. Falls back to whatever it was given. */
+const readableDate = (iso?: string | null) => {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1];
+  return `${Number(m[3])} ${month} ${m[1]}`;
+};
 
 type Action = 'cancel' | 'refund_full' | 'refund_partial';
 type PlanLine = { invoice_item_id: string; name: string; line_kind: string; quantity: number; selected_quantity: number; amount: number };
@@ -256,8 +264,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   closeRef.current = requestClose;
 
   if (done) return (
-    <div className="invoice-chooser-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="invoice-chooser" role="dialog" aria-modal="true" aria-labelledby="ga-done" ref={dialog}>
+    <div className="invoice-guided-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="invoice-guided invoice-guided--done" role="dialog" aria-modal="true" aria-labelledby="ga-done" ref={dialog}>
         <h3 id="ga-done">Done</h3>
         <p>{done}</p>
         {refreshFailed && (
@@ -265,7 +273,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             <strong>This was saved.</strong> The invoice on screen could not be reloaded, so what
             you can see behind this message may be out of date. Retrying only re-reads the
             invoice — it does not repeat the {action === 'cancel' ? 'cancellation' : 'refund'}.
-            <div className="invoice-chooser-actions">
+            <div className="invoice-guided-foot">
               <button className="btn" disabled={refreshing} onClick={async () => {
                 setRefreshing(true);
                 try { await onDone(); setRefreshFailed(false); } catch { /* still stale */ }
@@ -274,24 +282,23 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             </div>
           </div>
         )}
-        <div className="invoice-chooser-actions"><button className="btn btn-primary" onClick={onClose}>Close</button></div>
+        <div className="invoice-guided-foot"><button className="btn btn-primary" onClick={onClose}>Close</button></div>
       </div>
     </div>
   );
 
   return (
-    <div className="invoice-chooser-backdrop" onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
-      <div className="invoice-chooser invoice-guided" role="dialog" aria-modal="true" aria-labelledby="ga-title" ref={dialog}>
+    <div className="invoice-guided-backdrop" onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
+      <div className="invoice-guided" role="dialog" aria-modal="true" aria-labelledby="ga-title" ref={dialog}>
         <div className="invoice-guided-head">
-          <h3 id="ga-title">Refund or cancel {plan?.invoice_no ?? ''}</h3>
+          <h3 id="ga-title">Refund or cancel{plan?.invoice_no ? ` ${plan.invoice_no}` : ''}</h3>
           <button type="button" className="invoice-guided-close" aria-label="Close without saving"
             onClick={requestClose}>&times;</button>
         </div>
         {plan && (
           <p className="invoice-guided-status">
-            <strong>{plan.invoice_no}</strong>
-            {plan.status ? <> · {String(plan.status).replace(/_/g, ' ')}</> : null}
-            {plan.window ? <> · created {plan.window.created_on}</> : null}
+            {plan.status ? <span className="invoice-guided-chip">{String(plan.status).replace(/_/g, ' ')}</span> : null}
+            {plan.window ? <span>Created {readableDate(plan.window.created_on)}</span> : null}
           </p>
         )}
         <ol className="invoice-guided-steps" aria-label="Progress">
@@ -321,11 +328,11 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
         {step === 1 && (
           <div className="invoice-guided-choices">
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('cancel')}>
-              <strong>Cancel invoice</strong><span>It should not have been raised, or the customer is not going ahead.</span></button>
+              <strong>Cancel invoice</strong><span>Cancel this purchase. Any refund due is shown before confirmation.</span></button>
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('refund_full')}>
-              <strong>Full refund</strong><span>Everything on this invoice is being reversed — goods, services, vouchers and credits alike.</span></button>
+              <strong>Full refund</strong><span>Review the remaining refundable items and amount.</span></button>
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('refund_partial')}>
-              <strong>Partial refund</strong><span>Only some of what was bought is being reversed.</span></button>
+              <strong>Partial refund</strong><span>Choose the items and quantities to refund.</span></button>
           </div>
         )}
 
@@ -390,7 +397,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             <p>{detail.legacy_note}</p>
             <label>Reason for the requester
               <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
-            <div className="invoice-chooser-actions">
+            <div className="invoice-guided-foot">
               <button className="btn" onClick={onClose}>Close</button>
               <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Reject</button>
             </div>

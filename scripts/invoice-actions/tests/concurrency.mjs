@@ -198,6 +198,10 @@ const check = (name, condition, detail) => {
   check('nothing further was refunded on the stale plan', total === 100, `got ${total}`);
 }
 
+// These fixtures are committed, not rolled back, so the shared database is
+// put back as the bootstrap left it — every other suite assumes that.
+await ok(`\\i ${resolve('scripts/integration/cleanup-concurrency-fixtures.sql')}`);
+
 console.log(failures === 0
   ? '\nPASS: concurrent approvals, approval versus direct refund, refund versus cancellation, repeated submission and stale confirmations all hold their invariants with no deadlocks'
   : `\nFAILED: ${failures} check(s)`);

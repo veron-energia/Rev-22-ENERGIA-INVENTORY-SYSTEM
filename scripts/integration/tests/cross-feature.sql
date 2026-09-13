@@ -55,15 +55,25 @@ begin
   raise exception 'Package paid credit bought an own-brand product';
  exception when others then if sqlerrm not like '%eligible credit%' then raise; end if; end;
 
- -- BONUS credit may, and only for an own-brand one.
+ -- BONUS credit may.
  perform record_invoice_payment(spend,jsonb_build_array(jsonb_build_object('payment_method_id',wpm_bonus,'amount',50)),gen_random_uuid());
  if (select remaining_amount from customer_credit_lots where id=lot_bonus)<>50 then
   raise exception 'Bonus credit did not fund the own-brand product from the bonus lot'; end if;
 
+ -- And for a third-party one too. 242 allowed bonus credit own-brand products
+ -- only; the approved default this package now falls under is own-brand AND
+ -- third-party, so the refusal this once asserted would today be the bug.
  spend:=create_invoice(st,c,null,jsonb_build_array(jsonb_build_object('kind','product','product_id',third_p,'quantity',1)));
+ perform record_invoice_payment(spend,jsonb_build_array(jsonb_build_object('payment_method_id',wpm_bonus,'amount',50)),gen_random_uuid());
+ if (select remaining_amount from customer_credit_lots where id=lot_bonus)<>0 then
+  raise exception 'Bonus credit did not fund the third-party product from the bonus lot'; end if;
+
+ -- Bonus credit still may not buy a therapy session: the default names
+ -- products only, and the package's own permissions cannot widen that.
+ spend:=create_invoice(st,c,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_service_id',svc,'quantity',1)));
  begin
   perform record_invoice_payment(spend,jsonb_build_array(jsonb_build_object('payment_method_id',wpm_bonus,'amount',50)),gen_random_uuid());
-  raise exception 'Package bonus credit bought a third-party product';
+  raise exception 'Package bonus credit bought a therapy session';
  exception when others then if sqlerrm not like '%eligible credit%' then raise; end if; end;
 
  -- PAID credit may buy a therapy session.

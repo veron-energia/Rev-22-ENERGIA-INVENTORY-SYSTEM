@@ -224,10 +224,20 @@ check('header, scrolling body and footer are separate',
   && !!document.querySelector('.invoice-guided-foot'));
 check('the confirming action lives in the footer, not the scrolling body',
   !document.querySelector('.invoice-guided-body .invoice-guided-foot'));
-check('the invoice number is shown once, prominently',
-  document.querySelectorAll('.invoice-guided-status strong').length === 1
-  && text().includes('INV-2026-0207'));
-check('with status beneath it', text().includes('paid'));
+// The number belongs in the title, once. It used to appear again in the
+// subtitle, which is what the reported screenshot showed.
+check('the invoice number appears exactly once',
+  (document.querySelector('.invoice-guided').textContent.match(/INV-2026-0207/g) || []).length === 1);
+check('and it is in the title', document.querySelector('#ga-title').textContent.includes('INV-2026-0207'));
+check('with status and a readable date beneath it',
+  /paid/i.test(document.querySelector('.invoice-guided-status').textContent)
+  && /Created \d{1,2} \w{3} \d{4}/.test(document.querySelector('.invoice-guided-status').textContent));
+check('the dialog does not inherit the other chooser\u2019s rules',
+  !document.querySelector('.invoice-guided').classList.contains('invoice-chooser'));
+check('action descriptions are short enough not to overrun their card',
+  Array.from(document.querySelectorAll('.invoice-guided-choices .btn span'))
+    .every(s2 => s2.textContent.trim().length <= 70),
+  Array.from(document.querySelectorAll('.invoice-guided-choices .btn span')).map(s2=>s2.textContent.trim().length).join(','));
 check('the four steps are labelled',
   ['Action', 'Items', 'Reason', 'Review'].every(l => text().includes(l)));
 

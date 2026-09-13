@@ -27,7 +27,8 @@ import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockE
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
-import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails } from '../lib/invoices/business';
+import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, sortInvoices, INVOICE_SORT_FIELDS, isInvoiceSortField,
+  type InvoiceSortField, type SortDirection } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import '../components/invoices/invoice-controls.css';
 
@@ -152,6 +153,9 @@ const InvoicesPage: React.FC = () => {
   // Detail / payment modal
   const [detailFinancial, setDetailFinancial] = useState<any>(null);
   const [chooserOpen, setChooserOpen] = useState(false);
+  // Newest first by creation time, which is what the list has always shown.
+  const [sortField, setSortField] = useState<InvoiceSortField>('created_at');
+  const [sortDir, setSortDir] = useState<SortDirection>('desc');
   // The guided flow replaces the old two-step chooser: it derives the whole
   // effect set itself, so staff never pick ledger rows.
   const [guidedOpen, setGuidedOpen] = useState(false);
@@ -1326,6 +1330,27 @@ const InvoicesPage: React.FC = () => {
     });
   }, [invoices, statusFilter, dateFilter, dateFrom, dateTo, invSearch, customers, customerById, stores, payMethodsByInvoice]);
 
+  /* The loader pages through EVERY accessible invoice before this runs, so
+     ordering `filtered` orders all matching records — never just one page.
+     Store and role scope are already applied by RLS on the way in.        */
+  const sorted = useMemo(() => sortInvoices(filtered, sortField, sortDir, {
+    customerName: id => customerOf(id)?.full_name ?? '',
+    storeName: id => stores.find(s2 => s2.id === id)?.name ?? '',
+    outstanding: inv => Math.max(0, Number(inv.total_amount ?? 0) - Number(inv.paid_amount ?? 0)),
+  }), [filtered, sortField, sortDir, customers, customerById, stores]);
+
+  /** Clicking a column sorts by it; clicking again flips the direction. */
+  const sortBy = (field: InvoiceSortField) => {
+    if (!isInvoiceSortField(field)) return;
+    if (sortField === field) { setSortDir(d => (d === 'asc' ? 'desc' : 'asc')); return; }
+    setSortField(field);
+    // Dates and money read most usefully newest/largest first; names A-Z.
+    setSortDir(field === 'created_at' || field === 'business_date'
+      || field === 'total' || field === 'outstanding' ? 'desc' : 'asc');
+  };
+  const sortIndicator = (field: InvoiceSortField) =>
+    sortField === field ? (sortDir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
+
   // Shared by the printed document and the WhatsApp / email message.
   const lineName = (it: InvoiceItem) =>
     it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
@@ -1670,7 +1695,7 @@ const InvoicesPage: React.FC = () => {
             stores={stores.map(s2 => ({ id: s2.id, name: s2.name }))}
             defaultStoreId={activeStore ?? ''} />}
           {canExport && <ExcelExportButton
-            rows={filtered} filename="invoices" sheetName="Invoices"
+            rows={sorted} filename="invoices" sheetName="Invoices"
             dateOf={(i: Invoice) => i.business_date} dateLabel="Invoice business date" dateTimeZone="Asia/Singapore"
             columns={[
               { header: 'Invoice', value: (i: any) => i.invoice_no },
@@ -1709,7 +1734,19 @@ const InvoicesPage: React.FC = () => {
               style={{ maxWidth: 460 }} />
             {invSearch && (
               <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--text-muted)' }}>
-                {filtered.length} match{filtered.length === 1 ? '' : 'es'}
+                {sorted.length} match{sorted.length === 1 ? '' : 'es'}
+                <span className="invoice-sort-picker">
+                  <label htmlFor="invoice-sort">Sort</label>
+                  <select id="invoice-sort" value={sortField}
+                    onChange={e => { const v = e.target.value; if (isInvoiceSortField(v)) { setSortField(v); } }}>
+                    {INVOICE_SORT_FIELDS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  </select>
+                  <button type="button" className="btn btn-secondary btn-sm"
+                    aria-label={sortDir === 'asc' ? 'Sorted ascending, switch to descending' : 'Sorted descending, switch to ascending'}
+                    onClick={() => setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))}>
+                    {sortDir === 'asc' ? '\u25B2' : '\u25BC'}
+                  </button>
+                </span>
                 <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }}
                   onClick={() => setInvSearch('')}>Clear</button>
               </span>
@@ -1743,19 +1780,45 @@ const InvoicesPage: React.FC = () => {
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : filtered.length === 0 ? <div className="empty-state"><FileText size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No invoices yet</p></div>
+          : sorted.length === 0 ? <div className="empty-state"><FileText size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No invoices yet</p></div>
           : (
             <table>
-              <thead><tr><th>Invoice</th><th>Date</th><th>Store</th><th>Customer</th><th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>Paid</th><th>Payment</th><th>Status</th><th></th></tr></thead>
+              <thead><tr>
+                {([
+                  ['invoice_no', 'Invoice', undefined],
+                  ['business_date', 'Date', undefined],
+                  ['store', 'Store', undefined],
+                  ['customer', 'Customer', undefined],
+                  ['total', 'Total', 'right'],
+                  ['outstanding', 'Outstanding', 'right'],
+                ] as [InvoiceSortField, string, 'right' | undefined][]).map(([field, label, align]) => (
+                  <th key={field} style={{ textAlign: align }}
+                    aria-sort={sortField === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" className="invoice-sort-header" onClick={() => sortBy(field)}
+                      title={`Sort by ${label.toLowerCase()}`}>
+                      {label}<span aria-hidden="true">{sortIndicator(field)}</span>
+                    </button>
+                  </th>
+                ))}
+                <th>Payment</th>
+                <th aria-sort={sortField === 'status' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" className="invoice-sort-header" onClick={() => sortBy('status')}
+                    title="Sort by status">Status<span aria-hidden="true">{sortIndicator('status')}</span></button>
+                </th>
+                <th></th>
+              </tr></thead>
               <tbody>
-                {filtered.map(inv => (
+                {sorted.map(inv => (
                   <tr key={inv.id}>
                     <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong></td>
                     <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
-                    <td style={{ textAlign: 'right', color: inv.paid_amount >= inv.total_amount ? 'var(--success)' : 'var(--text-muted)' }}>{money(inv.paid_amount)}</td>
+                    <td style={{ textAlign: 'right', color: Number(inv.total_amount) - Number(inv.paid_amount) > 0 ? 'var(--accent)' : 'var(--success)' }}
+                      title={`Paid ${money(inv.paid_amount)}`}>
+                      {money(Math.max(0, Number(inv.total_amount ?? 0) - Number(inv.paid_amount ?? 0)))}
+                    </td>
                     <td style={{ fontSize: 12.5 }}>
                       {(payMethodsByInvoice[inv.id] ?? []).length > 0
                         ? (payMethodsByInvoice[inv.id] ?? []).join(', ')
