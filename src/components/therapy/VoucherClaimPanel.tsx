@@ -11,6 +11,7 @@ type State = {
   entitlement_id: string; entitlement_no: string; package_name: string;
   entitled: number; claimed: number; revoked: number; remaining: number;
   claim_deadline: string | null; deadline_passed: boolean; status: string;
+  cancelled: boolean;
   eligible: Eligible[]; snapshot_present: boolean;
 };
 
@@ -132,7 +133,12 @@ export const VoucherClaimPanel: React.FC<{
                 </p>
               )}
 
-              {state.deadline_passed ? (
+              {state.cancelled ? (
+                <p className="credit-rules-warn">
+                  This entitlement was cancelled, so nothing can be claimed against it. The
+                  entitled figure is shown for reference only.
+                </p>
+              ) : state.deadline_passed ? (
                 <p className="credit-rules-warn">The claim deadline has passed. Nothing can be claimed.</p>
               ) : state.remaining <= 0 ? (
                 <p className="credit-rules-hint">Nothing left to claim on this entitlement.</p>
@@ -174,7 +180,7 @@ export const VoucherClaimPanel: React.FC<{
 
         <div className="credit-rules-foot">
           <button type="button" className="btn" onClick={onClose}>Close</button>
-          {canClaim && state && !state.deadline_passed && state.remaining > 0 && (
+          {canClaim && state && !state.cancelled && !state.deadline_passed && state.remaining > 0 && (
             <button type="button" className="btn btn-primary" disabled={busy || picked <= 0 || over}
               onClick={submit}>
               {busy ? 'Claiming…' : picked > 0 ? `Claim ${picked}` : 'Claim'}
