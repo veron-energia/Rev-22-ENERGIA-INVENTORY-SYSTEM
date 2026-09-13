@@ -238,3 +238,26 @@
   .credit-rules-foot { flex-direction: column-reverse; }
   .credit-rules-foot .btn { width: 100%; min-height: 44px; }
 }
+
+/* ---- voucher claims ------------------------------------------------------ */
+.voucher-claim-tally { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.voucher-claim-tally > div {
+  flex: 1 1 72px; background: var(--surface-2); border-radius: 7px;
+  padding: 7px 9px; font-size: 11px; color: var(--text-muted); text-align: center;
+}
+.voucher-claim-tally span { display: block; font-size: 19px; font-weight: 700; color: var(--text); line-height: 1.2; }
+.voucher-claim-tally .vc-remaining { background: var(--primary-light); }
+.voucher-claim-tally .vc-remaining span { color: var(--primary); }
+.voucher-claim-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.voucher-claim-table th, .voucher-claim-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left;
+}
+.voucher-claim-table th { font-size: 11px; color: var(--text-muted); font-weight: 600; }
+.voucher-claim-table td:last-child, .voucher-claim-table th:last-child { text-align: right; width: 84px; }
+.voucher-claim-table input { width: 72px; font-size: 16px; padding: 5px 6px; text-align: right; }
+.voucher-claim-table .vc-withdrawn { opacity: 0.55; }
+.voucher-claim-table .vc-note { font-size: 11px; color: var(--text-muted); }
+.voucher-claim-done {
+  margin: 8px 0; padding: 8px 10px; border-radius: 7px; font-size: 12.5px;
+  background: var(--primary-light); color: var(--primary);
+}

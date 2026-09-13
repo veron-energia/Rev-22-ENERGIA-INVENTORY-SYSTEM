@@ -27,6 +27,7 @@
     "test:invoice-packages": "node --test scripts/invoice-packages/tests/*.test.mjs",
     "test:invoice-payments": "node --test scripts/invoice-payments/tests/*.test.mjs",
     "test:exchanges": "node --test scripts/exchanges/tests/*.test.mjs",
+    "test:voucher-claims": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/voucher-claims/tests/deferred-claims.sql -f scripts/voucher-claims/tests/revocation-and-reconciliation.sql",
     "test:credit-policy": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/credit-policy/tests/spending-rules.sql -f scripts/credit-policy/tests/snapshot-does-not-gate.sql",
     "test:invoice-payments:concurrency": "node scripts/invoice-payments/tests/concurrency.mjs",
     "test:invoice-actions:concurrency": "node scripts/invoice-actions/tests/concurrency.mjs",

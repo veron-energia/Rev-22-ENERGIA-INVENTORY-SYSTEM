@@ -1810,7 +1810,12 @@ const InvoicesPage: React.FC = () => {
               <tbody>
                 {sorted.map(inv => (
                   <tr key={inv.id}>
-                    <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong></td>
+                    <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong>
+                      {/* A voucher claim is a hand-over document, not a sale. It carries
+                          no value, so say so rather than let a S$0.00 row read as one. */}
+                      {(inv as any).is_voucher_claim && (
+                        <div><span className="badge badge-muted" style={{ fontSize: 10 }}>Voucher claim</span></div>
+                      )}</td>
                     <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>

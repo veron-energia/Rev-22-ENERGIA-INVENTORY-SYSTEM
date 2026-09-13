@@ -8,6 +8,7 @@ import StorePriceEditor from '../components/StorePriceEditor';
 import { SearchSelect } from '../components/SearchSelect';
 import { CustomerTherapySummary } from '../components/therapy/CustomerTherapySummary';
 import { RewardChoice, ClaimConfirmation } from '../components/therapy/RewardChoice';
+import { VoucherClaimPanel } from '../components/therapy/VoucherClaimPanel';
 import { HolidayAdmin, HolidayCountryField, suggestCountryFromPhone } from '../components/therapy/HolidayAdmin';
 import { RecalculationPreview, RewardMappingPreview } from '../components/therapy/TherapyDiagnostics';
 import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
@@ -33,6 +34,9 @@ const TherapyPage: React.FC = () => {
   // panel, read-only, because they are asked what a balance covers.
   const isOwner = profile?.role === 'owner';
   const [rulesFor, setRulesFor] = useState<{ id: string; name: string } | null>(null);
+  // A voucher reward can be taken a few at a time, so it stays reachable for as
+  // long as anything is left on it — not only on the day it is first claimed.
+  const [claimVouchersFor, setClaimVouchersFor] = useState<string | null>(null);
   const [tab, setTab] = useState<'purchased' | 'legacy' | 'packages' | 'qualification' | 'credit' | 'bundles'>('purchased');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -208,17 +212,24 @@ const TherapyPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
-    const [pe, le, pk, st, cu, ru] = await Promise.all([
+    const [pe, le, pk, st, cu, ru, claims] = await Promise.all([
       supabase.from('purchased_therapy_entitlements').select('*').order('created_at', { ascending: false }),
       supabase.from('therapy_entitlements').select('*').order('created_at', { ascending: false }),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).order('duration_months'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('customers').select('id, full_name, phone').is('deleted_at', null),
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+      // Claimed quantity is the sum of the claim events, never a stored column,
+      // so the two can never drift apart.
+      supabase.from('voucher_claims').select('entitlement_id, quantity'),
     ]);
     if (pe.error && !/relation.*does not exist/.test(pe.error.message)) setErr(pe.error.message);
     setEnts((pe.data as PurchasedTherapyEntitlement[]) ?? []);
-    setLegacy((le.data as any[]) ?? []);
+    const claimedBy = new Map<string, number>();
+    for (const row of ((claims.data as any[] | null) ?? [])) {
+      claimedBy.set(row.entitlement_id, (claimedBy.get(row.entitlement_id) ?? 0) + Number(row.quantity || 0));
+    }
+    setLegacy(((le.data as any[]) ?? []).map(e => ({ ...e, claimed_qty: claimedBy.get(e.id) ?? 0 })));
     setPackages((pk.data as UnlimitedTherapyPackage[]) ?? []);
     setStores((st.data as Store[]) ?? []);
     const baseCustomers = (cu.data as Customer[]) ?? [];
@@ -448,7 +459,7 @@ const TherapyPage: React.FC = () => {
           : (
             <div className="table-wrap">
               <table>
-                <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Qualified</th><th>Claim by</th><th>Runs</th><th>Status</th><th></th></tr></thead>
+                <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Qualified</th><th>Vouchers</th><th>Claim by</th><th>Runs</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                   {legacy.map(e => {
                     const canActivate = e.status === 'pending_activation' && sgToday() <= e.activation_deadline;
@@ -459,10 +470,16 @@ const TherapyPage: React.FC = () => {
                         <td>{cName(e.customer_id)}{e.earner_kind === 'affiliate' && <div><span className="badge badge-accent" style={{ fontSize: 10 }}>Affiliate</span></div>}</td>
                         <td>{e.package_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.entitlement_kind}{e.duration_months ? ` · ${e.duration_months} mo` : ''}</div></td>
                         <td style={{ fontSize: 12 }}>{money(e.qualified_value)}</td>
+                        <td style={{ fontSize: 12 }}>{e.entitlement_kind === 'voucher'
+                          ? <span>{(e.voucher_qty ?? 0) - (e.claimed_qty ?? 0) - (e.revoked_qty ?? 0)} of {e.voucher_qty ?? 0} left</span>
+                          : '—'}</td>
                         <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}{expired && <span style={{ color: 'var(--danger)', fontSize: 11 }}> · passed</span>}</td>
                         <td style={{ fontSize: 12 }}>{e.activation_date ? `${d(e.activation_date)} → ${e.expiry_date ? d(e.expiry_date) : '—'}` : '—'}</td>
                         <td><span className={`badge ${e.status === 'active' ? 'badge-success' : e.status === 'pending_activation' ? 'badge-accent' : 'badge-muted'}`}>{String(e.status).replace('_',' ')}</span></td>
-                        <td>{canActivate
+                        <td>{e.entitlement_kind === 'voucher'
+                          ? <button className="btn btn-secondary btn-sm" onClick={() => setClaimVouchersFor(e.id)}>
+                              <Play size={12} /> Vouchers</button>
+                          : canActivate
                           ? <button className="btn btn-primary btn-sm" onClick={() => openClaim(e)}><Play size={12} /> Claim</button>
                           : e.status === 'pending_activation' ? <span style={{ fontSize: 11, color: 'var(--danger)' }}>deadline passed</span>
                           : null}</td>
@@ -1378,6 +1395,11 @@ const TherapyPage: React.FC = () => {
       {rulesFor && (
         <CreditSpendingRules packageId={rulesFor.id} packageName={rulesFor.name}
           canEdit={isOwner} onClose={() => setRulesFor(null)} />
+      )}
+      {claimVouchersFor && (
+        <VoucherClaimPanel entitlementId={claimVouchersFor} canClaim={canManage}
+          onClaimed={() => { void load(); }}
+          onClose={() => setClaimVouchersFor(null)} />
       )}
     </div>
   );
