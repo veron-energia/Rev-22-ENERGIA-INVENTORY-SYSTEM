@@ -80,8 +80,25 @@ begin
   where entitlement_id=v_old and has_snapshot=false and classification='needs_eligible_list';
  if n<>1 then raise exception 'The pre-snapshot entitlement was not reported for review'; end if;
 
- select count(*) into n from voucher_claim_reconciliation(st) where entitlement_id=e and classification='ready';
- if n<>1 then raise exception 'A snapshotted entitlement should reconcile as ready'; end if;
+ -- e was refunded: 4 claimed, 6 revoked, so there is nothing left to arrange.
+ -- A settled entitlement is reported as such whether or not it has a snapshot,
+ -- because offering it for claiming would be wrong either way.
+ select count(*) into n from voucher_claim_reconciliation(st)
+  where entitlement_id=e and classification='nothing_outstanding' and remaining=0;
+ if n<>1 then raise exception 'A settled entitlement should reconcile as nothing_outstanding'; end if;
+
+ -- One with a snapshot and something still owed is the case that is ready.
+ declare e3 uuid; begin
+  insert into therapy_entitlements(entitlement_no,customer_id,store_id,package_name,entitlement_kind,
+    voucher_qty,qualifying_amount,qualified_value,forfeited_value,activation_deadline,status,
+    created_by,earner_kind,eligible_voucher_ids,claim_source_type)
+  values(next_legacy_entitlement_no(),c2,st,'Snapshotted reward','voucher',8,994,994,0,sg_today()+90,
+         'pending_activation',own,'credit_package',array[v1],'credit_package')
+  returning id into e3;
+  select count(*) into n from voucher_claim_reconciliation(st)
+   where entitlement_id=e3 and classification='ready' and remaining=8;
+  if n<>1 then raise exception 'A snapshotted entitlement with units left should reconcile as ready'; end if;
+ end;
 
  -- Reading it must not have written anything.
  if (select eligible_voucher_ids from therapy_entitlements where id=v_old) is not null then
