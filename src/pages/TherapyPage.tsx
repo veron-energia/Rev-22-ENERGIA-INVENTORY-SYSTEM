@@ -9,6 +9,7 @@ import { SearchSelect } from '../components/SearchSelect';
 import { CustomerTherapySummary } from '../components/therapy/CustomerTherapySummary';
 import { RewardChoice, ClaimConfirmation } from '../components/therapy/RewardChoice';
 import { VoucherClaimPanel } from '../components/therapy/VoucherClaimPanel';
+import { BenefitChoicePanel } from '../components/therapy/BenefitChoicePanel';
 import { HolidayAdmin, HolidayCountryField, suggestCountryFromPhone } from '../components/therapy/HolidayAdmin';
 import { RecalculationPreview, RewardMappingPreview } from '../components/therapy/TherapyDiagnostics';
 import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
@@ -37,6 +38,7 @@ const TherapyPage: React.FC = () => {
   // A voucher reward can be taken a few at a time, so it stays reachable for as
   // long as anything is left on it — not only on the day it is first claimed.
   const [claimVouchersFor, setClaimVouchersFor] = useState<string | null>(null);
+  const [benefitFor, setBenefitFor] = useState<string | null>(null);
   const [tab, setTab] = useState<'purchased' | 'legacy' | 'packages' | 'qualification' | 'credit' | 'bundles'>('purchased');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -58,7 +60,11 @@ const TherapyPage: React.FC = () => {
   const [pkgName, setPkgName] = useState(''); const [pkgSku, setPkgSku] = useState(''); const [pkgMonths, setPkgMonths] = useState(12);
   // A package grants either unlimited months or a quantity of vouchers, the
   // same choice Legacy Therapy rules already offer.
-  const [pkgKind, setPkgKind] = useState<'unlimited' | 'voucher'>('unlimited');
+  const [pkgKind, setPkgKind] = useState<'unlimited' | 'voucher' | 'choice'>('unlimited');
+  // A choice package draws from a LIST of vouchers, because the customer picks.
+  const [pkgVoucherIds, setPkgVoucherIds] = useState<string[]>([]);
+  const [pkgServiceIds, setPkgServiceIds] = useState<string[]>([]);
+  const [therapyServices, setTherapyServices] = useState<any[]>([]);
   const [pkgVoucherQty, setPkgVoucherQty] = useState(10);
   const [pkgVoucherId, setPkgVoucherId] = useState('');
   const [pkgDesc, setPkgDesc] = useState(''); const [pkgActive, setPkgActive] = useState(true);
@@ -212,7 +218,7 @@ const TherapyPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
-    const [pe, le, pk, st, cu, ru, claims] = await Promise.all([
+    const [pe, le, pk, st, cu, ru, claims, units] = await Promise.all([
       supabase.from('purchased_therapy_entitlements').select('*').order('created_at', { ascending: false }),
       supabase.from('therapy_entitlements').select('*').order('created_at', { ascending: false }),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).order('duration_months'),
@@ -222,9 +228,14 @@ const TherapyPage: React.FC = () => {
       // Claimed quantity is the sum of the claim events, never a stored column,
       // so the two can never drift apart.
       supabase.from('voucher_claims').select('entitlement_id, quantity'),
+      // The unit view carries the benefit choice and live voucher figures,
+      // which the raw table cannot: claimed is derived, never stored.
+      supabase.rpc('purchased_therapy_units', { p_store_id: null, p_customer_id: null, p_pending_only: false }),
     ]);
     if (pe.error && !/relation.*does not exist/.test(pe.error.message)) setErr(pe.error.message);
-    setEnts((pe.data as PurchasedTherapyEntitlement[]) ?? []);
+    const unitById = new Map<string, any>();
+    for (const u of ((units.data as any[] | null) ?? [])) unitById.set(u.purchased_id, u);
+    setEnts((((pe.data as any[]) ?? []).map(e => ({ ...e, unit: unitById.get(e.id) ?? null })) as PurchasedTherapyEntitlement[]) ?? []);
     const claimedBy = new Map<string, number>();
     for (const row of ((claims.data as any[] | null) ?? [])) {
       claimedBy.set(row.entitlement_id, (claimedBy.get(row.entitlement_id) ?? 0) + Number(row.quantity || 0));
@@ -250,6 +261,8 @@ const TherapyPage: React.FC = () => {
     setBundles((pb as any[]) ?? []);
     const { data: vc } = await supabase.from('vouchers').select('id,name,code').is('deleted_at', null).eq('is_active', true).order('name');
     setAllVouchers((vc as any[]) ?? []);
+    const { data: ts } = await supabase.from('therapy_services').select('id,name,code').order('name');
+    setTherapyServices((ts as any[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -337,12 +350,37 @@ const TherapyPage: React.FC = () => {
     setPkgKind(p === 'new' ? 'unlimited' : (((p as any).entitlement_kind ?? 'unlimited') as any));
     setPkgVoucherQty(p === 'new' ? 10 : Number((p as any).voucher_qty ?? 10));
     setPkgVoucherId(p === 'new' ? '' : ((p as any).voucher_id ?? ''));
+    setPkgVoucherIds([]); setPkgServiceIds([]);
+    if (p !== 'new' && (p as any).entitlement_kind === 'choice') {
+      void (async () => {
+        const [pv, ps] = await Promise.all([
+          supabase.from('therapy_package_vouchers').select('voucher_id').eq('package_id', p.id),
+          supabase.from('therapy_package_services').select('service_id').eq('package_id', p.id),
+        ]);
+        setPkgVoucherIds(((pv.data as any[]) ?? []).map(x => x.voucher_id));
+        setPkgServiceIds(((ps.data as any[]) ?? []).map(x => x.service_id));
+      })();
+    }
     setPkgModal(p);
     if (p === 'new') { setPkgName(''); setPkgMonths(12); setPkgDesc(''); setPkgActive(true); }
     else { setPkgName(p.name); setPkgMonths(p.duration_months); setPkgDesc(p.description ?? ''); setPkgActive(p.is_active); }
   };
   const savePkg = async () => {
     setBusy('pkg');
+    if (pkgKind === 'choice') {
+      // Its own upsert: the choice lists have no place in the original
+      // signature, and widening that would change every existing caller.
+      const { error: cErr } = await supabase.rpc('upsert_therapy_package_choice', {
+        p_id: pkgModal === 'new' ? null : (pkgModal as UnlimitedTherapyPackage).id,
+        p_name: pkgName, p_sku: pkgSku || null, p_description: pkgDesc || null,
+        p_is_active: pkgActive, p_duration_months: pkgMonths,
+        p_voucher_qty: pkgVoucherQty,
+        p_voucher_ids: pkgVoucherIds, p_service_ids: pkgServiceIds.length ? pkgServiceIds : null,
+      });
+      setBusy(null);
+      if (cErr) { setErr(cErr.message); return; }
+      setPkgModal(null); await load(); return;
+    }
     const { error } = await supabase.rpc('upsert_unlimited_therapy_package', {
       p_id: pkgModal === 'new' ? null : (pkgModal as UnlimitedTherapyPackage).id,
       p_name: pkgName, p_duration_months: pkgMonths, p_description: pkgDesc || null, p_is_active: pkgActive,
@@ -416,23 +454,56 @@ const TherapyPage: React.FC = () => {
             : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Purchased</th><th>Deadline</th><th>Activation</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
+                  <thead><tr><th>No.</th><th>Customer</th><th>Package / unit</th><th>Invoice</th><th>Benefit</th><th>Deadline</th><th>Activation</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
                   <tbody>
                     {filteredEnts.map(e => {
                       const stt = PSTATUS[e.status] ?? { cls: 'badge-muted', label: e.status };
-                      const canAct = e.status === 'pending_activation' || e.status === 'scheduled';
+                      const u = (e as any).unit as any | null;
+                      // Therapy actions only belong on a unit that took therapy.
+                      const isTherapy = !u || u.benefit_choice === 'unlimited';
+                      const canAct = isTherapy && (e.status === 'pending_activation' || e.status === 'scheduled');
                       return (
                         <tr key={e.id}>
                           <td style={{ fontWeight: 600 }}>{e.entitlement_no}</td>
                           <td><div>{cName(e.customer_id)}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{cPhone(e.customer_id)}</div></td>
-                          <td>{e.package_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.duration_months} mo · {money(e.price_snapshot)}</div></td>
-                          <td style={{ fontSize: 12 }}>{d(e.purchase_date)}</td>
+                          <td>{e.package_name}
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              {u && u.unit_count > 1 ? `Unit ${u.unit_index} of ${u.unit_count} · ` : ''}
+                              {money(e.price_snapshot)}
+                            </div></td>
+                          <td style={{ fontSize: 12 }}>{u?.invoice_no ?? '—'}
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{d(e.purchase_date)}</div></td>
+                          <td style={{ fontSize: 12 }}>
+                            {/* Pending is a state, not a fault — neutral styling. */}
+                            {!u ? '—'
+                              : u.choice_pending
+                                ? <span className="badge badge-muted benefit-badge">Choice pending</span>
+                                : u.benefit_choice === 'voucher'
+                                  ? <><span className="badge badge-accent benefit-badge">Vouchers</span>
+                                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                        {u.voucher_remaining ?? 0} of {u.voucher_entitled ?? 0} left
+                                      </div></>
+                                  : <><span className="badge badge-primary benefit-badge">Unlimited therapy</span>
+                                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                        {e.duration_months} mo
+                                        {u.days_remaining != null ? ` · ${u.days_remaining} days left` : ''}
+                                      </div></>}
+                          </td>
                           <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}</td>
                           <td style={{ fontSize: 12 }}>{d(e.activation_date ?? e.scheduled_date)}</td>
                           <td style={{ fontSize: 12 }}>{d(e.expiry_date)}</td>
                           <td><span className={`badge ${stt.cls}`}>{stt.label}</span></td>
                           <td>
                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {u && (u.choice_pending || u.offers_choice) && (
+                                <button className="btn btn-secondary btn-sm" onClick={() => setBenefitFor(e.id)}>
+                                  {u.choice_pending ? 'Choose benefit' : 'Benefit'}
+                                </button>)}
+                              {u && u.benefit_choice === 'voucher' && u.voucher_entitlement_id && (
+                                <button className="btn btn-secondary btn-sm"
+                                  onClick={() => setClaimVouchersFor(u.voucher_entitlement_id)}>
+                                  Claim vouchers
+                                </button>)}
                               {canAct && <button className="btn btn-primary btn-sm" disabled={busy === e.id} onClick={() => openActivate(e)}><Play size={12} /> Activate</button>}
                               {canAct && <button className="btn btn-secondary btn-sm" disabled={busy === e.id} onClick={() => doReschedule(e)}><CalendarClock size={12} /></button>}
                               {canManage && canAct && <button className="btn btn-danger btn-sm" disabled={busy === e.id} onClick={() => doRefund(e)}><Ban size={12} /> Refund</button>}
@@ -1327,12 +1398,62 @@ const TherapyPage: React.FC = () => {
             <div className="form-group" style={{ marginBottom: 0 }}><label>SKU</label><input value={pkgSku} onChange={e => setPkgSku(e.target.value)} placeholder="e.g. TH-12M" /></div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>What the customer receives *</label>
-              <select value={pkgKind} onChange={e => setPkgKind(e.target.value as 'unlimited' | 'voucher')}>
+              <select value={pkgKind} onChange={e => setPkgKind(e.target.value as 'unlimited' | 'voucher' | 'choice')}>
                 <option value="unlimited">Unlimited therapy for a period</option>
                 <option value="voucher">A quantity of vouchers</option>
+                <option value="choice">Customer chooses: unlimited therapy or vouchers</option>
               </select>
             </div>
-            {pkgKind === 'unlimited' ? (
+            {pkgKind === 'choice' ? (
+              <>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Unlimited therapy duration (calendar months) *</label>
+                  <input type="number" min={1} value={pkgMonths} onChange={e => setPkgMonths(+e.target.value)} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Vouchers granted instead *</label>
+                  <input type="number" min={1} value={pkgVoucherQty}
+                    onChange={e => setPkgVoucherQty(+e.target.value)} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Vouchers the customer may choose from *</label>
+                  <div className="therapy-choice-picker">
+                    {allVouchers.map((v: any) => (
+                      <label key={v.id} className={pkgVoucherIds.includes(v.id) ? 'chosen' : ''}>
+                        <input type="checkbox" checked={pkgVoucherIds.includes(v.id)}
+                          onChange={() => setPkgVoucherIds(ids =>
+                            ids.includes(v.id) ? ids.filter(x => x !== v.id) : [...ids, v.id])} />
+                        {v.name}
+                      </label>
+                    ))}
+                  </div>
+                  {pkgVoucherIds.length === 0 && (
+                    <div className="therapy-choice-hint">Choose at least one.</div>
+                  )}
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Eligible therapy services</label>
+                  <div className="therapy-choice-picker">
+                    {therapyServices.map((sv: any) => (
+                      <label key={sv.id} className={pkgServiceIds.includes(sv.id) ? 'chosen' : ''}>
+                        <input type="checkbox" checked={pkgServiceIds.includes(sv.id)}
+                          onChange={() => setPkgServiceIds(ids =>
+                            ids.includes(sv.id) ? ids.filter(x => x !== sv.id) : [...ids, sv.id])} />
+                        {sv.name}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="therapy-choice-hint">
+                    Recorded with each purchase so the terms sold are kept. Which services a
+                    customer may take during unlimited therapy is not enforced anywhere today.
+                  </div>
+                </div>
+                <div className="therapy-choice-hint">
+                  Each purchased unit provides one of these, never both. The customer may choose
+                  at the till or later.
+                </div>
+              </>
+            ) : pkgKind === 'unlimited' ? (
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Duration (calendar months) *</label>
                 <input type="number" min={1} value={pkgMonths} onChange={e => setPkgMonths(+e.target.value)} />
@@ -1395,6 +1516,11 @@ const TherapyPage: React.FC = () => {
       {rulesFor && (
         <CreditSpendingRules packageId={rulesFor.id} packageName={rulesFor.name}
           canEdit={isOwner} onClose={() => setRulesFor(null)} />
+      )}
+      {benefitFor && (
+        <BenefitChoicePanel purchasedId={benefitFor} canSwitch={canManage}
+          onDone={() => { void load(); }}
+          onClose={() => setBenefitFor(null)} />
       )}
       {claimVouchersFor && (
         <VoucherClaimPanel entitlementId={claimVouchersFor} canClaim={canManage}

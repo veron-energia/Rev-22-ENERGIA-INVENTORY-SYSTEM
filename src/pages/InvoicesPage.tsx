@@ -46,7 +46,7 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
 
 interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup?: number; kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle';
   special_product_id?: string; rental_rate_type?: 'day' | 'week' | 'month' | 'year';
-  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; therapy_service_id?: string; therapy_service_name?: string;
+  rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; therapy_service_id?: string; therapy_service_name?: string; therapy_benefit_intent?: '' | 'unlimited' | 'voucher';
   // Credit purchases bought directly on the invoice (Phase 31). The price and
   // every credit/reward snapshot come from the backend; these only carry the
   // chosen package/bundle and, for a bundle, the reward-voucher mix.
@@ -737,7 +737,10 @@ const InvoicesPage: React.FC = () => {
           ...ovr(l), ...foc(l),
         }
       : l.kind === 'therapy'
-      ? { kind: 'therapy', therapy_package_id: l.therapy_service_id ? null : l.therapy_package_id, therapy_service_id: l.therapy_service_id || null, quantity: l.therapy_service_id ? l.quantity : 1, ...ovr(l), ...foc(l) }
+      ? { kind: 'therapy', therapy_package_id: l.therapy_service_id ? null : l.therapy_package_id, therapy_service_id: l.therapy_service_id || null, quantity: l.therapy_service_id ? l.quantity : 1,
+          // Absent means "choose later" — the server treats a missing intent
+          // as no choice rather than as a default.
+          therapy_benefit_intent: l.therapy_benefit_intent || null, ...ovr(l), ...foc(l) }
       : l.kind === 'credit_package'
       ? { kind: 'credit_package', credit_package_id: l.credit_package_id, quantity: 1, ...ovr(l), ...foc(l) }
       : l.kind === 'premium_bundle'
@@ -2174,11 +2177,12 @@ const InvoicesPage: React.FC = () => {
                               label: `${v.name}${voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}`,
                               sublabel: (v as any).code, search: `${v.name} ${(v as any).code ?? ''}`, searchPrices: [voucherPrice(v.id)] }))} />
                         ) : line.kind === 'therapy' ? (
-                          <SearchSelect style={{ flex: 1 }} placeholder="Search therapy package or session…"
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                          <SearchSelect placeholder="Search therapy package or session…"
                             value={line.therapy_service_id ? `session:${line.therapy_service_id}` : line.therapy_package_id ?? ''}
                             onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l,
                               therapy_service_id: v.startsWith('session:') ? v.slice(8) : '',
-                              therapy_package_id: v.startsWith('session:') ? '' : v, unit_price: undefined, quantity: 1 } : l))}
+                              therapy_package_id: v.startsWith('session:') ? '' : v, therapy_benefit_intent: '', unit_price: undefined, quantity: 1 } : l))}
                             options={[
                               ...therapyPackages.map(p => { const pr = therapyPrice(p.id); return {
                                 value: p.id, label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`, search: `${p.name} ${(p as any).code ?? ''}`, searchPrices: [pr] }; }),
@@ -2186,6 +2190,38 @@ const InvoicesPage: React.FC = () => {
                               ...(line.therapy_service_id && !therapyServices.some(p => p.id === line.therapy_service_id)
                                 ? [{ value: `session:${line.therapy_service_id}`, label: `${line.therapy_service_name || 'Saved therapy session'} (saved)`, search: line.therapy_service_name }] : []),
                             ]} />
+                        {(() => {
+                          // Only a package that actually offers a choice asks for one.
+                          const tp: any = therapyPackages.find((t: any) => t.id === line.therapy_package_id);
+                          if (!tp || tp.entitlement_kind !== 'choice') return null;
+                          const months = tp.duration_months ?? 0;
+                          const qty = tp.voucher_qty ?? 0;
+                          const opts: Array<[string, string, string]> = [
+                            ['unlimited', `Unlimited therapy — ${months} calendar ${months === 1 ? 'month' : 'months'}`,
+                             'Recorded now; it does not start until it is activated.'],
+                            ['voucher', `Vouchers — ${qty} ${qty === 1 ? 'voucher' : 'vouchers'}`,
+                             'Recorded now; nothing is issued until they are claimed.'],
+                            ['', 'Choose later', 'No usable benefit is issued until the customer chooses.'],
+                          ];
+                          return (
+                            <div className="benefit-options" role="radiogroup" aria-label="Benefit for this package">
+                              {opts.map(([val, title, note]) => (
+                                <label key={val || 'later'}
+                                  className={`benefit-option${(line.therapy_benefit_intent ?? '') === val ? ' picked' : ''}`}>
+                                  <input type="radio" name={`benefit-${i}`} value={val}
+                                    checked={(line.therapy_benefit_intent ?? '') === val}
+                                    onChange={() => setCLines(ls => ls.map((l, j) => j === i
+                                      ? { ...l, therapy_benefit_intent: val as any } : l))} />
+                                  <span>
+                                    <strong>{title}</strong>
+                                    <span className="benefit-option-note">{note}</span>
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                          </div>
                         ) : line.kind === 'credit_package' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search Credit Package…"
                             value={line.credit_package_id ?? ''}
