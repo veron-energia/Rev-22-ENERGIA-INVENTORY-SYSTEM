@@ -12,6 +12,7 @@ export interface PasswordChangeResult extends AuthEmailResult {
 }
 export const AUTH_EMAIL_COPY: {
   signupSubmitted: string;
+  signupExistingHint: string;
   resendSubmitted: string;
   recoverySubmitted: string;
   notSent: string;

@@ -66,29 +66,49 @@ const AffiliateJoinPage: React.FC = () => {
       : (result.message ?? AUTH_EMAIL_COPY.unavailable));
   };
 
+  // The server answers identically for a new address and one that is already
+  // verified, and sends no email in the second case. So this screen states both
+  // possibilities and offers the way forward for each, rather than asserting an
+  // email that may never arrive — which is what left returning affiliates
+  // waiting indefinitely. Which branch applies is still not revealed.
   if (done) return (
-    <AffiliateAuthShell title="Check your email" subtitle="We've sent you a verification link">
+    <AffiliateAuthShell title="Next step" subtitle="Check your email, or sign in">
       {notice && <p role="alert" style={{ color: 'var(--warning, #b45309)', fontSize: 13, marginBottom: 12 }}>{notice}</p>}
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        Please open the email we sent to <b>{f.email}</b> and click the verification link.
-        Once verified you'll be brought back to finish setting up your affiliate account.
+        If <b>{f.email}</b> is new to Energia, we have sent it a verification link — open it and you
+        will be brought back to finish setting up your affiliate account.
       </p>
-      <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, marginTop: 10 }}>
-        {AUTH_EMAIL_COPY.signupSubmitted}
+      <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginTop: 10 }}>
+        If you already have an affiliate login with that address, <b>no new email is sent</b>. Sign in
+        below, or reset your password if you have forgotten it.
       </p>
       {resendMsg && <p role="status" style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 10 }}>{resendMsg}</p>}
-      <button className="btn btn-secondary" style={{ width: '100%', marginTop: 14 }} disabled={resendBusy} onClick={resend}>
-        {resendBusy ? 'Sending…' : 'Resend verification email'}
-      </button>
-      <div style={{ textAlign: 'center', marginTop: 16 }}>
-        <Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Back to login</Link>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
+        <Link className="btn btn-primary" style={{ width: '100%', textAlign: 'center' }} to="/affiliate/login">
+          Sign in
+        </Link>
+        <Link className="btn btn-secondary" style={{ width: '100%', textAlign: 'center' }} to="/affiliate/forgot-password">
+          Reset my password
+        </Link>
+        <button className="btn btn-secondary" style={{ width: '100%' }} disabled={resendBusy} onClick={resend}>
+          {resendBusy ? 'Sending…' : 'Resend verification email'}
+        </button>
       </div>
+      <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginTop: 14 }}>
+        {AUTH_EMAIL_COPY.signupExistingHint} Still stuck? Contact Energia and we will help.
+      </p>
     </AffiliateAuthShell>
   );
 
   return (
     <AffiliateAuthShell title="Become an Energia Affiliate" subtitle="Create your affiliate account"
       footer={<>Already have an account? <Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Sign in</Link></>}>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
+        Already an Energia customer? Use this form. Once your identity is verified your affiliate
+        login is joined to your existing customer record, so your purchases, credit, vouchers and
+        therapy stay exactly as they are. If anything needs checking we will review it and come
+        back to you — nothing is duplicated and nothing is lost.
+      </p>
       <div className="affiliate-form-grid-2">
         <Field label="First Name"><input className="input" value={f.first} onChange={on('first')} /></Field>
         <Field label="Last Name"><input className="input" value={f.last} onChange={on('last')} /></Field>

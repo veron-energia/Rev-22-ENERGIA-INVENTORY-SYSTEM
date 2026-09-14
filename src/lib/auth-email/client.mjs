@@ -10,8 +10,17 @@
 // care on the client side.
 
 export const AUTH_EMAIL_COPY = {
+  // Two branches, both stated, neither confirmed. The server deliberately
+  // suppresses the email when the address is already verified, so a screen that
+  // promised one would leave exactly those people waiting for something that is
+  // never coming. Saying both without saying which applies keeps the server's
+  // enumeration resistance and still gives everyone a next step.
   signupSubmitted:
-    'Check your email for a verification link. If you do not see it within a few minutes, look in your spam folder or use Resend below.',
+    'If this address is new to Energia, a verification link is on its way — open it to carry on. '
+    + 'If you already have an affiliate login with this address, no new email is sent: sign in below, '
+    + 'or reset your password if you have forgotten it.',
+  signupExistingHint:
+    'Already signed up before? No email will arrive. Use Sign in or Reset password.',
   resendSubmitted:
     'If that address still needs verifying, a new link is on its way. Please check your inbox and spam folder.',
   recoverySubmitted:

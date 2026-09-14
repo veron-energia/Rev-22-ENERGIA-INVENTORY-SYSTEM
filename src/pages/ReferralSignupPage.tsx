@@ -16,6 +16,7 @@ const ReferralSignupPage: React.FC = () => {
   const [hp, setHp] = useState(''); // honeypot
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [doneKind, setDoneKind] = useState<'registered' | 'existing'>('registered');
   const [done, setDone] = useState<string | null>(null);
   const on = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
 
@@ -37,6 +38,10 @@ const ReferralSignupPage: React.FC = () => {
     if (error) { setErr(phoneErrorMessage(error.message)); return; }
     const res = data as any;
     if (res?.ok === false) { setErr(res.message || 'Registration could not be completed.'); return; }
+    // The two outcomes read very differently to the person in front of the
+    // screen, so they are not both called "successful": one created a record,
+    // the other found an existing one and created nothing.
+    setDoneKind(res?.outcome === 'already_registered' ? 'existing' : 'registered');
     setDone(res?.message || 'Registration successful.');
   };
 
@@ -53,10 +58,28 @@ const ReferralSignupPage: React.FC = () => {
   );
 
   if (done) return (
-    <AffiliateAuthShell title="Registration Successful">
+    <AffiliateAuthShell
+      title={doneKind === 'existing' ? 'You are already registered' : 'Registration successful'}
+      subtitle={doneKind === 'existing' ? 'Nothing was changed' : undefined}>
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         {done}
       </p>
+      {/* This form registers a CUSTOMER under an affiliate. Neither outcome
+          creates an affiliate account, so both say where to go for one. */}
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, marginTop: 12 }}>
+        This form registers you as an Energia customer under the person who referred you. It does
+        not create an affiliate account.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
+        <Link className="btn btn-primary" style={{ width: '100%', textAlign: 'center' }} to="/affiliate/join">
+          Become an affiliate instead
+        </Link>
+        {doneKind === 'existing' && (
+          <Link className="btn btn-secondary" style={{ width: '100%', textAlign: 'center' }} to="/affiliate/login">
+            Sign in to an existing affiliate account
+          </Link>
+        )}
+      </div>
     </AffiliateAuthShell>
   );
 
