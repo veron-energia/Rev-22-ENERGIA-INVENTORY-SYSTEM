@@ -56,6 +56,50 @@ begin
  if (select source_type from customer_reward_vouchers where source_id=it)<>'invoice_promotion_voucher' then
   raise exception 'The original issuance reference was lost'; end if;
 
+ -- ---- unused CREDIT moves by draw-down and reissue, never by repointing ----
+ -- A posted lot is immutable: its customer, category, amount, source and store
+ -- cannot be edited. Repointing one is refused by the database, so the move has
+ -- to reverse the original and issue a replacement.
+ declare credlot uuid; newlot uuid; begin
+  credlot:=grant_customer_credit(c2,'bonus',200,'invoice_line',it,st,sg_today(),null,'bonus credit',null,null,own,
+            jsonb_build_object('allowed_purposes',jsonb_build_array('product'),'source','test'));
+  r:=correct_invoice(inv,
+       jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
+       jsonb_build_object('customer_id',c1),'move the credit too',gen_random_uuid());
+
+  -- the original is drawn down, not rewritten
+  if (select customer_id from customer_credit_lots where id=credlot)<>c2 then
+   raise exception 'The original lot was repointed instead of drawn down'; end if;
+  if (select remaining_amount from customer_credit_lots where id=credlot)<>0 then
+   raise exception 'The original lot was not drawn down'; end if;
+
+  -- a replacement exists for the new owner, carrying category and restrictions
+  select id into newlot from customer_credit_lots
+   where customer_id=c1 and source_type='invoice_reassignment' and source_record_id=inv;
+  if newlot is null then raise exception 'No replacement lot was issued'; end if;
+  if (select remaining_amount from customer_credit_lots where id=newlot)<>200 then
+   raise exception 'The replacement carries the wrong amount'; end if;
+  if (select category from customer_credit_lots where id=newlot)<>'bonus' then
+   raise exception 'Bonus credit became another category'; end if;
+  if (select usage_restrictions from customer_credit_lots where id=newlot) is null then
+   raise exception 'The spending restrictions were dropped'; end if;
+  -- the credit this invoice produced still totals what it did, on one side only
+  if (select coalesce(sum(remaining_amount),0) from customer_credit_lots
+       where source_record_id in (it, inv))<>200 then
+   raise exception 'Moving the credit changed how much of it there is'; end if;
+  -- and the unrelated balance is untouched
+  if (select remaining_amount from customer_credit_lots where id=unrelated_lot)<>250 then
+   raise exception 'An unrelated balance was drawn down'; end if;
+  -- and both movements are on the append-only ledger
+  if (select count(*) from customer_credit_ledger
+       where source_record_id=inv and source_type in ('invoice_reassignment_out','invoice_reassignment_in'))<>2 then
+   raise exception 'The credit movement was not recorded on the ledger'; end if;
+  -- put it back for the rest of the test
+  perform correct_invoice(inv,
+    jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
+    jsonb_build_object('customer_id',c2),'back',gen_random_uuid());
+ end;
+
  -- ---- a FULLY used benefit stays behind, and does not block ----------------
  -- There is nothing left to move and nothing to strand, so the usage simply
  -- stays where it happened and the correction is allowed to proceed.

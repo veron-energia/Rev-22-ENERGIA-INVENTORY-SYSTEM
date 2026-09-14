@@ -91,6 +91,7 @@ create or replace function public.move_invoice_benefits_to_customer(
   p_invoice_id uuid, p_customer_id uuid, p_store_id uuid, p_reason text)
 returns jsonb language plpgsql security definer set search_path to 'public' as $$
 declare v_blocked text; v_v int := 0; v_c int := 0; v_a int := 0; v_wallet uuid;
+        r_lot public.customer_credit_lots%rowtype; v_new_lot uuid;
 begin
   -- Anything committed stops the whole move rather than half of it.
   select string_agg(description || ' (' || blocked_reason || ')', '; ')
@@ -109,23 +110,52 @@ begin
      and status = 'held' and redeemed_at is null;
   get diagnostics v_v = row_count;
 
-  -- Credit: the wallet changes, the category and usage_restrictions do not.
-  if exists (select 1 from public.customer_credit_lots l
-              where (l.source_record_id in (select id from public.invoice_items where invoice_id = p_invoice_id)
-                  or l.source_record_id in (select package_id from public.credit_package_sales where invoice_id = p_invoice_id))
-                and l.remaining_amount = l.original_amount and l.status = 'active') then
-    v_wallet := public.ensure_customer_wallet(p_customer_id);
+  -- Credit is never repointed. A posted lot is immutable -- its customer,
+  -- category, original amount, source and store cannot be edited, and the
+  -- ledger behind it is append-only. Moving it is therefore the operation
+  -- transfer_invoice_unused_benefit already performs: draw the original down to
+  -- nothing, record that decrease, issue a replacement to the new customer
+  -- carrying the category, restrictions and original purchase date, and record
+  -- that grant. Bonus credit cannot become unrestricted paid credit this way.
+  v_wallet := public.ensure_customer_wallet(p_customer_id);
+  for r_lot in
+    select l.* from public.customer_credit_lots l
+     where (l.source_record_id in (select id from public.invoice_items where invoice_id = p_invoice_id)
+         or l.source_record_id in (select package_id from public.credit_package_sales where invoice_id = p_invoice_id))
+       and l.remaining_amount = l.original_amount
+       and l.remaining_amount > 0
+       and l.status = 'active'
+     for update
+  loop
+    v_new_lot := gen_random_uuid();
+
     update public.customer_credit_lots
-       set customer_id = p_customer_id, wallet_id = v_wallet, store_id = p_store_id
-     where (source_record_id in (select id from public.invoice_items where invoice_id = p_invoice_id)
-         or source_record_id in (select package_id from public.credit_package_sales where invoice_id = p_invoice_id))
-       and remaining_amount = original_amount and status = 'active';
-    get diagnostics v_c = row_count;
-    update public.customer_credit_ledger
-       set customer_id = p_customer_id, wallet_id = v_wallet
-     where lot_id in (select id from public.customer_credit_lots
-                       where customer_id = p_customer_id and store_id = p_store_id);
-  end if;
+       set remaining_amount = 0, updated_at = now()
+     where id = r_lot.id;
+    insert into public.customer_credit_ledger
+      (wallet_id, customer_id, entry_type, category, amount, lot_id,
+       source_type, source_record_id, store_id, reason, created_by, approved_by)
+    values (r_lot.wallet_id, r_lot.customer_id, 'adjust_decrease', r_lot.category,
+            r_lot.remaining_amount, r_lot.id, 'invoice_reassignment_out', p_invoice_id,
+            r_lot.store_id, p_reason, auth.uid(), auth.uid());
+
+    insert into public.customer_credit_lots
+    select (jsonb_populate_record(null::public.customer_credit_lots, to_jsonb(r_lot) || jsonb_build_object(
+      'id', v_new_lot, 'wallet_id', v_wallet, 'customer_id', p_customer_id, 'store_id', p_store_id,
+      'original_amount', r_lot.remaining_amount, 'remaining_amount', r_lot.remaining_amount,
+      'source_type', 'invoice_reassignment', 'source_record_id', p_invoice_id,
+      'reference_no', null, 'reason', p_reason, 'reversal_of_lot_id', null,
+      'created_by', auth.uid(), 'approved_by', auth.uid(),
+      'created_at', now(), 'updated_at', now()))).*;
+    insert into public.customer_credit_ledger
+      (wallet_id, customer_id, entry_type, category, amount, lot_id,
+       source_type, source_record_id, store_id, reason, created_by, approved_by)
+    values (v_wallet, p_customer_id, 'grant', r_lot.category, r_lot.remaining_amount,
+            v_new_lot, 'invoice_reassignment_in', p_invoice_id, p_store_id,
+            p_reason, auth.uid(), auth.uid());
+
+    v_c := v_c + 1;
+  end loop;
 
   -- Unclaimed voucher allowances.
   update public.therapy_entitlements
