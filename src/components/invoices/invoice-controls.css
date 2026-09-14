@@ -370,3 +370,38 @@
   .invoice-sort-picker { display: flex; margin: 8px 0 0; width: 100%; }
   .invoice-sort-picker select { flex: 1; }
 }
+
+/* ---- correction preview -------------------------------------------------- */
+.correction-preview {
+  border: 1px solid var(--border); border-radius: 9px; padding: 12px;
+  background: var(--surface-2); margin-bottom: 12px; overflow-wrap: anywhere;
+}
+.correction-preview h4 { margin: 0 0 8px; font-size: 13.5px; }
+.correction-none { font-size: 12.5px; color: var(--text-muted); margin: 0 0 8px; }
+.correction-effects { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.correction-effects > li {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 3px;
+}
+.correction-effects > li.is-unchanged { opacity: 0.75; }
+.correction-area { font-size: 11px; font-weight: 700; color: var(--primary); }
+.correction-tag {
+  align-self: flex-start; font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-secondary); text-transform: uppercase;
+}
+.correction-move { font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.correction-detail { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.correction-items { margin: 3px 0 0; padding-left: 17px; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; }
+.correction-review {
+  display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px; border-radius: 7px;
+  background: #fff4e5; color: #7a4100; border: 1px solid #ffcc80; font-size: 12px; margin-bottom: 10px;
+}
+.correction-review-item { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.correction-review .correction-area { color: #7a4100; }
+.correction-review .correction-detail { color: #7a4100; }
+.correction-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.correction-hint { font-size: 11.5px; color: var(--text-muted); margin: 8px 0 0; }
+@media (max-width: 560px) {
+  .correction-actions { flex-direction: column-reverse; }
+  .correction-actions .btn { width: 100%; min-height: 44px; }
+}

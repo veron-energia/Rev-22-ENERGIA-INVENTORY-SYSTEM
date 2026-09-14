@@ -23,6 +23,7 @@ import {
 import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel';
 import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefundCancelChooser';
 import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
+import { CorrectionPreview } from '../components/invoices/CorrectionPreview';
 import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
@@ -201,6 +202,11 @@ const InvoicesPage: React.FC = () => {
   // Correcting the affiliate and the payment methods on a settled invoice.
   const [cAffiliate, setCAffiliate] = useState('');
   const [affTouched, setAffTouched] = useState(false);
+  // A correction states its effects before it is applied. The case this exists
+  // for is the quiet one: a field the operator believes they changed which is
+  // not in the payload, which the preview reports as "unchanged".
+  const [correctionPreview, setCorrectionPreview] = useState<any | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [payFix, setPayFix] = useState<Record<string, string>>({});
   // Who the invoice is attributed to. Owner only — it changes what a printed
   // document says about who served the customer.
@@ -659,7 +665,7 @@ const InvoicesPage: React.FC = () => {
     setIssuedRecipientsConfirmed(false); setIssuedHeaderBefore(null);
     setCInstalment({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
     setEditRequestId(crypto.randomUUID());
-    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setPayFix({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
+    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setPayFix({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setSaveEarthOn(false); setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount);
@@ -794,6 +800,17 @@ const InvoicesPage: React.FC = () => {
         .filter(([id, mid]) => paymentsBeforeEdit.find(p => p.id === id)?.payment_method_id !== mid)
         .map(([payment_id, payment_method_id]) => ({ payment_id, payment_method_id })),
     };
+    // Show what the correction will do before doing it. Confirming from the
+    // summary calls back in with the preview already shown.
+    if (editingInvoiceId && !correctionPreview) {
+      setPreviewing(true);
+      const { data: pv, error: pErr } = await supabase.rpc('preview_invoice_correction',
+        { p_invoice_id: editingInvoiceId, p_header: header });
+      setPreviewing(false); setCSaving(false);
+      if (pErr) { setCErr(pErr.message); return; }
+      setCorrectionPreview(pv);
+      return;
+    }
     const { data, error } = editingInvoiceId
       ? await supabase.rpc('correct_invoice', { p_invoice_id: editingInvoiceId, p_items: allItems,
           p_header: header, p_reason: editReason.trim() || null, p_request_id: editRequestId })
@@ -802,6 +819,7 @@ const InvoicesPage: React.FC = () => {
     setCSaving(false);
     if (error) {
       setCErr(error.message);
+      setCorrectionPreview(null);
       // This particular refusal has a way forward, so offer it rather than
       // leaving a message the operator can do nothing with.
       if (editingInvoiceId && /Historical component snapshots need review/i.test(error.message)) {
@@ -810,6 +828,7 @@ const InvoicesPage: React.FC = () => {
       return;
     }
     const newInvoiceId = editingInvoiceId ? null : (typeof data === 'string' ? data : (data as any)?.id ?? null);
+    setCorrectionPreview(null);
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
     setEditingPaid(false); setEditReason('');
     if (newInvoiceId) {
@@ -1852,7 +1871,7 @@ const InvoicesPage: React.FC = () => {
 
       {createOpen && (
         <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}
-          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}>Cancel</button>{!splitMode && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving}>{cSaving ? 'Saving…' : editingInvoiceId ? 'Save Changes' : 'Create Invoice'}</button>}</>}>
+          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
           <div className="form-grid invoice-editor">
             {/* On a correction the audited notice and its required reason come
                 first, then the business date. Someone reading downwards learns
@@ -1956,6 +1975,11 @@ const InvoicesPage: React.FC = () => {
                   </div>
                 </div>
               </div>
+            )}
+            {correctionPreview && (
+              <CorrectionPreview preview={correctionPreview} saving={cSaving}
+                onBack={() => setCorrectionPreview(null)}
+                onConfirm={() => { void handleCreate(); }} />
             )}
             {cErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
             {stockReviewFor && editingInvoiceId === stockReviewFor && (
