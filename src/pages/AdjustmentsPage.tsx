@@ -188,7 +188,7 @@ const AdjustmentsPage: React.FC = () => {
       </div>
 
       {open && (
-        <Modal title="New Inventory Adjustment" maxWidth={460} onClose={() => setOpen(false)}
+        <Modal title="New Inventory Adjustment" maxWidth={460} confirmClose onClose={() => setOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

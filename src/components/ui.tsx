@@ -36,20 +36,51 @@ export const Modal: React.FC<{
   maxWidth?: number;
   /** Fill the working area, leaving only the sidebar visible. */
   wide?: boolean;
-}> = ({ title, onClose, children, footer, maxWidth = 480, wide = false }) => (
-  <div className={`modal-overlay${wide ? ' wide' : ''}`} onClick={e => e.target === e.currentTarget && onClose()}>
-    <div className="modal" style={wide
+  /**
+   * Set on any modal holding a form. A backdrop click or Escape then asks
+   * before discarding, instead of throwing away work silently — a clerk two
+   * minutes into a New Invoice used to lose all of it to one stray click.
+   * Read-only modals leave this off and keep click-outside-to-close.
+   */
+  confirmClose?: boolean;
+}> = ({ title, onClose, children, footer, maxWidth = 480, wide = false, confirmClose = false }) => {
+  const titleId = React.useId();
+  const panelRef = React.useRef<HTMLDivElement | null>(null);
+
+  const requestClose = React.useCallback(() => {
+    if (confirmClose && !window.confirm('Discard what you have entered? It will not be saved.')) return;
+    onClose();
+  }, [confirmClose, onClose]);
+
+  // Escape closes, through the same confirmation. The component had no keyboard
+  // route out at all before this.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); requestClose(); } };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [requestClose]);
+
+  // Focus moves into the dialog so the keyboard follows the eye.
+  React.useEffect(() => { panelRef.current?.focus(); }, []);
+
+  return (
+  <div className={`modal-overlay${wide ? ' wide' : ''}`}
+       onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
+    <div className="modal" ref={panelRef} tabIndex={-1}
+      role="dialog" aria-modal="true" aria-labelledby={titleId}
+      style={wide
       ? { maxWidth: 'none', width: '100%', height: '100%', maxHeight: 'none', display: 'flex', flexDirection: 'column', overflow: 'hidden' }
       : { maxWidth }}>
       <div className="modal-header">
-        <h3>{title}</h3>
-        <button className="btn btn-secondary btn-sm btn-icon" onClick={onClose}>✕</button>
+        <h3 id={titleId}>{title}</h3>
+        <button className="btn btn-secondary btn-sm btn-icon" aria-label="Close" onClick={requestClose}>✕</button>
       </div>
       <div className="modal-body" style={wide ? { flex: 1, overflowY: 'auto' } : undefined}>{children}</div>
       {footer && <div className="modal-footer">{footer}</div>}
     </div>
   </div>
-);
+  );
+};
 
 // Reusable input modals to replace browser prompt() calls.
 export const ReasonModal: React.FC<{

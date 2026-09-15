@@ -405,7 +405,7 @@ const PromotionsPage: React.FC = () => {
 
       {/* Create/edit promotion */}
       {modalOpen && (
-        <Modal title={editId ? 'Edit Promotion' : 'Add Promotion'} wide onClose={() => setModalOpen(false)}
+        <Modal title={editId ? 'Edit Promotion' : 'Add Promotion'} wide confirmClose onClose={() => setModalOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : (editId ? 'Save' : 'Save & Add Items')}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

@@ -497,7 +497,7 @@ const ExchangesPage: React.FC = () => {
 
       {/* New exchange wizard */}
       {wizard && (
-        <Modal title="New Exchange" maxWidth={640} onClose={() => setWizard(false)}
+        <Modal title="New Exchange" maxWidth={640} confirmClose onClose={() => setWizard(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setWizard(false)}>Cancel</button><button className="btn btn-primary" onClick={openConfirm} disabled={busy}>{busy ? 'Processing…' : 'Complete Exchange'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

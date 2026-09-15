@@ -79,3 +79,4 @@ uploads/
 
 # Exclusive historical invoice-date test cluster and private reports
 .invoice-date-test/
+.stock-history-test/

@@ -42,8 +42,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resolveActor = useCallback(async (userId: string) => {
     // 1) Staff? A profiles row keyed by auth.uid().
-    const { data: profileData } = await supabase
+    const { data: profileData, error: profileError } = await supabase
       .from('profiles').select('*').eq('id', userId).maybeSingle();
+
+    // A failed lookup is not the same as "no profile". Falling through would
+    // send a perfectly valid owner to the "account setup needed" dead end,
+    // whose only way out is Sign out, because a network blip looks exactly
+    // like an absent row once the error is dropped.
+    if (profileError) {
+      setError('We could not reach the server to load your account. Check your connection and try again.');
+      setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
+      return;
+    }
 
     if (profileData) {
       if (!profileData.is_active) {
@@ -63,10 +73,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 2) Affiliate? An affiliate_accounts row keyed by auth.uid().
     //    RLS on affiliate_accounts limits this to the user's own row.
-    const { data: acct } = await supabase
+    const { data: acct, error: acctError } = await supabase
       .from('affiliate_accounts')
       .select('id, auth_user_id, customer_id, affiliate_id, status')
       .eq('auth_user_id', userId).maybeSingle();
+
+    if (acctError) {
+      setError('We could not reach the server to load your account. Check your connection and try again.');
+      setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
+      return;
+    }
 
     if (acct) {
       setError(null);
