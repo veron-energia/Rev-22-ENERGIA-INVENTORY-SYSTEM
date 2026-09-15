@@ -13,8 +13,8 @@ const ONBOARDING_KEY = 'energia_aff_onboarding';
 
 const AffiliateVerifyPage: React.FC = () => {
   const nav = useNavigate();
-  const { refreshProfile } = useAuth();
-  const [state, setState] = useState<'working' | 'need_details' | 'pending' | 'error' | 'suspended' | 'rejected'>('working');
+  const { refreshProfile, actorType, profile } = useAuth();
+  const [state, setState] = useState<'working' | 'need_details' | 'pending' | 'error' | 'suspended' | 'rejected' | 'staff'>('working');
   const [msg, setMsg] = useState<string | null>(null);
   const [f, setF] = useState({ first: '', last: '', phone: '' });
   // Guard so React StrictMode / re-renders can't fire onboarding twice. The DB
@@ -23,6 +23,10 @@ const AffiliateVerifyPage: React.FC = () => {
 
   const complete = async (first: string, last: string, phone: string) => {
     setF({ first, last, phone });
+    // A login is either Staff or an Affiliate, never both. The server refuses
+    // this too; stopping here means a staff member sees why instead of a raw
+    // permission error after filling the form in.
+    if (actorType === 'staff') { setState('staff'); return; }
     if (!first.trim() || !isPhoneValid(phone)) { setState('need_details'); setMsg('Enter your name and a valid international phone number.'); return; }
     setState('working'); setMsg(null);
     const { data: sess } = await supabase.auth.getSession();
@@ -58,6 +62,28 @@ const AffiliateVerifyPage: React.FC = () => {
     <AffiliateAuthShell title="Identity verification needed">
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{msg}</p>
       <div style={{ textAlign: 'center', marginTop: 16 }}><Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Back to login</Link></div>
+    </AffiliateAuthShell>
+  );
+
+  if (state === 'staff') return (
+    <AffiliateAuthShell title="You are signed in as staff">
+      <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        You are signed in as <b>{profile?.full_name ?? profile?.email ?? 'a staff member'}</b>. An
+        Energia staff login cannot also be an affiliate account, so nothing has been created.
+      </p>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, marginTop: 10 }}>
+        To join as an affiliate, sign out and sign up with a personal email address. If an affiliate
+        record should exist against an existing customer, an Owner or Manager can set that up.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
+        <button type="button" className="btn btn-primary" style={{ width: '100%' }}
+          onClick={async () => { await supabase.auth.signOut(); nav('/affiliate/join', { replace: true }); }}>
+          Sign out and join as an affiliate
+        </button>
+        <Link className="btn btn-secondary" style={{ width: '100%', textAlign: 'center' }} to="/">
+          Back to the app
+        </Link>
+      </div>
     </AffiliateAuthShell>
   );
 
