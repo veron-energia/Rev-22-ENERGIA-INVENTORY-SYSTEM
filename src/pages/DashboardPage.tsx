@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { fetchAllFrom } from '../lib/supabasePaging';
 import { useAuth } from '../context/AuthContext';
 import { ROLE_LABELS, isManagerOrAbove } from '../types';
 import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, TrendingUp, Clock, Ban, Sparkles, Users } from 'lucide-react';
@@ -137,38 +138,42 @@ const DashboardPage: React.FC = () => {
 
       // 5G-2 stats: unpaid commission, voucher redemptions, rentals.
       if (isManagerOrAbove(profile?.role)) {
+        // Summed, so a truncated read under-reports money owed rather than
+        // failing — page all of it.
         const [comm, redemp, rent] = await Promise.all([
-          supabase.from('commissions').select('commission_amount').eq('status', 'earned'),
+          fetchAllFrom<any>('commissions', 'id,commission_amount', q => q.eq('status', 'earned')),
           supabase.from('voucher_redemptions').select('id', { count: 'exact', head: true }),
-          supabase.from('rentals').select('status,expected_return_date').in('status', ['paid', 'active']),
+          fetchAllFrom<any>('rentals', 'id,status,expected_return_date', q => q.in('status', ['paid', 'active'])),
         ]);
-        setUnpaidCommission(((comm.data as any[]) ?? []).reduce((s, x) => s + Number(x.commission_amount), 0));
+        setUnpaidCommission(comm.reduce((s, x) => s + Number(x.commission_amount), 0));
         setRedemptionCount(redemp.count ?? 0);
-        const rents = (rent.data as any[]) ?? [];
+        const rents = rent;
         setActiveRentals(rents.length);
         const today = new Date().toISOString().slice(0, 10);
         setOverdueRentals(rents.filter(r => r.expected_return_date < today).length);
       }
 
       // Low stock across warehouse + store inventory.
+      // Inventory and products are joined in the browser, so a truncated read
+      // silently drops products out of the low-stock list instead of erroring.
       const [wh, st, prods, whs, sts] = await Promise.all([
-        supabase.from('warehouse_inventory').select('*'),
-        supabase.from('store_inventory').select('*'),
-        supabase.from('products').select('id,name,sku'),
-        supabase.from('warehouses').select('id,name'),
-        supabase.from('stores').select('id,name'),
+        fetchAllFrom<any>('warehouse_inventory'),
+        fetchAllFrom<any>('store_inventory'),
+        fetchAllFrom<any>('products', 'id,name,sku'),
+        fetchAllFrom<any>('warehouses', 'id,name'),
+        fetchAllFrom<any>('stores', 'id,name'),
       ]);
-      const pMap = new Map((prods.data ?? []).map((p: any) => [p.id, p]));
-      const whMap = new Map((whs.data ?? []).map((w: any) => [w.id, w.name]));
-      const stMap = new Map((sts.data ?? []).map((s: any) => [s.id, s.name]));
+      const pMap = new Map(prods.map((p: any) => [p.id, p]));
+      const whMap = new Map(whs.map((w: any) => [w.id, w.name]));
+      const stMap = new Map(sts.map((s: any) => [s.id, s.name]));
       const alerts: typeof lowStock = [];
-      (wh.data ?? []).forEach((i: any) => {
+      wh.forEach((i: any) => {
         if (i.low_stock_threshold > 0 && i.current_qty <= i.low_stock_threshold) {
           const p = pMap.get(i.product_id);
           if (p) alerts.push({ name: p.name, sku: p.sku, loc: `🏭 ${whMap.get(i.warehouse_id) ?? ''}`, qty: i.current_qty, threshold: i.low_stock_threshold });
         }
       });
-      (st.data ?? []).forEach((i: any) => {
+      st.forEach((i: any) => {
         if (i.low_stock_threshold > 0 && i.current_qty <= i.low_stock_threshold) {
           const p = pMap.get(i.product_id);
           if (p) alerts.push({ name: p.name, sku: p.sku, loc: `🏪 ${stMap.get(i.store_id) ?? ''}`, qty: i.current_qty, threshold: i.low_stock_threshold });

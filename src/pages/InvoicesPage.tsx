@@ -7,6 +7,7 @@ import { ExcelExportButton } from '../components/ExcelExport';
 import { PaymentSummaryExport } from '../components/PaymentSummaryExport';
 import { XeroExportButton } from '../components/XeroExport';
 import { supabase } from '../lib/supabase';
+import { fetchAllFrom } from '../lib/supabasePaging';
 import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -257,12 +258,16 @@ const InvoicesPage: React.FC = () => {
     setLoading(true);
     const [inv, allPays, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
       loadInvoiceList(),
-      supabase.from('invoice_payments').select('invoice_id,payment_method_id,amount'),
+      // Every payment on every invoice feeds the Payment method column, so
+      // this crosses 1000 rows before anything else on the page.
+      fetchAllFrom<any>('invoice_payments', 'id,invoice_id,payment_method_id,amount'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('customers').select('*').is('deleted_at', null).order('full_name'),
+      // CustomerSearchSelect exists because this table is too large to hold in
+      // the browser; until this load is narrowed, at least read all of it.
+      fetchAllFrom<any>('customers', '*', q => q.is('deleted_at', null), ['full_name', 'id']),
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('store_product_prices').select('*').is('deleted_at', null),
+      fetchAllFrom<any>('store_product_prices', '*', q => q.is('deleted_at', null)),
       supabase.from('vouchers').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('promotions').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('promotion_choice_groups').select('*'),
@@ -292,7 +297,7 @@ const InvoicesPage: React.FC = () => {
     const methodName = new Map<string, string>(
       ((pm.data as any[]) ?? []).map(m => [m.id, m.name]));
     const byInvoice: Record<string, string[]> = {};
-    for (const row of ((allPays.data as any[]) ?? [])) {
+    for (const row of allPays) {
       const name = methodName.get(row.payment_method_id);
       if (!name) continue;
       const list = byInvoice[row.invoice_id] ?? (byInvoice[row.invoice_id] = []);
@@ -301,12 +306,12 @@ const InvoicesPage: React.FC = () => {
     setPayMethodsByInvoice(byInvoice);
     setStores((st.data as Store[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
-    setCustomers((cu.data as Customer[]) ?? []);
+    setCustomers(cu as Customer[]);
     // Names for every customer on the loaded invoices, regardless of where
     // they fall alphabetically.
     void ensureCustomers(((inv.data as Invoice[]) ?? []).map(i => i.customer_id));
     setMethods((pm.data as PaymentMethod[]) ?? []);
-    setPrices((pp.data as StoreProductPrice[]) ?? []);
+    setPrices(pp as StoreProductPrice[]);
     setVouchers((vc.data as Voucher[]) ?? []);
     setPromotions((pm2.data as Promotion[]) ?? []);
     setChoiceGroups((cg.data as PromotionChoiceGroup[]) ?? []);
@@ -1870,7 +1875,7 @@ const InvoicesPage: React.FC = () => {
 
 
       {createOpen && (
-        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}
+        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide confirmClose onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}
           footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
           <div className="form-grid invoice-editor">
             {/* On a correction the audited notice and its required reason come
