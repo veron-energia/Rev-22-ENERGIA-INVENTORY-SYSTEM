@@ -261,7 +261,11 @@ const TherapyPage: React.FC = () => {
     setBundles((pb as any[]) ?? []);
     const { data: vc } = await supabase.from('vouchers').select('id,name,code').is('deleted_at', null).eq('is_active', true).order('name');
     setAllVouchers((vc as any[]) ?? []);
-    const { data: ts } = await supabase.from('therapy_services').select('id,name,code').order('name');
+    // service_code, not code — asking for the wrong column made PostgREST
+    // return 400 and left the eligible-services picker permanently empty.
+    const { data: ts, error: tsErr } = await supabase
+      .from('therapy_services').select('id,name,service_code').order('name');
+    if (tsErr) setErr(tsErr.message);
     setTherapyServices((ts as any[]) ?? []);
     setLoading(false);
   }, []);
