@@ -72,7 +72,7 @@ begin
  -- ---- the correction that used to be refused now works ---------------------
  r:=correct_invoice(inv,
       jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
-      jsonb_build_object('customer_id',c2),'move to the right customer',gen_random_uuid());
+      jsonb_build_object('customer_id',c2,'benefit_action','transfer'),'move to the right customer',gen_random_uuid());
  if (select customer_id from invoices where id=inv)<>c2 then
   raise exception 'The customer was not reassigned'; end if;
 

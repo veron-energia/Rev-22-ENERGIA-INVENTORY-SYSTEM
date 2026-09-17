@@ -53,16 +53,19 @@ begin
  if (select bundle_voucher_selection from invoice_items where invoice_id=inv) is null then
   raise exception 'The chosen reward vouchers were not recorded on the line'; end if;
 
- -- An incomplete voucher selection is still refused, by name, not by <NULL>.
+ -- A selection LARGER than the allowance is refused, by name, not by <NULL>.
+ -- (An incomplete selection used to be refused here too. It is now a supported
+ -- choice: the unchosen remainder becomes a claimable allowance, so a customer
+ -- who has not decided can still buy the bundle.)
  begin
   perform create_invoice_with_details(st,c,
     jsonb_build_array(jsonb_build_object('kind','premium_bundle','premium_bundle_id',pb,'quantity',1,
-      'voucher_selection',jsonb_build_array(jsonb_build_object('voucher_id',v,'quantity',3)))),
+      'voucher_selection',jsonb_build_array(jsonb_build_object('voucher_id',v,'quantity',151)))),
     jsonb_build_object('business_date',sg_today()::text));
-  raise exception 'An incomplete reward-voucher selection was accepted';
+  raise exception 'A reward-voucher selection larger than the allowance was accepted';
  exception when others then
   msg:=sqlerrm;
-  if msg like '%An incomplete reward%' then raise; end if;
+  if msg like '%larger than the allowance was accepted%' then raise; end if;
   if msg not like '%reward voucher%' then raise exception 'Unhelpful refusal: %',msg; end if;
   if msg like '%<NULL>%' then raise exception 'The refusal named the item as <NULL>'; end if;
  end;

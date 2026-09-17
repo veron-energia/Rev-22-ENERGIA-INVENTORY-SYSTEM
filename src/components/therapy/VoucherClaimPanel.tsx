@@ -44,6 +44,13 @@ export const VoucherClaimPanel: React.FC<{
   const [state, setState] = useState<State | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [basket, setBasket] = useState<Record<string, number>>({});
+  // Two steps. Asking "how many" first is what people actually decide first,
+  // and it makes the second step a distribution of a known total rather than
+  // an open-ended tally that only reveals its own limit on submission.
+  const [step, setStep] = useState<'quantity' | 'distribute'>('quantity');
+  const [wanted, setWanted] = useState('');
+  const [wantedError, setWantedError] = useState<string | null>(null);
+  const wantedRef = React.useRef<HTMLInputElement | null>(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,14 +62,34 @@ export const VoucherClaimPanel: React.FC<{
       { p_entitlement_id: entitlementId });
     if (err) { setLoadError(err.message); setState(null); return; }
     setState(data as State);
-    setBasket({});
+    setBasket({}); setStep('quantity'); setWanted(''); setWantedError(null);
   }, [entitlementId]);
 
   useEffect(() => { void load(); }, [load]);
 
   const picked = Object.values(basket).reduce((n, q) => n + (q || 0), 0);
   const remaining = state?.remaining ?? 0;
-  const over = picked > remaining;
+  const requested = Number(wanted) || 0;
+  const over = picked > requested;
+
+  // Going back to change the total is allowed; if what is already chosen no
+  // longer fits, say so rather than quietly issuing a different number.
+  const goBack = () => {
+    setStep('quantity');
+    setError(picked > 0 && picked !== requested
+      ? `You had ${picked} selected. Set a new total, then adjust the selection to match it.`
+      : null);
+  };
+  const goForward = () => {
+    const n = Number(wanted);
+    if (!Number.isInteger(n) || n <= 0) {
+      setWantedError('Enter a whole number of 1 or more.'); wantedRef.current?.focus(); return;
+    }
+    if (n > remaining) {
+      setWantedError(`Only ${remaining} left to collect on this purchase.`); wantedRef.current?.focus(); return;
+    }
+    setWantedError(null); setError(null); setStep('distribute');
+  };
 
   const setQty = (id: string, q: number, available: number | null) => {
     const ceiling = Math.min(remaining, available ?? Number.MAX_SAFE_INTEGER);
@@ -142,13 +169,44 @@ export const VoucherClaimPanel: React.FC<{
                 <p className="credit-rules-warn">The claim deadline has passed. Nothing can be claimed.</p>
               ) : state.remaining <= 0 ? (
                 <p className="credit-rules-hint">Nothing left to claim on this entitlement.</p>
+              ) : step === 'quantity' ? (
+                <>
+                  <h4 className="vc-step-title">How many vouchers would you like to collect today?</h4>
+                  <dl className="vc-facts">
+                    <div><dt>From</dt><dd>{state.package_name}</dd></div>
+                    <div><dt>Reference</dt><dd>{state.entitlement_no}</dd></div>
+                    <div><dt>Total allowance</dt><dd>{state.entitled}</dd></div>
+                    <div><dt>Already collected</dt><dd>{state.claimed}</dd></div>
+                    {state.revoked > 0 && <div><dt>Withdrawn</dt><dd>{state.revoked}</dd></div>}
+                    <div><dt>Still available</dt><dd><b>{state.remaining}</b></dd></div>
+                    <div><dt>Collect by</dt><dd>{readable(state.claim_deadline)}</dd></div>
+                  </dl>
+                  <label className="vc-quantity-label" htmlFor="vc-wanted">
+                    Number to collect now
+                    <input id="vc-wanted" ref={wantedRef} type="number" inputMode="numeric"
+                      min={1} max={state.remaining} step={1} value={wanted}
+                      disabled={!canClaim}
+                      aria-describedby="vc-wanted-help"
+                      aria-invalid={wantedError ? true : undefined}
+                      onChange={e => { setWanted(e.target.value); setWantedError(null); }} />
+                  </label>
+                  <p id="vc-wanted-help" className="credit-rules-hint">
+                    A whole number between 1 and {state.remaining}. Whatever is left stays
+                    collectable until the deadline.
+                  </p>
+                  {wantedError && <p className="credit-rules-warn" role="alert">{wantedError}</p>}
+                </>
               ) : (
                 <>
-                  <p className="credit-rules-hint">
-                    Take any number up to {state.remaining}. The rest stays claimable until the deadline.
+                  <h4 className="vc-step-title">Which vouchers, and how many of each?</h4>
+                  <p className={picked === requested ? 'vc-counter vc-counter-done' : 'vc-counter'}
+                     role="status" aria-live="polite">
+                    {picked} of {requested} selected
+                    {picked < requested && ` — choose ${requested - picked} more`}
+                    {picked > requested && ` — that is ${picked - requested} too many`}
                   </p>
                   <table className="voucher-claim-table">
-                    <thead><tr><th>Voucher</th><th>In stock</th><th>Claim</th></tr></thead>
+                    <thead><tr><th>Voucher</th><th>In stock</th><th>Collect</th></tr></thead>
                     <tbody>
                       {state.eligible.map(v => (
                         <tr key={v.voucher_id} className={v.still_offered ? '' : 'vc-withdrawn'}>
@@ -156,7 +214,7 @@ export const VoucherClaimPanel: React.FC<{
                           <td>{v.available === null ? 'unlimited' : v.available}</td>
                           <td>
                             <input type="number" min={0}
-                              max={Math.min(state.remaining, v.available ?? state.remaining)}
+                              max={Math.min(requested, v.available ?? requested)}
                               value={basket[v.voucher_id] ?? 0} disabled={!canClaim || !v.still_offered}
                               onChange={e => setQty(v.voucher_id, Number(e.target.value), v.available)} />
                           </td>
@@ -169,22 +227,33 @@ export const VoucherClaimPanel: React.FC<{
                   </table>
                   <label className="credit-rules-reason">Note (optional)
                     <input value={note} onChange={e => setNote(e.target.value)}
-                      placeholder="Anything worth recording about this claim" /></label>
+                      placeholder="Anything worth recording about this collection" /></label>
                 </>
               )}
             </>
           )}
           {error && <p className="credit-rules-warn" role="alert">{error}</p>}
-          {over && <p className="credit-rules-warn">That is {picked - remaining} more than remains.</p>}
+          {over && <p className="credit-rules-warn">That is {picked - requested} more than the {requested} you asked to collect.</p>}
         </div>
 
         <div className="credit-rules-foot">
           <button type="button" className="btn" onClick={onClose}>Close</button>
           {canClaim && state && !state.cancelled && !state.deadline_passed && state.remaining > 0 && (
-            <button type="button" className="btn btn-primary" disabled={busy || picked <= 0 || over}
-              onClick={submit}>
-              {busy ? 'Claiming…' : picked > 0 ? `Claim ${picked}` : 'Claim'}
-            </button>
+            step === 'quantity' ? (
+              <button type="button" className="btn btn-primary" onClick={goForward}>
+                Choose vouchers
+              </button>
+            ) : (
+              <>
+                <button type="button" className="btn btn-secondary" onClick={goBack}>
+                  Change the number
+                </button>
+                <button type="button" className="btn btn-primary"
+                  disabled={busy || picked !== requested || requested <= 0} onClick={submit}>
+                  {busy ? 'Collecting…' : `Collect ${requested}`}
+                </button>
+              </>
+            )
           )}
         </div>
       </div>

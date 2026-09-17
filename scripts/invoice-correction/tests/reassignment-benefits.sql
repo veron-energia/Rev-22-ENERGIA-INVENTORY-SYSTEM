@@ -40,7 +40,7 @@ begin
  -- ---- the move ------------------------------------------------------------
  r:=correct_invoice(inv,
       jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
-      jsonb_build_object('customer_id',c2),'reassign',gen_random_uuid());
+      jsonb_build_object('customer_id',c2,'benefit_action','transfer'),'reassign',gen_random_uuid());
 
  if exists(select 1 from customer_reward_vouchers where source_id=it and customer_id<>c2) then
   raise exception 'The vouchers did not follow the invoice'; end if;
@@ -65,7 +65,7 @@ begin
             jsonb_build_object('allowed_purposes',jsonb_build_array('product'),'source','test'));
   r:=correct_invoice(inv,
        jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
-       jsonb_build_object('customer_id',c1),'move the credit too',gen_random_uuid());
+       jsonb_build_object('customer_id',c1,'benefit_action','transfer'),'move the credit too',gen_random_uuid());
 
   -- the original is drawn down, not rewritten
   if (select customer_id from customer_credit_lots where id=credlot)<>c2 then
@@ -74,8 +74,10 @@ begin
    raise exception 'The original lot was not drawn down'; end if;
 
   -- a replacement exists for the new owner, carrying category and restrictions
+  -- The replacement keeps its ORIGIN in source_type/source_record_id so its
+  -- spending rules still resolve; the hop is recorded separately.
   select id into newlot from customer_credit_lots
-   where customer_id=c1 and source_type='invoice_reassignment' and source_record_id=inv;
+   where customer_id=c1 and reassigned_from_lot_id=credlot;
   if newlot is null then raise exception 'No replacement lot was issued'; end if;
   if (select remaining_amount from customer_credit_lots where id=newlot)<>200 then
    raise exception 'The replacement carries the wrong amount'; end if;
@@ -97,7 +99,7 @@ begin
   -- put it back for the rest of the test
   perform correct_invoice(inv,
     jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
-    jsonb_build_object('customer_id',c2),'back',gen_random_uuid());
+    jsonb_build_object('customer_id',c2,'benefit_action','transfer'),'back',gen_random_uuid());
  end;
 
  -- ---- a FULLY used benefit stays behind, and does not block ----------------
@@ -108,7 +110,7 @@ begin
   raise exception 'A fully redeemed voucher is blocking the correction'; end if;
  r:=correct_invoice(inv,
       jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
-      jsonb_build_object('customer_id',c1),'move back',gen_random_uuid());
+      jsonb_build_object('customer_id',c1,'benefit_action','transfer'),'move back',gen_random_uuid());
  if (select customer_id from customer_reward_vouchers where source_id=it)<>c2 then
   raise exception 'A redeemed voucher was moved to the new customer'; end if;
 
@@ -121,7 +123,7 @@ begin
   begin
    r:=correct_invoice(inv,
         jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','promotion','promotion_id',promo,'quantity',1)),
-        jsonb_build_object('customer_id',c2),'move again',gen_random_uuid());
+        jsonb_build_object('customer_id',c2,'benefit_action','transfer'),'move again',gen_random_uuid());
    raise exception 'A partly spent benefit was moved silently';
   exception when others then
    if sqlerrm not like '%already been used%' then raise; end if;

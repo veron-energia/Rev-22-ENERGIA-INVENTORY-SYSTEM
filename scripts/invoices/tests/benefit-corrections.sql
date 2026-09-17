@@ -66,8 +66,10 @@ begin
  begin
   perform correct_invoice(inv,x,jsonb_build_object('customer_id',c2),'Change buyer',gen_random_uuid());
   raise exception 'Buyer correction silently changed issued recipients';
- exception when others then if sqlerrm not like '%Review the issued recipients%' then raise; end if; end;
- perform correct_invoice(inv,x,jsonb_build_object('customer_id',c2,'preserve_issued_recipients',true),'Reviewed buyer correction',gen_random_uuid());
+ exception when others then if sqlerrm not like '%BENEFIT_ACTION_REQUIRED%' then raise; end if; end;
+ -- This test's whole point is that the recipients stay put, which is now
+ -- something the caller asks for by name rather than by ticking a box.
+ perform correct_invoice(inv,x,jsonb_build_object('customer_id',c2,'benefit_action','keep'),'Reviewed buyer correction',gen_random_uuid());
  perform refund_invoice_recorded(inv,jsonb_build_array(jsonb_build_object('invoice_item_id',it,'amount',20,'overpayment',true,
   'benefits',jsonb_build_array(jsonb_build_object('benefit_id',moved,'amount',20)))),jsonb_build_array(jsonb_build_object('payment_id',pay,'amount',20)),
   '[]','Return corrected price difference from unused value',gen_random_uuid());
