@@ -224,3 +224,96 @@ begin
  raise notice 'PASS: credit released before settlement follows a customer correction';
 end $$;
 rollback;
+
+-- ---------------------------------------------------------------------
+-- Backfilling invoices that were already part paid when 327 arrived.
+-- 327 releases on payment, so money received before it was installed released
+-- nothing. The backfill calls the same function a payment would, which is what
+-- makes it safe to run twice and impossible for it to invent a different
+-- amount from the one the rule gives.
+-- ---------------------------------------------------------------------
+begin;
+do $$
+declare
+ own uuid := gen_random_uuid();
+ st uuid; c uuid; pm uuid; cp uuid; inv uuid; old_inv uuid; paid numeric; n int;
+begin
+ insert into auth.users(id,email) values(own,'rp5-own@tests.invalid');
+ insert into profiles(id,full_name,email,role) values(own,'Owner','rp5-own@tests.invalid','owner');
+ perform set_config('request.jwt.claim.sub',own::text,true);
+ insert into stores(name,code,country_code) values('RP5 Store','RP5','SG') returning id into st;
+ insert into customers(full_name,phone) values('RP5 Buyer','+6598911782') returning id into c;
+ insert into payment_methods(name) values('RP5 Cash') returning id into pm;
+ insert into credit_packages(name,customer_price,paid_credit_amount,bonus_enabled,bonus_mode,bonus_value,
+                             allow_product,allow_therapy)
+   values('RP5 Package',5000,5000,true,'fixed',500,true,true) returning id into cp;
+ insert into credit_package_stores(package_id,store_id) values(cp,st);
+
+ inv := create_invoice(st,c,null,jsonb_build_array(
+   jsonb_build_object('kind','credit_package','credit_package_id',cp,'quantity',1)));
+
+ -- Reproduce a pre-327 invoice: money received, nothing released. The credit
+ -- ledger is append-only by design, so the state is created by taking the
+ -- payment with the trigger off rather than by deleting what it wrote.
+ alter table invoices disable trigger create_therapy_on_paid;
+ perform record_invoice_payment(inv,jsonb_build_array(
+   jsonb_build_object('payment_method_id',pm,'amount',1000)),gen_random_uuid());
+ alter table invoices enable trigger create_therapy_on_paid;
+ update invoices set business_date = current_date - 400 where id = inv;
+
+ select coalesce(sum(original_amount),0) into paid
+   from customer_credit_lots where customer_id=c and category='paid' and status<>'reversed';
+ if paid <> 0 then raise exception 'FAIL: fixture did not reproduce the pre-327 state (%)', paid; end if;
+
+ -- An age cutoff shorter than the invoice leaves it alone.
+ if (current_date - (select coalesce(business_date, created_at::date) from invoices where id=inv)) <= 180 then
+   raise exception 'FAIL: fixture invoice is not old enough to test the cutoff'; end if;
+
+ -- The backfill, for invoices up to a year old: this one is 400 days old.
+ for old_inv in
+   select i.id from invoices i
+    join invoice_items it on it.invoice_id=i.id and it.line_kind='credit_package'
+   where i.deleted_at is null and i.status not in ('cancelled','refunded','draft')
+     and it.credit_issued_at is null and coalesce(i.paid_amount,0) > 0
+     and (current_date - coalesce(i.business_date, i.created_at::date)) <= 365
+ loop
+   perform release_credit_package_paid_credit(old_inv);
+ end loop;
+
+ select coalesce(sum(original_amount),0) into paid
+   from customer_credit_lots where customer_id=c and category='paid' and status<>'reversed';
+ if paid <> 0 then
+   raise exception 'FAIL: a 400-day-old invoice was released under a 365-day cutoff (%)', paid; end if;
+
+ -- The backfill with no cutoff reaches it.
+ for old_inv in
+   select i.id from invoices i
+    join invoice_items it on it.invoice_id=i.id and it.line_kind='credit_package'
+   where i.deleted_at is null and i.status not in ('cancelled','refunded','draft')
+     and it.credit_issued_at is null and coalesce(i.paid_amount,0) > 0
+ loop
+   perform release_credit_package_paid_credit(old_inv);
+ end loop;
+
+ select coalesce(sum(original_amount),0) into paid
+   from customer_credit_lots where customer_id=c and category='paid' and status<>'reversed';
+ if paid <> 1000 then
+   raise exception 'FAIL: backfill should have released 1000, released %', paid; end if;
+
+ -- Running it a second time must not pay the customer twice.
+ perform release_credit_package_paid_credit(inv);
+ select coalesce(sum(original_amount),0) into paid
+   from customer_credit_lots where customer_id=c and category='paid' and status<>'reversed';
+ if paid <> 1000 then
+   raise exception 'FAIL: a second backfill run released again, total now %', paid; end if;
+
+ -- And the rewards are still waiting for the last payment.
+ select count(*) into n from customer_credit_lots
+  where customer_id=c and category='bonus' and status<>'reversed';
+ if n <> 0 then raise exception 'FAIL: backfill released bonus credit'; end if;
+ select count(*) into n from credit_package_sales where invoice_id=inv;
+ if n <> 0 then raise exception 'FAIL: backfill wrote a sale record'; end if;
+
+ raise notice 'PASS: backfill honours the age cutoff, releases 1000 once, never twice, and grants no rewards';
+end $$;
+rollback;
