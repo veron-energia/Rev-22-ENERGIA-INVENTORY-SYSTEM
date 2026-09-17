@@ -12,7 +12,7 @@ import { PaymentPriceReview, PriceReviewResult } from '../components/PricingCont
 import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
-  Invoice, InvoiceItem, InvoicePayment, Store, Product, Customer,
+  Invoice, InvoiceItem, InvoicePayment, Store, Product,
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { QuickCustomerModal } from '../components/customers/QuickCustomerModal';
@@ -63,34 +63,52 @@ const InvoicesPage: React.FC = () => {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [choiceGroups, setChoiceGroups] = useState<PromotionChoiceGroup[]>([]);
   const [promoItems, setPromoItems] = useState<any[]>([]);
-  // The customers array is capped at 1000 rows by Supabase, so an invoice for
-  // a customer outside that set had no name to show. Names for the customers
-  // actually referenced are fetched by id instead, which is correct at any
-  // table size.
+  // Whole customer records — name, phone, email, referrer — for the few
+  // customers a screen actually needs one for: the invoice being viewed, the
+  // one chosen in the form, their referrer. Fetched by id, so this is correct
+  // and cheap at any table size.
   const [customerById, setCustomerById] = useState<Record<string, any>>({});
-  const ensureCustomers = useCallback(async (ids: (string | null | undefined)[]) => {
-    const wanted = Array.from(new Set(ids.filter(Boolean) as string[]));
-    if (wanted.length === 0) return;
-    setCustomerById(prev => {
-      const missing = wanted.filter(id => !prev[id]);
-      if (missing.length === 0) return prev;
-      (async () => {
-        const found: Record<string, any> = {};
-        for (let i = 0; i < missing.length; i += 200) {
-          const { data } = await supabase.from('customers')
-            .select('id, full_name, phone, email, referred_by')
-            .in('id', missing.slice(i, i + 200));
-          for (const c of (data as any[]) ?? []) found[c.id] = c;
-        }
-        if (Object.keys(found).length > 0) setCustomerById(cur => ({ ...cur, ...found }));
-      })();
-      return prev;
+  // Each list row arrives with its customer's name attached, from the same
+  // query that produced the row, so labelling a page of invoices costs no
+  // request at all. Kept apart from customerById, which holds whole records —
+  // a name here must never be mistaken for a customer whose phone is missing.
+  const [nameById, setNameById] = useState<Record<string, string>>({});
+  const rememberNames = useCallback((rows: { customer_id?: string | null; customer_name?: string | null }[]) => {
+    setNameById(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const r of rows) {
+        const id = r.customer_id, name = r.customer_name;
+        if (id && name && next[id] !== name) { next[id] = name; changed = true; }
+      }
+      return changed ? next : prev;
     });
+  }, []);
+  // Ids already fetched or in flight. Without this an effect that re-runs while
+  // a request is still out — which is what following a referral chain does —
+  // asks for the same customer twice.
+  const customerAskedRef = useRef<Set<string>>(new Set());
+  const ensureCustomers = useCallback(async (ids: (string | null | undefined)[]) => {
+    const wanted = Array.from(new Set(ids.filter(Boolean) as string[]))
+      .filter(id => !customerAskedRef.current.has(id));
+    if (wanted.length === 0) return;
+    for (const id of wanted) customerAskedRef.current.add(id);
+    const found: Record<string, any> = {};
+    for (let i = 0; i < wanted.length; i += 200) {
+      const slice = wanted.slice(i, i + 200);
+      const { data, error } = await supabase.from('customers')
+        .select('id, full_name, phone, email, referred_by')
+        .in('id', slice);
+      // A failed request must not mark those ids as settled, or the names
+      // would stay missing until the page is reloaded.
+      if (error) { for (const id of slice) customerAskedRef.current.delete(id); continue; }
+      for (const c of (data as any[]) ?? []) found[c.id] = c;
+    }
+    if (Object.keys(found).length > 0) setCustomerById(cur => ({ ...cur, ...found }));
   }, []);
   const [choiceOptions, setChoiceOptions] = useState<PromotionChoiceOption[]>([]);
   const [storeInv, setStoreInv] = useState<any[]>([]);
@@ -134,6 +152,13 @@ const InvoicesPage: React.FC = () => {
   const [issuedHeaderBefore, setIssuedHeaderBefore] = useState<{ customer: string; store: string } | null>(null);
   useEffect(() => { setIssuedRecipientsConfirmed(false); }, [cCustomer, cStore]);
   useEffect(() => { if (cCustomer) void ensureCustomers([cCustomer]); }, [cCustomer, ensureCustomers]);
+  // The commission note names the referrer, so the chain is followed one
+  // link up by id. ensureCustomers ignores ids it already holds, so this
+  // settles after a single request.
+  useEffect(() => {
+    const referrerId = cCustomer ? customerById[cCustomer]?.referred_by : null;
+    if (referrerId) void ensureCustomers([referrerId]);
+  }, [cCustomer, customerById, ensureCustomers]);
   // Declared HERE, above lineUnit(), which reads it. A `const` is not hoisted:
   // declaring this further down put it in the temporal dead zone, so the first
   // render threw "Cannot access 'specialProducts' before initialization" and
@@ -280,7 +305,7 @@ const InvoicesPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [inv, allPays, st, pr, cu, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
+    const [inv, allPays, st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
       // The list itself is paged now, so loadAll no longer fetches invoices.
       Promise.resolve({ data: [] as Invoice[], error: null as { message: string } | null }),
       // Payment methods are fetched per page now, for the ~25 invoices on
@@ -288,9 +313,10 @@ const InvoicesPage: React.FC = () => {
       Promise.resolve([] as any[]),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      // CustomerSearchSelect exists because this table is too large to hold in
-      // the browser; until this load is narrowed, at least read all of it.
-      fetchAllFrom<any>('customers', '*', q => q.is('deleted_at', null), ['full_name', 'id']),
+      // The customers table is deliberately absent. It was read whole here —
+      // one request per thousand rows, every time the page opened — to label
+      // list rows the database already labels, and to feed a selector that
+      // searches the server itself.
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       fetchAllFrom<any>('store_product_prices', '*', q => q.is('deleted_at', null)),
       supabase.from('vouchers').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -321,10 +347,6 @@ const InvoicesPage: React.FC = () => {
     // ever recorded and mapping the lot.
     setStores((st.data as Store[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
-    setCustomers(cu as Customer[]);
-    // Names for every customer on the loaded invoices, regardless of where
-    // they fall alphabetically.
-    void ensureCustomers(((inv.data as Invoice[]) ?? []).map(i => i.customer_id));
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setPrices(pp as StoreProductPrice[]);
     setVouchers((vc.data as Voucher[]) ?? []);
@@ -354,8 +376,11 @@ const InvoicesPage: React.FC = () => {
 
   const storeName = (id: string) => stores.find(s => s.id === id)?.name ?? '—';
   const customerOf = (id: string | null | undefined) =>
-    (id ? customerById[id] : null) ?? customers.find(c => c.id === id) ?? null;
-  const custName = (id: string) => customerOf(id)?.full_name ?? '—';
+    (id ? customerById[id] : null) ?? null;
+  // A whole record if one has been fetched, otherwise the name the list row
+  // carried. Either way the row is never left showing a dash for a customer
+  // the database just named.
+  const custName = (id: string) => customerOf(id)?.full_name ?? nameById[id] ?? '—';
   const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
   const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
   // Credit Package / Premium Bundle lines carry their name in plan_name_snapshot
@@ -1347,7 +1372,9 @@ const InvoicesPage: React.FC = () => {
   const handleSplitCreated = (result: any) => {
     setCreateOpen(false); setSplitMode(false); resetCreate();
     setEditingInvoiceId(null); setEditingPaid(false);
-    setSplitSummary({ package_name: result?.package_name ?? result?.bundle_name ?? 'Split', invoices: result?.invoices ?? [] });
+    const made = (result?.invoices ?? []) as any[];
+    setSplitSummary({ package_name: result?.package_name ?? result?.bundle_name ?? 'Split', invoices: made });
+    void ensureCustomers(made.map(iv => iv.customer_id));
     void loadAll();
   };
 
@@ -1372,7 +1399,7 @@ const InvoicesPage: React.FC = () => {
     const { data } = await supabase.from('customers')
       .select('id, full_name, phone, email, referred_by').eq('id', id).maybeSingle();
     if (!data) return;
-    setCustomers(prev => prev.some(c => c.id === id) ? prev : [...prev, data as any]);
+    setCustomerById(cur => ({ ...cur, [id]: data }));
   }, []);
 
   /** Payment methods for a set of invoices, in batches — one request per page
@@ -1411,6 +1438,7 @@ const InvoicesPage: React.FC = () => {
       if (ticket !== pageRequestRef.current) return;   // a newer request won
       setPageRows(res.rows); setPageTotal(res.total);
       setPageCount(res.pages); setPageSummary(res.summary);
+      rememberNames(res.rows as any[]);
       void loadPaymentMethodsFor(res.rows.map(r => r.id));
       // Deleting or filtering can strand the viewer past the end; step back
       // rather than showing an empty page that looks like "no results".
@@ -1423,7 +1451,7 @@ const InvoicesPage: React.FC = () => {
     } finally {
       if (ticket === pageRequestRef.current) setPageLoading(false);
     }
-  }, [listQuery, pageSize, loadPaymentMethodsFor]);
+  }, [listQuery, pageSize, loadPaymentMethodsFor, rememberNames]);
 
   // Any change to what is being asked for goes back to page one.
   useEffect(() => { setPage(1); }, [listQuery, pageSize]);
@@ -1813,7 +1841,7 @@ const InvoicesPage: React.FC = () => {
               { header: 'Invoice', value: (i: any) => i.invoice_no },
               { header: 'Date', value: (i: Invoice) => displayInvoiceDate(i) },
               { header: 'Store', value: (i: any) => storeName(i.store_id) },
-              { header: 'Customer', value: (i: any) => custName(i.customer_id) },
+              { header: 'Customer', value: (i: any) => i.customer_name ?? custName(i.customer_id) },
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
               { header: 'Net payments held', value: (i: any) => Number(i.paid_amount ?? 0) },
               { header: 'Instalments', value: (i: any) => instalmentText(i, methods) },
