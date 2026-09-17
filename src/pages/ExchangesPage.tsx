@@ -36,12 +36,15 @@ const ExchangesPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [ex, exinv, pr, st, cu, pm, spp, si, mine, myStoreList, promo] = await Promise.all([
+    const [ex, exinv, pr, st, pm, spp, si, mine, myStoreList, promo] = await Promise.all([
       supabase.from('product_exchanges').select('*').order('created_at', { ascending: false }),
       supabase.from('invoices').select('id, invoice_no, exchange_id').eq('is_exchange', true),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('customers').select('*').is('deleted_at', null),
+      // The customers table is deliberately absent. It was read whole here, a
+      // thousand rows of every column on each page open, to supply names that
+      // the by-id lookup below already supplies — and that the thousand-row cap
+      // could not have guaranteed in any case.
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('store_product_prices').select('store_id,product_id,selling_price,is_active').eq('is_active', true),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
@@ -55,15 +58,12 @@ const ExchangesPage: React.FC = () => {
     setExchangeInvoiceNos(exMap);
     setProducts((pr.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
-    const baseCustomers = (cu.data as Customer[]) ?? [];
-    setCustomers(baseCustomers);
-    // The customer table is capped at 1000 rows per request, so records
-    // belonging to customers outside that set would show no name. Fetch the
-    // ones actually referenced here.
-    void (async () => {
-      const extra = await fetchCustomersByIds(((ex.data as any[]) ?? []).map(x => x.customer_id));
-      setCustomers(cur => mergeCustomers(cur, extra));
-    })();
+    // Exactly the customers these exchanges name, by id, which is correct at
+    // any table size and reaches historical records the live list excludes.
+    // Awaited rather than left running: the rows are rendered once, with their
+    // names, instead of appearing as dashes that fill in a moment later.
+    const named = await fetchCustomersByIds(((ex.data as any[]) ?? []).map(x => x.customer_id));
+    setCustomers(cur => mergeCustomers(cur, named));
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setPrices((spp.data as any[]) ?? []);
     setStoreInv((si.data as any[]) ?? []);
