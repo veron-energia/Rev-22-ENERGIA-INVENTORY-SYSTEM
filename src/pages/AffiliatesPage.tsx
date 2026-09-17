@@ -15,6 +15,10 @@ interface DirRow {
   referral_code: string | null; portal_account: 'not_claimed' | 'claimed' | 'disabled';
   direct_referrals: number; tier2: number; lifetime: number; unpaid: number; blocked: number; last_commission: string | null;
 }
+/** What a staff login may see: enough to identify an affiliate and hand over
+ *  their link. Nothing about money, purchases, claims or accounts. */
+interface StaffRow { customer_id: string; full_name: string; referral_code: string | null; status: string; link_usable: boolean; }
+
 interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; entered_name?: string | null; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; rejected_at?: string | null; rejection_reason?: string | null; }
 
 const PORTAL: Record<string, { cls: string; label: string }> = {
@@ -36,6 +40,19 @@ const AffiliatesPage: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
+  // The affiliate whose referral link/QR is open. The code shown is the one
+  // already on the row — the same one the portal shows the affiliate — so
+  // opening this never creates or rotates anything.
+  const [linkFor, setLinkFor] = useState<{ name: string; code: string | null; usable: boolean; status: string } | null>(null);
+
+  // Staff directory: searched and paged on the server, because it is
+  // company-wide and the API row limit would otherwise cut it off silently.
+  const STAFF_PAGE = 50;
+  const [staffRows, setStaffRows] = useState<StaffRow[]>([]);
+  const [staffTotal, setStaffTotal] = useState(0);
+  const [staffPage, setStaffPage] = useState(1);
+  const [staffQ, setStaffQ] = useState('');
+  const staffTicket = React.useRef(0);
 
   // Correct-referrer modal
   const [fixFor, setFixFor] = useState<DirRow | null>(null);
@@ -49,7 +66,20 @@ const AffiliatesPage: React.FC = () => {
   // Delete-claim confirmation
   const [deleteFor, setDeleteFor] = useState<ClaimRow | null>(null);
 
+  const loadStaffDirectory = useCallback(async (query: string, page: number) => {
+    const ticket = ++staffTicket.current;
+    setLoading(true); setErr(null);
+    const { data, error } = await supabase.rpc('affiliate_staff_directory',
+      { p_search: query.trim() || null, p_limit: STAFF_PAGE, p_offset: (page - 1) * STAFF_PAGE });
+    if (ticket !== staffTicket.current) return;   // a newer search won
+    setLoading(false);
+    if (error) { setErr(error.message); return; }
+    setStaffRows(((data as any)?.rows ?? []) as StaffRow[]);
+    setStaffTotal(Number((data as any)?.total ?? 0));
+  }, []);
+
   const load = useCallback(async () => {
+    if (!canManage) { await loadStaffDirectory(staffQ, staffPage); return; }
     setLoading(true); setErr(null);
     const [dir, cl, rj] = await Promise.all([
       supabase.rpc('affiliate_admin_directory'),
@@ -61,8 +91,14 @@ const AffiliatesPage: React.FC = () => {
     setClaims((cl.data as ClaimRow[]) ?? []);
     setRejected((rj.data as ClaimRow[]) ?? []);
     setLoading(false);
-  }, []);
+  }, [canManage, loadStaffDirectory, staffQ, staffPage]);
   useEffect(() => { load(); }, [load]);
+  // A request per keystroke would be one per letter of a name.
+  useEffect(() => {
+    if (canManage) return;
+    const t = setTimeout(() => { setStaffPage(1); void loadStaffDirectory(staffQ, 1); }, 300);
+    return () => clearTimeout(t);
+  }, [staffQ, canManage, loadStaffDirectory]);
 
   const act = async (fn: string, args: any, key: string, okMsg?: string) => {
     setBusy(key); setErr(null); setSuccess(null);
@@ -117,6 +153,8 @@ const AffiliatesPage: React.FC = () => {
   };
 
   const activationUrl = `${publicAppUrl()}/affiliate/join`;
+  // Reuses the portal's own link format; a code is never minted here.
+  const referralUrl = (code: string) => `${publicAppUrl()}/r/${code}`;
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -130,7 +168,9 @@ const AffiliatesPage: React.FC = () => {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Affiliates</h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginTop: 2 }}>
-            Customers register as affiliates through the Affiliate Signup QR/link. Owner/Manager can suspend or reactivate affiliate accounts.
+            {canManage
+              ? 'Customers register as affiliates through the Affiliate Signup QR/link. Owner/Manager can suspend or reactivate affiliate accounts.'
+              : 'Find an affiliate and hand over their referral link or QR code. Changes to affiliate accounts are made by an Owner or Manager.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -203,10 +243,43 @@ const AffiliatesPage: React.FC = () => {
 
       <div style={{ position: 'relative', marginBottom: 12, maxWidth: 320 }}>
         <Search size={15} style={{ position: 'absolute', left: 10, top: 10, color: 'var(--text-muted)' }} />
-        <input className="input" style={{ paddingLeft: 32 }} placeholder="Search name or code…" value={q} onChange={e => setQ(e.target.value)} />
+        <input className="input" style={{ paddingLeft: 32 }} placeholder="Search name or code…" aria-label="Search affiliates"
+          value={canManage ? q : staffQ} onChange={e => canManage ? setQ(e.target.value) : setStaffQ(e.target.value)} />
       </div>
 
-      <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+      {!canManage && (
+        <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+          <table className="table" style={{ width: '100%' }}>
+            <thead><tr><th>Affiliate</th><th>Status</th><th>Referral Code</th><th>Referral Link</th></tr></thead>
+            <tbody>
+              {loading && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>Loading…</td></tr>}
+              {!loading && staffRows.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>No affiliates found</td></tr>}
+              {staffRows.map(r => (
+                <tr key={r.customer_id}>
+                  <td style={{ fontWeight: 500 }}>{r.full_name}</td>
+                  <td><span className={'badge ' + (r.link_usable ? 'badge-success' : 'badge-danger')}>{r.status === 'suspended' ? 'Suspended' : r.status === 'active' ? 'Active' : r.status}</span></td>
+                  <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{r.referral_code ?? '—'}</td>
+                  <td>
+                    <button type="button" className="btn btn-secondary btn-sm" style={{ gap: 4 }} disabled={!r.referral_code}
+                      onClick={() => setLinkFor({ name: r.full_name, code: r.referral_code, usable: r.link_usable, status: r.status })}>
+                      <QrCode size={14} /> QR &amp; link
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', fontSize: 12.5, color: 'var(--text-muted)', flexWrap: 'wrap', gap: 8 }}>
+            <span>{staffTotal === 0 ? 'No affiliates' : `${(staffPage - 1) * STAFF_PAGE + 1}–${Math.min(staffPage * STAFF_PAGE, staffTotal)} of ${staffTotal}`}</span>
+            <span style={{ display: 'flex', gap: 6 }}>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={staffPage <= 1} onClick={() => setStaffPage(p => p - 1)}>Previous</button>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={staffPage * STAFF_PAGE >= staffTotal} onClick={() => setStaffPage(p => p + 1)}>Next</button>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {canManage && <div className="card" style={{ padding: 0, overflow: 'auto' }}>
         <table className="table" style={{ width: '100%' }}>
           <thead><tr>
             <th>Affiliate</th><th>Status</th><th>Portal Account</th><th>Referral Code</th>
@@ -234,6 +307,8 @@ const AffiliatesPage: React.FC = () => {
                   <td>{d(r.last_commission)}</td>
                   {canManage && (
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-secondary btn-sm" title="Referral QR and link" disabled={!r.referral_code} style={{ marginRight: 6 }}
+                        onClick={() => setLinkFor({ name: r.name, code: r.referral_code, usable: !suspended && r.status === 'active', status: suspended ? 'suspended' : r.status })}><QrCode size={14} /></button>
                       <button className="btn btn-secondary btn-sm" title="Correct referrer" onClick={() => { setFixFor(r); setFixRef(''); setFixReason(''); }} style={{ marginRight: 6 }}><Edit3 size={14} /></button>
                       {suspended
                         ? <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => reactivate(r)} style={{ gap: 4 }}><PlayCircle size={14} /> Reactivate</button>
@@ -245,7 +320,25 @@ const AffiliatesPage: React.FC = () => {
             })}
           </tbody>
         </table>
-      </div>
+      </div>}
+
+      {/* One affiliate's referral link and QR. Shown for suspended affiliates
+          too, with the state made plain: a link that registers nobody is still
+          the right answer to "what is their link". */}
+      {linkFor && (
+        <Modal title={`Referral link — ${linkFor.name}`} onClose={() => setLinkFor(null)}>
+          {!linkFor.usable && (
+            <div className="alert alert-danger" style={{ marginBottom: 12 }}>
+              This affiliate is {linkFor.status === 'suspended' ? 'suspended' : linkFor.status}. Their link will not register new referrals until an Owner or Manager changes that.
+            </div>
+          )}
+          {linkFor.code
+            ? <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <QRCodeCard url={referralUrl(linkFor.code)} title="Referral link" filename={`energia-referral-${linkFor.code}`} />
+              </div>
+            : <p>This affiliate has no referral code.</p>}
+        </Modal>
+      )}
 
       {/* Affiliate Activation QR */}
       {qrOpen && (

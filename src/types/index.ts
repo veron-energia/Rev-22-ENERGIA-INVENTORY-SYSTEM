@@ -372,6 +372,9 @@ export interface Invoice {
   status: InvoiceStatus;
   subtotal: number;
   discount_total: number;
+  manual_discount?: number | null;
+  /** Internal. Required when a manual discount is set or changed; never on customer documents. */
+  manual_discount_reason?: string | null;
   total_amount: number;
   paid_amount: number;
   created_at: string;

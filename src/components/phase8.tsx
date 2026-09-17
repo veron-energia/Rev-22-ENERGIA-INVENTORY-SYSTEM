@@ -40,23 +40,3 @@ export const BlockedCommission: React.FC<{ amount: number }> = ({ amount }) =>
   Number(amount) > 0
     ? <span style={{ color: 'var(--danger)', fontWeight: 600 }}>{money(amount)}</span>
     : <span style={{ color: 'var(--text-muted)' }}>—</span>;
-
-// Save Earth editor — checkbox + editable label/amount (per-invoice).
-export const SaveEarthEditor: React.FC<{
-  applied: boolean; label: string; amount: number; defaultLabel: string; defaultAmount: number;
-  onChange: (applied: boolean, label: string, amount: number) => void;
-}> = ({ applied, label, amount, defaultLabel, defaultAmount, onChange }) => (
-  <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-      <input type="checkbox" checked={applied} style={{ width: 'auto' }}
-        onChange={e => onChange(e.target.checked, e.target.checked ? defaultLabel : label, e.target.checked ? defaultAmount : amount)} />
-      {defaultLabel} ({money(defaultAmount)})
-    </label>
-    {applied && (
-      <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-        <input value={label} onChange={e => onChange(true, e.target.value, amount)} placeholder="Label for this invoice" style={{ flex: 1, minWidth: 160 }} />
-        <input type="number" min={0} step={0.01} value={amount} onChange={e => onChange(true, label, Math.max(0, +e.target.value))} style={{ width: 110 }} />
-      </div>
-    )}
-  </div>
-);

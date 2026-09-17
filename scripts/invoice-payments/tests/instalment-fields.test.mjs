@@ -44,18 +44,19 @@ const check = (name, cond, detail) => {
 };
 
 // ---- the rules -----------------------------------------------------------
-const ok = { category: 'in_house', method_id: 'pm-1', months: 12, covered_amount: 900 };
-check('a complete portion is accepted', portionProblem(ok, 0) === null);
-check('a missing category is caught', /in-house or provider-funded/.test(portionProblem({ ...ok, category: '' }, 0)));
-check('a missing underlying method is caught', /actually comes through/.test(portionProblem({ ...ok, method_id: '' }, 0)));
+// An instalment is a label on money that has arrived (326): one amount, the
+// real method it came through, and a duration for the record.
+const ok = { method_id: 'pm-1', months: 12 };
+check('a complete instalment with money is accepted', portionProblem(ok, 1080) === null);
+check('a missing underlying method is caught', /actually comes through/.test(portionProblem({ ...ok, method_id: '' }, 1080)));
 check('instalment cannot be its own method',
-  /its own payment method/.test(portionProblem({ ...ok, method_id: INSTALMENT_METHOD }, 0)));
-check('zero months is caught', /positive whole number/.test(portionProblem({ ...ok, months: 0 }, 0)));
-check('a fractional duration is caught', /positive whole number/.test(portionProblem({ ...ok, months: 2.5 }, 0)));
-check('a missing covered amount is caught', /amount this arrangement covers/.test(portionProblem({ ...ok, covered_amount: 0 }, 0)));
-check('nothing received today is perfectly valid', portionProblem(ok, 0) === null);
-check('a negative receipt is caught', /cannot be negative/.test(portionProblem(ok, -5)));
-check('the default portion still needs a method', portionProblem(emptyPortion, 0) !== null);
+  /its own payment method/.test(portionProblem({ ...ok, method_id: INSTALMENT_METHOD }, 1080)));
+check('zero months is caught', /positive whole number/.test(portionProblem({ ...ok, months: 0 }, 1080)));
+check('a fractional duration is caught', /positive whole number/.test(portionProblem({ ...ok, months: 2.5 }, 1080)));
+check('an amount is required: nothing received is no longer the normal case',
+  /amount received/.test(portionProblem(ok, 0)));
+check('a negative amount is refused the same way', /amount received/.test(portionProblem(ok, -5)));
+check('the default portion still needs a method', portionProblem(emptyPortion, 100) !== null);
 
 // ---- the fields ----------------------------------------------------------
 const root = createRoot(document.getElementById('root'));
@@ -80,14 +81,14 @@ const render = async () => {
 await render();
 const text = () => document.body.textContent;
 
-check('both categories are offered',
-  text().includes('In-house') && text().includes('Provider-funded'));
+check('no category is offered any more: every instalment is in-house',
+  !text().includes('Provider-funded') && !text().includes('Category'));
 check('the presets are offered', [3, 6, 9, 12].every(n =>
   Array.from(document.querySelectorAll('.instalment-months .btn')).some(b => b.textContent.trim() === String(n))));
 check('a custom duration can be typed',
   !!document.querySelector('.instalment-months input[type="number"]'));
-check('the covered amount and the money received now are asked separately',
-  text().includes('Amount covered by this arrangement') && text().includes('Amount actually received now'));
+check('one amount is asked for, not a covered sum and a deposit',
+  text().includes('Amount') && !text().includes('Amount covered by this arrangement') && !text().includes('Amount actually received now'));
 check('the current preset is marked for assistive technology',
   !!document.querySelector('.instalment-months .btn[aria-pressed="true"]'));
 
@@ -100,15 +101,11 @@ check('a retired method is not offered', !options.some(o => (o ?? '').includes('
 check('Instalment is not offered as its own method',
   !options.some(o => (o ?? '').toLowerCase().includes('instalment — pay over time')));
 
-// In-house wording tells staff a promise is not money.
-check('in-house explains that nothing has been paid yet',
-  text().includes('the arrangement on its own settles nothing'));
-value = { ...value, category: 'provider_funded' };
-await render();
-check('provider-funded explains it is a real settlement',
-  text().includes('What the provider has actually settled'));
+// The wording says what the amount is: money that settles the invoice today.
+check('the amount is explained as settling the invoice today',
+  text().includes('settles the') && text().includes('nothing is left outstanding'));
 
 console.log(failures === 0
-  ? '\nPASS: instalment rules reject every incomplete or recursive portion, the fields offer both categories, four presets and a custom duration, and keep the covered amount separate from money actually received'
+  ? '\nPASS: instalment rules reject every incomplete or recursive portion and require an amount, the fields offer no category, four presets, a custom duration and a single amount that settles the invoice today'
   : `\nFAILED: ${failures} check(s)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -173,14 +173,18 @@ const InvoicesPage: React.FC = () => {
   };
   const [cDiscountVoucher, setCDiscountVoucher] = useState('');
   const [cDiscount, setCDiscount] = useState(0);
-  const [saveEarthOn, setSaveEarthOn] = useState(false);
-  const [saveEarthLabel, setSaveEarthLabel] = useState('Save Earth Project');
-  const [saveEarthAmount, setSaveEarthAmount] = useState(1);
-  const [saveEarthDefault, setSaveEarthDefault] = useState<{ label: string; amount: number }>({ label: 'Save Earth Project', amount: 1 });
-  const [seSettingsOpen, setSeSettingsOpen] = useState(false);
-  const [seLabel, setSeLabel] = useState('Save Earth Project');
-  const [seAmount, setSeAmount] = useState(1);
-  const [seBusy, setSeBusy] = useState(false);
+  // Internal reason for a manual discount. Its own field: not the customer
+  // notes and not the correction reason. Required on the server whenever a
+  // positive discount is set or changed; the form asks first so the refusal
+  // arrives with the field focused rather than as a message from the save.
+  const [cDiscountReason, setCDiscountReason] = useState('');
+  const [discountReasonErr, setDiscountReasonErr] = useState<string | null>(null);
+  const [discountBeforeEdit, setDiscountBeforeEdit] = useState(0);
+  const discountReasonRef = useRef<HTMLInputElement>(null);
+  // Focus is moved by an effect, not a frame callback: it then happens on the
+  // commit that shows the error, and cannot be lost to a throttled frame.
+  const [reasonFocusTick, setReasonFocusTick] = useState(0);
+  useEffect(() => { if (reasonFocusTick) discountReasonRef.current?.focus(); }, [reasonFocusTick]);
   const [cErr, setCErr] = useState<string | null>(null);
   const [cSaving, setCSaving] = useState(false);
   const [splitMode, setSplitMode] = useState(false);
@@ -332,7 +336,8 @@ const InvoicesPage: React.FC = () => {
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).eq('is_active', true).order('duration_months'),
       supabase.from('unlimited_therapy_store_prices').select('*').is('deleted_at', null),
-      supabase.from('app_settings').select('save_earth_label, save_earth_amount').maybeSingle(),
+      // Save Earth defaults used to be read here; the feature is withdrawn (330).
+      Promise.resolve({ data: null as any }),
       supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
       supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
       supabase.rpc('active_foc_reasons'),
@@ -365,8 +370,6 @@ const InvoicesPage: React.FC = () => {
     setTherapyServices((services.data as any[]) ?? []);
     setTherapyServiceStores((serviceStores.data as any[]) ?? []);
     setTherapyPrices((utsp?.data as any[]) ?? []);
-    const se = aset?.data as any;
-    if (se) setSaveEarthDefault({ label: se.save_earth_label ?? 'Save Earth Project', amount: Number(se.save_earth_amount ?? 1) });
     setVoucherStorePrices((vsp.data as any[]) ?? []);
     setPromoStorePrices((psp.data as any[]) ?? []);
     setFocReasons((focr?.data as FocReason[]) ?? []);
@@ -692,9 +695,8 @@ const InvoicesPage: React.FC = () => {
     const manual = Math.min(cDiscount || 0, Math.max(0, gross));
     const voucherBase = Math.max(0, createSubtotal + topupPreview - thirdPartySum - lineVoucherDiscountPreview - manual);
     const invLevel = manual + Math.min(voucherDiscountPreview, voucherBase);
-    const se = saveEarthOn ? Math.max(0, saveEarthAmount || 0) : 0;
-    return Math.max(0, gross - invLevel - se);
-  }, [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview, voucherDiscountPreview, saveEarthOn, saveEarthAmount]);
+    return Math.max(0, gross - invLevel);
+  }, [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview, voucherDiscountPreview]);
 
 
   // All vouchers can be sold as a line item (a discount voucher sold now is
@@ -713,7 +715,7 @@ const InvoicesPage: React.FC = () => {
     setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setBenefitAction(''); setPayFix({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
-    setSaveEarthOn(false); setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount);
+    setCDiscountReason(''); setDiscountReasonErr(null); setDiscountBeforeEdit(0);
   };
 
   const handleCreate = async () => {
@@ -828,6 +830,17 @@ const InvoicesPage: React.FC = () => {
       setCErr('Give a reason for the invoice correction — it is kept in the revision history.');
       setCSaving(false); return;
     }
+    // The same rule the server enforces: a positive discount that is new, or
+    // changed, needs a reason. An unchanged historical one does not.
+    const needsDiscountReason = (cDiscount || 0) > 0
+      && (!editingInvoiceId || Number(cDiscount) !== Number(discountBeforeEdit));
+    if (needsDiscountReason && !cDiscountReason.trim()) {
+      setDiscountReasonErr('Give the internal reason for this manual discount.');
+      setCErr('A manual discount needs a reason before the invoice can be saved.');
+      setCSaving(false);
+      setReasonFocusTick(t => t + 1);
+      return;
+    }
 
     const header = {
       customer_id: cCustomer, store_id: effectiveStore, notes: cNotes || null,
@@ -838,7 +851,9 @@ const InvoicesPage: React.FC = () => {
       instalment_category: cInstalment.instalment_category || null,
       instalment_method_id: cInstalment.instalment_method_id || null,
       instalment_months: cInstalment.instalment_months || null,
-      save_earth_applied: saveEarthOn, save_earth_label: saveEarthLabel, save_earth_amount: saveEarthAmount,
+      // Internal. Sent only with a positive discount; the server refuses a
+      // positive discount without one and clears it when the discount goes.
+      manual_discount_reason: (cDiscount || 0) > 0 ? cDiscountReason.trim() : null,
       ...(editingInvoiceId ? { expected_edit_count: expectedEditCount } : {}),
       ...(affTouched ? { affiliate_id: cAffiliate || null } : {}),
       ...(cCreatedBy && cCreatedBy !== createdByBeforeEdit ? { created_by: cCreatedBy } : {}),
@@ -866,6 +881,11 @@ const InvoicesPage: React.FC = () => {
     if (error) {
       setCErr(error.message);
       setCorrectionPreview(null);
+      // The server's refusal names the field; put the cursor in it.
+      if (/MANUAL_DISCOUNT_REASON_REQUIRED/.test(error.message)) {
+        setDiscountReasonErr('Give the internal reason for this manual discount.');
+        setReasonFocusTick(t => t + 1);
+      }
       // This particular refusal has a way forward, so offer it rather than
       // leaving a message the operator can do nothing with.
       if (editingInvoiceId && /Historical component snapshots need review/i.test(error.message)) {
@@ -1000,10 +1020,13 @@ const InvoicesPage: React.FC = () => {
     setCLines(lines.length ? lines : [{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
     setCDiscount(Number((detail as any).manual_discount ?? 0));
     setCDiscountVoucher((detail as any).discount_voucher_id ?? '');
+    // Restored exactly as saved, so an unrelated edit cannot erase it. The
+    // amount at open decides whether a reason is demanded on save: only a
+    // changed positive amount needs one, so history is never asked to invent.
+    setCDiscountReason(String((detail as any).manual_discount_reason ?? ''));
+    setDiscountReasonErr(null);
+    setDiscountBeforeEdit(Number((detail as any).manual_discount ?? 0));
     setCServiceStaff(detailServiceStaff);
-    setSaveEarthOn(!!(detail as any).save_earth_applied);
-    setSaveEarthLabel((detail as any).save_earth_label ?? saveEarthDefault.label);
-    setSaveEarthAmount(Number((detail as any).save_earth_amount ?? saveEarthDefault.amount));
     setEditingInvoiceId(detail.id);
     setEditingPaid(!['draft', 'unpaid'].includes(String(detail.status)) || detailPayments.length > 0);
     setEditReason('');
@@ -1093,6 +1116,13 @@ const InvoicesPage: React.FC = () => {
     const seq = ++detailLoadSeq.current;
     detailIdRef.current = inv.id;
     const superseded = () => seq !== detailLoadSeq.current;
+    // The list row is the page's narrow shape (324): enough to show, not
+    // enough to correct from — it carries no notes, manual discount, voucher
+    // or instalment fields, and openEdit restores all of those from `detail`.
+    // Open from the full row, so nothing the form restores is silently blank.
+    const { data: fullRow } = await supabase.from('invoices').select('*').eq('id', inv.id).maybeSingle();
+    if (superseded()) return;
+    if (fullRow) inv = fullRow as Invoice;
     setPaymentRequestId(crypto.randomUUID());
     setDetail(inv); setDetailFinancial(null);
     setDetailTherapy(null);
@@ -1467,7 +1497,11 @@ const InvoicesPage: React.FC = () => {
 
   // Any change to what is being asked for goes back to page one.
   useEffect(() => { setPage(1); }, [listQuery, pageSize]);
-  useEffect(() => { void loadPage(page); }, [loadPage, page]);
+  // A reversed range is never sent. The list keeps its last good result and
+  // the inputs say what is wrong, rather than the server refusing, or worse,
+  // the dates being quietly swapped.
+  const rangeInvalid = Boolean(dateFrom && dateTo && dateFrom > dateTo);
+  useEffect(() => { if (rangeInvalid) return; void loadPage(page); }, [loadPage, page, rangeInvalid]);
 
   /* The database filters, searches, sorts, counts and totals over every
      invoice the user may see; this is the page it returned. The previous
@@ -1822,7 +1856,6 @@ const InvoicesPage: React.FC = () => {
         <div><h2>Invoices</h2><p>Create invoices for a store. Stock is deducted only when an invoice is fully paid.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={() => { setSeLabel(saveEarthDefault.label); setSeAmount(saveEarthDefault.amount); setSeSettingsOpen(true); }} title="Save Earth defaults">🌱 Save Earth</button>}
           {/* canExport is already Owner/Manager only. */}
           {exportProgress && exportProgress.got < exportProgress.all && (
             <span className="invoice-page-busy" role="status" aria-live="polite">
@@ -1921,7 +1954,7 @@ const InvoicesPage: React.FC = () => {
           if (value === 'pending') { setDateFrom(''); setDateTo(''); }
         }}>
           <option value="all">All invoice dates</option><option value="confirmed">Confirmed dates</option>
-          <option value="pending">Date from creation only ({invoices.filter(i => !i.business_date).length})</option>
+          <option value="pending">Date from creation only</option>
         </select></label>
         <label>Invoice date from<input aria-label="Invoice date from" type="date" value={dateFrom} max={dateTo || undefined}
           disabled={dateFilter === 'pending'} onChange={e => setDateFrom(e.target.value)} /></label>
@@ -1929,6 +1962,17 @@ const InvoicesPage: React.FC = () => {
           disabled={dateFilter === 'pending'} onChange={e => setDateTo(e.target.value)} /></label>
         <button className="btn btn-secondary btn-sm" onClick={() => { setDateFilter('all'); setDateFrom(''); setDateTo(''); }}>All dates</button>
       </div>
+      {rangeInvalid && (
+        <p role="alert" data-testid="invoice-date-range-error" style={{ color: 'var(--danger)', fontSize: 12.5, marginTop: -8, marginBottom: 12 }}>
+          The "from" date is after the "to" date. Correct the range to filter the list.
+        </p>
+      )}
+      {!rangeInvalid && (dateFrom || dateTo) && dateFilter !== 'pending' && (
+        <p data-testid="invoice-date-range-note" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: -8, marginBottom: 12 }}>
+          Showing invoices whose recorded invoice date is {dateFrom && dateTo ? `from ${dateFrom.split('-').reverse().join('/')} to ${dateTo.split('-').reverse().join('/')}` : dateFrom ? `on or after ${dateFrom.split('-').reverse().join('/')}` : `on or before ${dateTo.split('-').reverse().join('/')}`}, both ends included.
+          Invoices with no recorded date are not shown; choose "Date from creation only" to see those.
+        </p>
+      )}
       {dateFilter === 'pending' && <p>These invoices show the date they were created, because no separate invoice date was recorded. Received money is reported on the day it was received, so their reporting is unaffected.
         {isOwnerOrManager(profile?.role) && ' Open an invoice and use Edit Invoice or Correct Invoice to enter a verified date.'}</p>}
       <div className="card">
@@ -2773,19 +2817,28 @@ const InvoicesPage: React.FC = () => {
                   Applies to everything on the invoice — products, third-party items, vouchers,
                   promotions and therapy — capped at the subtotal.
                 </div>
-              </div>
-              <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={saveEarthOn} style={{ width: 'auto' }}
-                    onChange={e => { setSaveEarthOn(e.target.checked); if (e.target.checked) { setSaveEarthLabel(saveEarthDefault.label); setSaveEarthAmount(saveEarthDefault.amount); } }} />
-                  {saveEarthDefault.label} (S${Number(saveEarthDefault.amount).toFixed(2)})
-                </label>
-                {saveEarthOn && (
-                  <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                    <input value={saveEarthLabel} onChange={e => setSaveEarthLabel(e.target.value)} placeholder="Label for this invoice" style={{ flex: 1, minWidth: 160 }} />
-                    <input type="number" min={0} step={0.01} value={saveEarthAmount} onChange={e => setSaveEarthAmount(Math.max(0, +e.target.value))} style={{ width: 110 }} />
-                  </div>
-                )}
+                {(cDiscount || 0) > 0 && (() => {
+                  const required = !editingInvoiceId || Number(cDiscount) !== Number(discountBeforeEdit);
+                  return (
+                    <div style={{ marginTop: 8 }}>
+                      <label htmlFor="manual-discount-reason">Manual discount reason{required && <span aria-hidden="true"> *</span>}</label>
+                      <input id="manual-discount-reason" ref={discountReasonRef} value={cDiscountReason} maxLength={300}
+                        onChange={e => { setCDiscountReason(e.target.value); if (discountReasonErr) setDiscountReasonErr(null); }}
+                        placeholder="Internal — why this discount was given"
+                        aria-required={required} aria-invalid={!!discountReasonErr}
+                        aria-describedby={discountReasonErr ? 'manual-discount-reason-error' : 'manual-discount-reason-help'} />
+                      {discountReasonErr
+                        ? <div id="manual-discount-reason-error" role="alert" style={{ fontSize: 12, color: 'var(--danger)', marginTop: 3 }}>{discountReasonErr}</div>
+                        : <div id="manual-discount-reason-help" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                            {required
+                              ? 'Kept on the invoice record for staff. Never printed or sent to the customer.'
+                              : cDiscountReason.trim()
+                                ? 'Kept on the invoice record for staff. Never printed or sent to the customer.'
+                                : 'No reason was recorded when this discount was given. One is only needed if the amount changes.'}
+                          </div>}
+                    </div>
+                  );
+                })()}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
                 <div style={{ textAlign: 'right', fontSize: 13, color: 'var(--text-secondary)' }}>Subtotal: <strong>{money(createSubtotal)}</strong></div>
@@ -2794,7 +2847,6 @@ const InvoicesPage: React.FC = () => {
                 {(cDiscount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− manual discount {money(cDiscount)}</div>}
                 {lineVoucherDiscountPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− line vouchers {money(lineVoucherDiscountPreview)}</div>}
                 {cDiscountVoucher && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− voucher discount {money(voucherDiscountPreview)}</div>}
-                {saveEarthOn && (saveEarthAmount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− {saveEarthLabel || 'Save Earth'} {money(saveEarthAmount)}</div>}
                 <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 700, marginTop: 2 }}>Total: {money(previewTotal)}</div>
               </div>
             </div>
@@ -2916,6 +2968,14 @@ const InvoicesPage: React.FC = () => {
                 An ordinary unpaid invoice offers Edit Invoice there instead. */}
             <div data-testid="invoice-detail-date"><strong>Invoice date: {displayInvoiceDate(detail)}</strong>
             </div>
+            {Number((detail as any).manual_discount ?? 0) > 0 && (
+              <p data-testid="invoice-detail-discount-reason" style={{ fontSize: 12.5, margin: 0 }}>
+                Manual discount {money(Number((detail as any).manual_discount))} · internal reason:{' '}
+                {String((detail as any).manual_discount_reason ?? '').trim()
+                  ? <strong>{(detail as any).manual_discount_reason}</strong>
+                  : <em>none recorded (given before reasons were required)</em>}
+              </p>
+            )}
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
               requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
@@ -3490,24 +3550,6 @@ const InvoicesPage: React.FC = () => {
         </Modal>
       )}
 
-      {seSettingsOpen && (
-        <Modal title="Save Earth Project — Global Defaults" maxWidth={420} onClose={() => setSeSettingsOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setSeSettingsOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" disabled={seBusy} onClick={async () => {
-              setSeBusy(true);
-              const { error } = await supabase.rpc('set_save_earth_defaults', { p_label: seLabel, p_amount: seAmount });
-              setSeBusy(false);
-              if (error) { alert(error.message); return; }
-              setSaveEarthDefault({ label: seLabel, amount: seAmount });
-              setSeSettingsOpen(false);
-            }}>Save</button></>}>
-          <div className="form-grid">
-            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>These defaults are copied onto each invoice when the cashier ticks Save Earth. Editing them here does not change past invoices.</div>
-            <div className="form-group" style={{ marginBottom: 0 }}><label>Default label</label><input value={seLabel} onChange={e => setSeLabel(e.target.value)} /></div>
-            <div className="form-group" style={{ marginBottom: 0 }}><label>Default amount (S$)</label><input type="number" min={0} step={0.01} value={seAmount} onChange={e => setSeAmount(Math.max(0, +e.target.value))} /></div>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 };
