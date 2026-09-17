@@ -244,11 +244,9 @@ const ExchangesPage: React.FC = () => {
   // Mode-aware credit (component mode uses the selected component's store price).
   const modeCredit = mode === 'component' ? (priceAt(effectiveStore, componentPid) ?? 0) * componentQty : creditTotal;
   const compTopup = mode === 'bundle' ? 0 : Math.max(0, +(replTotal - modeCredit).toFixed(2));
-  // Money actually received now, kept apart from what an arrangement merely
-  // covers. An in-house promise is not a receipt.
+  // An instalment is a label on money that has arrived, so its amount is
+  // received money like any other and needs no separate coverage figure.
   const receivedNow = pays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
-  const instalmentCovered = pays.reduce((a, p) =>
-    a + (p.payment_method_id === INSTALMENT_METHOD ? (Number(p.instalment?.covered_amount) || 0) : 0), 0);
   const outstandingNow = Math.max(0, +(compTopup - receivedNow).toFixed(2));
   const compNonref = mode === 'bundle' ? 0 : Math.max(0, +(modeCredit - replTotal).toFixed(2));
 
@@ -265,8 +263,8 @@ const ExchangesPage: React.FC = () => {
       if (returnedType === 'MIXED') return 'All returned items must be the same product type.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
       if (compTopup > 0 && receivedNow - compTopup > 0.001) return `Payments (${money(receivedNow)}) exceed the additional charge of ${money(compTopup)}.`;
-      if (compTopup > 0 && receivedNow + instalmentCovered - compTopup < -0.001) {
-        return `${money(compTopup - receivedNow - instalmentCovered)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
+      if (compTopup > 0 && receivedNow - compTopup < -0.001) {
+        return `${money(compTopup - receivedNow)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
       }
       { const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
         if (bad) return bad; }
@@ -279,8 +277,8 @@ const ExchangesPage: React.FC = () => {
       if (componentQty <= 0) return 'Component quantity must be greater than zero.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
       if (compTopup > 0 && receivedNow - compTopup > 0.001) return `Payments (${money(receivedNow)}) exceed the additional charge of ${money(compTopup)}.`;
-      if (compTopup > 0 && receivedNow + instalmentCovered - compTopup < -0.001) {
-        return `${money(compTopup - receivedNow - instalmentCovered)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
+      if (compTopup > 0 && receivedNow - compTopup < -0.001) {
+        return `${money(compTopup - receivedNow)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
       }
       { const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
         if (bad) return bad; }
@@ -314,20 +312,15 @@ const ExchangesPage: React.FC = () => {
         payment_method_id: p.payment_method_id === INSTALMENT_METHOD ? p.instalment!.method_id : p.payment_method_id,
         amount: p.amount, reference: p.reference,
       }));
-    const arrangementPayload = active
-      .filter(p => p.payment_method_id === INSTALMENT_METHOD && p.instalment)
-      .map((p, i) => ({
-        key: `exchange-plan-${i}`,
-        category: p.instalment!.category, method_id: p.instalment!.method_id,
-        months: Number(p.instalment!.months), covered_amount: p.instalment!.covered_amount,
-      }));
+    // An instalment is recorded as the payment it is, under the real method,
+    // so there is no arrangement to write alongside it.
     // One call: the exchange and who handled it are written together, so an
     // exchange can never exist without its own attribution. The three original
     // creators are called unchanged underneath.
     const common = {
       original_invoice_id: invoice.id, processing_store_id: effectiveStore,
       payments: payPayload,
-      arrangements: arrangementPayload,
+      arrangements: [],
       reason: reason.trim() || null, notes: notes.trim() || null,
       served_by: exStaff,
       // "None" is a decision, not an absence: it is sent explicitly so the
@@ -688,9 +681,8 @@ const ExchangesPage: React.FC = () => {
                         <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                           <div>Additional charge: <strong>{money(compTopup)}</strong></div>
                           <div>Received now: <strong>{money(receivedNow)}</strong></div>
-                          <div>Covered by instalment: <strong>{money(instalmentCovered)}</strong></div>
                           <div>Outstanding: <strong style={{ color: outstandingNow > 0 ? 'var(--accent)' : 'var(--success)' }}>{money(outstandingNow)}</strong></div>
-                          {outstandingNow > 0 && instalmentCovered === 0 && (
+                          {outstandingNow > 0 && (
                             <div className="muted">The balance stays owed on the replacement invoice.</div>)}
                         </div>
                       )}

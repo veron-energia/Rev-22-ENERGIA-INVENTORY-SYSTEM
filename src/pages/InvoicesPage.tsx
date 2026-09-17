@@ -980,7 +980,23 @@ const InvoicesPage: React.FC = () => {
     setExpectedEditCount((detail as any).edit_count ?? 0); setEditRequestId(crypto.randomUUID());
     setCCustomer(detail.customer_id);
     setIssuedRecipientsConfirmed(false);
-    setIssuedHeaderBefore(detailItems.some(it => (it as any).credit_issued_at) ? { customer: detail.customer_id, store: detail.store_id } : null);
+    // What counts as "this invoice issued benefits" is decided by the server
+    // (322), and it means vouchers, credit and allowances — not credit alone.
+    // The form used to test invoice items for credit_issued_at, which is the
+    // predicate 322 replaced, so a voucher-only invoice was refused for a
+    // choice it never offered. Ask the same function the refusal comes from.
+    setIssuedHeaderBefore(null);
+    setBenefitAction('');
+    void (async () => {
+      const { data } = await supabase.rpc('invoice_transferable_benefits', { p_invoice_id: detail.id });
+      if (!((data as any[]) ?? []).length) return;
+      setIssuedHeaderBefore({ customer: detail.customer_id, store: detail.store_id });
+      // Moving them with the customer is what a reassignment almost always
+      // means, so it is offered ready to save. Keeping them is still one click
+      // away, because the two outcomes are not interchangeable.
+      setBenefitAction('transfer');
+      setIssuedRecipientsConfirmed(true);
+    })();
     setCLines(lines.length ? lines : [{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
     setCDiscount(Number((detail as any).manual_discount ?? 0));
     setCDiscountVoucher((detail as any).discount_voucher_id ?? '');
@@ -1208,20 +1224,16 @@ const InvoicesPage: React.FC = () => {
     if (filled.length === 0) return 'Add at least one payment.';
     // A row with money in it and no method is a mistake, not a row to skip.
     if (filled.some(p => p.amount > 0 && !p.payment_method_id)) return 'Choose a payment method for every amount entered.';
-    // An instalment line is an arrangement, and an in-house one usually
-    // receives nothing today: a zero there is the normal case, not a gap. Every
-    // OTHER selected method still needs an amount.
-    const isArrangement = (p: typeof payLines[number]) => p.payment_method_id === INSTALMENT_METHOD;
-    if (filled.some(p => p.payment_method_id && !isArrangement(p) && !(p.amount > 0))) {
+    // An instalment is a label on money that has arrived, so its line needs an
+    // amount exactly like every other method.
+    const isInstalment = (p: typeof payLines[number]) => p.payment_method_id === INSTALMENT_METHOD;
+    if (filled.some(p => p.payment_method_id && !(p.amount > 0))) {
       return 'Enter an amount for every selected payment method.';
     }
-    if (filled.some(p => !isArrangement(p) && (!Number.isFinite(p.amount) || p.amount <= 0))) {
+    if (filled.some(p => !Number.isFinite(p.amount) || p.amount <= 0)) {
       return 'Amounts must be positive.';
     }
-    if (filled.some(p => isArrangement(p) && (!Number.isFinite(p.amount) || p.amount < 0))) {
-      return 'The amount received now cannot be negative.';
-    }
-    const badPortion = filled.map((p, i) => isArrangement(p)
+    const badPortion = filled.map((p, i) => isInstalment(p)
       ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
     if (badPortion) return badPortion;
     const instalmentError = validateInstalment(payInstalment);
@@ -1236,10 +1248,9 @@ const InvoicesPage: React.FC = () => {
     if (!detail) return;
     const blocked = paymentBlocker();
     if (blocked) { setPayErr(blocked); return; }
-    // An instalment line is an arrangement, and may or may not carry money
-    // received today. Everything else is a plain receipt. The two are built
-    // separately because the database keeps them separate: only real money
-    // becomes an invoice_payments row.
+    // An instalment line is a receipt like any other, recorded under the real
+    // method the money came through. The duration is a label, stamped on the
+    // invoice afterwards; no arrangement to collect anything later is written.
     const lineErrors: Record<number, string> = {};
     payLines.forEach((p, i) => {
       if (p.payment_method_id !== INSTALMENT_METHOD) return;
@@ -1253,45 +1264,36 @@ const InvoicesPage: React.FC = () => {
     }
 
     const receipts: any[] = [];
-    const arrangements: any[] = [];
-    // Every receipt and portion carries a key that is stable for this request,
-    // so a retry finds what it already wrote instead of writing again, and an
-    // arrangement points at its receipt by name rather than by position.
+    // The instalment label to stamp on the invoice once the money is recorded.
+    // The last instalment line wins: the invoice carries one set of terms.
+    let instalmentLabel: { method_id: string; months: number } | null = null;
+    // Every receipt carries a key that is stable for this request, so a retry
+    // finds what it already wrote instead of writing again.
     payLines.forEach((p, i) => {
+      if (!p.payment_method_id || !(p.amount > 0)) return;
       if (p.payment_method_id === INSTALMENT_METHOD) {
         const inst = p.instalment!;
-        const receiptKey = `line-${i}`;
-        // Money taken today goes in under the REAL method, never "Instalment".
-        if ((p.amount || 0) > 0) {
-          receipts.push({ key: receiptKey, payment_method_id: inst.method_id,
-                          amount: p.amount, payment_date: payDate || undefined });
-        }
-        arrangements.push({
-          key: `plan-${i}`,
-          category: inst.category, method_id: inst.method_id,
-          months: Number(inst.months), covered_amount: inst.covered_amount,
-          ...((p.amount || 0) > 0 ? { receipt_key: receiptKey } : {}),
-        });
+        // Money goes in under the REAL method, never "Instalment".
+        receipts.push({ key: `line-${i}`, payment_method_id: inst.method_id,
+                        amount: p.amount, payment_date: payDate || undefined });
+        instalmentLabel = { method_id: inst.method_id, months: Number(inst.months) };
         return;
       }
-      if (p.payment_method_id && p.amount > 0) {
-        receipts.push({ key: `line-${i}`, payment_method_id: p.payment_method_id,
-                        amount: p.amount, payment_date: payDate || undefined });
-      }
+      receipts.push({ key: `line-${i}`, payment_method_id: p.payment_method_id,
+                      amount: p.amount, payment_date: payDate || undefined });
     });
-    if (receipts.length === 0 && arrangements.length === 0) {
-      setPayErr('Choose a payment method and an amount, or set up an instalment arrangement.');
+    if (receipts.length === 0) {
+      setPayErr('Choose a payment method and an amount.');
       return;
     }
 
     setPayBusy(true); setPayErr(null); setPayOutcome(null);
     const invoiceId = detail.id;
-    // Receipts and arrangements are written in one server call, so the invoice
-    // can never end up carrying an arrangement for a payment that failed, or a
-    // payment without the arrangement it was taken under.
+    // The money goes in first. The instalment label is stamped afterwards, so a
+    // failed payment can never leave terms behind for money that was not taken.
     const { data, error } = await supabase.rpc('record_invoice_settlement', {
       p_invoice_id: invoiceId,
-      p_payload: { receipts, arrangements },
+      p_payload: { receipts, arrangements: [] },
       p_request_id: paymentRequestId,
     });
     setPayBusy(false);
@@ -1300,6 +1302,16 @@ const InvoicesPage: React.FC = () => {
       // request id stays the same so a retry cannot double-charge.
       setPayErr(error.message);
       return;
+    }
+    // Terms for money that has actually been recorded. If this stamp fails the
+    // payment still stands — the invoice simply shows no instalment terms, which
+    // an edit can put right; it is not worth failing a taken payment over.
+    if (instalmentLabel) {
+      const label = instalmentLabel as { method_id: string; months: number };
+      const { error: labelError } = await supabase.rpc('set_invoice_instalment_label', {
+        p_invoice_id: invoiceId, p_method_id: label.method_id, p_months: label.months,
+      });
+      if (labelError) setPayErr(`The payment was recorded. The instalment terms were not: ${labelError.message}`);
     }
     const res: any = data;
     if (res?.review_required) {
@@ -2238,9 +2250,9 @@ const InvoicesPage: React.FC = () => {
               </div>
             </div>
             {issuedHeaderBefore && (issuedHeaderBefore.customer !== cCustomer || issuedHeaderBefore.store !== cStore) && <div className="alert alert-info">
-              <p><strong>This invoice issued benefits.</strong> Changing its customer is two different
-                corrections, so say which one this is. The review summary will list exactly what moves
-                before anything is saved.</p>
+              <p><strong>This invoice issued benefits.</strong> They move with the customer unless
+                you say otherwise. The review summary lists exactly what moves before anything is
+                saved.</p>
               <div className="benefit-options" role="radiogroup" aria-label="What happens to the benefits">
                 <label className={`benefit-option${benefitAction === 'transfer' ? ' picked' : ''}`}>
                   <input type="radio" name="benefit-action" value="transfer"
@@ -3305,13 +3317,13 @@ const InvoicesPage: React.FC = () => {
                           // An arrangement, offered beside the methods because
                           // that is where a person looks for it — but it is
                           // never sent as a payment method.
-                          { value: INSTALMENT_METHOD, label: 'Instalment — pay over time' },
+                          { value: INSTALMENT_METHOD, label: 'Instalment' },
                           ...methods.filter((m: any) => !m.is_wallet_credit || !hasCreditLine).map((m: any) => ({
                             value: m.id, label: m.name + (m.is_wallet_credit ? ` — ${money(Number(payWallet?.categories?.[m.wallet_category] ?? 0))} available` : ''),
                             disabled: m.is_wallet_credit && Number(payWallet?.categories?.[m.wallet_category] ?? 0) <= 0,
                           }))]} />
                       <input type="number" min={0} step={0.01} value={pl.amount || ''}
-                        placeholder={pl.payment_method_id === INSTALMENT_METHOD ? 'Received now' : 'Amount'} style={{ width: 110 }}
+                        placeholder="Amount" style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setPayLines(ls => ls.filter((_, j) => j !== i))} disabled={payLines.length === 1}><X size={13} /></button>
                     </div>

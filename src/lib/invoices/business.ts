@@ -40,7 +40,9 @@ export function invoiceDateSearch(invoice: { business_date?: string | null; crea
 }
 export function instalmentText(invoice: Partial<InstalmentDetails>, methods: { id: string; name: string }[]) {
   if (!invoice.instalment_category) return '';
-  return `${invoice.instalment_category === 'in_house' ? 'In-house' : 'Provider-funded'} instalments · ${invoice.instalment_months} months · ${methods.find(m => m.id === invoice.instalment_method_id)?.name ?? 'Saved payment method'}`;
+  // Rows saved before 326 may carry provider_funded, and keep saying so.
+  const kind = invoice.instalment_category === 'provider_funded' ? 'Provider-funded instalments' : 'Instalment';
+  return `${kind} · ${invoice.instalment_months} months · ${methods.find(m => m.id === invoice.instalment_method_id)?.name ?? 'Saved payment method'}`;
 }
 export function validateInstalment(value: InstalmentDetails) {
   if (!value.instalment_category) return null;
