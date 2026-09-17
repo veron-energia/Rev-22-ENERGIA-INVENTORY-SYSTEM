@@ -218,12 +218,14 @@ const TherapyPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
-    const [pe, le, pk, st, cu, ru, claims, units] = await Promise.all([
+    const [pe, le, pk, st, ru, claims, units] = await Promise.all([
       supabase.from('purchased_therapy_entitlements').select('*').order('created_at', { ascending: false }),
       supabase.from('therapy_entitlements').select('*').order('created_at', { ascending: false }),
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).order('duration_months'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('customers').select('id, full_name, phone').is('deleted_at', null),
+      // The customers table is deliberately absent. It was read whole here, and
+      // capped at a thousand rows, to supply names the by-id lookup below
+      // already supplies for every entitlement on the page.
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
       // Claimed quantity is the sum of the claim events, never a stored column,
       // so the two can never drift apart.
@@ -243,15 +245,14 @@ const TherapyPage: React.FC = () => {
     setLegacy(((le.data as any[]) ?? []).map(e => ({ ...e, claimed_qty: claimedBy.get(e.id) ?? 0 })));
     setPackages((pk.data as UnlimitedTherapyPackage[]) ?? []);
     setStores((st.data as Store[]) ?? []);
-    const baseCustomers = (cu.data as Customer[]) ?? [];
-    setCustomers(baseCustomers);
-    // The customer table is capped at 1000 rows per request, so records
-    // belonging to customers outside that set would show no name. Fetch the
-    // ones actually referenced here.
-    void (async () => {
-      const extra = await fetchCustomersByIds([...((pe.data as any[]) ?? []).map(x => x.customer_id), ...((le.data as any[]) ?? []).map(x => x.customer_id)]);
-      setCustomers(cur => mergeCustomers(cur, extra));
-    })();
+    // Exactly the customers these entitlements name. Awaited rather than left
+    // running behind the render: the search box filters on customer name, so a
+    // search run before these landed would have missed rows that do match.
+    const named = await fetchCustomersByIds([
+      ...((pe.data as any[]) ?? []).map(x => x.customer_id),
+      ...((le.data as any[]) ?? []).map(x => x.customer_id),
+    ]);
+    setCustomers(cur => mergeCustomers(cur, named));
     setRules((ru.data as any[]) ?? []);
     const { data: st2 } = await supabase.rpc('legacy_setup_status');
     setSetupStatus(st2 ?? null);

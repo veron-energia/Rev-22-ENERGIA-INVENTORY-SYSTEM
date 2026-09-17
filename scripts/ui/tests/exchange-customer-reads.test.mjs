@@ -11,9 +11,8 @@
  * of the rendered page can prove a request was not made on a table larger than
  * the fixture.
  *
- * Two pages still carry a lighter form of this — SpecialPage and TherapyPage
- * each read `id, full_name, phone` for the whole table in one uncapped request.
- * They are deliberately not asserted here; claiming them clean would be false.
+ * SpecialPage and TherapyPage carried the same fault and are now fixed too;
+ * page-customer-reads.test.mjs guards those.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

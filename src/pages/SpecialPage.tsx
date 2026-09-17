@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, whatsappNumber, emailAddress } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
-import { supabase } from '../lib/supabase';
+import { supabase, fetchCustomersByIds } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
   SpecialProduct, SpecialProductStock, SpecialSale, Rental, Warehouse, Customer, PaymentMethod,
@@ -71,14 +71,18 @@ const SpecialPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [sp, st, si, sa, re, wh, cu, pm, sto, prof] = await Promise.all([
+    const [sp, st, si, sa, re, wh, pm, sto, prof] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('warehouse_inventory').select('warehouse_id,product_id,current_qty'),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
       supabase.from('special_sales').select('*').order('created_at', { ascending: false }),
       supabase.from('rentals').select('*').order('created_at', { ascending: false }),
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('customers').select('id,full_name,phone').is('deleted_at', null).order('full_name'),
+      // The customers table is deliberately absent. It was read whole here and
+      // capped at a thousand rows, so a sale or rental belonging to anyone
+      // further down the alphabet showed no name at all; and it never asked for
+      // email, which is why every Send-by-email button on this page was
+      // permanently disabled. Both are answered by the by-id lookup below.
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('id,full_name').is('deleted_at', null),
@@ -109,7 +113,13 @@ const SpecialPage: React.FC = () => {
     setSales((sa.data as SpecialSale[]) ?? []);
     setRentals((re.data as Rental[]) ?? []);
     setWarehouses((wh.data as Warehouse[]) ?? []);
-    setCustomers((cu.data as Customer[]) ?? []);
+    // Exactly the customers these sales and rentals name, with the columns the
+    // row actions need. Correct at any table size, and it reaches customers who
+    // have since been deleted, whose historical sale still names them.
+    setCustomers(await fetchCustomersByIds([
+      ...((sa.data as any[]) ?? []).map(x => x.customer_id),
+      ...((re.data as any[]) ?? []).map(x => x.customer_id),
+    ]) as Customer[]);
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setBrandStores((sto.data as any[]) ?? []);
     setStaffProfiles((prof.data as any[]) ?? []);
