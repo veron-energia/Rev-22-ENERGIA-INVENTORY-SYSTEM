@@ -19,6 +19,9 @@ export type SearchOption = {
  * `search` text (falling back to its label), so a product can be found by
  * name or SKU, a voucher by name or code, and so on.
  */
+/** Rows rendered at once. Matches beyond it are reported, never dropped quietly. */
+const LIST_LIMIT = 200;
+
 export const SearchSelect: React.FC<{
   options: SearchOption[];
   value: string;
@@ -45,9 +48,15 @@ export const SearchSelect: React.FC<{
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
 
-  const visible = useMemo(() => {
-    return searchCatalogueOptions(options.filter(o => o.value === value || !exclude.includes(o.value)), query).slice(0, 200);
-  }, [options, query, exclude, value]);
+  const matches = useMemo(
+    () => searchCatalogueOptions(options.filter(o => o.value === value || !exclude.includes(o.value)), query),
+    [options, query, exclude, value]);
+  // Rendering thousands of rows makes the list unusable, so it is capped — but
+  // a cap that says nothing is worse than a long list: the option you wanted is
+  // simply absent and the selector looks complete. The count below is the
+  // difference between "not stocked" and "not shown".
+  const visible = matches.slice(0, LIST_LIMIT);
+  const hidden = matches.length - visible.length;
 
   return (
     <div ref={boxRef} style={{ position: 'relative', ...style }}>
@@ -100,6 +109,15 @@ export const SearchSelect: React.FC<{
               {o.sublabel && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{o.sublabel}</div>}
             </div>
           ))}
+          {hidden > 0 && (
+            <div style={{
+              position: 'sticky', bottom: 0, background: 'var(--surface-2, var(--surface))',
+              borderTop: '1px solid var(--border)', padding: '7px 10px',
+              fontSize: 11.5, color: 'var(--text-muted)',
+            }}>
+              {hidden} more {hidden === 1 ? 'match is' : 'matches are'} not shown — keep typing to narrow the list.
+            </div>
+          )}
         </div>
       )}
     </div>

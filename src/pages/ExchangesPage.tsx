@@ -580,10 +580,21 @@ const ExchangesPage: React.FC = () => {
                   <>
                     <div className="form-group">
                       <label>Replacement bundle</label>
-                      <select value={newPromoId} onChange={e => setNewPromoId(e.target.value)}>
-                        <option value="">— Select replacement bundle —</option>
-                        {promotions.map(p => <option key={p.id} value={p.id}>{p.name} — {money(Number(p.fixed_price))}</option>)}
-                      </select>
+                      {/* Every active bundle is a candidate here, and the catalogue runs to
+                          names that differ by one word — "Bundle B with Therapy" against
+                          "Bundle B with Vouchers". Scrolling a plain <select> for those is
+                          how the wrong bundle gets picked, so this searches name, code and
+                          price, the same way the invoice form's promotion picker does. */}
+                      <SearchSelect placeholder="Search bundle name, code or price…"
+                        value={newPromoId} onChange={v => setNewPromoId(v)}
+                        emptyLabel="No bundle matches that name, code or price"
+                        options={promotions.map(p => ({
+                          value: p.id,
+                          label: `${p.name} — ${money(Number(p.fixed_price))}`,
+                          sublabel: p.code,
+                          search: `${p.name} ${p.code ?? ''}`,
+                          searchPrices: [p.fixed_price],
+                        }))} />
                     </div>
                     <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Whole-bundle swap: every component of the old bundle returns to stock and every component of the new bundle is deducted. The exact credit, replacement total, and any top-up or non-refundable balance are computed and shown on the completed exchange.</div></div>
                   </>
