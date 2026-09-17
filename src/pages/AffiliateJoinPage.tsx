@@ -1,4 +1,5 @@
 import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
+import { PasswordInput } from '../components/PasswordInput';
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
@@ -115,8 +116,8 @@ const AffiliateJoinPage: React.FC = () => {
       </div>
       <Field label="Phone Number"><PhoneInput value={f.phone} onChange={phone => setF(s => ({ ...s, phone }))} /></Field>
       <Field label="Email"><input className="input" type="email" value={f.email} onChange={on('email')} /></Field>
-      <Field label="Password"><input className="input" type="password" value={f.password} onChange={on('password')} placeholder="At least 8 characters" /></Field>
-      <Field label="Confirm Password"><input className="input" type="password" value={f.confirm} onChange={on('confirm')} /></Field>
+      <Field label="Password"><PasswordInput className="input" value={f.password} onChange={on('password')} placeholder="At least 8 characters" /></Field>
+      <Field label="Confirm Password"><PasswordInput className="input" value={f.confirm} onChange={on('confirm')} /></Field>
       <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, color: 'var(--text-secondary)', margin: '4px 0 14px' }}>
         <input type="checkbox" checked={agree} onChange={e => setAgree(e.target.checked)} style={{ marginTop: 2 }} />
         <span>I agree to the Energia Affiliate terms and privacy statement.</span>

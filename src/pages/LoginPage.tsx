@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { PasswordInput } from '../components/PasswordInput';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Leaf, LogIn } from 'lucide-react';
@@ -52,7 +53,7 @@ const LoginPage: React.FC = () => {
             </div>
             <div className="form-group">
               <label>Password</label>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+              <PasswordInput value={password} onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••" autoComplete="current-password" required />
             </div>
 

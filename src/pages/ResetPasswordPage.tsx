@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PasswordInput } from '../components/PasswordInput';
 import { Link, useNavigate } from 'react-router-dom';
 import { Leaf } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -77,12 +78,12 @@ const ResetPasswordPage: React.FC = () => {
             <form onSubmit={submit} className="form-grid">
               <div className="form-group">
                 <label>New Password</label>
-                <input type="password" value={pw} onChange={e => setPw(e.target.value)}
+                <PasswordInput value={pw} onChange={e => setPw(e.target.value)}
                   placeholder="At least 8 characters" autoComplete="new-password" required autoFocus />
               </div>
               <div className="form-group">
                 <label>Confirm Password</label>
-                <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
+                <PasswordInput value={confirm} onChange={e => setConfirm(e.target.value)}
                   autoComplete="new-password" required />
               </div>
               {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

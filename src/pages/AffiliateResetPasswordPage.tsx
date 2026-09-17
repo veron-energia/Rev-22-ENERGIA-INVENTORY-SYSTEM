@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { PasswordInput } from '../components/PasswordInput';
 import { useNavigate } from 'react-router-dom';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
 import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
@@ -33,8 +34,8 @@ const AffiliateResetPasswordPage: React.FC = () => {
 
   return (
     <AffiliateAuthShell title="Set a New Password" subtitle="Choose a new password for your account">
-      <Field label="New Password"><input className="input" type="password" value={pw} onChange={e => setPw(e.target.value)} /></Field>
-      <Field label="Confirm Password"><input className="input" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} /></Field>
+      <Field label="New Password"><PasswordInput className="input" value={pw} onChange={e => setPw(e.target.value)} /></Field>
+      <Field label="Confirm Password"><PasswordInput className="input" value={confirm} onChange={e => setConfirm(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} /></Field>
       {err && <p role="alert" style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{err}</p>}
       <button className="btn btn-primary" style={{ width: '100%' }} disabled={busy} onClick={submit}>{busy ? 'Saving…' : 'Save Password'}</button>
     </AffiliateAuthShell>

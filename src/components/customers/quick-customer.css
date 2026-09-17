@@ -1,0 +1,56 @@
+/* Above the invoice modal, so the nested dialog is what receives clicks. */
+.quick-customer-backdrop {
+  position: fixed; inset: 0; z-index: 1300;
+  background: rgba(0,0,0,0.45);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.quick-customer {
+  background: var(--surface); color: var(--text); border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  width: 100%; max-width: 560px; max-height: min(88vh, 760px);
+  display: flex; flex-direction: column; overflow: hidden; overflow-wrap: anywhere;
+}
+.quick-customer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 13px 16px 0;
+}
+.quick-customer-head h3 {
+  margin: 0; font-size: 15px; display: inline-flex; align-items: center; gap: 7px;
+}
+.quick-customer-close {
+  width: 28px; height: 28px; border: 0; background: transparent; border-radius: 6px;
+  font-size: 18px; line-height: 1; color: var(--text-muted); cursor: pointer;
+}
+.quick-customer-close:hover { background: var(--surface-2); }
+.quick-customer-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 16px 14px; }
+.quick-customer-foot {
+  flex: 0 0 auto; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+}
+.qc-note { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; line-height: 1.5; }
+.qc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.qc-field { display: block; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+.qc-field input, .qc-field select { width: 100%; margin-top: 3px; font-size: 16px; }
+.qc-field [aria-invalid="true"] { border-color: var(--danger); }
+.qc-hint { display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; margin-top: 3px; line-height: 1.5; }
+.qc-candidates {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  background: var(--surface-2); margin-bottom: 12px; font-size: 12.5px;
+}
+.qc-candidates strong { font-size: 12px; }
+.qc-candidates ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.qc-candidates li { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.qc-cand-name { min-width: 0; }
+.qc-same { color: var(--accent); font-style: normal; font-weight: 600; }
+.qc-error {
+  margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; font-size: 12.5px;
+  background: #fae9e5; color: #a8321f; border: 1px solid #f0c3ba;
+  display: flex; align-items: flex-start; gap: 7px;
+}
+.quick-customer :focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 5px; }
+@media (max-width: 560px) {
+  .qc-grid { grid-template-columns: 1fr; }
+  .quick-customer-foot { flex-direction: column-reverse; }
+  .quick-customer-foot .btn { width: 100%; min-height: 44px; }
+  .qc-candidates li { flex-direction: column; align-items: stretch; }
+}

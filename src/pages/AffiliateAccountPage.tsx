@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PasswordInput } from '../components/PasswordInput';
 import AffiliateLayout from '../components/AffiliateLayout';
 import { portalRpc, dateStr } from '../lib/affiliatePortal';
 import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
@@ -52,11 +53,11 @@ const AffiliateAccountPage: React.FC = () => {
             <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Change Password</h3>
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>New Password</label>
-              <input className="input" type="password" value={pw} onChange={e => setPw(e.target.value)} />
+              <PasswordInput className="input" value={pw} onChange={e => setPw(e.target.value)} />
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Confirm Password</label>
-              <input className="input" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} />
+              <PasswordInput className="input" value={confirm} onChange={e => setConfirm(e.target.value)} />
             </div>
             {pwMsg && <p style={{ fontSize: 13, marginBottom: 10, color: pwMsg === 'Password updated.' ? 'var(--success)' : 'var(--danger)' }}>{pwMsg}</p>}
             <button className="btn btn-primary" disabled={pwBusy} onClick={changePw} style={{ minHeight: 44 }}>{pwBusy ? 'Saving…' : 'Update Password'}</button>

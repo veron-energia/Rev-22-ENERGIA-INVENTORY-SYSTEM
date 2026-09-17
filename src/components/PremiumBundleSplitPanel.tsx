@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { CustomerSearchSelect } from './SearchSelect';
+import { QuickCustomerModal } from './customers/QuickCustomerModal';
 
 // A Premium Bundle purchase divided between several customers, each of whom
 // gets their own normal invoice. Paid/Bonus credit are derived from payment
@@ -58,6 +59,9 @@ export function PremiumBundleSplitPanel(props: Props) {
     { customer_id: '', payment: '', vouchers: emptyVouchers() },
     { customer_id: '', payment: '', vouchers: emptyVouchers() },
   ]);
+  // The row that opened the customer form. Only that row's recipient changes;
+  // every other recipient and allocation amount is left exactly as it is.
+  const [addCustomerRow, setAddCustomerRow] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -138,6 +142,7 @@ export function PremiumBundleSplitPanel(props: Props) {
   const td: React.CSSProperties = { textAlign: 'right', padding: '4px 8px', fontVariantNumeric: 'tabular-nums' };
 
   return (
+    <>
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginTop: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
         <strong>Customer Allocation — {pv.bundle_name}</strong>
@@ -170,7 +175,11 @@ export function PremiumBundleSplitPanel(props: Props) {
               return (
                 <tr key={i}>
                   <td style={{ padding: '4px 8px', minWidth: 200 }}>
+                    <div className="customer-with-add">
                     <CustomerSearchSelect value={r.customer_id} onChange={v => setRows(rs => rs.map((x, k) => k === i ? { ...x, customer_id: v } : x))} />
+                    <button type="button" className="btn btn-secondary btn-sm" title="Add a customer for this row"
+                      onClick={() => setAddCustomerRow(i)}>+</button>
+                  </div>
                   </td>
                   <td style={td}>
                     <input type="number" min={0} step="0.01" value={r.payment} style={{ width: 96, textAlign: 'right' }}
@@ -230,5 +239,20 @@ export function PremiumBundleSplitPanel(props: Props) {
         </button>
       </div>
     </div>
+    {addCustomerRow !== null && (
+      <QuickCustomerModal
+        onCreated={(id) => {
+          setRows(rs => rs.map((x, k) => k === addCustomerRow ? { ...x, customer_id: id } : x));
+          setAddCustomerRow(null);
+        }}
+        onPickedExisting={(id) => {
+          setRows(rs => rs.map((x, k) => k === addCustomerRow ? { ...x, customer_id: id } : x));
+          setAddCustomerRow(null);
+        }}
+        onClose={() => setAddCustomerRow(null)}
+      />
+    )}
+    </>
+
   );
 }

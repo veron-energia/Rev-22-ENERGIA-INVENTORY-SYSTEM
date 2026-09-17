@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { PasswordInput } from '../components/PasswordInput';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
@@ -28,7 +29,7 @@ const AffiliateLoginPage: React.FC = () => {
     <AffiliateAuthShell title="Affiliate Login" subtitle="Sign in to your Energia Affiliate portal"
       footer={<>New affiliate? <Link to="/affiliate/join" style={{ color: 'var(--primary)', fontWeight: 600 }}>Create an account</Link></>}>
       <Field label="Email"><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" /></Field>
-      <Field label="Password"><input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} /></Field>
+      <Field label="Password"><PasswordInput className="input" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} /></Field>
       {err && <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{err}</p>}
       <button className="btn btn-primary" style={{ width: '100%' }} disabled={busy} onClick={submit}>{busy ? 'Signing in…' : 'Sign In'}</button>
       <div style={{ textAlign: 'center', marginTop: 12 }}>

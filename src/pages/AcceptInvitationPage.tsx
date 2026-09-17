@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PasswordInput } from '../components/PasswordInput';
 import { Link, useNavigate } from 'react-router-dom';
 import { Leaf } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -149,14 +150,14 @@ const AcceptInvitationPage: React.FC = () => {
 
               <div className="form-group">
                 <label htmlFor="acc-pw">Choose a password *</label>
-                <input id="acc-pw" type="password" value={pw} autoComplete="new-password"
+                <PasswordInput id="acc-pw" value={pw} autoComplete="new-password"
                        onChange={e => setPw(e.target.value)} />
                 <p className="users-hint">At least 8 characters. Nobody else will know it.</p>
               </div>
 
               <div className="form-group">
                 <label htmlFor="acc-confirm">Confirm password *</label>
-                <input id="acc-confirm" type="password" value={confirm} autoComplete="new-password"
+                <PasswordInput id="acc-confirm" value={confirm} autoComplete="new-password"
                        onChange={e => setConfirm(e.target.value)} />
               </div>
 
