@@ -151,10 +151,10 @@ begin
  perform record_invoice_payment(inv,jsonb_build_array(
    jsonb_build_object('payment_method_id',pm,'amount',1000)),gen_random_uuid());
 
- -- The customer spends 600 of the 1000 released.
+ -- The customer spends 600 of the 1000 released. Found through the link, so
+ -- the fixture does not care what source the lot carries.
  update customer_credit_lots set remaining_amount = remaining_amount - 600
-  where source_type='credit_package_progress'
-    and source_record_id in (select id from invoice_items where invoice_id=inv);
+  where id in (select lot_id from credit_package_progress_lots where invoice_id=inv);
 
  perform cancel_invoice_recorded(inv,'Customer changed their mind',gen_random_uuid());
 
@@ -315,5 +315,176 @@ begin
  if n <> 0 then raise exception 'FAIL: backfill wrote a sale record'; end if;
 
  raise notice 'PASS: backfill honours the age cutoff, releases 1000 once, never twice, and grants no rewards';
+end $$;
+rollback;
+
+-- ---------------------------------------------------------------------
+-- Released credit must look like credit from its package, or it buys nothing.
+-- 327 stamped released lots with an invented source and the invoice LINE as
+-- their record, so 242's policy matrix could not place them and 309 could not
+-- find the package's rules: a customer holding S$3,000 was told "Only 0 of the
+-- requested 521.00 could be funded by eligible credit". 328 gives a released
+-- lot the same provenance as a full issuance and keeps the way back to its
+-- invoice in credit_package_progress_lots.
+-- ---------------------------------------------------------------------
+begin;
+do $$
+declare
+ own uuid := gen_random_uuid();
+ st uuid; c uuid; pm uuid; wpm_paid uuid; cp uuid; svc uuid; inv uuid; it uuid; spend uuid;
+ lot public.customer_credit_lots%rowtype; total numeric;
+begin
+ insert into auth.users(id,email) values(own,'rp6-own@tests.invalid');
+ insert into profiles(id,full_name,email,role) values(own,'Owner','rp6-own@tests.invalid','owner');
+ perform set_config('request.jwt.claim.sub',own::text,true);
+ insert into stores(name,code,country_code) values('RP6 Store','RP6','SG') returning id into st;
+ insert into customers(full_name,phone) values('RP6 Buyer','+6598911783') returning id into c;
+ insert into payment_methods(name) values('RP6 Cash') returning id into pm;
+ select id into wpm_paid from payment_methods where wallet_category='paid' and is_system limit 1;
+ svc:=(upsert_therapy_service(null,'RP6-PR','RP6 Session',50,30,'per_hours',1,5,null,true,null)->>'id')::uuid;
+ perform set_therapy_service_store(svc,st,true,null);
+ insert into credit_packages(name,customer_price,paid_credit_amount,allow_product,allow_therapy)
+   values('RP6 Package',5000,5000,true,true) returning id into cp;
+ insert into credit_package_stores(package_id,store_id) values(cp,st);
+
+ inv := create_invoice(st,c,null,jsonb_build_array(
+   jsonb_build_object('kind','credit_package','credit_package_id',cp,'quantity',1)));
+ select id into it from invoice_items where invoice_id=inv and line_kind='credit_package';
+ perform record_invoice_payment(inv,jsonb_build_array(
+   jsonb_build_object('payment_method_id',pm,'amount',1000)),gen_random_uuid());
+
+ select l.* into lot from customer_credit_lots l
+   join credit_package_progress_lots p on p.lot_id=l.id where p.invoice_item_id=it;
+ if lot.id is null then raise exception 'FAIL: the released lot is not linked to its line'; end if;
+ if lot.source_type <> 'credit_package' or lot.source_record_id <> cp then
+   raise exception 'FAIL: released lot carries source %/% — 242 and 309 will not recognise it',
+     lot.source_type, lot.source_record_id; end if;
+ if credit_lot_policy_for(lot.id) <> 'package_paid' then
+   raise exception 'FAIL: policy for released credit is %, expected package_paid', credit_lot_policy_for(lot.id); end if;
+ if not exists (select 1 from invoice_credit_lot_ids(inv) where lot_id=lot.id) then
+   raise exception 'FAIL: invoice_credit_lot_ids cannot find the released lot — refunds and reassignment would miss it'; end if;
+
+ -- The production failure, now expected to succeed.
+ spend := create_invoice(st,c,null,jsonb_build_array(
+   jsonb_build_object('kind','therapy','therapy_service_id',svc,'quantity',1)));
+ perform record_invoice_payment(spend,jsonb_build_array(
+   jsonb_build_object('payment_method_id',wpm_paid,'amount',50)),gen_random_uuid());
+ if (select remaining_amount from customer_credit_lots where id=lot.id) <> 950 then
+   raise exception 'FAIL: released paid credit could not fund a therapy session (remaining %)',
+     (select remaining_amount from customer_credit_lots where id=lot.id); end if;
+
+ -- Settling the package still lands on exactly its paid credit: the issuer
+ -- grants the remainder, never a second 1000.
+ perform record_invoice_payment(inv,jsonb_build_array(
+   jsonb_build_object('payment_method_id',pm,'amount',4000)),gen_random_uuid());
+ select coalesce(sum(original_amount),0) into total
+   from customer_credit_lots where customer_id=c and category='paid' and status<>'reversed';
+ if total <> 5000 then raise exception 'FAIL: expected 5000 paid credit granted in total, got %', total; end if;
+
+ raise notice 'PASS: released credit carries its package, is found from its invoice, and buys a therapy session';
+end $$;
+rollback;
+
+-- ---------------------------------------------------------------------
+-- Repairing a lot exactly as 327 left it in production: old source, the line
+-- as its record, partly spent, no link row. A posted lot cannot be edited, so
+-- the repair reverses the unspent part and grants it again under the package.
+-- ---------------------------------------------------------------------
+begin;
+do $$
+declare
+ own uuid := gen_random_uuid();
+ st uuid; c uuid; pm uuid; wpm_paid uuid; cp uuid; svc uuid; inv uuid; it uuid; spend uuid;
+ old_lot uuid; old_eff date; new_lot public.customer_credit_lots%rowtype; r jsonb;
+begin
+ insert into auth.users(id,email) values(own,'rp7-own@tests.invalid');
+ insert into profiles(id,full_name,email,role) values(own,'Owner','rp7-own@tests.invalid','owner');
+ perform set_config('request.jwt.claim.sub',own::text,true);
+ insert into stores(name,code,country_code) values('RP7 Store','RP7','SG') returning id into st;
+ insert into customers(full_name,phone) values('RP7 Buyer','+6598911784') returning id into c;
+ insert into payment_methods(name) values('RP7 Cash') returning id into pm;
+ select id into wpm_paid from payment_methods where wallet_category='paid' and is_system limit 1;
+ svc:=(upsert_therapy_service(null,'RP7-PR','RP7 Session',50,30,'per_hours',1,5,null,true,null)->>'id')::uuid;
+ perform set_therapy_service_store(svc,st,true,null);
+ insert into credit_packages(name,customer_price,paid_credit_amount,allow_product,allow_therapy)
+   values('RP7 Package',5000,5000,true,true) returning id into cp;
+ insert into credit_package_stores(package_id,store_id) values(cp,st);
+
+ inv := create_invoice(st,c,null,jsonb_build_array(
+   jsonb_build_object('kind','credit_package','credit_package_id',cp,'quantity',1)));
+ select id into it from invoice_items where invoice_id=inv and line_kind='credit_package';
+
+ -- 1000 paid with the trigger off, then the lot granted the way 327 did.
+ alter table invoices disable trigger create_therapy_on_paid;
+ perform record_invoice_payment(inv,jsonb_build_array(
+   jsonb_build_object('payment_method_id',pm,'amount',1000)),gen_random_uuid());
+ alter table invoices enable trigger create_therapy_on_paid;
+ old_lot := grant_customer_credit(c,'paid',1000,'credit_package_progress',it,st,sg_today(),null,
+   'Credit package (paid so far): RP7 Package',null,null,own,
+   jsonb_build_object('allowed_purposes',credit_package_purposes(cp),'source','credit_package'));
+ select effective_date into old_eff from customer_credit_lots where id=old_lot;
+
+ -- Useless as it stands: the bug is reproduced, not assumed.
+ if credit_lot_policy_for(old_lot) <> 'needs_review' then
+   raise exception 'FIXTURE: expected the old-source lot to be needs_review, got %', credit_lot_policy_for(old_lot); end if;
+ spend := create_invoice(st,c,null,jsonb_build_array(
+   jsonb_build_object('kind','therapy','therapy_service_id',svc,'quantity',1)));
+ begin
+   perform record_invoice_payment(spend,jsonb_build_array(
+     jsonb_build_object('payment_method_id',wpm_paid,'amount',50)),gen_random_uuid());
+   raise exception 'FIXTURE: the old-source lot funded a spend; the bug is not reproduced';
+ exception when others then if sqlerrm not like '%eligible credit%' then raise; end if; end;
+
+ -- 300 of it was spent before anyone noticed.
+ update customer_credit_lots set remaining_amount = 700 where id = old_lot;
+
+ r := repair_credit_package_progress_lots();
+ if (r->>'linked')::int <> 1 or (r->>'regranted')::int <> 1 or (r->>'regranted_amount')::numeric <> 700 then
+   raise exception 'FAIL: repair reported %', r; end if;
+
+ if (select status from customer_credit_lots where id=old_lot) <> 'reversed'
+    or (select remaining_amount from customer_credit_lots where id=old_lot) <> 0 then
+   raise exception 'FAIL: the old lot was not reversed'; end if;
+ select l.* into new_lot from customer_credit_lots l
+   join credit_package_progress_lots p on p.lot_id=l.id where p.replaces_lot_id=old_lot;
+ if new_lot.id is null then raise exception 'FAIL: no replacement lot was granted'; end if;
+ if new_lot.source_type <> 'credit_package' or new_lot.source_record_id <> cp then
+   raise exception 'FAIL: replacement carries source %/%', new_lot.source_type, new_lot.source_record_id; end if;
+ if new_lot.original_amount <> 700 or new_lot.remaining_amount <> 700 then
+   raise exception 'FAIL: replacement must carry exactly the unspent 700, got %/%', new_lot.original_amount, new_lot.remaining_amount; end if;
+ if new_lot.effective_date <> old_eff then
+   raise exception 'FAIL: replacement lost its place in the queue (% vs %)', new_lot.effective_date, old_eff; end if;
+ if credit_lot_policy_for(new_lot.id) <> 'package_paid' then
+   raise exception 'FAIL: replacement policy is %', credit_lot_policy_for(new_lot.id); end if;
+ if credit_package_released_paid_credit(it) <> 1000 then
+   raise exception 'FAIL: released on record must still be 1000, got % — the next payment would re-release', credit_package_released_paid_credit(it); end if;
+ if (select count(*) from invoice_credit_lot_ids(inv) where lot_id in (old_lot,new_lot.id)) <> 2 then
+   raise exception 'FAIL: the invoice cannot see both its old and replacement lots'; end if;
+ if not exists (select 1 from customer_credit_ledger where lot_id=old_lot and entry_type='reverse'
+                  and amount=700 and source_type='credit_lot_provenance_repair') then
+   raise exception 'FAIL: the reversal is not on the ledger'; end if;
+
+ -- And now it spends.
+ spend := create_invoice(st,c,null,jsonb_build_array(
+   jsonb_build_object('kind','therapy','therapy_service_id',svc,'quantity',1)));
+ perform record_invoice_payment(spend,jsonb_build_array(
+   jsonb_build_object('payment_method_id',wpm_paid,'amount',50)),gen_random_uuid());
+ if (select remaining_amount from customer_credit_lots where id=new_lot.id) <> 650 then
+   raise exception 'FAIL: the replacement lot could not fund a therapy session'; end if;
+
+ -- The next payment releases only the new money: 500 more paid, 500 more
+ -- credit — not the 300 that was spent, not the 700 that was re-granted.
+ perform record_invoice_payment(inv,jsonb_build_array(
+   jsonb_build_object('payment_method_id',pm,'amount',500)),gen_random_uuid());
+ if credit_package_released_paid_credit(it) <> 1500 then
+   raise exception 'FAIL: expected 1500 released on record after another 500, got %', credit_package_released_paid_credit(it); end if;
+ if (select count(*) from credit_package_progress_lots where invoice_item_id=it and released_amount=500) <> 1 then
+   raise exception 'FAIL: the further payment did not release exactly 500'; end if;
+
+ -- Running the repair again finds nothing to do.
+ r := repair_credit_package_progress_lots();
+ if (r->>'linked')::int <> 0 then raise exception 'FAIL: the repair is not idempotent: %', r; end if;
+
+ raise notice 'PASS: a 327-era lot is reversed and re-granted under its package for the unspent part only, still counts once, and spends';
 end $$;
 rollback;
