@@ -28,6 +28,7 @@ import PublicSurveyPage from './pages/PublicSurveyPage';
 import SurveysPage from './pages/SurveysPage';
 import TikTokImportPage from './pages/TikTokImportPage';
 import AffiliatesPage from './pages/AffiliatesPage';
+import AffiliateAuthShell from './components/AffiliateAuthShell';
 import InvoicesPage from './pages/InvoicesPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import AdjustmentsPage from './pages/AdjustmentsPage';
@@ -88,10 +89,19 @@ const Protected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // Affiliate-only guard. Staff are sent to the staff app; unauthenticated to the
 // affiliate login. Not-yet-onboarded sessions go to the verify/onboarding flow.
 const AffiliateProtected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { session, actorType, loading } = useAuth();
+  const { session, actorType, loading, error, refreshProfile } = useAuth();
   if (loading) return <FullScreenLoader />;
   if (!session) return <Navigate to="/affiliate/login" replace />;
   if (actorType === 'staff') return <Navigate to="/" replace />;
+  // A lookup that failed is not an account that does not exist. Sending the
+  // person on to /affiliate/verify here is how an existing affiliate on a poor
+  // phone connection was asked to "confirm their details" again.
+  if (actorType !== 'affiliate' && error) return (
+    <AffiliateAuthShell title="Could not load your account">
+      <p role="alert" style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{error}</p>
+      <button type="button" className="btn btn-primary" style={{ width: '100%', marginTop: 14 }} onClick={() => void refreshProfile()}>Try again</button>
+    </AffiliateAuthShell>
+  );
   if (actorType !== 'affiliate') return <Navigate to="/affiliate/verify" replace />;
   return <>{children}</>;
 };

@@ -170,12 +170,14 @@ const AffiliatesPage: React.FC = () => {
           <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginTop: 2 }}>
             {canManage
               ? 'Customers register as affiliates through the Affiliate Signup QR/link. Owner/Manager can suspend or reactivate affiliate accounts.'
-              : 'Find an affiliate and hand over their referral link or QR code. Changes to affiliate accounts are made by an Owner or Manager.'}
+              : 'Find an affiliate and hand over their referral link or QR code, or share the Affiliate Signup QR with someone who wants to join. Changes to affiliate accounts are made by an Owner or Manager.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" onClick={load} style={{ gap: 6 }}><RefreshCw size={15} /> Refresh</button>
-          {canManage && <button className="btn btn-primary" onClick={() => setQrOpen(true)} style={{ gap: 6 }}><QrCode size={15} /> Affiliate Signup QR</button>}
+          {/* The signup link is public; any staff member may hand it to someone
+              who wants to join. It creates nothing by itself. */}
+          <button className="btn btn-primary" onClick={() => setQrOpen(true)} style={{ gap: 6 }}><QrCode size={15} /> Affiliate Signup QR</button>
         </div>
       </div>
 

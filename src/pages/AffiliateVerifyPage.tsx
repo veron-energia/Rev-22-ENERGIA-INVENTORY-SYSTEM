@@ -21,19 +21,26 @@ const AffiliateVerifyPage: React.FC = () => {
   // one-pending-claim index is the authoritative protection; this is secondary.
   const attempted = useRef(false);
 
-  const complete = async (first: string, last: string, phone: string) => {
+  const complete = async (first: string, last: string, phone: string, typed = false) => {
     setF({ first, last, phone });
     // A login is either Staff or an Affiliate, never both. The server refuses
     // this too; stopping here means a staff member sees why instead of a raw
     // permission error after filling the form in.
     if (actorType === 'staff') { setState('staff'); return; }
-    if (!first.trim() || !isPhoneValid(phone)) { setState('need_details'); setMsg('Enter your name and a valid international phone number.'); return; }
+    // Only what the person typed is checked here. Details that arrived with
+    // the account are the server's to check — it holds its own copy, answers
+    // an existing affiliate without needing any, and says DETAILS_REQUIRED
+    // when it genuinely has none.
+    if (typed && (!first.trim() || !isPhoneValid(phone))) { setState('need_details'); setMsg('Enter your name and a valid international phone number.'); return; }
     setState('working'); setMsg(null);
     const { data: sess } = await supabase.auth.getSession();
     if (!sess.session) { setState('error'); setMsg('Your verification session has expired. Please sign in.'); return; }
     const { data, error } = await supabase.rpc('complete_affiliate_onboarding',
       { p_first_name: first, p_last_name: last, p_phone: phone, p_agree: true });
-    if (error) { setState('error'); setMsg(phoneErrorMessage(error.message)); return; }  // keep saved state to allow retry
+    if (error) {
+      if (/DETAILS_REQUIRED/.test(error.message)) { setState('need_details'); setMsg(null); return; }
+      setState('error'); setMsg(phoneErrorMessage(error.message)); return;              // keep saved state to allow retry
+    }
     const res = data as any;
 
     // Definitive backend response — safe to clear the saved onboarding details.
@@ -49,10 +56,20 @@ const AffiliateVerifyPage: React.FC = () => {
   useEffect(() => {
     if (attempted.current) return;
     attempted.current = true;
-    let saved: any = null;
-    try { saved = JSON.parse(localStorage.getItem(ONBOARDING_KEY) || 'null'); } catch { /* ignore */ }
-    if (saved?.phone) { complete(saved.first || '', saved.last || '', saved.phone); }
-    else { setState('need_details'); }
+    (async () => {
+      // Where the details come from, in order: the account itself — stored at
+      // sign-up, present in whichever browser the link opens in — then this
+      // browser's copy of the form, then nothing. The verification link on a
+      // phone usually opens in the mail app's browser, not the one the form
+      // was filled in, which is why the browser's copy was so often missing
+      // and the person was asked again.
+      const { data: sess } = await supabase.auth.getSession();
+      const meta = (sess.session?.user?.user_metadata ?? {}) as Record<string, unknown>;
+      let saved: any = null;
+      try { saved = JSON.parse(localStorage.getItem(ONBOARDING_KEY) || 'null'); } catch { /* ignore */ }
+      const pick = (a: unknown, b: unknown) => String((typeof a === 'string' && a.trim()) ? a : (b ?? ''));
+      await complete(pick(meta.first_name, saved?.first), pick(meta.last_name, saved?.last), pick(meta.phone, saved?.phone));
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -120,7 +137,7 @@ const AffiliateVerifyPage: React.FC = () => {
       <Field label="First Name"><input className="input" value={f.first} onChange={e => setF({ ...f, first: e.target.value })} /></Field>
       <Field label="Last Name"><input className="input" value={f.last} onChange={e => setF({ ...f, last: e.target.value })} /></Field>
       <Field label="Phone Number"><PhoneInput value={f.phone} onChange={(e164) => setF({ ...f, phone: e164 })} /></Field>
-      <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => complete(f.first, f.last, f.phone)}>Finish Setup</button>
+      <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => complete(f.first, f.last, f.phone, true)}>Finish Setup</button>
     </AffiliateAuthShell>
   );
 };
