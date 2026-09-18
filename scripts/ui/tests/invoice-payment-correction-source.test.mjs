@@ -41,6 +41,13 @@ test('the save sends what the server expects', () => {
   assert.match(page, /payment_methods/, 'method-only changes keep their in-place path');
 });
 
+test('a payment can be split across methods; each part is a replacement of the same receipt', () => {
+  assert.match(form, /\+ Split across methods/, 'the split button');
+  assert.match(form, /aria-label="Drop this part"/, 'an added part can be dropped');
+  assert.match(page, /parts: e\.parts\.map\(x => \(\{ amount: Number\(x\.amount\)/, 'a split travels as parts of one payment_corrections entry');
+  assert.match(page, /e\.parts\.length > 1/, 'one part stays a plain correction');
+});
+
 test('the preview names the payments area', () => {
   assert.match(preview, /payments: 'Payments'/);
 });

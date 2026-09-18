@@ -41,7 +41,10 @@ import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-type PayEdit = { amount: string; date: string; payment_method_id: string; remove: boolean };
+type PayPart = { amount: string; date: string; payment_method_id: string };
+/** One recorded payment as the operator wants it to read: one part is a plain
+ *  correction (or nothing), two or more are a split across methods. */
+type PayEdit = { parts: PayPart[]; remove: boolean };
 /** Receipts and replacements still standing. A reversed entry, and the
  *  payment it superseded, are history rather than something to correct again. */
 const currentPaymentsOf = (pays: InvoicePayment[]) => pays.filter(p =>
@@ -275,6 +278,7 @@ const InvoicesPage: React.FC = () => {
   // replacement); a method-only change stays in place; "remove" reverses a
   // receipt recorded by mistake. Wallet-credit payments never get an entry.
   const [payEdits, setPayEdits] = useState<Record<string, PayEdit>>({});
+  const [statusBeforeEdit, setStatusBeforeEdit] = useState('');
   // Who the invoice is attributed to. Owner only — it changes what a printed
   // document says about who served the customer.
   const [cCreatedBy, setCCreatedBy] = useState('');
@@ -725,7 +729,7 @@ const InvoicesPage: React.FC = () => {
     setIssuedRecipientsConfirmed(false); setIssuedHeaderBefore(null);
     setCInstalment({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
     setEditRequestId(crypto.randomUUID());
-    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setBenefitAction(''); setPayEdits({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
+    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setBenefitAction(''); setPayEdits({}); setPaymentsBeforeEdit([]); setStatusBeforeEdit(''); setCCreatedBy(''); setCreatedByBeforeEdit('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCDiscountReason(''); setDiscountReasonErr(null); setDiscountBeforeEdit(0);
@@ -737,18 +741,25 @@ const InvoicesPage: React.FC = () => {
   // a removal is a reversal with no replacement and no refund.
   const paymentChanges = () => {
     const payment_methods: { payment_id: string; payment_method_id: string }[] = [];
-    const payment_corrections: { payment_id: string; amount: number; date: string; payment_method_id: string }[] = [];
+    const payment_corrections: ({ payment_id: string; amount: number; date: string; payment_method_id: string }
+      | { payment_id: string; parts: { amount: number; date: string; payment_method_id: string }[] })[] = [];
     const payment_removals: string[] = [];
     for (const p of paymentsBeforeEdit) {
       const e = payEdits[p.id];
       if (!e) continue;
       if (e.remove) { payment_removals.push(p.id); continue; }
-      const amountChanged = Math.abs(Number(e.amount) - Number(p.amount)) > 0.004;
-      const dateChanged = e.date !== sgDateOf(p);
+      if (e.parts.length > 1) {
+        // A split: every part is a replacement of this payment.
+        payment_corrections.push({ payment_id: p.id, parts: e.parts.map(x => ({ amount: Number(x.amount), date: x.date, payment_method_id: x.payment_method_id })) });
+        continue;
+      }
+      const one = e.parts[0];
+      const amountChanged = Math.abs(Number(one.amount) - Number(p.amount)) > 0.004;
+      const dateChanged = one.date !== sgDateOf(p);
       if (amountChanged || dateChanged) {
-        payment_corrections.push({ payment_id: p.id, amount: Number(e.amount), date: e.date, payment_method_id: e.payment_method_id });
-      } else if (e.payment_method_id !== p.payment_method_id) {
-        payment_methods.push({ payment_id: p.id, payment_method_id: e.payment_method_id });
+        payment_corrections.push({ payment_id: p.id, amount: Number(one.amount), date: one.date, payment_method_id: one.payment_method_id });
+      } else if (one.payment_method_id !== p.payment_method_id) {
+        payment_methods.push({ payment_id: p.id, payment_method_id: one.payment_method_id });
       }
     }
     return { payment_methods, payment_corrections, payment_removals };
@@ -881,9 +892,10 @@ const InvoicesPage: React.FC = () => {
     // Each payment kept needs a positive amount and the date it was received;
     // the server refuses anything else, so say it here first.
     if (editingInvoiceId && paymentsBeforeEdit.some(p => {
-      const e = payEdits[p.id]; return e && !e.remove && (!(Number(e.amount) > 0) || !e.date);
+      const e = payEdits[p.id];
+      return e && !e.remove && (e.parts.length === 0 || e.parts.some(x => !(Number(x.amount) > 0) || !x.date));
     })) {
-      setCErr('Each payment kept needs a positive amount and the date it was received. To take one out, mark it as recorded by mistake.');
+      setCErr('Each payment kept — and each part of a split — needs a positive amount and the date it was received. To take a payment out, mark it as recorded by mistake.');
       setCSaving(false); return;
     }
 
@@ -1081,8 +1093,9 @@ const InvoicesPage: React.FC = () => {
       const current = currentPaymentsOf(detailPayments);
       setPayEdits(Object.fromEntries(current
         .filter(p2 => !(methods.find(m => m.id === p2.payment_method_id) as any)?.is_wallet_credit)
-        .map(p2 => [p2.id, { amount: Number(p2.amount).toFixed(2), date: sgDateOf(p2), payment_method_id: p2.payment_method_id, remove: false }])));
+        .map(p2 => [p2.id, { parts: [{ amount: Number(p2.amount).toFixed(2), date: sgDateOf(p2), payment_method_id: p2.payment_method_id }], remove: false }])));
       setPaymentsBeforeEdit(current);
+      setStatusBeforeEdit(String(detail.status));
     }
     setCCreatedBy((detail as any).created_by ?? '');
     setCreatedByBeforeEdit((detail as any).created_by ?? '');
@@ -2252,23 +2265,49 @@ const InvoicesPage: React.FC = () => {
                         </span>
                       </div>
                     );
+                    const setPart = (idx: number, patch: Partial<PayPart>) =>
+                      setEdit({ parts: e.parts.map((x, j) => j === idx ? { ...x, ...patch } : x) });
+                    const methodOptions = methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }));
                     return (
                       <div key={p2.id} style={{ marginBottom: 6 }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '104px 148px minmax(140px, 1fr) auto',
-                                      gap: 8, alignItems: 'center', opacity: e.remove ? 0.55 : 1 }}>
-                          <input type="number" min="0.01" step="0.01" aria-label="Payment amount" value={e.amount}
-                            disabled={e.remove} onChange={ev => setEdit({ amount: ev.target.value })} />
-                          <input type="date" aria-label="Date received" value={e.date}
-                            disabled={e.remove} onChange={ev => setEdit({ date: ev.target.value })} />
-                          {e.remove
-                            ? <span style={{ fontSize: 12.5 }}>{methods.find(m => m.id === e.payment_method_id)?.name}</span>
-                            : <InvoiceSearchSelect value={e.payment_method_id} onChange={id => setEdit({ payment_method_id: id })}
-                                options={methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }))} />}
-                          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEdit({ remove: !e.remove })}
-                            title={e.remove ? 'Keep this payment' : 'This receipt was recorded by mistake'}>
-                            {e.remove ? 'Keep' : 'Remove'}
-                          </button>
-                        </div>
+                        {e.parts.map((part, idx) => (
+                          <div key={idx} style={{ display: 'grid', gridTemplateColumns: '104px 148px minmax(140px, 1fr) auto',
+                                                  gap: 8, alignItems: 'center', marginBottom: 4, opacity: e.remove ? 0.55 : 1 }}>
+                            <input type="number" min="0.01" step="0.01" aria-label="Payment amount" value={part.amount}
+                              disabled={e.remove} onChange={ev => setPart(idx, { amount: ev.target.value })} />
+                            <input type="date" aria-label="Date received" value={part.date}
+                              disabled={e.remove} onChange={ev => setPart(idx, { date: ev.target.value })} />
+                            {e.remove
+                              ? <span style={{ fontSize: 12.5 }}>{methods.find(m => m.id === part.payment_method_id)?.name}</span>
+                              : <InvoiceSearchSelect value={part.payment_method_id} onChange={id => setPart(idx, { payment_method_id: id })}
+                                  options={methodOptions} />}
+                            {idx === 0 ? (
+                              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEdit({ remove: !e.remove })}
+                                title={e.remove ? 'Keep this payment' : 'This receipt was recorded by mistake'}>
+                                {e.remove ? 'Keep' : 'Remove'}
+                              </button>
+                            ) : (
+                              <button type="button" className="btn btn-secondary btn-sm" aria-label="Drop this part"
+                                onClick={() => setEdit({ parts: e.parts.filter((_, j) => j !== idx) })}>✕</button>
+                            )}
+                          </div>
+                        ))}
+                        {!e.remove && (
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 2 }}>
+                            {/* Part of this money came through another method: add a
+                                part. Each part becomes a replacement of this receipt. */}
+                            <button type="button" className="btn btn-secondary btn-sm"
+                              title="Part of this payment came through another method"
+                              onClick={() => setEdit({ parts: [...e.parts, { amount: '', date: e.parts[0].date, payment_method_id: e.parts[0].payment_method_id }] })}>
+                              + Split across methods
+                            </button>
+                            {e.parts.length > 1 && (
+                              <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                                {e.parts.length} parts totalling {money(e.parts.reduce((sum, x) => sum + (Number(x.amount) || 0), 0))} replace this {money(Number(p2.amount))} receipt.
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {e.remove && (
                           <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 3 }}>
                             Recorded by mistake: this receipt is reversed with the correction’s reason. No refund is recorded, because no money goes back.
@@ -2282,7 +2321,7 @@ const InvoicesPage: React.FC = () => {
                     const kept = paymentsBeforeEdit.reduce((sum, p2) => {
                       const e = payEdits[p2.id];
                       if (!e) return sum + Number(p2.amount);
-                      return e.remove ? sum : sum + (Number(e.amount) || 0);
+                      return e.remove ? sum : sum + e.parts.reduce((t, x) => t + (Number(x.amount) || 0), 0);
                     }, 0);
                     const total = previewTotal;
                     const verdict = kept > total + 0.004
@@ -2290,7 +2329,7 @@ const InvoicesPage: React.FC = () => {
                       : kept > 0 && kept >= total - 0.004
                         ? 'which still settles the invoice'
                         : kept > 0
-                          ? `the invoice goes back to partially paid with ${money(total - kept)} outstanding`
+                          ? `the invoice ${statusBeforeEdit === 'partially_paid' ? 'stays' : 'goes back to'} partially paid with ${money(total - kept)} outstanding`
                           : 'no payment is left, so the invoice goes back to unpaid';
                     return (
                       <div style={{ fontSize: 12, marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>

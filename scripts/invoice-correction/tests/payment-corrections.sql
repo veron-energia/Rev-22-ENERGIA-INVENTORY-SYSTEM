@@ -11,6 +11,7 @@ do $$
 declare own uuid:=gen_random_uuid(); staff_id uuid:=gen_random_uuid(); st uuid; buyer uuid; refr uuid; affr uuid;
  cash uuid; bank uuid; wallet uuid; prod uuid; inv uuid; it uuid; items jsonb; r jsonb; req uuid;
  pay_cash uuid; pay_bank uuid; pay_wallet uuid; repl uuid; n int; fin jsonb; before_rows int;
+ paynow uuid; inv2 uuid; it2 uuid; items2 jsonb; pay_c uuid; part_pn uuid; part_cash uuid; req2 uuid;
 begin
  insert into auth.users(id,email) values(own,'pcf-owner@tests.invalid'),(staff_id,'pcf-staff@tests.invalid');
  insert into profiles(id,full_name,email,role) values(own,'PCF Owner','pcf-owner@tests.invalid','owner'),(staff_id,'PCF Staff','pcf-staff@tests.invalid','staff');
@@ -22,6 +23,7 @@ begin
  insert into payment_methods(name) values('PCF Cash') returning id into cash;
  insert into payment_methods(name) values('PCF Bank') returning id into bank;
  insert into payment_methods(name,is_wallet_credit) values('PCF Wallet',true) returning id into wallet;
+ insert into payment_methods(name) values('PCF PayNow') returning id into paynow;
  insert into products(name,sku,product_type) values('PCF Item','PCF-1','own') returning id into prod;
  insert into store_inventory(store_id,product_id,current_qty) values(st,prod,50);
  perform set_product_prices(st,prod,100,100,'available');
@@ -77,6 +79,11 @@ begin
  if invoice_net_sales_between(inv,'2026-09-10','2026-09-10')<>50 then raise exception 'FAIL: the corrected receipt date is not what reports use'; end if;
  fin:=invoice_financial_position(inv);
  if (fin->>'outstanding')::numeric<>50 or (fin->>'refund_due')::numeric<>0 then raise exception 'FAIL: financial position %', fin; end if;
+
+ -- an invoice that is already partially paid "stays" so; it does not "go back"
+ r:=preview_invoice_correction(inv,jsonb_build_object('payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',repl,'amount',40,'date','2026-09-10','payment_method_id',bank))));
+ if not exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'change'='partially paid' and e->>'detail' like 'Payments will total S$40.00 of S$100.00: the invoice stays partially paid with S$60.00 outstanding%') then
+  raise exception 'FAIL: partially-paid wording: %', r->'effects'; end if;
 
  -- ---- the same request again writes nothing -------------------------------
  select count(*) into before_rows from invoice_payments where invoice_id=inv;
@@ -165,6 +172,116 @@ begin
  end;
 
 
- raise notice 'PASS: a correction carries payment amount, date and method changes and removals through the per-payment rules in one transaction; the preview describes each change and the invoice''s state afterwards; superseded, zero, wallet and staff attempts are refused before and at the save; replay and no-op are still detected';
+
+ -- ================================================================
+ -- 337: one payment, several methods. A second invoice: 100 keyed as
+ -- cash, really 60 by PayNow and 40 in cash.
+ -- ================================================================
+ perform set_config('request.jwt.claim.sub',own::text,true);
+ inv2:=create_invoice(st,buyer,null,jsonb_build_array(jsonb_build_object('kind','product','product_id',prod,'quantity',1)));
+ perform pay_invoice(inv2,jsonb_build_array(jsonb_build_object('payment_method_id',cash,'amount',100)));
+ select id into it2 from invoice_items where invoice_id=inv2;
+ items2:=jsonb_build_array(jsonb_build_object('invoice_item_id',it2,'kind','product','product_id',prod,'quantity',1));
+ select id into pay_c from invoice_payments where invoice_id=inv2;
+
+ -- the preview describes the split and the unchanged consequence
+ r:=preview_invoice_correction(inv2,jsonb_build_object('payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',pay_c,'parts',
+   jsonb_build_array(jsonb_build_object('amount',60,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',40,'date','2026-09-10','payment_method_id',cash))))));
+ if (r->>'blocking')::boolean then raise exception 'FAIL: a valid split is blocked: %', r->'needs_review'; end if;
+ if not exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'change'='split' and e->>'from' like 'PCF Cash S$100.00 on %'
+                  and e->>'to'='PCF PayNow S$60.00 on 10 Sep 2026 + PCF Cash S$40.00 on 10 Sep 2026' and e->>'detail' like '%2 replacements totalling S$100.00%') then
+  raise exception 'FAIL: the split is not described: %', r->'effects'; end if;
+ if not exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'change'='still paid' and e->>'detail' like 'Payments will total S$100.00, which still settles%') then
+  raise exception 'FAIL: split consequence: %', r->'effects'; end if;
+
+ -- the save: one reversal, two replacements of the same receipt, nothing else changes
+ req2:=gen_random_uuid();
+ r:=correct_invoice(inv2,items2,jsonb_build_object('expected_edit_count',0,'payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',pay_c,'parts',
+   jsonb_build_array(jsonb_build_object('amount',60,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',40,'date','2026-09-10','payment_method_id',cash))))),'Really PayNow and cash',req2);
+ if coalesce((r->>'unchanged')::boolean,false) then raise exception 'FAIL: a split was treated as a no-op'; end if;
+ if (select status from invoices where id=inv2)<>'paid' or (select paid_amount from invoices where id=inv2)<>100 then
+  raise exception 'FAIL: split changed the invoice''s money: % %', (select status from invoices where id=inv2), (select paid_amount from invoices where id=inv2); end if;
+ if (select count(*) from invoice_payments where invoice_id=inv2 and entry_kind='correction_reversal' and corrects_payment_id=pay_c)<>1 then raise exception 'FAIL: one reversal expected'; end if;
+ select id into part_pn from invoice_payments where invoice_id=inv2 and entry_kind='correction_replacement' and corrects_payment_id=pay_c and payment_method_id=paynow and amount=60;
+ select id into part_cash from invoice_payments where invoice_id=inv2 and entry_kind='correction_replacement' and corrects_payment_id=pay_c and payment_method_id=cash and amount=40;
+ if part_pn is null or part_cash is null then raise exception 'FAIL: the two parts were not recorded as replacements of the receipt'; end if;
+ -- the reversal carries the correction's derived request id; each part carries its own, derived from that
+ if (select correction_request_id from invoice_payments where invoice_id=inv2 and entry_kind='correction_reversal' and corrects_payment_id=pay_c)<>md5(req2::text||'/split/'||pay_c::text)::uuid then
+  raise exception 'FAIL: the split reversal does not carry the correction''s request id'; end if;
+ if (select count(distinct correction_request_id) from invoice_payments where invoice_id=inv2 and corrects_payment_id=pay_c)<>3 then
+  raise exception 'FAIL: the split rows must each carry a request id of their own'; end if;
+ if (select (effective_at at time zone 'Asia/Singapore')::date from invoice_payments where id=part_pn)<>'2026-09-10' then raise exception 'FAIL: part date'; end if;
+ if not exists (select 1 from audit_logs where action='payment_split' and record_id=pay_c) then raise exception 'FAIL: no payment_split audit row'; end if;
+ if exists (select 1 from invoice_refunds where invoice_id=inv2) then raise exception 'FAIL: a split recorded a refund'; end if;
+ if invoice_net_sales_between(inv2,'2026-09-10','2026-09-10')<>100 then raise exception 'FAIL: split parts are not reported on their date'; end if;
+ if invoice_payment_remaining(part_pn)<>60 or invoice_payment_remaining(part_cash)<>40 then raise exception 'FAIL: each part stands on its own for refunds'; end if;
+
+ -- the same request again writes nothing; a different answer under it is refused
+ select count(*) into before_rows from invoice_payments where invoice_id=inv2;
+ r:=correct_invoice(inv2,items2,jsonb_build_object('expected_edit_count',0,'payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',pay_c,'parts',
+   jsonb_build_array(jsonb_build_object('amount',60,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',40,'date','2026-09-10','payment_method_id',cash))))),'Really PayNow and cash',req2);
+ if not coalesce((r->>'replayed')::boolean,false) or (select count(*) from invoice_payments where invoice_id=inv2)<>before_rows then raise exception 'FAIL: split replay'; end if;
+ begin
+  perform split_invoice_payment(pay_c,jsonb_build_array(jsonb_build_object('amount',70,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',cash)),'Really PayNow and cash',md5(req2::text||'/split/'||pay_c::text)::uuid);
+  raise exception 'FAIL: a reused request with different parts was accepted';
+ exception when others then
+  if sqlerrm like 'FAIL:%' then raise; end if;
+  if sqlerrm not like '%already used for different payment details%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if;
+ end;
+
+ -- the original cannot be split again; a part can be corrected as one payment, or split further
+ r:=preview_invoice_correction(inv2,jsonb_build_object('payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',pay_c,'parts',
+   jsonb_build_array(jsonb_build_object('amount',50,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',50,'date','2026-09-10','payment_method_id',cash))))));
+ if not (r->>'blocking')::boolean or not exists (select 1 from jsonb_array_elements(r->'needs_review') x where x->>'detail' like '%already corrected%') then
+  raise exception 'FAIL: a second split of the original is not stopped: %', r->'needs_review'; end if;
+ -- one part in "parts" is the plain correction: exactly one replacement, audited as a correction
+ perform correct_invoice(inv2,items2,jsonb_build_object('expected_edit_count',1,'payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',part_cash,'parts',
+   jsonb_build_array(jsonb_build_object('amount',45,'date','2026-09-11','payment_method_id',cash))))),'Cash was 45',gen_random_uuid());
+ if (select count(*) from invoice_payments where invoice_id=inv2 and entry_kind='correction_replacement' and corrects_payment_id=part_cash)<>1
+    or not exists (select 1 from audit_logs where action='payment_corrected' and record_id=part_cash) then
+  raise exception 'FAIL: a single part did not go through the plain correction'; end if;
+ fin:=invoice_financial_position(inv2);
+ if (select status from invoices where id=inv2)<>'paid' or (fin->>'refund_due')::numeric<>5 then raise exception 'FAIL: 60 + 45 should be paid with 5 refund due: %', fin; end if;
+ -- a further split of the PayNow part, totalling less: partially paid
+ r:=preview_invoice_correction(inv2,jsonb_build_object('payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',part_pn,'parts',
+   jsonb_build_array(jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',20,'date','2026-09-10','payment_method_id',bank))))));
+ if not exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'change'='partially paid' and e->>'detail' like 'Payments will total S$95.00 of S$100.00%') then
+  raise exception 'FAIL: a smaller split''s consequence: %', r->'effects'; end if;
+
+ -- what a split refuses: a zero part, a wallet part, staff
+ r:=preview_invoice_correction(inv2,jsonb_build_object('payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',part_pn,'parts',
+   jsonb_build_array(jsonb_build_object('amount',0,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',60,'date','2026-09-10','payment_method_id',bank))))));
+ if not (r->>'blocking')::boolean or not exists (select 1 from jsonb_array_elements(r->'needs_review') x where x->>'detail' like 'Each part of the % payment needs a positive amount%') then
+  raise exception 'FAIL: a zero part not stopped: %', r->'needs_review'; end if;
+ begin
+  perform split_invoice_payment(part_pn,jsonb_build_array(jsonb_build_object('amount',0,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',60,'date','2026-09-10','payment_method_id',bank)),'Zero part',gen_random_uuid());
+  raise exception 'FAIL: a zero part was accepted';
+ exception when others then
+  if sqlerrm like 'FAIL:%' then raise; end if;
+  if sqlerrm not like '%positive amount%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if;
+ end;
+ r:=preview_invoice_correction(inv2,jsonb_build_object('payment_corrections',jsonb_build_array(jsonb_build_object('payment_id',part_pn,'parts',
+   jsonb_build_array(jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',wallet),jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',cash))))));
+ if not (r->>'blocking')::boolean or not exists (select 1 from jsonb_array_elements(r->'needs_review') x where x->>'detail' like '%cannot be wallet credit%') then
+  raise exception 'FAIL: a wallet part not stopped: %', r->'needs_review'; end if;
+ begin
+  perform split_invoice_payment(part_pn,jsonb_build_array(jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',wallet),jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',cash)),'Wallet part',gen_random_uuid());
+  raise exception 'FAIL: a wallet part was accepted';
+ exception when others then
+  if sqlerrm like 'FAIL:%' then raise; end if;
+  if sqlerrm not like '%wallet credit%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if;
+ end;
+ perform set_config('request.jwt.claim.sub',staff_id::text,true);
+ begin
+  perform split_invoice_payment(part_pn,jsonb_build_array(jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',paynow),jsonb_build_object('amount',30,'date','2026-09-10','payment_method_id',cash)),'Staff try',gen_random_uuid());
+  raise exception 'FAIL: staff split a payment';
+ exception when others then
+  if sqlerrm like 'FAIL:%' then raise; end if;
+  if sqlerrm not like '%Owner or Manager%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if;
+ end;
+ perform set_config('request.jwt.claim.sub',own::text,true);
+ if has_function_privilege('anon','public.split_invoice_payment(uuid,jsonb,text,uuid)','execute') then raise exception 'FAIL: anonymous can split payments'; end if;
+
+ raise notice 'PASS: a correction carries payment amount, date and method changes and removals through the per-payment rules in one transaction; the preview describes each change and the invoice''s state afterwards; superseded, zero, wallet and staff attempts are refused before and at the save; replay and no-op are still detected; a payment splits into several methods as replacements of one receipt, with the same checks';
 end $$;
 rollback;
