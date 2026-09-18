@@ -117,6 +117,15 @@ records of one person; 0167 and 0185 pay a referral that was recorded after
 the sale. Both are what the system does on any correction today; `-v skip=`
 leaves them out if you would rather not.
 
+## Applied to production on 2026-09-18
+
+334 and 335 were applied by the owner. The re-earn was run through the
+Supabase SQL tool with the script's exact logic (rehearsal first, then the
+real run, actor = the owner profile): 20 invoices looked at, 10 changed, 7
+unchanged, 3 left for review (INV-2026-0020, 0027, 0045 — rows already paid
+out), no errors. INV-2026-0222 carries 11.55 earned to Marlinah (Guoco
+Tower). One `commission_reearned` audit row per changed invoice.
+
 ## Steps for production
 
 ```bash
