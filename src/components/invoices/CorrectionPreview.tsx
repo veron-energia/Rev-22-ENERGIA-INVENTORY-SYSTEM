@@ -15,7 +15,7 @@ type Preview = {
 const AREA: Record<string, string> = {
   affiliate: 'Affiliate commission', affiliate_payout: 'Affiliate payout',
   customer: 'Customer', benefits: 'Customer benefits', store: 'Store',
-  voucher_ownership: 'Voucher ownership',
+  voucher_ownership: 'Voucher ownership', payments: 'Payments',
 };
 
 /**

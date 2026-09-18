@@ -37,9 +37,18 @@ import '../components/invoices/invoice-controls.css';
 
 import { loadInvoiceList } from '../lib/invoices/loadInvoiceList';
 import { fetchInvoicePage, fetchAllMatchingInvoices } from '../lib/invoices/listPage';
-import { calendarDateInRange } from '../lib/calendarDates';
+import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
+
+type PayEdit = { amount: string; date: string; payment_method_id: string; remove: boolean };
+/** Receipts and replacements still standing. A reversed entry, and the
+ *  payment it superseded, are history rather than something to correct again. */
+const currentPaymentsOf = (pays: InvoicePayment[]) => pays.filter(p =>
+  (p as any).entry_kind !== 'correction_reversal'
+  && !pays.some(r => (r as any).corrects_payment_id === p.id && (r as any).entry_kind === 'correction_reversal'));
+/** The calendar day the money was received, in the business's time zone. */
+const sgDateOf = (p: InvoicePayment) => calendarDate((p as any).effective_at || p.created_at, 'Asia/Singapore');
 
 const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   const cls = s === 'completed_foc' ? 'badge-success' : s === 'paid' ? 'badge-success' : s === 'partially_paid' ? 'badge-primary'
@@ -261,7 +270,11 @@ const InvoicesPage: React.FC = () => {
   // not in the payload, which the preview reports as "unchanged".
   const [correctionPreview, setCorrectionPreview] = useState<any | null>(null);
   const [previewing, setPreviewing] = useState(false);
-  const [payFix, setPayFix] = useState<Record<string, string>>({});
+  // Per recorded payment on a correction: what the operator wants it to say.
+  // Amount or date changes run through the per-payment rule (reversal +
+  // replacement); a method-only change stays in place; "remove" reverses a
+  // receipt recorded by mistake. Wallet-credit payments never get an entry.
+  const [payEdits, setPayEdits] = useState<Record<string, PayEdit>>({});
   // Who the invoice is attributed to. Owner only — it changes what a printed
   // document says about who served the customer.
   const [cCreatedBy, setCCreatedBy] = useState('');
@@ -712,10 +725,33 @@ const InvoicesPage: React.FC = () => {
     setIssuedRecipientsConfirmed(false); setIssuedHeaderBefore(null);
     setCInstalment({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
     setEditRequestId(crypto.randomUUID());
-    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setBenefitAction(''); setPayFix({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
+    setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setBenefitAction(''); setPayEdits({}); setPaymentsBeforeEdit([]); setCCreatedBy(''); setCreatedByBeforeEdit('');
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCDiscountReason(''); setDiscountReasonErr(null); setDiscountBeforeEdit(0);
+  };
+
+  // What the correction sends about money. Amount or date changes go through
+  // the per-payment rule (the original receipt stays; a reversal and a
+  // replacement are recorded); a method-only change stays in place as before;
+  // a removal is a reversal with no replacement and no refund.
+  const paymentChanges = () => {
+    const payment_methods: { payment_id: string; payment_method_id: string }[] = [];
+    const payment_corrections: { payment_id: string; amount: number; date: string; payment_method_id: string }[] = [];
+    const payment_removals: string[] = [];
+    for (const p of paymentsBeforeEdit) {
+      const e = payEdits[p.id];
+      if (!e) continue;
+      if (e.remove) { payment_removals.push(p.id); continue; }
+      const amountChanged = Math.abs(Number(e.amount) - Number(p.amount)) > 0.004;
+      const dateChanged = e.date !== sgDateOf(p);
+      if (amountChanged || dateChanged) {
+        payment_corrections.push({ payment_id: p.id, amount: Number(e.amount), date: e.date, payment_method_id: e.payment_method_id });
+      } else if (e.payment_method_id !== p.payment_method_id) {
+        payment_methods.push({ payment_id: p.id, payment_method_id: e.payment_method_id });
+      }
+    }
+    return { payment_methods, payment_corrections, payment_removals };
   };
 
   const handleCreate = async () => {
@@ -842,6 +878,15 @@ const InvoicesPage: React.FC = () => {
       return;
     }
 
+    // Each payment kept needs a positive amount and the date it was received;
+    // the server refuses anything else, so say it here first.
+    if (editingInvoiceId && paymentsBeforeEdit.some(p => {
+      const e = payEdits[p.id]; return e && !e.remove && (!(Number(e.amount) > 0) || !e.date);
+    })) {
+      setCErr('Each payment kept needs a positive amount and the date it was received. To take one out, mark it as recorded by mistake.');
+      setCSaving(false); return;
+    }
+
     const header = {
       customer_id: cCustomer, store_id: effectiveStore, notes: cNotes || null,
       preserve_issued_recipients: issuedRecipientsConfirmed,
@@ -857,9 +902,7 @@ const InvoicesPage: React.FC = () => {
       ...(editingInvoiceId ? { expected_edit_count: expectedEditCount } : {}),
       ...(affTouched ? { affiliate_id: cAffiliate || null } : {}),
       ...(cCreatedBy && cCreatedBy !== createdByBeforeEdit ? { created_by: cCreatedBy } : {}),
-      payment_methods: Object.entries(payFix)
-        .filter(([id, mid]) => paymentsBeforeEdit.find(p => p.id === id)?.payment_method_id !== mid)
-        .map(([payment_id, payment_method_id]) => ({ payment_id, payment_method_id })),
+      ...paymentChanges(),
     };
     // Show what the correction will do before doing it. Confirming from the
     // summary calls back in with the preview already shown.
@@ -1032,10 +1075,17 @@ const InvoicesPage: React.FC = () => {
     setEditReason('');
     setCAffiliate((detail as any).affiliate_id ?? '');
     setAffTouched(false);
-    setPayFix(Object.fromEntries(detailPayments.map(p2 => [p2.id, p2.payment_method_id])));
+    {
+      // Only payments still standing are offered; a reversed entry and the
+      // receipt it superseded are history.
+      const current = currentPaymentsOf(detailPayments);
+      setPayEdits(Object.fromEntries(current
+        .filter(p2 => !(methods.find(m => m.id === p2.payment_method_id) as any)?.is_wallet_credit)
+        .map(p2 => [p2.id, { amount: Number(p2.amount).toFixed(2), date: sgDateOf(p2), payment_method_id: p2.payment_method_id, remove: false }])));
+      setPaymentsBeforeEdit(current);
+    }
     setCCreatedBy((detail as any).created_by ?? '');
     setCreatedByBeforeEdit((detail as any).created_by ?? '');
-    setPaymentsBeforeEdit(detailPayments);
     void loadAffiliateOptions();
     setDetail(null);
     setCErr(null);
@@ -2144,15 +2194,16 @@ const InvoicesPage: React.FC = () => {
                 {/* Referrer: add one that was missed, change it, or clear it. */}
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>Referrer / affiliate</label>
-                  <select value={cAffiliate}
-                    onChange={e => { setCAffiliate(e.target.value); setAffTouched(true); }}>
-                    <option value="">— None —</option>
-                    {affiliateOptions.map(a => (
-                      <option key={a.affiliate_id} value={a.affiliate_id}>
-                        {a.full_name}{a.phone ? ` · ${a.phone}` : ''}
-                      </option>
-                    ))}
-                  </select>
+                  <SearchSelect placeholder="None — search name, phone or email…"
+                    emptyLabel="No affiliate matches"
+                    value={cAffiliate}
+                    onChange={v => { setCAffiliate(v); setAffTouched(true); }}
+                    options={affiliateOptions.map((a: any) => ({
+                      value: a.affiliate_id,
+                      label: a.full_name,
+                      sublabel: [a.phone, a.email].filter(Boolean).join(' · ') || undefined,
+                      search: `${a.full_name} ${a.phone ?? ''} ${a.email ?? ''}`,
+                    }))} />
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                     Changing this reverses the affiliate commission and re-earns it for whoever is
                     selected here.
@@ -2181,36 +2232,75 @@ const InvoicesPage: React.FC = () => {
                   </div>
                 )}
 
-                {/* Payment method: how the money arrived, not how much. */}
+                {/* Payments: amount, date received and method — or a receipt that
+                    should never have been recorded. Wallet-credit payments are
+                    corrected from the payment list, which checks the credit lots. */}
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label>Payment method{detailPayments.length > 1 ? 's' : ''}</label>
-                  {detailPayments.length === 0 ? (
+                  <label>Payment{paymentsBeforeEdit.length > 1 ? 's' : ''}</label>
+                  {paymentsBeforeEdit.length === 0 ? (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No payments recorded.</div>
-                  ) : detailPayments.map(p2 => {
-                    // A wallet payment consumed credit from the customer's
-                    // wallet; the database refuses to reattribute it, so it is
-                    // shown as fixed rather than offered and then rejected.
-                    const isWallet = !!(methods.find(m => m.id === p2.payment_method_id) as any)?.is_wallet_credit;
-                    return (
+                  ) : paymentsBeforeEdit.map(p2 => {
+                    const e = payEdits[p2.id];
+                    const setEdit = (patch: Partial<PayEdit>) => setPayEdits(m => ({ ...m, [p2.id]: { ...m[p2.id], ...patch } }));
+                    if (!e) return (
                       <div key={p2.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
-                        <span style={{ flex: '0 0 84px', fontSize: 12.5, fontWeight: 600,
-                                       fontVariantNumeric: 'tabular-nums' }}>
+                        <span style={{ flex: '0 0 84px', fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
                           {money(Number(p2.amount))}
                         </span>
-                        {isWallet ? (
-                          <span style={{ flex: 1, fontSize: 12.5, color: 'var(--text-muted)' }}>
-                            {methods.find(m => m.id === p2.payment_method_id)?.name} — wallet credit, cannot be reattributed
-                          </span>
-                        ) : (
-                          <InvoiceSearchSelect value={payFix[p2.id] ?? p2.payment_method_id}
-                            onChange={id => setPayFix(m => ({ ...m, [p2.id]: id }))}
-                            options={methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }))} />
+                        <span style={{ flex: 1, fontSize: 12.5, color: 'var(--text-muted)' }}>
+                          {methods.find(m => m.id === p2.payment_method_id)?.name} — wallet credit; corrected from the payment list, not here
+                        </span>
+                      </div>
+                    );
+                    return (
+                      <div key={p2.id} style={{ marginBottom: 6 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '104px 148px minmax(140px, 1fr) auto',
+                                      gap: 8, alignItems: 'center', opacity: e.remove ? 0.55 : 1 }}>
+                          <input type="number" min="0.01" step="0.01" aria-label="Payment amount" value={e.amount}
+                            disabled={e.remove} onChange={ev => setEdit({ amount: ev.target.value })} />
+                          <input type="date" aria-label="Date received" value={e.date}
+                            disabled={e.remove} onChange={ev => setEdit({ date: ev.target.value })} />
+                          {e.remove
+                            ? <span style={{ fontSize: 12.5 }}>{methods.find(m => m.id === e.payment_method_id)?.name}</span>
+                            : <InvoiceSearchSelect value={e.payment_method_id} onChange={id => setEdit({ payment_method_id: id })}
+                                options={methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }))} />}
+                          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEdit({ remove: !e.remove })}
+                            title={e.remove ? 'Keep this payment' : 'This receipt was recorded by mistake'}>
+                            {e.remove ? 'Keep' : 'Remove'}
+                          </button>
+                        </div>
+                        {e.remove && (
+                          <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 3 }}>
+                            Recorded by mistake: this receipt is reversed with the correction’s reason. No refund is recorded, because no money goes back.
+                          </div>
                         )}
                       </div>
                     );
                   })}
+                  {paymentsBeforeEdit.length > 0 && (() => {
+                    // The same arithmetic the preview does, against the form's live total.
+                    const kept = paymentsBeforeEdit.reduce((sum, p2) => {
+                      const e = payEdits[p2.id];
+                      if (!e) return sum + Number(p2.amount);
+                      return e.remove ? sum : sum + (Number(e.amount) || 0);
+                    }, 0);
+                    const total = previewTotal;
+                    const verdict = kept > total + 0.004
+                      ? `the invoice stays paid and ${money(kept - total)} shows as refund due`
+                      : kept > 0 && kept >= total - 0.004
+                        ? 'which still settles the invoice'
+                        : kept > 0
+                          ? `the invoice goes back to partially paid with ${money(total - kept)} outstanding`
+                          : 'no payment is left, so the invoice goes back to unpaid';
+                    return (
+                      <div style={{ fontSize: 12, marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
+                        Payments will total <strong>{money(kept)}</strong> of {money(total)} — {verdict}.
+                      </div>
+                    );
+                  })()}
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                    Only which method the money came through — the amounts cannot be changed here.
+                    The original receipt stays in history: a change to the amount or date records a reversal and a
+                    replacement with the correction’s reason, and no refund. Benefits already issued at payment stay issued.
                   </div>
                 </div>
               </div>
