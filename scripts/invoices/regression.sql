@@ -38,7 +38,8 @@ begin
  if r->>'unchanged' is distinct from 'true' then raise exception 'No-op not detected: %',r; end if;
  if before_item is distinct from (select to_jsonb(i) from invoice_items i where id=item) or before_stock<>(select count(*) from stock_movements where invoice_id=inv) then raise exception 'No-op altered invoice lines or stock'; end if;
  update staff_commissions set status='paid',payout_id=gen_random_uuid() where invoice_id=inv and status='earned';
- r:=correct_invoice(inv,x,'{"manual_discount":200,"business_date":"2020-01-03"}','Discount correction');
+ -- 331: a positive manual discount needs its internal reason.
+ r:=correct_invoice(inv,x,'{"manual_discount":200,"manual_discount_reason":"Regression: discount correction","business_date":"2020-01-03"}','Discount correction');
  if (r->>'refund_due')::numeric is distinct from 200 then raise exception 'Expected refund due 200: %',r; end if;
  -- Since 292 the invoice's own date no longer decides where money is reported;
  -- the receipt date does. Correcting the business date is a document change and

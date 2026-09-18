@@ -45,6 +45,24 @@ begin
  update invoices set discount_total=5, total_amount=95 where id=inv;
  if (select manual_discount_reason from invoices where id=inv) is not null then raise exception 'FAIL: non-manual discount touched the reason'; end if;
 
+ -- 335: adding a discount to an invoice that never had one. The reason comes
+ -- with the change and is accepted; without one the change is refused.
+ select id into it from invoice_items where invoice_id=inv;
+ begin
+  perform correct_invoice(inv,jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','product','product_id',prod,'quantity',1)),
+    jsonb_build_object('manual_discount',12,'manual_discount_reason',''),'add one',gen_random_uuid());
+  raise exception 'FAIL: a discount added without a reason was accepted';
+ exception when others then
+  if sqlerrm like 'FAIL:%' then raise; end if;
+  if sqlerrm not like '%MANUAL_DISCOUNT_REASON_REQUIRED%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if;
+ end;
+ perform correct_invoice(inv,jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','product','product_id',prod,'quantity',1)),
+   jsonb_build_object('manual_discount',12,'manual_discount_reason','Adding one'),'add one',gen_random_uuid());
+ if (select manual_discount from invoices where id=inv)<>12 or (select manual_discount_reason from invoices where id=inv) is distinct from 'Adding one' then
+  raise exception 'FAIL: a discount added by correction was refused or its reason not kept: % / %',
+   (select manual_discount from invoices where id=inv), (select manual_discount_reason from invoices where id=inv); end if;
+ if nullif(current_setting('invoice.manual_discount_reason',true),'') is not null then raise exception 'FAIL: the hand-off was left set after the correction'; end if;
+
  -- ---- history: an invoice discounted before the column existed -----------
  -- Written the way it would have been before 331: through the older
  -- create_invoice, which never knew the column, with the guard off.

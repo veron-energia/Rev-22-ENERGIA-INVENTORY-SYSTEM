@@ -39,6 +39,7 @@
     "test:therapy-choices": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/therapy-choices/tests/choice-packages.sql -f scripts/therapy-choices/tests/choice-at-till.sql -f scripts/therapy-choices/tests/switching-and-refunds.sql",
     "test:therapy-choices:concurrency": "node scripts/therapy-choices/tests/concurrency.mjs",
     "test:voucher-claims": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/voucher-claims/tests/deferred-claims.sql -f scripts/voucher-claims/tests/revocation-and-reconciliation.sql -f scripts/voucher-claims/tests/prior-issuance-counts.sql -f scripts/voucher-claims/tests/cancelled-offers-nothing.sql -f scripts/voucher-claims/tests/line-kind-rebuild.sql -f scripts/voucher-claims/tests/bundle-deferred-selection.sql",
+    "test:commission-reinstall": "sh scripts/commissions/tests/reinstall-reearn.sh",
     "test:credit-policy": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/credit-policy/tests/spending-rules.sql -f scripts/credit-policy/tests/snapshot-does-not-gate.sql -f scripts/credit-policy/tests/releases-as-it-is-paid.sql",
     "test:invoice-payments:concurrency": "node scripts/invoice-payments/tests/concurrency.mjs",
     "test:invoice-actions:concurrency": "node scripts/invoice-actions/tests/concurrency.mjs",
