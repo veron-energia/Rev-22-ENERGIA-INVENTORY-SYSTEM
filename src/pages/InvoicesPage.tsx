@@ -30,13 +30,14 @@ import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockE
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
-import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, sortInvoices, INVOICE_SORT_FIELDS, isInvoiceSortField,
+import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import '../components/invoices/invoice-controls.css';
 
-import { loadInvoiceList } from '../lib/invoices/loadInvoiceList';
 import { fetchInvoicePage, fetchAllMatchingInvoices } from '../lib/invoices/listPage';
+import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefresh, announcedMatchesShown } from '../lib/invoices/listRefresh';
+import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
@@ -70,9 +71,8 @@ interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup
   quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
 
 const InvoicesPage: React.FC = () => {
-  const { profile } = useAuth();
+  const { profile, session } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
@@ -140,7 +140,10 @@ const InvoicesPage: React.FC = () => {
   const [dateFilter, setDateFilter] = useState<'all' | 'confirmed' | 'pending'>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [listError, setListError] = useState('');
+  // A background refresh keeps the rows on screen and reports failure beside
+  // them; only the first load, which has nothing to keep, shows an empty state.
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<{ message: string; afterSave?: string } | null>(null);
   // Free-text search includes the confirmed invoice business date.
   const [invSearch, setInvSearch] = useState('');
 
@@ -221,6 +224,44 @@ const InvoicesPage: React.FC = () => {
   // Only the newest request may write to the screen. Without this a slow early
   // keystroke can land after a fast later one and show the wrong results.
   const pageRequestRef = useRef(0);
+  // The latest page, query, rows and dialog state, for handlers that run long
+  // after the render that created them (a realtime event, a queued refresh).
+  const pageRef = useRef(1);
+  const rangeInvalidRef = useRef(false);
+  const pageRowsRef = useRef<Invoice[]>([]);
+  const createOpenRef = useRef(false);
+  const editingIdRef = useRef<string | null>(null);
+  const dialogsOpenRef = useRef(false);
+  const financeActiveRef = useRef(false);
+  // Whether the payment entry under the open invoice has been touched since it
+  // was opened. An untouched entry can be reset by a background reload; a
+  // touched one is never reset without being asked.
+  const payTouchedRef = useRef(false);
+  const programmaticPayRef = useRef(true);
+  // Set on mount as well as cleared on unmount: React's development double
+  // mount runs the cleanup once and mounts again with the same refs.
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  // When the page last started reading the list, and the last change it was
+  // told about (its own save, another tab's, a realtime event): the same
+  // change arriving again by another route needs no second refresh.
+  const lastRefreshStartedRef = useRef(0);
+  const recentChangeRef = useRef<{ at: number; ids: Set<string>; source: string }>({ at: 0, ids: new Set(), source: '' });
+  const labelStamps = useRef(createStampedWriter());
+  const announceRef = useRef<(ids: string[]) => void>(() => {});
+  const noteLocalChangeRef = useRef<(ids: string[]) => void>(() => {});
+  // The open invoice, or the one being edited, was changed elsewhere.
+  const [detailStale, setDetailStale] = useState(false);
+  const [detailUpdatedNote, setDetailUpdatedNote] = useState<string | null>(null);
+  const [detailReloadError, setDetailReloadError] = useState<string | null>(null);
+  const [editConflict, setEditConflict] = useState<{ reviewed: boolean; fresh: Invoice | null; loading: boolean } | null>(null);
+  const editBaseRef = useRef<Invoice | null>(null);
+  // Whether a list read was requested since a change was first seen: a request
+  // made at T runs at or after T, so it covers every change seen before T.
+  const lastRefreshRequestedRef = useRef(0);
+  // Foreground loads (first open, filter/page change) own the "loading…"
+  // indicator; a background refresh that lands first must not leave it on.
+  const foregroundTicketRef = useRef(0);
   const [sortField, setSortField] = useState<InvoiceSortField>('created_at');
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
   // The guided flow replaces the old two-step chooser: it derives the whole
@@ -312,9 +353,10 @@ const InvoicesPage: React.FC = () => {
       { p_invoice_id: detail.id, p_warehouse_id: warehouseId });
     setFulfilBusy(false);
     if (error) { setFulfilErr(error.message); return; }
+    noteLocalChangeRef.current([detail.id]);
     const { data: inv } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
     if (inv) await openDetail(inv as Invoice);
-    await loadAll();
+    void refreshList({ afterSave: 'The fulfilment warehouse was saved', changed: [detail.id] });
   };
   const [focLine, setFocLine] = useState<InvoiceItem | null>(null);
   const [focQty, setFocQty] = useState(1);
@@ -324,14 +366,20 @@ const InvoicesPage: React.FC = () => {
   const [voucherStorePrices, setVoucherStorePrices] = useState<any[]>([]);
   const [promoStorePrices, setPromoStorePrices] = useState<any[]>([]);
 
-  const loadAll = useCallback(async () => {
+  /**
+   * The reference data the forms and labels need: stores, products, prices,
+   * payment methods, promotions, staff, the therapy catalogue. Loaded once,
+   * when the page opens.
+   *
+   * It does NOT load invoices. The list is one page of a server-side query,
+   * refreshed by refreshList() below. This used to be called loadAll() and was
+   * what every save called afterwards — which reloaded the catalogue and left
+   * the list exactly as it was (INVOICE_LIST_REFRESH.md). A save must call
+   * refreshList(), never this.
+   */
+  const loadReferenceData = useCallback(async () => {
     setLoading(true);
-    const [inv, allPays, st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
-      // The list itself is paged now, so loadAll no longer fetches invoices.
-      Promise.resolve({ data: [] as Invoice[], error: null as { message: string } | null }),
-      // Payment methods are fetched per page now, for the ~25 invoices on
-      // screen, rather than every payment ever recorded.
-      Promise.resolve([] as any[]),
+    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       // The customers table is deliberately absent. It was read whole here —
@@ -361,12 +409,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('therapy_services').select('*').eq('is_active', true).order('name'),
       supabase.from('therapy_service_stores').select('*'),
     ]);
-    setListError(inv.error?.message ?? '');
-    if (!inv.error) setInvoices((inv.data as Invoice[]) ?? []);
-
-    // Payment method names are resolved per page by loadPaymentMethodsFor, for
-    // the invoices actually on screen, rather than by reading every payment row
-    // ever recorded and mapping the lot.
+    if (!mountedRef.current) return;
     setStores((st.data as Store[]) ?? []);
     setProducts((pr.data as Product[]) ?? []);
     setMethods((pm.data as PaymentMethod[]) ?? []);
@@ -392,7 +435,7 @@ const InvoicesPage: React.FC = () => {
     setFocReasons((focr?.data as FocReason[]) ?? []);
     setLoading(false);
   }, []);
-  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { void loadReferenceData(); }, [loadReferenceData]);
 
   const storeName = (id: string) => stores.find(s => s.id === id)?.name ?? '—';
   const customerOf = (id: string | null | undefined) =>
@@ -733,6 +776,7 @@ const InvoicesPage: React.FC = () => {
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCDiscountReason(''); setDiscountReasonErr(null); setDiscountBeforeEdit(0);
+    setEditConflict(null); editBaseRef.current = null;
   };
 
   // What the correction sends about money. Amount or date changes go through
@@ -898,6 +942,13 @@ const InvoicesPage: React.FC = () => {
       setCErr('Each payment kept — and each part of a split — needs a positive amount and the date it was received. To take a payment out, mark it as recorded by mistake.');
       setCSaving(false); return;
     }
+    // Another user or tab changed this invoice while it was being edited. The
+    // server refuses a stale save anyway; asking for the review here first
+    // keeps the entries and makes the refusal not the first anyone hears of it.
+    if (editingInvoiceId && editConflict && !editConflict.reviewed) {
+      setCErr('This invoice was changed by another user or tab. Review the current invoice (above) before saving.');
+      setCSaving(false); return;
+    }
 
     const header = {
       customer_id: cCustomer, store_id: effectiveStore, notes: cNotes || null,
@@ -936,6 +987,9 @@ const InvoicesPage: React.FC = () => {
     if (error) {
       setCErr(error.message);
       setCorrectionPreview(null);
+      // Someone else saved this invoice first (expected_edit_count). Say so
+      // where the entries are, with the review, rather than as a bare refusal.
+      if (editingInvoiceId && /changed by another user/i.test(error.message)) markEditConflict();
       // The server's refusal names the field; put the cursor in it.
       if (/MANUAL_DISCOUNT_REASON_REQUIRED/.test(error.message)) {
         setDiscountReasonErr('Give the internal reason for this manual discount.');
@@ -949,6 +1003,7 @@ const InvoicesPage: React.FC = () => {
       return;
     }
     const newInvoiceId = editingInvoiceId ? null : (typeof data === 'string' ? data : (data as any)?.id ?? null);
+    noteLocalChangeRef.current([newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[]);
     setCorrectionPreview(null);
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
     setEditingPaid(false); setEditReason('');
@@ -965,7 +1020,8 @@ const InvoicesPage: React.FC = () => {
         await openDetail(invRow as Invoice);
       }
     }
-    loadAll();
+    void refreshList({ afterSave: editingInvoiceId ? 'The correction was saved' : 'The invoice was created',
+      changed: [newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[] });
   };
 
   // Phase 13 — prefill the builder modal from an unpaid invoice and switch it
@@ -1053,6 +1109,7 @@ const InvoicesPage: React.FC = () => {
     setCInstalment({ instalment_category: (detail as any).instalment_category ?? '',
       instalment_method_id: (detail as any).instalment_method_id ?? '', instalment_months: (detail as any).instalment_months ?? '' });
     setExpectedEditCount((detail as any).edit_count ?? 0); setEditRequestId(crypto.randomUUID());
+    editBaseRef.current = detail; setEditConflict(null);
     setCCustomer(detail.customer_id);
     setIssuedRecipientsConfirmed(false);
     // What counts as "this invoice issued benefits" is decided by the server
@@ -1140,10 +1197,11 @@ const InvoicesPage: React.FC = () => {
     const { error } = await supabase.rpc('set_invoice_affiliate', { p_invoice_id: detail.id, p_affiliate_id: affiliateId });
     setAffiliateBusy(false);
     if (error) { setAffiliateErr(error.message); return; }
+    noteLocalChangeRef.current([detail.id]);
     await loadEffectiveAffiliate(detail.id);
     const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
     if (invRow) await openDetail(invRow as Invoice);
-    await loadAll();
+    void refreshList({ afterSave: 'The affiliate was saved', changed: [detail.id] });
   };
 
   // Every detail load takes a ticket. A slower, older load that finishes after
@@ -1151,11 +1209,18 @@ const InvoicesPage: React.FC = () => {
   // invoice the user has already navigated away from.
   const detailLoadSeq = useRef(0);
   const detailIdRef = useRef<string | null>(null);
+  // Closing the invoice forgets it: a live signal about it, or a slow open
+  // still in flight, must not bring it back.
+  useEffect(() => {
+    if (detail) return;
+    detailIdRef.current = null; detailLoadSeq.current++;
+    setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
+  }, [detail]);
   /**
    * Reload the invoice that is open, by its own id.
    *
    * A refund or cancellation changes status, paid_amount, refunds, payments
-   * and benefits. loadAll() refreshes the LIST, but `detail` still holds the
+   * and benefits. refreshList() refreshes the LIST, but `detail` still holds the
    * row as it was when the invoice was opened, so the screen went on saying
    * "Paid · net S$15 · refunded S$0" after a S$15 refund had been recorded.
    * Nothing was wrong with the money; the screen was reading a stale copy.
@@ -1164,13 +1229,14 @@ const InvoicesPage: React.FC = () => {
    * read-only retry, rather than presenting stale figures as current.
    */
   const refreshDetail = useCallback(async (invoiceId: string) => {
-    // Do not reopen an invoice the user has since navigated away from.
-    if (detailIdRef.current && detailIdRef.current !== invoiceId) return;
+    // Only the invoice that is open is reloaded: never one the user has since
+    // closed or navigated away from.
+    if (detailIdRef.current !== invoiceId) return;
     const { data, error } = await supabase.from('invoices')
       .select('*').eq('id', invoiceId).is('deleted_at', null).maybeSingle();
     if (error) throw error;
     if (!data) throw new Error('The invoice could not be read back.');
-    if (detailIdRef.current && detailIdRef.current !== invoiceId) return;
+    if (detailIdRef.current !== invoiceId) return;
     await openDetail(data as Invoice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1188,6 +1254,7 @@ const InvoicesPage: React.FC = () => {
     if (fullRow) inv = fullRow as Invoice;
     setPaymentRequestId(crypto.randomUUID());
     setDetail(inv); setDetailFinancial(null);
+    setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
     setDetailTherapy(null);
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
@@ -1244,6 +1311,7 @@ const InvoicesPage: React.FC = () => {
     // No method is chosen for the operator. Defaulting to the first method, or
     // to whatever the previous customer used, is how the wrong one gets
     // recorded without anyone noticing.
+    programmaticPayRef.current = true; payTouchedRef.current = false;
     setPayLines([{ payment_method_id: '', amount: remaining > 0 ? remaining : 0 }]);
     setPayInstalment({
       instalment_category: (inv as any).instalment_category ?? '',
@@ -1275,12 +1343,13 @@ const InvoicesPage: React.FC = () => {
     const { data, error } = await supabase.rpc('confirm_foc_invoice', { p_invoice_id: detail.id, p_note: null });
     setFocBusy(false);
     if (error) { setFocErr(error.message); return; }
+    noteLocalChangeRef.current([detail.id]);
     const res = data as any;
     if (res && res.review_required) {
       setFocErr('Prices changed since this invoice was created — reopen it and review before confirming.');
-      await loadAll(); return;
+      void refreshList(); return;
     }
-    setDetail(null); await loadAll();
+    setDetail(null); void refreshList({ afterSave: 'The FOC invoice was confirmed', changed: [detail.id] });
   };
 
   const handleApplyLineFoc = async () => {
@@ -1293,9 +1362,10 @@ const InvoicesPage: React.FC = () => {
     });
     setFocBusy(false);
     if (error) { setFocErr(error.message); return; }
+    if (detail) noteLocalChangeRef.current([detail.id]);
     setFocLine(null);
     if (detail) { const { data: invRow } = await supabase.from('invoices').select('*').eq('id', detail.id).single(); if (invRow) await openDetail(invRow as Invoice); }
-    await loadAll();
+    void refreshList({ afterSave: 'The FOC line was saved', changed: detail ? [detail.id] : [] });
   };
 
   const handleRemoveLineFoc = async (itemId: string) => {
@@ -1303,8 +1373,8 @@ const InvoicesPage: React.FC = () => {
     const { error } = await supabase.rpc('remove_line_foc', { p_invoice_item_id: itemId, p_reason: null });
     setFocBusy(false);
     if (error) { setFocErr(error.message); return; }
-    if (detail) { await openDetail(detail); }
-    await loadAll();
+    if (detail) { noteLocalChangeRef.current([detail.id]); await openDetail(detail); }
+    void refreshList({ afterSave: 'The FOC was removed', changed: detail ? [detail.id] : [] });
   };
 
   /* Why Record Payment is or is not available. Returned as a sentence so the
@@ -1417,16 +1487,17 @@ const InvoicesPage: React.FC = () => {
     }
     // Recorded. From here a failure is a DISPLAY failure, never a reason to pay
     // again, so it is reported as exactly that.
+    noteLocalChangeRef.current([invoiceId]);
     const { data: invRow, error: refreshError } = await supabase.from('invoices').select('*').eq('id', invoiceId).single();
     if (refreshError || !invRow) {
       setPayOutcome('The payment was recorded. This invoice could not be reloaded just now — reopen it from the list to see its updated status. Do not record the payment again.');
-      void loadAll();
+      void refreshList({ afterSave: 'The payment was recorded', changed: [invoiceId] });
       return;
     }
     // A fresh request id: this payment is done, the next one is a new request.
     setPaymentRequestId(crypto.randomUUID());
     await openDetail(invRow as Invoice);
-    await loadAll();
+    void refreshList({ afterSave: 'The payment was recorded', changed: [invoiceId] });
   };
 
   const handleDelete = async (inv: Invoice) => {
@@ -1434,7 +1505,8 @@ const InvoicesPage: React.FC = () => {
     if (!confirm(`Delete invoice ${inv.invoice_no}?`)) return;
     const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: inv.id });
     if (error) { alert(error.message); return; }
-    loadAll();
+    noteLocalChangeRef.current([inv.id]);
+    void refreshList({ afterSave: 'The invoice was deleted', changed: [inv.id] });
   };
 
   // Phase 4: request refund or cancellation
@@ -1454,7 +1526,9 @@ const InvoicesPage: React.FC = () => {
     });
     setActionBusy(false);
     if (error) { setActionErr(error.message); return; }
-    setActionType(null); setActionReason(''); setDetail(null); loadAll();
+    noteLocalChangeRef.current([detail.id]);
+    setActionType(null); setActionReason(''); setDetail(null);
+    void refreshList({ afterSave: 'The request was recorded', changed: [detail.id] });
   };
 
   const canExport = isOwnerOrManager(profile?.role);
@@ -1478,9 +1552,10 @@ const InvoicesPage: React.FC = () => {
     setCreateOpen(false); setSplitMode(false); resetCreate();
     setEditingInvoiceId(null); setEditingPaid(false);
     const made = (result?.invoices ?? []) as any[];
+    noteLocalChangeRef.current(made.map(iv => iv.id).filter(Boolean));
     setSplitSummary({ package_name: result?.package_name ?? result?.bundle_name ?? 'Split', invoices: made });
     void ensureCustomers(made.map(iv => iv.customer_id));
-    void loadAll();
+    void refreshList({ afterSave: 'The split invoices were created', changed: made.map(iv => iv.id).filter(Boolean) });
   };
 
   // A request per keystroke would be one per letter of a customer's name.
@@ -1509,10 +1584,13 @@ const InvoicesPage: React.FC = () => {
 
   /** Payment methods for a set of invoices, in batches — one request per page
    *  of rows, never one per row. Merged rather than replaced so an export can
-   *  add to what the page already resolved. */
+   *  add to what the page already resolved. Each request stamps the invoices
+   *  it is about to label; a slower, older response may not write a label a
+   *  newer request has since claimed. */
   const loadPaymentMethodsFor = useCallback(async (ids: string[]) => {
     const missing = ids.filter(Boolean);
     if (missing.length === 0) return;
+    const token = labelStamps.current.stamp(missing);
     const out: Record<string, string[]> = {};
     for (let i = 0; i < missing.length; i += 200) {
       const slice = missing.slice(i, i + 200);
@@ -1528,33 +1606,57 @@ const InvoicesPage: React.FC = () => {
         if (!list.includes(name)) list.push(name);
       }
     }
+    if (!mountedRef.current) return;
     setPayMethodsByInvoice(prev => {
       const next = { ...prev };
-      for (const id of missing) next[id] = out[id] ?? [];
+      for (const id of missing) if (labelStamps.current.accepts(id, token)) next[id] = out[id] ?? [];
       return next;
     });
   }, []);
 
-  const loadPage = useCallback(async (which: number) => {
+  /**
+   * One page of the list, from the server, for the current query.
+   *
+   * A foreground load (first open, a filter or page change) shows the empty
+   * state while it waits and replaces the rows when it lands. A background
+   * refresh (after a save, a realtime event, the Refresh button) keeps the
+   * rows it has and only swaps them for the answer; if the answer never
+   * comes, the rows stay and the failure is reported beside them.
+   * Returns false only when this request failed and was the latest.
+   */
+  const loadPage = useCallback(async (which: number, opts: { background?: boolean } = {}): Promise<boolean> => {
     const ticket = ++pageRequestRef.current;
-    setPageLoading(true); setPageError(null);
+    const startedAt = Date.now();
+    if (opts.background) setRefreshing(true);
+    else { foregroundTicketRef.current = ticket; setPageLoading(true); setPageError(null); }
     try {
       const res = await fetchInvoicePage({ ...listQuery, page: which, pageSize });
-      if (ticket !== pageRequestRef.current) return;   // a newer request won
+      if (ticket !== pageRequestRef.current || !mountedRef.current) return true;   // a newer request won
+      lastRefreshStartedRef.current = startedAt;
+      // Deleting or filtering can strand the viewer past the end; step back
+      // to the last page that exists rather than showing an empty page that
+      // looks like "no results". The rows stay until that page arrives.
+      const target = pageAfterRefresh(which, res.pages, res.total);
+      if (target !== which) { setPage(target); return true; }
       setPageRows(res.rows); setPageTotal(res.total);
       setPageCount(res.pages); setPageSummary(res.summary);
+      setPageError(null); setRefreshError(null);
       rememberNames(res.rows as any[]);
       void loadPaymentMethodsFor(res.rows.map(r => r.id));
-      // Deleting or filtering can strand the viewer past the end; step back
-      // rather than showing an empty page that looks like "no results".
-      if (which > 1 && res.rows.length === 0 && res.total > 0) {
-        setPage(Math.max(1, res.pages));
-      }
+      return true;
     } catch (e: any) {
-      if (ticket !== pageRequestRef.current) return;
-      setPageError(e?.message ?? 'The invoice list could not be loaded.');
+      if (ticket !== pageRequestRef.current || !mountedRef.current) return true;
+      const message = e?.message ?? 'The invoice list could not be loaded.';
+      if (opts.background && pageRowsRef.current.length > 0) setRefreshError({ message });
+      else setPageError(message);
+      return false;
     } finally {
-      if (ticket === pageRequestRef.current) setPageLoading(false);
+      if (mountedRef.current) {
+        if (opts.background) setRefreshing(false);
+        // Cleared by the newest foreground load whoever answered first; a
+        // background refresh that overtook it showed the same page already.
+        else if (ticket === foregroundTicketRef.current) setPageLoading(false);
+      }
     }
   }, [listQuery, pageSize, loadPaymentMethodsFor, rememberNames]);
 
@@ -1565,6 +1667,168 @@ const InvoicesPage: React.FC = () => {
   // the dates being quietly swapped.
   const rangeInvalid = Boolean(dateFrom && dateTo && dateFrom > dateTo);
   useEffect(() => { if (rangeInvalid) return; void loadPage(page); }, [loadPage, page, rangeInvalid]);
+
+  /**
+   * Refresh what the list shows: the current page for the current search,
+   * filters, sort and page size, with its count, page count, totals and
+   * payment labels. The server answers; nothing is patched locally.
+   *
+   * Every save calls this. Calls that overlap are coalesced — one in flight,
+   * at most one queued behind it — and each resolves once the list has been
+   * asked again after the call was made. `afterSave` is the sentence to show
+   * if the save went through but the list could not be refreshed: the action
+   * is done and must not be repeated, only the screen is behind.
+   */
+  const loadPageRef = useRef(loadPage);
+  loadPageRef.current = loadPage;
+  const lastRefreshOkRef = useRef(true);
+  const refreshQueue = useRef(createRefreshQueue(async () => {
+    if (rangeInvalidRef.current) { lastRefreshOkRef.current = true; return; }
+    lastRefreshOkRef.current = await loadPageRef.current(pageRef.current, { background: true });
+  })).current;
+  /**
+   * This tab changed these invoices. Called the moment a save succeeds — before
+   * the invoice is re-read — so the realtime echo of the save, however early it
+   * arrives, is recognised as this tab's own; and the other tabs of this
+   * browser are told at once.
+   */
+  const noteLocalChangeImpl = useCallback((ids: string[]) => {
+    const recent = recentChangeRef.current;
+    // Noted once per change: a save path notes it at success and again when it
+    // asks for the refresh, and the other tabs must hear it once.
+    const already = recent.source === 'local' && Date.now() - recent.at < 3000 && ids.every(id => recent.ids.has(id));
+    if (already) return;
+    recentChangeRef.current = { at: Date.now(), ids: new Set(ids), source: 'local' };
+    announceRef.current(ids);
+  }, []);
+  noteLocalChangeRef.current = noteLocalChangeImpl;
+  const refreshList = useCallback(async (opts: { afterSave?: string; changed?: string[] } = {}): Promise<boolean> => {
+    if (opts.afterSave) noteLocalChangeImpl(opts.changed ?? []);
+    lastRefreshRequestedRef.current = Date.now();
+    await refreshQueue.request();
+    const ok = lastRefreshOkRef.current;
+    if (!ok && opts.afterSave && mountedRef.current) {
+      const sentence = opts.afterSave;
+      setRefreshError(e => ({ message: e?.message ?? 'The invoice list could not be refreshed.', afterSave: sentence }));
+    }
+    return ok;
+  }, [refreshQueue, noteLocalChangeImpl]);
+
+  /** The invoice being edited was changed elsewhere: keep the entries, ask for a review. */
+  // A conflict that has already been reviewed, and then another change arrives,
+  // is a new conflict: the review is asked for again. A preview computed before
+  // the change no longer describes what the save would do.
+  const markEditConflict = () => {
+    setEditConflict(c => (c && !c.reviewed) ? c : { reviewed: false, fresh: null, loading: false });
+    setCorrectionPreview(null);
+  };
+  const reviewEditConflict = async () => {
+    const id = editingIdRef.current; if (!id) return;
+    setEditConflict(c => c && { ...c, loading: true });
+    const { data } = await supabase.from('invoices').select('*').eq('id', id).maybeSingle();
+    if (data) void ensureCustomers([(data as any).customer_id]);
+    setEditConflict(c => c && { ...c, loading: false, fresh: (data as Invoice) ?? null });
+  };
+  // Reviewed: the save proceeds against the invoice as it is now, and says so.
+  const continueAfterReview = () => {
+    setEditConflict(c => {
+      if (c?.fresh) setExpectedEditCount(Number((c.fresh as any).edit_count ?? 0));
+      return c && { ...c, reviewed: true };
+    });
+    setCorrectionPreview(null); setCErr(null);
+  };
+  const discardAndReopen = async () => {
+    const id = editingIdRef.current;
+    setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null);
+    setEditConflict(null); setCorrectionPreview(null); setCErr(null);
+    if (!id) return;
+    const { data } = await supabase.from('invoices').select('*').eq('id', id).is('deleted_at', null).maybeSingle();
+    if (data) void openDetail(data as Invoice);
+  };
+  const conflictRows = (before: Invoice | null, after: Invoice) => {
+    const b: any = before ?? {}; const a: any = after;
+    const row = (label: string, x: string, y: string) => ({ label, before: x, after: y, changed: x !== y });
+    return [
+      row('Status', String(b.status ?? '—'), String(a.status ?? '—')),
+      row('Total', money(Number(b.total_amount ?? 0)), money(Number(a.total_amount ?? 0))),
+      row('Paid', money(Number(b.paid_amount ?? 0)), money(Number(a.paid_amount ?? 0))),
+      row('Customer', b.customer_id ? custName(b.customer_id) : '—', a.customer_id ? custName(a.customer_id) : '—'),
+      row('Store', b.store_id ? storeName(b.store_id) : '—', a.store_id ? storeName(a.store_id) : '—'),
+      row('Invoice date', b.business_date ?? '—', a.business_date ?? '—'),
+      row('Affiliate', b.affiliate_id ? 'set' : 'none', a.affiliate_id ? 'set' : 'none'),
+      row('Manual discount', money(Number(b.manual_discount ?? 0)), money(Number(a.manual_discount ?? 0))),
+      row('Notes', String(b.notes ?? '—'), String(a.notes ?? '—')),
+      row('Edits', String(b.edit_count ?? 0), String(a.edit_count ?? 0)),
+    ];
+  };
+
+  /** The open invoice was changed elsewhere: reload it if nothing is being entered, else say so. */
+  const noteDetailChanged = () => {
+    const id = detailIdRef.current; if (!id) return;
+    const busy = payTouchedRef.current || financeActiveRef.current || dialogsOpenRef.current;
+    if (busy) { setDetailStale(true); return; }
+    refreshDetail(id).then(() => {
+      if (mountedRef.current && detailIdRef.current === id) setDetailUpdatedNote('Updated just now — this invoice was changed by another user or tab.');
+    }).catch(() => { if (mountedRef.current && detailIdRef.current === id) setDetailStale(true); });
+  };
+  const reloadStaleDetail = async () => {
+    const id = detailIdRef.current; if (!id) return;
+    setDetailStale(false); setDetailReloadError(null);
+    try { await refreshDetail(id); }
+    catch (e: any) { if (detailIdRef.current === id) setDetailReloadError(`This invoice could not be reloaded${e?.message ? ` (${e.message})` : ''}. Try again, or close and reopen it.`); }
+  };
+  // The payment entry counts as touched once it changes after the invoice was
+  // opened. The first run after opening is the reset itself and is skipped.
+  useEffect(() => {
+    if (programmaticPayRef.current) { programmaticPayRef.current = false; return; }
+    payTouchedRef.current = true;
+  }, [payLines, payDate, payInstalment]);
+
+  /**
+   * Something the list shows may have changed: another user saved, another
+   * tab saved, the tab came back, the realtime channel reconnected. The list
+   * is asked again — through the same access-checked query — unless a refresh
+   * already covers the change. The open invoice and an open edit are told
+   * first, so entries are never silently overwritten.
+   */
+  const handleLiveChange = useCallback((change: LiveChange) => {
+    const ids = change.ids;
+    // One change reaches this tab more than once: this tab's own save and its
+    // realtime echo; another tab's announcement and the realtime event for the
+    // same rows. A signal from a different source, about the same invoices,
+    // within three seconds of one this tab already knows, is that same change:
+    // the open invoice and an open edit were told the first time, and the
+    // refresh for it is either pending (the queue covers it) or has landed
+    // (the ordinary coverage check below decides). Two signals from the SAME
+    // source are two changes and both count.
+    const recent = recentChangeRef.current;
+    const duplicate = ids.length > 0 && change.source !== recent.source
+      && change.at - recent.at < 3000 && ids.every(id => recent.ids.has(id));
+    if (!duplicate && ids.length > 0) {
+      recentChangeRef.current = { at: change.at, ids: new Set(ids), source: change.source };
+      if (createOpenRef.current && editingIdRef.current && ids.includes(editingIdRef.current)) markEditConflict();
+      if (detailIdRef.current && ids.includes(detailIdRef.current)) noteDetailChanged();
+    }
+    if (duplicate && lastRefreshStartedRef.current < recent.at) return;   // its refresh is still on its way
+    // A signal whose every announced row equals the row the list already shows
+    // is not news, whatever route it came by: the echo of a change already on
+    // screen, or the second event of the same transaction. Anything not
+    // comparable — a payment-row event, an invoice not on this page — is news.
+    if (ids.length > 0 && change.rows && ids.every(id => announcedMatchesShown(change.rows![id], pageRowsRef.current.find(r => r.id === id)) === true)) return;
+    if ((change.source === 'realtime' || change.source === 'tab')
+        && (refreshCovers(lastRefreshStartedRef.current, change.at) || lastRefreshRequestedRef.current >= change.at)) return;
+    if ((change.source === 'visible' || change.source === 'poll') && Date.now() - lastRefreshStartedRef.current < 5000) return;
+    void refreshList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshList]);
+  const live = useInvoiceLiveUpdates({ userId: session?.user?.id ?? null, onChange: handleLiveChange });
+  announceRef.current = live.announce;
+  const liveLabel = live.state === 'live' ? 'Live' : live.state === 'unavailable' ? 'Updates paused' : live.state === 'connecting' ? 'Connecting…' : '';
+  const liveTitle = live.state === 'live'
+    ? 'Changes made by other staff or in other tabs appear here as they happen.'
+    : live.state === 'unavailable'
+      ? 'Live updates are not available right now. The list is checked once a minute while this tab is open, and whenever you come back to it.'
+      : '';
 
   /* The database filters, searches, sorts, counts and totals over every
      invoice the user may see; this is the page it returned. The previous
@@ -1913,12 +2177,21 @@ const InvoicesPage: React.FC = () => {
 
   const statusOptions: ('all' | InvoiceStatus)[] = ['all', 'unpaid', 'partially_paid', 'paid', 'cancelled', 'refunded'];
 
+  // Read by handlers that run after this render, without a stale closure.
+  pageRef.current = page; rangeInvalidRef.current = rangeInvalid; pageRowsRef.current = pageRows;
+  createOpenRef.current = createOpen; editingIdRef.current = editingInvoiceId;
+  dialogsOpenRef.current = createOpen || guidedOpen || chooserOpen || !!actionType || !!focLine
+    || !!stockReviewFor || !!priceReview || !!quickCustomerFor;
+
   return (
     <div>
       <div className="page-header">
         <div><h2>Invoices</h2><p>Create invoices for a store. Stock is deducted only when an invoice is fully paid.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-secondary" onClick={loadAll}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="btn btn-secondary" onClick={() => void refreshList()} disabled={refreshing} aria-busy={refreshing}
+            title="Reload this page of invoices with its count and totals">
+            <RefreshCw size={15} className={(loading || refreshing) ? 'spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}</button>
+          {liveLabel && <span className="invoice-live-status" data-live={live.state} title={liveTitle} role="status">{liveLabel}</span>}
           {/* canExport is already Owner/Manager only. */}
           {exportProgress && exportProgress.got < exportProgress.all && (
             <span className="invoice-page-busy" role="status" aria-live="polite">
@@ -2010,7 +2283,19 @@ const InvoicesPage: React.FC = () => {
         ))}
       </div>
 
-      {listError && <div className="alert alert-danger" role="alert">Invoices could not be refreshed: {listError}</div>}
+      {refreshError && (
+        <div className="alert alert-warning invoice-refresh-error" role="alert" data-testid="invoice-list-refresh-error">
+          <div>
+            {refreshError.afterSave
+              ? <><strong>{refreshError.afterSave}.</strong> The invoice list could not be refreshed and may still show the earlier state. Do not repeat the action. </>
+              : <>The invoice list could not be refreshed and may be out of date. </>}
+            <span style={{ color: 'var(--text-muted)' }}>{refreshError.message}</span>
+          </div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refreshList()} disabled={refreshing}>
+            <RefreshCw size={13} className={refreshing ? 'spin' : ''} /> Try again
+          </button>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14, alignItems: 'end' }}>
         <label>Date status<select aria-label="Invoice date status" value={dateFilter} onChange={e => {
           const value = e.target.value as typeof dateFilter; setDateFilter(value);
@@ -2175,6 +2460,39 @@ const InvoicesPage: React.FC = () => {
         <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide confirmClose onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}
           footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
           <div className="form-grid invoice-editor">
+            {editingInvoiceId && editConflict && (
+              <div className="alert alert-warning" role="alert" data-testid="invoice-edit-conflict" style={{ marginBottom: 0, display: 'block' }}>
+                <strong>This invoice was changed by another user or tab while you were editing it.</strong>{' '}
+                Your entries are kept. Review the current invoice before saving, so their change is not overwritten unseen.
+                {!editConflict.fresh ? (
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void reviewEditConflict()} disabled={editConflict.loading}>
+                      {editConflict.loading ? 'Loading…' : 'Review the current invoice'}
+                    </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void discardAndReopen()}>Discard my entries and reopen</button>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 8 }}>
+                    <table className="invoice-conflict-table">
+                      <thead><tr><th></th><th>When you opened it</th><th>Now</th></tr></thead>
+                      <tbody>
+                        {conflictRows(editBaseRef.current, editConflict.fresh).map(r => (
+                          <tr key={r.label} style={{ fontWeight: r.changed ? 700 : 400 }}>
+                            <td>{r.label}</td><td>{r.before}</td><td>{r.after}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {editConflict.reviewed
+                        ? <span>Reviewed. Saving now applies your entries over the invoice as it is now.</span>
+                        : <button type="button" className="btn btn-primary btn-sm" onClick={continueAfterReview}>I have reviewed it — keep my entries</button>}
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => void discardAndReopen()}>Discard my entries and reopen</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {/* On a correction the audited notice and its required reason come
                 first, then the business date. Someone reading downwards learns
                 that this is a correction before they are asked to date it. */}
@@ -3093,6 +3411,21 @@ const InvoicesPage: React.FC = () => {
                         title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
           }>
           <div className="form-grid">
+            {detailReloadError && (
+              <div className="alert alert-warning invoice-refresh-error" role="alert" data-testid="invoice-detail-reload-error">
+                <div>{detailReloadError}</div>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => void reloadStaleDetail()}><RefreshCw size={13} /> Reload</button>
+              </div>
+            )}
+            {detailStale && (
+              <div className="alert alert-warning invoice-refresh-error" role="alert" data-testid="invoice-detail-stale">
+                <div><strong>This invoice was changed by another user or tab</strong> since it was opened. What you have entered here is kept; reload to see the current figures before recording anything.</div>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => void reloadStaleDetail()}><RefreshCw size={13} /> Reload invoice</button>
+              </div>
+            )}
+            {detailUpdatedNote && (
+              <div className="alert alert-info" role="status" data-testid="invoice-detail-updated" style={{ marginBottom: 0 }}>{detailUpdatedNote}</div>
+            )}
             {/* Correction lives in the footer now, once, beside Refund / Cancel.
                 An ordinary unpaid invoice offers Edit Invoice there instead. */}
             <div data-testid="invoice-detail-date"><strong>Invoice date: {displayInvoiceDate(detail)}</strong>
@@ -3109,10 +3442,17 @@ const InvoicesPage: React.FC = () => {
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
               requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
               onRequestHandled={() => setFinanceRequest(null)}
+              onActiveChange={active => { financeActiveRef.current = active; }}
               onChanged={async () => {
-                const { data, error } = await supabase.from('invoices').select('*').eq('id', detail.id).single();
-                if (error) throw error;
-                await openDetail(data as Invoice); await loadAll();
+                // The action is recorded. From here a failure is a display
+                // failure: said beside the invoice, never as a failed action.
+                const id = detail.id;
+                noteLocalChangeRef.current([id]);
+                try { await refreshDetail(id); setDetailReloadError(null); }
+                catch (e: any) {
+                  setDetailReloadError(`The change was saved. This invoice could not be reloaded just now${e?.message ? ` (${e.message})` : ''} — reload to see its updated figures. Do not repeat the action.`);
+                }
+                void refreshList({ afterSave: 'The change was saved', changed: [id] });
               }} />
             {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
             {detailExchange?.found && (
@@ -3596,8 +3936,12 @@ const InvoicesPage: React.FC = () => {
             // The open invoice first, so the figures behind the dialog are the
             // ones the action just produced; then the list behind it.
             const id = detail.id;
+            noteLocalChangeRef.current([id]);
+            // The list behind the dialog does not wait on the invoice re-read:
+            // if that fails the dialog says so and offers its own retry, and
+            // the list must still show what the action did.
+            void refreshList({ afterSave: 'The action was recorded', changed: [id] });
             await refreshDetail(id);
-            void loadAll();
           }} />
       )}
 

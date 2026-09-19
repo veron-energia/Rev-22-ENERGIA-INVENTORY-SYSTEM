@@ -67,6 +67,12 @@ const mock = `export const supabase={ from(table) {
  }, rpc(name,args) {
  window.__calls.push({name,args});
  let data=[];
+ if(name==='invoice_list_page'){
+   const all=(window.__tables.invoices||[]).filter(i=>!i.deleted_at);
+   const rows=all.map(i=>({...i,customer_name:(window.__tables.customers||[]).find(c=>c.id===i.customer_id)?.full_name??null}));
+   const sum=(k)=>rows.reduce((s,i)=>s+Number(i[k]||0),0);
+   data={rows,total:rows.length,pages:rows.length?1:0,summary:{matching:rows.length,total_amount:sum('total_amount'),outstanding:rows.reduce((s,i)=>s+Math.max(0,Number(i.total_amount||0)-Number(i.paid_amount||0)),0),paid:sum('paid_amount')}};
+ }
  if(name==='invoice_effective_affiliate')data={found:true,has_affiliate:false};
  if(name==='customer_search')data=window.__tables.customers;
  if(name==='invoice_financial_position')data=window.__financial;

@@ -29,6 +29,8 @@
     "test:exchanges": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/exchanges/tests/attribution.sql -f scripts/exchanges/tests/commission.sql -f scripts/exchanges/tests/instalments.sql",
     "test:affiliate-signup": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/affiliate-signup/tests/existing-customer-linking.sql -f scripts/affiliate-signup/tests/referral-and-states.sql -f scripts/affiliate-signup/tests/staff-cannot-self-issue.sql -f scripts/affiliate-signup/tests/onboarding-from-metadata.sql",
     "test:customer-merge": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/customer-merge/tests/merge-duplicates.sql",
+    "test:invoice-list-refresh": "node --test scripts/invoices/tests/list-refresh.test.mjs && node scripts/invoices/tests/list-refresh-browser.mjs",
+    "test:invoice-live": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-live/tests/publication.sql",
     "test:invoice-pagination": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-pagination/tests/list-page.sql -f scripts/invoice-pagination/tests/date-range.sql",
     "test:invoice-discounts": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-discounts/tests/manual-discount-reason.sql",
     "test:affiliate-directory": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/affiliate-directory/tests/staff-directory.sql",

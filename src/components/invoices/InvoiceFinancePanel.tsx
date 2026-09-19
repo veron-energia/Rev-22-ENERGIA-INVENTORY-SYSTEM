@@ -17,11 +17,15 @@ type Options = { financial: Record<string, any>; sources: Source[]; benefits: Be
 /** All amounts are proposals: the locked database transaction rechecks capacity,
  * source ownership, benefit use and stock evidence before recording anything. */
 export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, stores = [], onChanged,
-  requestedMode = null, requestedPaymentId = null, onRequestHandled }: {
+  requestedMode = null, requestedPaymentId = null, onRequestHandled, onActiveChange }: {
   invoiceId: string; canManage: boolean; payments: any[]; methods: any[]; stores?: { id: string; name: string }[]; onChanged: () => Promise<void>;
   /** Refund, cancel and payment correction are opened from the invoice footer and
    *  the payments list now, not from this panel's own row of buttons. */
   requestedMode?: Mode | null; requestedPaymentId?: string | null; onRequestHandled?: () => void;
+  /** Whether a refund, cancellation, correction or transfer is being entered
+   *  here. The invoice view uses it to leave those entries alone when the
+   *  invoice changes underneath them. */
+  onActiveChange?: (active: boolean) => void;
 }) {
   const [options, setOptions] = useState<Options | null>(null);
   const [mode, setMode] = useState<Mode>('');
@@ -54,8 +58,9 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     });
     return () => { cancelled = true; };
   }, [invoiceId, payments]);
-  const close = () => { setMode(''); onRequestHandled?.(); };
+  const close = () => { setMode(''); onRequestHandled?.(); onActiveChange?.(false); };
   const open = async (next: Mode) => {
+    onActiveChange?.(true);
     setMode(next); setError(''); setReason(''); setRequestId(crypto.randomUUID()); setConfirmed(false); setBenefitOverpayment(false);
     setLineAmounts({}); setBenefitAmounts({}); setSourceAmounts({}); setStock({}); setPreview(null);
     setTransferBenefit(''); setTransferCustomer(''); setTransferStore('');
@@ -65,6 +70,8 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     }
   };
   const currentPayments = payments.filter(p => p.entry_kind !== 'correction_reversal' && !payments.some(r => r.corrects_payment_id === p.id && r.entry_kind === 'correction_reversal'));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => { onActiveChange?.(false); }, []);
   useEffect(() => {
     if (!requestedMode || !canManage) return;
     let cancelled = false;
