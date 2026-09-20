@@ -1,32 +1,83 @@
 # Calendar readiness
 
-**Scope.** Preparation only. No calendar screen, no Google OAuth, no API
-credentials, no external events and no synchronisation job were added, and none
-should be added on the strength of this document alone: the decisions in the
-last section come first.
+**Scope.** Preparation only. Nothing was built: no calendar screen, no Google
+OAuth, no API credentials, no external events and no synchronisation job were
+added, and none should be added on the strength of this document alone — the
+decisions near the end come first. This assesses readiness for a **therapy
+booking** feature. A separate Google Calendar integration already runs in
+production for the ads lead pipeline; the next section explains what it is and
+why it does not do this job.
 
 The appointment scope this assesses is the one that was set: **customer, store,
 therapy service, assigned staff, appointment duration, and the voucher or
 therapy entitlement used**. Rooms and equipment are out of scope and are
 recorded here only as a possible later extension.
 
+## Correction, 2026-09-20
+
+**An earlier draft of this document said there is no calendar and no appointment
+table. That is true of this repository and false of your production database.**
+
+Production carries an `ads` lead pipeline that this repository does not contain:
+12 tables and 34 functions, applied over 19 migrations on 19 and 20 September.
+It includes a **live Google Calendar integration** and a table called
+`ads_appointments` holding 29 rows. Everything below was written against the
+repository and the local databases, where none of that exists. The section that
+follows describes what is actually there and what it does and does not change.
+
+## What already exists in production
+
+`ads_appointments` is a **one-way mirror of Google Calendar**, not a booking
+system. Its 22 columns are calendar bookkeeping and lead matching:
+
+| Purpose | Columns |
+| --- | --- |
+| Which Google event this is | `calendar_id`, `event_id`, `recurring_event_id`, `colour_id`, `summary`, `version`, `first_seen_at`, `last_seen_at` |
+| Who it might be | `lead_id`, `customer_id`, `matched_phone_e164`, `match_method` |
+| When | `starts_at`, `ends_at`, `appt_date_sgt` |
+| What happened | `status`, `cancel_signal`, `attended`, `attendance_source`, `is_repeat_booking` |
+
+Events arrive through `ads_ingest_calendar_event(ev jsonb, …)`, which takes a
+raw Google event, and reach it from Pabbly Connect calling `ads_rpc_calendar_event`
+with a service-role key. Google is the source of truth; the database follows.
+
+**It does not meet the appointment scope in this document, at all.** Across all
+twelve `ads` tables there are **zero** columns for a store, a staff member, a
+therapy service, an entitlement or a voucher. It cannot say who would deliver a
+session, where, or what it would consume.
+
+Two things about its current state are worth knowing before building on it:
+
+- All 29 appointments were matched by `phone_in_event_text` — scraping a phone
+  number out of the event's own text — and **none of them has matched a customer
+  record**. `customer_id` is null on all 29.
+- **No attendance has been recorded on any of them.** `attended` is null
+  throughout.
+
+So the integration exists and runs, but the link from a calendar event to a
+person in your database is not yet working, and this is exactly the hazard this
+document warns about below: up to three customers may legitimately share one
+phone number, so a phone scraped from an event title cannot identify a customer
+on its own.
+
 ## The short answer
 
-The database was built in anticipation of this. Duration, per-store service
-availability, structured frequency rules, a unified entitlement view and a
-permission-aware booking probe already exist, and the migrations that introduced
-them say why. Migration 245 puts it plainly:
+For the **therapy booking** feature this document was asked to assess, the
+database was built in anticipation. Duration, per-store service availability,
+structured frequency rules, a unified entitlement view and a permission-aware
+booking probe already exist, and migration 245 says why they were built early:
+so that when a calendar is built, the permission question is already settled in
+the database rather than re-decided in a page.
 
-> There is no calendar and no appointment table. These exist so that when one is
-> built the permission question is already settled in the database rather than
-> re-decided in a page.
+What is missing is precisely the thing a therapy appointment feature would
+create: **a record that a session was actually taken, at a time, against a named
+entitlement**. `ads_appointments` does not do that — it records that a calendar
+event existed. The two columns meant to count consumption have still never been
+incremented by anything.
 
-What is missing is precisely the thing an appointment feature would create: **a
-record that a session was actually taken, at a time**. Nothing in the system
-stores when a therapy session began, and the two columns meant to count
-consumption have never been incremented by anything.
-
-So the work ahead is mostly business decisions, not schema archaeology.
+So the work ahead is still mostly business decisions. But one of those decisions
+is now larger than it looks: whether therapy booking extends the calendar
+integration that already exists, or sits beside it.
 
 ## 1. Identifiers and relationships
 
@@ -95,9 +146,14 @@ the voucher definition is frozen into `therapy_voucher_issues.definition_snapsho
 at issue, so a later change to the catalogue cannot rewrite what a customer was
 given.
 
-**What is missing is a start time.** No table stores one.
-`customer_therapy_sessions` records only `purchased_at`. `duration_months` on an
-entitlement is the length of an unlimited period, not the length of a session.
+**What is missing is a start time for a THERAPY session.** No table in the
+therapy model stores one: `customer_therapy_sessions` records only
+`purchased_at`, and `duration_months` on an entitlement is the length of an
+unlimited period, not the length of a session. `ads_appointments.starts_at`
+exists, but it is the start of a Google Calendar event in the lead pipeline,
+carries no service, staff member, store or entitlement, and is matched to a
+customer by scraping a phone number from the event text — currently matching
+none. It is not a therapy session record and should not be read as one.
 
 ## 3. Staff and store access
 
@@ -230,6 +286,10 @@ without a lock and returns success unconditionally.
 The rule to hold onto: **an appointment is a scheduling fact plus a pointer. It
 is never a second copy of a balance.**
 
+This sketch describes the shape a therapy appointment needs. Whether that shape
+becomes new columns on `ads_appointments` or a separate table is decision 6
+below, and it is not this document's to make.
+
 An appointment row would carry the customer, store, service, staff and start
 time, the duration, exactly one benefit pointer — a purchased entitlement, a
 counted session row, or a reward voucher — a status, the Google event and
@@ -287,7 +347,25 @@ inferred from the schema.
    an entitlement's expiry with nothing to stop it. Field-level ownership is the
    most usable and the most complex.
 
-6. **Calendar mapping and sync direction.** One calendar per store, per staff
+   **This is already answered one way in production, and the two answers
+   conflict.** `ads_appointments` is Calendar-authoritative: Google holds the
+   truth and the database mirrors it. If therapy booking is
+   application-authoritative, your staff will be working two calendars with
+   opposite rules on the same screen. Deciding this is now a choice between
+   changing the ads direction, accepting two directions, or having therapy
+   booking follow Google's lead and losing the entitlement guard.
+
+6. **Extend `ads_appointments`, or add a second table?** A new decision, created
+   by what already exists. Extending it means one row type for every kind of
+   appointment and one sync path, at the cost of a table that is currently a
+   faithful Google mirror growing business columns Google knows nothing about,
+   and of a `customer_id` that is presently null on every row. A separate
+   therapy table keeps the mirror clean and the booking rules strict, at the cost
+   of two tables that both mean "an appointment" and a staff view that has to
+   merge them. Whoever owns the ads pipeline should make this call, not this
+   document.
+
+7. **Calendar mapping and sync direction.** One calendar per store, per staff
    member, or one shared calendar. Per-staff matches how people read their day;
    per-store matches the existing permission model; multi-store staff make this a
    real choice. Push-only, pull-only or two-way, and polling versus Google push
@@ -295,13 +373,22 @@ inferred from the schema.
    a customer's name in the title is convenient and is personal data sitting in a
    third-party calendar other staff can see. A reference number is an option.
 
-7. **Retry and conflict handling.** Reuse the request id and hash so a redelivered
+   Note the ads pipeline has already chosen: it reads a phone number out of the
+   event text to identify a person. That is the mapping decision made implicitly,
+   and it is currently matching nobody.
+
+8. **Retry and conflict handling.** Reuse the request id and hash so a redelivered
    webhook is a no-op, and put a unique index on the Google event id. Decide the
    conflict rule — last writer wins, this system wins, or queue for human review,
    for which the therapy date-change request flow is the precedent. Decide whether
    a deleted Google event cancels the appointment or is drift to be re-pushed.
 
-8. **Timezone.** The business timezone is Asia/Singapore and it is already
+   **There is now a working precedent to copy rather than invent.**
+   `ads_appointments` already handles redelivery with `event_id` plus a `version`
+   and `last_seen_at`, and has an explicit `ads_mark_event_deleted` path and a
+   `cancel_signal` column. Whatever therapy booking does should match it.
+
+9. **Timezone.** The business timezone is Asia/Singapore and it is already
    hardcoded throughout: "today" is Singapore's today, and frequency periods
    resolve in Singapore time with Monday-based weeks. There is no timezone column
    on `stores`. Store the start time as `timestamptz` and render in Singapore
@@ -316,6 +403,10 @@ inferred from the schema.
    Malaysian mobile number attending a Singapore store is a Singapore
    appointment.
 
+   The ads pipeline agrees with this already: `ads_appointments.appt_date_sgt`
+   stores the Singapore calendar date alongside the `timestamptz`, which is the
+   convention to follow.
+
 ## Current defects that would affect appointments
 
 Severity below is assessed from schema and logic. The disposable integration
@@ -329,7 +420,8 @@ production data was read or repaired during this task.**
 | No session-attendance record exists anywhere | Blocking | Frequency rules and both usage counters have no data source. This is the feature's core deliverable, not a bug to fix first. |
 | Vouchers held with no recorded therapy rights | Blocking for those customers | They report as unrecorded, are excluded from every total, and cannot be booked against. Count with `therapy_vouchers_without_rights()`. |
 | Voucher lines sold before migration 254 issued nothing, and were deliberately not backfilled | High | Those customers hold paid-for vouchers the system cannot see. Count with `invoice_untracked_voucher_lines()`. |
-| Several customers may share one phone number, by policy | High | Any booking flow that identifies by phone will attach sessions to the wrong person. Sweep `customer_phone_collisions()` and a stricter duplicate check. |
+| Several customers may share one phone number, by policy | High | Any booking flow that identifies by phone will attach sessions to the wrong person. Sweep `customer_phone_collisions()` and a stricter duplicate check. **This is no longer hypothetical:** the live calendar integration identifies people by scraping a phone from the event text (`match_method = 'phone_in_event_text'`), and across 29 ingested appointments it has matched a customer record zero times. |
+| The live calendar mirror records no attendance | Medium, and blocking if relied on | `ads_appointments.attended` is null on all 29 rows. Whatever else is true, attendance is not being captured today, so it cannot yet be a source for the frequency history that `therapy_service_frequency_ok` expects. |
 | `invoice_service_staff` does not verify the staff member works at the invoice's store | Medium | Cross-store attribution is possible if appointments reuse it. |
 | Active entitlements with no holiday country get no closure extension | Medium | An appointment booked near expiry could be invalidated by a later recalculation. |
 | The voucher repeat rule is stored but never evaluated | Medium | Voucher-level frequency limits are currently unenforced, contrary to the documented intent. |
@@ -342,6 +434,14 @@ first four are the ones to resolve before booking goes live; the rest can be
 addressed alongside the feature.
 
 ## What this assessment rests on
+
+**Originally written against this repository and two local databases, then
+corrected against production on 2026-09-20.** That correction matters: the
+repository does not contain the `ads` lead pipeline, so the first draft's
+central claim — that no calendar and no appointment table exist — was true of
+everything I could see and false of the system you actually run. The production
+facts in the correction and in the defects table were read directly from the
+live database, read-only.
 
 Read-only inspection of the migrations in `supabase/`, of `src/`, and of the
 effective definitions installed in the local Docker database and the disposable

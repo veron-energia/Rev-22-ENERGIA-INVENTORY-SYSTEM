@@ -6,10 +6,13 @@ documentation. Preparation for a future Google Calendar feature only: no
 calendar code, no OAuth, no credentials and no external events were added. The
 readiness assessment is in [CALENDAR_READINESS.md](CALENDAR_READINESS.md).
 
-**Not done, by instruction.** Nothing was committed, pushed or deployed. No
-migration was applied to production. No production record was read or repaired.
-No live email was sent. Every database change in this report was applied to two
-disposable local databases and nowhere else.
+**Applied to production on 2026-09-20.** All seven migrations are live on the
+`Energia Inventory System` project, applied between 14:36 and 14:39 SGT after a
+pre-flight against the live database and an adversarial review that found and
+stopped a real defect first (see "What the pre-flight caught" below). Nothing
+was committed or pushed, no edge function was deployed, and no production record
+was read or repaired. Invoice and customer counts were identical before and
+after: 244 and 12,886.
 
 **What this report does not claim.** The application is not bug-free and this
 review did not make it so. What follows is what was examined, what was changed,
@@ -30,7 +33,7 @@ role permissions, or hand out benefits and money twice.
 | 3 | A negative voucher quantity bought headroom in a claim, so five could be issued against two | High | migration 341 |
 | 4 | Two tables never had row-level security enabled at all, with full read and write granted to signed-out callers | High | migration 342 |
 | 5 | An affiliate login could make itself an Owner, rewrite any customer, and read the whole medical and financial record | High | migration 343 |
-| 6 | The invoice email function made no authorization decision, so the publishable key could send mail from the company domain | High | `send-invoice-email` |
+| 6 | The invoice email function made no authorization decision, so the publishable key could send mail from the company domain | High **latent** — see below | `send-invoice-email` |
 | 7 | Any signed-in staff member, of any role, could write off any quantity from any warehouse | High | migration 345 |
 
 Three more that lose money or records quietly:
@@ -216,11 +219,20 @@ database whether they may see that store, through the same function the invoice
 screens are gated on. The decision lives in `authorize.ts` so it can be tested
 without a network or a server, and nine tests drive it.
 
-**This could not be exercised end to end here**: the local edge runtime has no
-network access in this environment, so it cannot fetch its client library and
-returns a configuration error before reaching any of the new code. The decision
-logic is tested directly; the deployed path is not. That verification remains to
-be done — see section 10.
+**A correction to the severity above.** When it came to deploying this, the
+function turned out never to have been deployed at all — not on the live project
+and not on the paused one. So the hole was never reachable in production: it was
+a real defect in code that would have become live the first time anyone deployed
+it. It is listed as High because that is what it was worth fixing as, but it was
+latent, not exploited and not exploitable. Saying otherwise would overstate it.
+
+**It is now deployed, with the fix in place** (2026-09-20, version 1,
+`verify_jwt` on). The refusal paths were checked against the live endpoint: a
+request with no credentials is refused at the gateway, and the CORS preflight is
+answered by this function's own code — which incidentally proved the thing that
+could not be tested locally, that both of its imports resolve in the real edge
+runtime. The authenticated success path was deliberately **not** exercised,
+because doing so sends a real email to a real address.
 
 ---
 
@@ -479,15 +491,72 @@ Full results are in section 11.
 
 ---
 
-## 10. Before deploying
+## 10. What the pre-flight caught
 
-In order. Nothing here has been done.
+The migrations were **not** applied as written. Checking them against the live
+database first changed them twice, and both changes mattered.
 
-1. **Apply the migrations in number order: 339, 340, 341, 342, 343, 344, 345.**
+**Production is not what the repository describes.** It carries an entire
+`ads` leads, appointments and calendar subsystem — including a live Google
+Calendar integration, which is why CALENDAR_READINESS.md needed correcting — — 12 tables and 34 functions,
+19 migrations applied over the two days before this work — that exists in no
+local database and in no file in this repository. That is why production had
+1,013 functions against 1,000 locally. All 34 are SECURITY INVOKER, so 339 keeps
+them reachable by staff, and the only external caller in 24 hours of API logs is
+Pabbly Connect authenticating with a secret key, which 339 grants. It was
+unaffected. **It was also never tested against**, which is worth saying plainly.
+
+**339 would have broken staff invitations.** Three functions an administrator
+calls as themselves — `invite_user_begin`, `invite_user_prepare_resend` and
+`invite_user_cancel` — were missing from the allowlist, so 339 would have
+revoked them and Invite, Resend and Cancel would all have failed. The automated
+pre-flight missed it because those calls are spelled `callerRpc('...')` inside a
+shared edge-function module rather than `supabase.rpc('...')`, and the scan
+matched only the latter. Its clean result was an artefact of the pattern, not
+evidence of safety. Three independent reviewers found it; the check now covers
+both spellings and distinguishes caller-side calls from service-role ones.
+
+**339 would also have opened something.** `invite_user_accept` was *in* the
+allowlist, but migrations 230 and 231 had deliberately revoked it from signed-in
+users. It takes a user id and an email as arguments instead of reading
+`auth.uid()`, so granting it back would have let any signed-in user accept
+somebody else's invitation and activate their profile. It was removed from the
+list. The migration as originally written would have introduced a privilege
+escalation while fixing others.
+
+339 also gained a `notify pgrst, 'reload schema'`, which it lacked: it changes
+only grants, and without it the API could have kept answering from its cached
+view of who may call what.
+
+## 11. Applied to production
+
+In this order, each verified before the next.
+
+| Migration | Effect on production, measured |
+| --- | --- |
+| 339 | Functions callable without signing in: **637 → 5**, and exactly the five intended endpoints |
+| 340 | Guards that let a role-less caller through: **8 → 0** |
+| 341 | The voucher claim now refuses a quantity below one |
+| 342 | Tables with no row-level security: **1 → 0** |
+| 343 | The profiles INSERT policy is gone; **45 policies** now require a staff role |
+| 344 | The issued-once index and the payout serialization trigger are in place, and the payout function takes the lock before it reads |
+| 345 | A warehouse write-off now requires the warehouse permission |
+
+Checked afterwards: all 243 functions the application calls are still callable
+by a signed-in user; the three invitation functions are callable and
+`invite_user_accept` is not; all 34 ads functions keep staff and service-role
+access, the one exception being a trigger function, which PostgreSQL checks at
+trigger-creation rather than at fire time; and in the API logs the only non-2xx
+response is a 400 from the ads workstream's own iteration 24 minutes *before*
+the first migration landed. Nothing has failed since.
+
+## 12. Still to do
+
+1. ~~Apply the migrations~~ — done, above.
    All seven are idempotent — each was applied twice to both local databases and the
    second run reports nothing to do. Each computes what it needs from the live
    catalogue, so none assumes production matches a local database.
-2. **Before 339, run the pre-flight against the target:**
+2. **The pre-flight, for any future database:**
    ```bash
    ENERGIA_PERMISSIONS_DSN=<local dsn> node scripts/permissions/client-rpcs-are-granted.mjs
    ```
@@ -501,11 +570,18 @@ In order. Nothing here has been done.
    profiles row. The application was driven through its main screens against the
    local stack with zero failed requests, but production may have screens or
    integrations this environment does not exercise.
-4. **Deploy `send-invoice-email` without `--no-verify-jwt`**, and set
-   `INVOICE_ALLOWED_ORIGINS` if you want the browser check tightened too. Then
-   **verify sending an invoice still works from a staff session** — this is the
-   one change that could not be exercised locally, because the local edge
-   runtime has no network here.
+4. ~~Deploy `send-invoice-email`~~ — done, with `verify_jwt` on. **Two things
+   remain, and they are yours because I cannot see or set project secrets:**
+   set `RESEND_API_KEY` and `INVOICE_FROM`, then send one invoice from a staff
+   session to an address you control. Until those secrets are set the function
+   returns 503 and the application falls back to the device share sheet, which
+   is exactly what it does today, so nothing changes. **Once they are set the
+   behaviour changes for staff**: the Email button stops opening their mail app
+   and instead sends straight from the server to the address stored on the
+   customer. A stale address on a customer record would send that invoice to
+   whoever now owns it. `VITE_INVOICE_EMAIL=off` in the frontend disables the
+   attempt instantly, and deleting the function restores today's behaviour.
+   Optionally set `INVOICE_ALLOWED_ORIGINS` to restrict which sites may call it.
 5. **Confirm a TikTok settlement file of more than 1,000 rows** now confirms
    every row. The local data does not reach that size.
 6. **Check the Excel export row count** against the list's own count for a
@@ -542,7 +618,7 @@ production:
 
 ---
 
-## 11. Test results
+## 13. Test results
 
 Every suite in `package.json` was run after the changes.
 

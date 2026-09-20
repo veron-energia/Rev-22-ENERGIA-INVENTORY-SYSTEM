@@ -73,7 +73,18 @@ declare
     'delete_affiliate_account_claim', 'delete_customer', 'delete_invoice', 'delete_survey_attachment', 'delete_therapy_closure_date',
     'delete_tiktok_batch', 'delete_tiktok_row', 'edit_transfer_request', 'entitlement_voucher_state', 'exchange_ineligibility_reason',
     'exchange_invoice_details', 'exchange_original_context', 'exchange_payment_position', 'fulfil_special_doc', 'health_survey_detail',
-    'invite_user_accept', 'invoice_action_plan', 'invoice_action_request_detail', 'invoice_benefit_review_options', 'invoice_bill_to_source',
+    -- The three invitation functions an administrator calls AS THEMSELVES, through
+    -- the admin-invite-user function's caller client (230 granted them to
+    -- authenticated; 231 re-granted cancel). They are spelled callerRpc('...')
+    -- rather than supabase.rpc('...'), which is why a grep for the latter missed
+    -- them. Each still gates itself on user_admin_role()/can_assign_role().
+    -- invite_user_accept is deliberately NOT here: 230 and 231 revoked it from
+    -- authenticated on purpose, it is called only by the service role, and it
+    -- takes the user id and email as arguments instead of reading auth.uid(),
+    -- so granting it to signed-in users would let anyone accept somebody else's
+    -- invitation and activate their profile.
+    'invite_user_begin', 'invite_user_prepare_resend', 'invite_user_cancel',
+    'invoice_action_plan', 'invoice_action_request_detail', 'invoice_benefit_review_options', 'invoice_bill_to_source',
     'invoice_credit_reward_entitlements', 'invoice_effective_affiliate', 'invoice_financial_position', 'invoice_legacy_entitlements', 'invoice_list_page',
     'invoice_refund_options', 'invoice_rentals_awaiting_return', 'invoice_reopen_preview', 'invoice_revision_history', 'invoice_sales_ledger',
     'invoice_stock_component_evidence', 'invoice_therapy_summary', 'invoice_transferable_benefits', 'legacy_qualification_diagnose', 'legacy_reward_options',
@@ -223,6 +234,11 @@ end $$;
 
 comment on schema public is
   'Application schema. Functions are not endpoints by default: since 339 no function is reachable with the anon key unless its migration grants it, and a privileged helper is granted to nobody and reached only from inside another SECURITY DEFINER function. New functions are callable by authenticated and by no one else until said otherwise.';
+
+-- PostgREST decides what to expose per role from a cached view of the
+-- catalogue. This migration changes nothing but grants, so without this the
+-- API could keep answering from the reach it had before.
+notify pgrst, 'reload schema';
 
 notify pgrst, 'reload schema';
 commit;

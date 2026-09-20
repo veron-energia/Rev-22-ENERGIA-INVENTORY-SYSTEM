@@ -25,7 +25,20 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const ROOTS = ['src', 'supabase/functions'];
-const RPC = /\.rpc\(\s*'([a-z0-9_]+)'/g;
+// Two ways this codebase calls a function, and they have different answers.
+//
+// CALLER: supabase.rpc('x') from the browser, and callerRpc('x') inside the
+// edge functions — both run as the signed-in user, so both MUST stay granted to
+// authenticated. The callerRpc spelling is the one a plain `.rpc(` grep misses,
+// and missing it is how migration 339 nearly shipped revoking the three
+// invitation functions an administrator calls as themselves.
+//
+// SERVICE: adminRpc('x') runs on the service-role key, which keeps its grant
+// whatever happens to authenticated. Those names are reported, not required.
+// The repository names the two clients apart: `admin` is the service role,
+// anything else carries the caller's own token. That naming is the signal.
+const RPC_CALLER = /(?:(?<!\badmin)\.rpc|\bcallerRpc)\(\s*'([a-z0-9_]+)'/g;
+const RPC_SERVICE = /(?:\badmin\.rpc|\badminRpc)\(\s*'([a-z0-9_]+)'/g;
 
 function walk(dir, out = []) {
   let entries;
@@ -38,17 +51,22 @@ function walk(dir, out = []) {
   return out;
 }
 
-const called = new Map();          // rpc name -> the files that call it
+const called = new Map();          // rpc name -> the files that call it, as the caller
+const serviceOnly = new Map();     // rpc name -> the files that call it on the service role
 for (const root of ROOTS) {
   for (const file of walk(root)) {
     const text = readFileSync(file, 'utf8');
-    for (const m of text.matchAll(RPC)) {
-      if (!called.has(m[1])) called.set(m[1], []);
-      if (!called.get(m[1]).includes(file)) called.get(m[1]).push(file);
+    for (const [re, sink] of [[RPC_CALLER, called], [RPC_SERVICE, serviceOnly]]) {
+      for (const m of text.matchAll(re)) {
+        if (!sink.has(m[1])) sink.set(m[1], []);
+        if (!sink.get(m[1]).includes(file)) sink.get(m[1]).push(file);
+      }
     }
   }
 }
-if (called.size === 0) { console.error('Found no supabase.rpc() calls — the scan is wrong, not the database.'); process.exit(2); }
+// A name called both ways is a caller name: the stricter requirement wins.
+for (const n of called.keys()) serviceOnly.delete(n);
+if (called.size === 0) { console.error('Found no caller-side rpc() calls — the scan is wrong, not the database.'); process.exit(2); }
 
 const names = [...called.keys()].sort();
 const sql = `
@@ -89,7 +107,10 @@ const anonCallable = rows.filter(r => r.anon);
 for (const r of ungranted) console.error(`NOT CALLABLE BY STAFF: ${r.name}  (called from ${called.get(r.name).join(', ')})`);
 for (const r of absent) console.error(`NOT IN THIS DATABASE:   ${r.name}  (called from ${called.get(r.name).join(', ')})`);
 
-console.log(`${rows.length} RPC names called by the application; ${rows.length - ungranted.length - absent.length} callable by a signed-in user.`);
+console.log(`${rows.length} RPC names called as the signed-in user; ${rows.length - ungranted.length - absent.length} callable by one.`);
+if (serviceOnly.size) {
+  console.log(`${serviceOnly.size} more are called only on the service role, which keeps its grant either way: ${[...serviceOnly.keys()].sort().join(', ')}`);
+}
 if (anonCallable.length) {
   console.log(`Reachable without signing in (expected: the public endpoints only): ${anonCallable.map(r => r.name).join(', ')}`);
 }
