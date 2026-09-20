@@ -7,8 +7,21 @@
  * touched.
  */
 
+/**
+ * Stored text on its way into HTML.
+ *
+ * Quotes matter as much as angle brackets here: esc() is used inside attributes
+ * as well as in text (`<img src="${esc(...)}">`), and a value carrying a double
+ * quote could otherwise close the attribute and open another one. `>` is
+ * escaped too so a partly-formed tag cannot be completed by stored text.
+ */
 export const esc = (v: any) =>
-  String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
 export const money = (n: any) => `S$${Number(n ?? 0).toFixed(2)}`;
 

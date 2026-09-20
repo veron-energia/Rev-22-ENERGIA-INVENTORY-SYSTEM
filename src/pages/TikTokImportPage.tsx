@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
+import { fetchAllFrom } from '../lib/supabasePaging';
 import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
 import { settledDateSgt, reportingMonthFor, periodLabel } from '../lib/tiktok/settlementPeriod.mjs';
 import { classifyTransaction, CATEGORY } from '../lib/tiktok/classification.mjs';
@@ -195,7 +196,11 @@ const TikTokImportPage: React.FC = () => {
   const loadBatchRows = async (batchId: string) => {
     const [{ data: b }, { data: r }] = await Promise.all([
       supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
-      supabase.from('tiktok_order_rows').select('*').eq('batch_id', batchId).order('row_no'),
+      // Every row of the batch, not the first thousand: these ids are what the
+      // confirm sends, so a truncated read silently leaves the rest of the
+      // file unconfirmed with no error anywhere.
+      fetchAllFrom('tiktok_order_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id'])
+        .then(rows => ({ data: rows })),
     ]);
     setActiveBatch(b ?? null);
     const rr = (r as any[]) ?? [];
@@ -248,7 +253,10 @@ const TikTokImportPage: React.FC = () => {
   const loadSettleRows = async (batchId: string) => {
     const [{ data: b }, { data: r }] = await Promise.all([
       supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
-      supabase.from('tiktok_settlement_rows').select('*').eq('batch_id', batchId).order('row_no'),
+      // As above, and this one is money: the ids of the rows ticked here are
+      // what confirm_tiktok_settlement_batch is given.
+      fetchAllFrom('tiktok_settlement_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id'])
+        .then(rows => ({ data: rows })),
     ]);
     setSettleBatch(b ?? null);
     const rr = (r as any[]) ?? [];
@@ -287,11 +295,14 @@ const TikTokImportPage: React.FC = () => {
       setTabLoading(true);
       let rows: any[] = [];
       if (pageTab === 'orders') {
-        const { data } = await supabase.from('tiktok_order_state').select('*').order('updated_at', { ascending: false }).limit(300);
-        rows = (data as any[]) ?? [];
+        // tiktok_order_state has no id; its key is (store_id, order_id,
+        // seller_sku), and paging needs a total order or rows repeat and vanish.
+        rows = await fetchAllFrom('tiktok_order_state', '*',
+          q => effectiveStore ? q.eq('store_id', effectiveStore) : q,
+          ['store_id', 'order_id', 'seller_sku']);
       } else if (pageTab === 'items') {
-        const { data } = await supabase.from('tiktok_order_rows').select('*').eq('confirmed', true).order('confirmed_at', { ascending: false }).limit(300);
-        rows = (data as any[]) ?? [];
+        rows = await fetchAllFrom('tiktok_order_rows', '*',
+          q => { q = q.eq('confirmed', true); return effectiveStore ? q.eq('store_id', effectiveStore) : q; }, ['confirmed_at', 'id']);
       } else if (pageTab === 'settlements') {
         const { data } = await supabase.rpc('report_tiktok_settlement', { p_store_id: effectiveStore || null, p_from: null, p_to: null });
         rows = (data as any[]) ?? [];
@@ -302,14 +313,26 @@ const TikTokImportPage: React.FC = () => {
         const { data } = await supabase.rpc('report_tiktok_recon_exceptions', { p_store_id: effectiveStore || null });
         rows = (data as any[]) ?? [];
       } else if (pageTab === 'returns') {
-        const { data } = await supabase.from('tiktok_physical_returns').select('*').order('created_at', { ascending: false }).limit(300);
-        rows = (data as any[]) ?? [];
+        rows = await fetchAllFrom('tiktok_physical_returns', '*',
+          q => effectiveStore ? q.eq('store_id', effectiveStore) : q, ['created_at', 'id']);
       } else if (pageTab === 'corrections') {
-        const { data } = await supabase.from('tiktok_corrections').select('*').order('created_at', { ascending: false }).limit(300);
-        rows = (data as any[]) ?? [];
+        rows = await fetchAllFrom('tiktok_corrections', '*',
+          q => effectiveStore ? q.eq('store_id', effectiveStore) : q, ['created_at', 'id']);
       }
-      const filtered = effectiveStore && ['orders', 'items', 'returns', 'corrections'].includes(pageTab)
-        ? rows.filter(r => r.store_id === effectiveStore) : rows;
+      // The store filter is applied in the query above, not here. Filtering
+      // after a row limit was how a store's rows could disappear completely:
+      // the limit took the newest 300 rows of every store, and the filter then
+      // kept whichever of those happened to belong to this one.
+      //
+      // Paging has to read in a stable ascending order to be correct, so the
+      // newest-first order these tabs are read in is restored here.
+      const newestFirst: Record<string, string> = {
+        orders: 'updated_at', items: 'confirmed_at', returns: 'created_at', corrections: 'created_at',
+      };
+      const by = newestFirst[pageTab];
+      const filtered = by
+        ? [...rows].sort((a, b) => String(b?.[by] ?? '').localeCompare(String(a?.[by] ?? '')))
+        : rows;
       if (cancelled) return;   // a slower earlier tab must not overwrite this one
       setTabRows(filtered);
       setTabLoading(false);

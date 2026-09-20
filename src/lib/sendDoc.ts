@@ -292,6 +292,9 @@ export async function sendViaEmailAttachment(
           subject: `${a.kindLabel} ${a.docNo} — Energia`,
           customerName: a.customerName ?? null,
           docNo: a.docNo, kindLabel: a.kindLabel,
+          // The function checks this against the caller's own store access,
+          // so a document cannot be emailed out of a branch they cannot see.
+          storeId: a.storeId ?? null,
           filename: `${safeName(a.docNo)}.pdf`,
           pdfBase64: await blobToBase64(pdfBlob),
         },

@@ -86,7 +86,10 @@ begin
  perform cancel_invoice_recorded(inv,'Cancel remaining delivery',rid);
  if (select current_qty from store_inventory where store_id=st and product_id=p)<>98 then raise exception 'Cancellation restocked damaged/not-returned goods or repeated returns'; end if;
  if not (invoice_reopen_preview(inv)->>'can_reopen')::boolean then raise exception 'Reopening with an explicit replacement plan was blocked'; end if;
- if (select sum((s->>'quantity')::int) from jsonb_array_elements(invoice_reopen_preview(inv)->'stock_to_issue') s)<>9 then raise exception 'Reopening did not preview replacement of damaged units'; end if;
+ -- coalesce: sum() over no rows is NULL, NULL <> n is NULL, and PL/pgSQL
+ -- takes the false branch on NULL — so this assertion used to pass on
+ -- exactly the regression it guards.
+ if coalesce((select sum((s->>'quantity')::int) from jsonb_array_elements(invoice_reopen_preview(inv)->'stock_to_issue') s), -1)<>9 then raise exception 'Reopening did not preview replacement of damaged units'; end if;
  -- Simple cancellation and full refund/reopen, with settlement replay.
  inv:=create_invoice_with_details(st,c,jsonb_build_array(jsonb_build_object('kind','product','product_id',p,'quantity',1)), '{"business_date":"2020-01-02"}');
  perform pay_invoice(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',100)));
@@ -187,7 +190,7 @@ begin
   '[]','Session returned',gen_random_uuid());
  -- The credit half goes back to the lot it came from, in its original category.
  if (select remaining_amount from customer_credit_lots where id=lot)<>60 then raise exception 'Credit refund did not return to origin'; end if;
- if (select sum(credit_returned) from invoice_refunds where invoice_id=spend)<>60 then raise exception 'Wallet return classified as cash'; end if;
+ if coalesce((select sum(credit_returned) from invoice_refunds where invoice_id=spend), -1)<>60 then raise exception 'Wallet return classified as cash'; end if;
  -- And the entitlement it bought is reconciled, not left standing.
  if (select quantity_refunded from customer_therapy_sessions where invoice_item_id=item)<>1 then
   raise exception 'Refunded session still counted as purchased'; end if;

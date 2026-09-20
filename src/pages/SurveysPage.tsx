@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import QRCode from 'qrcode';
 import { supabase } from '../lib/supabase';
+import { esc } from '../lib/printDoc';
 import { useAuth } from '../context/AuthContext';
 import { Store, SurveyLink, HealthSurvey, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
@@ -164,8 +165,8 @@ const SurveysPage: React.FC = () => {
       img{width:320px;height:320px;} h2{margin:16px 0 4px;} .m{color:#666;font-size:13px;}
     </style></head><body>
       <h2>New Customer Form</h2>
-      <div class="m">${sName(qrFor.store_id)}${qrFor.event_name ? ` · ${qrFor.event_name}` : ''}</div>
-      <img src="${qrImg}" />
+      <div class="m">${esc(sName(qrFor.store_id))}${qrFor.event_name ? ` · ${esc(qrFor.event_name)}` : ''}</div>
+      <img src="${esc(qrImg)}" />
       <div class="m">Scan to complete the form</div>
     </body></html>`);
     w.document.close(); w.focus(); setTimeout(() => w.print(), 300);

@@ -51,7 +51,10 @@ begin
  insert into invoice_credit_splits(invoice_id,invoice_item_id,customer_id,amount,created_by) values(inv,it,c,50,o),(inv,it,c2,50,o);
  perform pay_invoice(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',100)));
  if (select count(*) from invoice_benefit_values where invoice_item_id=it)<>4 then raise exception 'Paid and bonus lots for both recipients not captured'; end if;
- if (select sum(paid_value) from invoice_benefit_values where invoice_item_id=it)<>100 then raise exception 'Bonus paid values do not reconcile to actual money'; end if;
+ -- coalesce: sum() over no rows is NULL, NULL <> n is NULL, and PL/pgSQL
+ -- takes the false branch on NULL — so this assertion used to pass on
+ -- exactly the regression it guards.
+ if coalesce((select sum(paid_value) from invoice_benefit_values where invoice_item_id=it), -1)<>100 then raise exception 'Bonus paid values do not reconcile to actual money'; end if;
  select id into pay from invoice_payments where invoice_id=inv;
  select bv.id,bv.lot_id,bv.paid_value into b,lot,amt from invoice_benefit_values bv join customer_credit_lots l on l.id=bv.lot_id where bv.invoice_item_id=it and l.customer_id=c2 and l.category='bonus';
  perform cancel_invoice_recorded(inv,'Cancel unused credits',gen_random_uuid());

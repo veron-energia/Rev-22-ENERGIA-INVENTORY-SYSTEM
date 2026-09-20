@@ -44,7 +44,10 @@ begin
  select count(*) into n from customer_reward_vouchers
   where source_type='invoice_promotion_voucher' and source_id=it;
  if n<>2 then raise exception 'Expected an ownership record per voucher type, got %', n; end if;
- if (select sum(quantity) from customer_reward_vouchers where source_id=it)<>3 then
+ -- coalesce: sum() over no rows is NULL, NULL <> n is NULL, and PL/pgSQL
+ -- takes the false branch on NULL — so this assertion used to pass on
+ -- exactly the regression it guards.
+ if coalesce((select sum(quantity) from customer_reward_vouchers where source_id=it), -1)<>3 then
   raise exception 'The recorded units do not match what the promotion sold'; end if;
  if (select customer_id from customer_reward_vouchers where source_id=it limit 1)<>c1 then
   raise exception 'The vouchers were recorded against the wrong customer'; end if;
@@ -79,7 +82,7 @@ begin
  -- and the vouchers went with it, without being duplicated or reset
  if (select count(*) from customer_reward_vouchers where source_id=it)<>2 then
   raise exception 'Reassignment duplicated the voucher records'; end if;
- if (select sum(quantity) from customer_reward_vouchers where source_id=it)<>3 then
+ if coalesce((select sum(quantity) from customer_reward_vouchers where source_id=it), -1)<>3 then
   raise exception 'Reassignment changed the voucher quantities'; end if;
 
  -- the holders changed, and only these records did

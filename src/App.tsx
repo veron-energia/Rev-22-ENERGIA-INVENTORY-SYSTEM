@@ -1,54 +1,63 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import AppLayout from './components/AppLayout';
-import LoginPage from './pages/LoginPage';
-import DashboardPage from './pages/DashboardPage';
-import ProductsPage from './pages/ProductsPage';
-import WarehousesPage from './pages/WarehousesPage';
-import StoresPage from './pages/StoresPage';
-import PaymentMethodsPage from './pages/PaymentMethodsPage';
-import UsersPage from './pages/UsersPage';
-import WarehouseInventoryPage from './pages/WarehouseInventoryPage';
-import StoreInventoryPage from './pages/StoreInventoryPage';
-import TransfersPage from './pages/TransfersPage';
-import StockMovementsPage from './pages/StockMovementsPage';
-import CustomersPage from './pages/CustomersPage';
-import PriceListPage from './pages/PriceListPage';
-import CommissionsPage from './pages/CommissionsPage';
-import VouchersPage from './pages/VouchersPage';
-import PromotionsPage from './pages/PromotionsPage';
-import SpecialPage from './pages/SpecialPage';
-import StaffCommissionsPage from './pages/StaffCommissionsPage';
-import NotFoundPage from './pages/NotFoundPage';
-import ExchangesPage from './pages/ExchangesPage';
-import TherapyPage from './pages/TherapyPage';
-import TherapyServicesPage from './pages/TherapyServicesPage';
-import PublicSurveyPage from './pages/PublicSurveyPage';
-import SurveysPage from './pages/SurveysPage';
-import TikTokImportPage from './pages/TikTokImportPage';
-import AffiliatesPage from './pages/AffiliatesPage';
 import AffiliateAuthShell from './components/AffiliateAuthShell';
-import InvoicesPage from './pages/InvoicesPage';
-import ApprovalsPage from './pages/ApprovalsPage';
-import AdjustmentsPage from './pages/AdjustmentsPage';
-import AuditLogPage from './pages/AuditLogPage';
-import ReportsPage from './pages/ReportsPage';
-import AffiliateJoinPage from './pages/AffiliateJoinPage';
-import AffiliateLoginPage from './pages/AffiliateLoginPage';
-import AffiliateVerifyPage from './pages/AffiliateVerifyPage';
-import AffiliateForgotPasswordPage from './pages/AffiliateForgotPasswordPage';
-import AffiliateResetPasswordPage from './pages/AffiliateResetPasswordPage';
-import AffiliateDashboardPage from './pages/AffiliateDashboardPage';
-import AffiliateNetworkPage from './pages/AffiliateNetworkPage';
-import AffiliateEarningsPage from './pages/AffiliateEarningsPage';
-import AffiliatePayoutsPage from './pages/AffiliatePayoutsPage';
-import AffiliateReferralPage from './pages/AffiliateReferralPage';
-import AffiliateAccountPage from './pages/AffiliateAccountPage';
-import ReferralSignupPage from './pages/ReferralSignupPage';
-import ForgotPasswordPage from './pages/ForgotPasswordPage';
-import ResetPasswordPage from './pages/ResetPasswordPage';
-import AcceptInvitationPage from './pages/AcceptInvitationPage';
+
+/**
+ * Pages are fetched when they are first opened, not when the application
+ * starts. Before this, one bundle held every screen — the invoice editor,
+ * the TikTok importer with its CSV parser, the spreadsheet writer, the PDF
+ * builder — and a staff member waited for all of it to open the dashboard.
+ * The shell below (layout, auth, the loader) stays in the first bundle so
+ * there is something on screen while a page arrives.
+ */
+const LoginPage = React.lazy(() => import('./pages/LoginPage'));
+const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
+const ProductsPage = React.lazy(() => import('./pages/ProductsPage'));
+const WarehousesPage = React.lazy(() => import('./pages/WarehousesPage'));
+const StoresPage = React.lazy(() => import('./pages/StoresPage'));
+const PaymentMethodsPage = React.lazy(() => import('./pages/PaymentMethodsPage'));
+const UsersPage = React.lazy(() => import('./pages/UsersPage'));
+const WarehouseInventoryPage = React.lazy(() => import('./pages/WarehouseInventoryPage'));
+const StoreInventoryPage = React.lazy(() => import('./pages/StoreInventoryPage'));
+const TransfersPage = React.lazy(() => import('./pages/TransfersPage'));
+const StockMovementsPage = React.lazy(() => import('./pages/StockMovementsPage'));
+const CustomersPage = React.lazy(() => import('./pages/CustomersPage'));
+const PriceListPage = React.lazy(() => import('./pages/PriceListPage'));
+const CommissionsPage = React.lazy(() => import('./pages/CommissionsPage'));
+const VouchersPage = React.lazy(() => import('./pages/VouchersPage'));
+const PromotionsPage = React.lazy(() => import('./pages/PromotionsPage'));
+const SpecialPage = React.lazy(() => import('./pages/SpecialPage'));
+const StaffCommissionsPage = React.lazy(() => import('./pages/StaffCommissionsPage'));
+const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage'));
+const ExchangesPage = React.lazy(() => import('./pages/ExchangesPage'));
+const TherapyPage = React.lazy(() => import('./pages/TherapyPage'));
+const TherapyServicesPage = React.lazy(() => import('./pages/TherapyServicesPage'));
+const PublicSurveyPage = React.lazy(() => import('./pages/PublicSurveyPage'));
+const SurveysPage = React.lazy(() => import('./pages/SurveysPage'));
+const TikTokImportPage = React.lazy(() => import('./pages/TikTokImportPage'));
+const AffiliatesPage = React.lazy(() => import('./pages/AffiliatesPage'));
+const InvoicesPage = React.lazy(() => import('./pages/InvoicesPage'));
+const ApprovalsPage = React.lazy(() => import('./pages/ApprovalsPage'));
+const AdjustmentsPage = React.lazy(() => import('./pages/AdjustmentsPage'));
+const AuditLogPage = React.lazy(() => import('./pages/AuditLogPage'));
+const ReportsPage = React.lazy(() => import('./pages/ReportsPage'));
+const AffiliateJoinPage = React.lazy(() => import('./pages/AffiliateJoinPage'));
+const AffiliateLoginPage = React.lazy(() => import('./pages/AffiliateLoginPage'));
+const AffiliateVerifyPage = React.lazy(() => import('./pages/AffiliateVerifyPage'));
+const AffiliateForgotPasswordPage = React.lazy(() => import('./pages/AffiliateForgotPasswordPage'));
+const AffiliateResetPasswordPage = React.lazy(() => import('./pages/AffiliateResetPasswordPage'));
+const AffiliateDashboardPage = React.lazy(() => import('./pages/AffiliateDashboardPage'));
+const AffiliateNetworkPage = React.lazy(() => import('./pages/AffiliateNetworkPage'));
+const AffiliateEarningsPage = React.lazy(() => import('./pages/AffiliateEarningsPage'));
+const AffiliatePayoutsPage = React.lazy(() => import('./pages/AffiliatePayoutsPage'));
+const AffiliateReferralPage = React.lazy(() => import('./pages/AffiliateReferralPage'));
+const AffiliateAccountPage = React.lazy(() => import('./pages/AffiliateAccountPage'));
+const ReferralSignupPage = React.lazy(() => import('./pages/ReferralSignupPage'));
+const ForgotPasswordPage = React.lazy(() => import('./pages/ForgotPasswordPage'));
+const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
+const AcceptInvitationPage = React.lazy(() => import('./pages/AcceptInvitationPage'));
 import { Leaf } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -112,6 +121,7 @@ const AppRoutes: React.FC = () => {
 
   return (
     <ErrorBoundary>
+    <Suspense fallback={<FullScreenLoader />}>
     <Routes>
       {/* Public: no login required (QR survey) */}
       <Route path="/survey/:token" element={<PublicSurveyPage />} />
@@ -167,6 +177,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/users" element={<Protected><UsersPage /></Protected>} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
+    </Suspense>
     </ErrorBoundary>
   );
 };

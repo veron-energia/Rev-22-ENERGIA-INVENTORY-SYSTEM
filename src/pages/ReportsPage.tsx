@@ -249,10 +249,24 @@ const ReportsPage: React.FC = () => {
   }).filter(r => r.count > 0).sort((a, b) => b.total - a.total);
 
   // Commission report by referrer (earned incl. paid-out; reversed separate).
+  //
+  // "Paid Out" is the money that actually left, and it is NOT the sum of the
+  // commissions marked paid. A payout may settle part of a commission —
+  // affiliate_payout_save allocates `least(remaining, available)` and then sets
+  // the whole row to 'paid' — so counting commission_amount for every paid row
+  // reported a S$100 commission with S$20 allocated as S$100 paid out.
+  //
+  // report_affiliates() is already loaded above and answers this from the
+  // payout records themselves (`sum(total_amount) from commission_payouts
+  // where status = 'paid'`), which is the same basis the Commissions page and
+  // the payout panel use. The two screens used to disagree; now they do not.
+  const paidByCustomer = new Map<string, number>(
+    (repAffiliate ?? []).map((a: any) => [String(a.customer_id), Number(a.paid ?? 0)]),
+  );
   const commissionRows = referrerIds.map(rid => {
     const rc = commissions.filter(c => c.referrer_customer_id === rid);
     const earned = rc.filter(c => c.status === 'earned' || c.status === 'paid').reduce((s, c) => s + Number(c.commission_amount), 0);
-    const paidOut = rc.filter(c => c.status === 'paid').reduce((s, c) => s + Number(c.commission_amount), 0);
+    const paidOut = paidByCustomer.get(String(rid)) ?? 0;
     const reversed = rc.filter(c => c.status === 'reversed').reduce((s, c) => s + Number(c.commission_amount), 0);
     return { name: cName(rid), earned, paidOut, reversed, net: earned };
   }).filter(r => r.earned > 0 || r.reversed > 0).sort((a, b) => b.net - a.net);
