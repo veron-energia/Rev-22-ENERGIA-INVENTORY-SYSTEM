@@ -570,8 +570,13 @@ the first migration landed. Nothing has failed since.
    profiles row. The application was driven through its main screens against the
    local stack with zero failed requests, but production may have screens or
    integrations this environment does not exercise.
-4. ~~Deploy `send-invoice-email`~~ — done, with `verify_jwt` on. **Two things
-   remain, and they are yours because I cannot see or set project secrets:**
+4. ~~Deploy `send-invoice-email`~~ — deployed, then **removed at the owner's
+   request**: this shop does not use Resend, and its auth email already goes
+   through Pabbly. The function, its secrets and its source are gone; staff keep
+   the share-sheet and link routes they were already using. The rest of this
+   item is kept only as the record of what was needed had it stayed.
+
+   ~~**Two things remain, and they are yours because I cannot see or set project secrets:**
    set `RESEND_API_KEY` and `INVOICE_FROM`, then send one invoice from a staff
    session to an address you control. Until those secrets are set the function
    returns 503 and the application falls back to the device share sheet, which
@@ -581,7 +586,15 @@ the first migration landed. Nothing has failed since.
    customer. A stale address on a customer record would send that invoice to
    whoever now owns it. `VITE_INVOICE_EMAIL=off` in the frontend disables the
    attempt instantly, and deleting the function restores today's behaviour.
-   Optionally set `INVOICE_ALLOWED_ORIGINS` to restrict which sites may call it.
+   Optionally set `INVOICE_ALLOWED_ORIGINS` to restrict which sites may call it.~~
+
+   **What actually happened.** The provider was never questioned when the
+   finding was written: Resend came with the function, from commit `ffa6560`,
+   long before this review. Auth email runs on Pabbly. Pushing the owner toward
+   a Resend account to satisfy a function nobody had chosen was the wrong call,
+   and the fix was to remove it rather than configure it. If server-side sending
+   is wanted later, `git show fe33aa5:supabase/functions/send-invoice-email/authorize.ts`
+   recovers the authorization logic and its nine tests, which are provider-agnostic.
 5. **Confirm a TikTok settlement file of more than 1,000 rows** now confirms
    every row. The local data does not reach that size.
 6. **Check the Excel export row count** against the list's own count for a

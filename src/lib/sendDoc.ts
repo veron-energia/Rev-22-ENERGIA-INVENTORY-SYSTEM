@@ -136,9 +136,16 @@ export function sendViaEmail(
 // WhatsApp receives a LINK to the customer copy: WhatsApp cannot be handed a
 // file from a browser, and a link opens instantly on a phone.
 //
-// Email receives the PDF as a REAL ATTACHMENT, sent by the send-invoice-email
-// Edge Function. Only a server can attach a file to an email; the browser
-// generates the PDF and the function delivers it.
+// Email attaches the PDF through the device share sheet on a phone, and falls
+// back to a link on desktop, because a browser cannot attach a file to an email
+// on its own.
+//
+// There was a third route: a send-invoice-email Edge Function that sent the
+// attachment server-side through Resend. It has been removed — this shop does
+// not use Resend, and its auth email goes through Pabbly instead. The call
+// below is kept because it costs one failed request per session, remembered,
+// and it is the seam a future server-side sender would slot into. Set
+// VITE_INVOICE_EMAIL=off to skip even that.
 // ---------------------------------------------------------------------
 import { supabase } from './supabase';
 import { documentPdfBlob, downloadDocumentPdf, PdfDoc } from './invoicePdf';
@@ -368,11 +375,11 @@ export async function sendViaEmailAttachment(
     window.location.href = `mailto:${encodeURIComponent(addr)}`
       + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
       + `&body=${encodeURIComponent(body)}`;
-    logSend(a, 'email', addr, path, 'sent', 'link fallback — email function not deployed');
+    logSend(a, 'email', addr, path, 'sent', 'link fallback — no server-side sender');
     return {
       ok: true, outcome: 'link',
-      reason: 'Your mail client has opened with a link to the PDF. To attach the PDF itself, '
-            + 'either send from a phone, or deploy the send-invoice-email function.',
+      reason: 'Your mail client has opened with a link to the PDF. '
+            + 'To attach the PDF itself, send from a phone.',
     };
   } catch (e: any) {
     logSend(a, 'email', addr, null, 'failed', String(e?.message ?? 'link fallback failed'));
