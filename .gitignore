@@ -80,3 +80,17 @@ uploads/
 # Exclusive historical invoice-date test cluster and private reports
 .invoice-date-test/
 .stock-history-test/
+
+# Parked, deliberately unapplied: the migrations that make a credit package or
+# premium bundle inside a promotion actually GRANT its benefit, plus their
+# tests. Two adversarial review rounds found money-losing defects in them; what
+# is still open is listed at the end of
+# supabase/352_a_promotion_may_not_promise_what_it_never_grants.sql, which is
+# applied and holds the trap shut in the meantime.
+#
+# They are ignored so they cannot be committed by accident while unfinished.
+# When the work resumes, delete these five lines and commit them properly.
+supabase/350_a_package_inside_a_promotion_grants_it.sql
+supabase/351_a_promotion_keeps_its_own_money.sql
+scripts/promotions/tests/promotion-package-benefits.sql
+scripts/promotions/tests/promotion-keeps-its-own-money.sql
