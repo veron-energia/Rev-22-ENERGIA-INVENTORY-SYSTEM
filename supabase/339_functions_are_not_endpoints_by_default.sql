@@ -158,7 +158,8 @@ begin
 
   for f in
     select p.oid::regprocedure::text as sig, p.proname, p.prosecdef,
-           pg_catalog.format_type(p.prorettype, null) = 'trigger' as is_trigger
+           pg_catalog.format_type(p.prorettype, null) = 'trigger' as is_trigger,
+           coalesce(obj_description(p.oid, 'pg_proc'), '') like 'DEPRECATED%' as is_deprecated
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.prokind = 'f'
        and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
@@ -173,6 +174,13 @@ begin
 
     if f.is_trigger then
       n_trigger := n_trigger + 1;                       -- fired by the table, never called
+    elsif f.is_deprecated then
+      -- Marked DEPRECATED and left in place. Granting it back would put a second
+      -- candidate in front of PostgREST, which resolves an overload by the SET of
+      -- parameter names and refuses outright when two match. That is exactly what
+      -- this migration did to create_transfer_request, breaking every transfer
+      -- until 348 revoked the stale overload again.
+      n_internal := n_internal + 1;
     elsif f.proname = any(v_public) then
       if v_has_anon then execute format('grant execute on function %s to anon', f.sig); end if;
       if v_has_auth then execute format('grant execute on function %s to authenticated', f.sig); end if;
@@ -206,12 +214,30 @@ begin
        and not (p.proname = any(v_public))) then
     raise exception '339: a function outside the public allowlist is still callable by anon';
   end if;
+  -- A name in the client list may have a DEPRECATED overload alongside the live
+  -- one, deliberately left unreachable. Demanding a grant for it would either
+  -- fail this check or, worse, pass by granting it — which is how transfers
+  -- broke: two candidates with identical parameter names make PostgREST refuse
+  -- the call outright.
   if v_has_auth and exists (
     select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'public' and p.prokind = 'f' and p.proname = any(v_client)
        and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
+       and coalesce(obj_description(p.oid, 'pg_proc'), '') not like 'DEPRECATED%'
        and not has_function_privilege('authenticated', p.oid, 'execute')) then
     raise exception '339: a function the application calls is no longer callable by staff';
+  end if;
+
+  -- And no name the application calls may have more than one callable overload,
+  -- whatever their parameter types: PostgREST cannot choose between two whose
+  -- parameter NAMES match, and answers PGRST203 instead of calling either.
+  if v_has_auth and exists (
+    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.prokind = 'f' and p.proname = any(v_client)
+       and has_function_privilege('authenticated', p.oid, 'execute')
+     group by p.proname, (select string_agg(a, ',' order by a) from unnest(p.proargnames) a)
+    having count(*) > 1) then
+    raise exception '339: a function the application calls has two callable overloads with the same parameter names; PostgREST will refuse it';
   end if;
 end $$;
 

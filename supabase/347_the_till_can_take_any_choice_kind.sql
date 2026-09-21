@@ -133,9 +133,14 @@ begin
   -- Both functions must now carry the shared non-product branch. The words
   -- "expects product selections" legitimately REMAIN, in the product branch
   -- below it, so their absence is not the thing to check for.
-  select string_agg(p.proname, ', ') into v_left
+  -- Only the overloads that actually handle choice groups. Production carries a
+  -- legacy 7-argument create_invoice, from before service staff, whose body
+  -- never mentions promotion_choice_groups; it is not this migration's to
+  -- change and must not be demanded of.
+  select string_agg(p.oid::regprocedure::text, ', ') into v_left
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname in ('create_invoice','update_invoice_internal')
+     and p.prosrc like '%promotion_choice_groups%'
      and not (p.prosrc ~ 'item_kind <> ''product''' and p.prosrc ~ 'does not belong to choice group');
   if v_left is not null then
     raise exception '347: % still refuses a non-product choice group', v_left;

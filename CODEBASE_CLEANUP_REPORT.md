@@ -550,6 +550,46 @@ trigger-creation rather than at fire time; and in the API logs the only non-2xx
 response is a 400 from the ads workstream's own iteration 24 minutes *before*
 the first migration landed. Nothing has failed since.
 
+## 11b. An incident this work caused, and how it was found
+
+**339 broke transfer requests for about fifteen hours.** Creating one failed with
+HTTP 300 from the moment 339 was applied at 14:39 on 2026-09-20 until 348 fixed
+it at about 05:30 the next morning. Six attempts were refused at 02:26, all
+before reaching the database.
+
+`create_transfer_request` has two overloads with identical parameter names: the
+current `(text, text, …)` form, and a stale `(text, location_type, …)` form left
+behind because `create or replace function` with different parameter types
+creates a new function rather than replacing one. PostgREST resolves an overload
+by the set of parameter names and refuses outright when two match, answering
+PGRST203.
+
+339 caused it directly. Its allowlist matches on the function **name**, so
+granting `create_transfer_request` granted **both** overloads and put a second
+candidate in front of PostgREST where there had been one. The earlier database
+review had flagged this exact overload as a risk and recommended revoking the
+stale one; the recommendation was recorded in section 7 and not acted on, and
+339 then made it live.
+
+**How it was found matters.** Not by a test, not by a user report, and not by
+the post-apply verification, which only checked that every function the client
+calls is *callable* — never that exactly one candidate answers. It surfaced
+because I happened to read the API error log while applying an unrelated
+migration. Nobody told us.
+
+**348** revokes the stale overload, which removes it from PostgREST's candidate
+set, and marks it DEPRECATED. It is not dropped: this codebase patches function
+bodies by matching installed text, and a hard drop could strand such a patch.
+
+**339 was amended twice** so this cannot repeat. It now skips any function whose
+comment begins DEPRECATED, and it carries a new self-check that fails if any
+name the application calls has more than one callable overload with the same
+parameter names. That check would have caught this at apply time.
+
+**What this says about the rest of the work.** Every other verification in this
+report asked "does this still work", never "is there now more than one way for
+it to work". That is the class of mistake to look for if anything else surfaces.
+
 ## 12. Still to do
 
 1. ~~Apply the migrations~~ — done, above.
