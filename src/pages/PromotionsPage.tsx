@@ -330,27 +330,48 @@ const PromotionsPage: React.FC = () => {
   const vName = (id: string | null) => vouchers.find(v => v.id === id)?.name ?? '—';
   const promoName = (id: string | null) => rows.find(r => r.id === id)?.name ?? '—';
   /** What one choice option is called, whatever kind its group offers. */
-  const optionLabel = (kind: ChoiceKind, o: any) => {
-    switch (kind) {
-      case 'voucher': return `🎟 ${vName(o.voucher_id)}`;
-      case 'therapy': return `✨ ${therapyPkgs.find((t: any) => t.id === o.therapy_package_id)?.name ?? 'Therapy'}`;
-      case 'credit_package': return `💳 ${creditPkgs.find((c: any) => c.id === o.credit_package_id)?.name ?? 'Credit package'}`;
-      case 'promotion': return `🧩 ${promoName(o.child_promotion_id)}`;
-      default: return pName(o.product_id);
-    }
-  };
+  // ── Choice-group options ───────────────────────────────────────────────
+  // One place that knows what each kind offers and what its options are
+  // called. These were chained ternaries duplicated across the draft and saved
+  // flows, each ending in a bare "else → credit packages"; a kind neither
+  // branch named fell through to it, which is why a group set to "promotion"
+  // listed credit packages.
+
   /** What may be offered in a choice group of this kind. */
-  const optionChoices = (kind: ChoiceKind, parentId: string | null) => {
+  const optionChoices = (kind: ChoiceKind, parentId: string | null): { id: string; name: string; sku?: string }[] => {
     switch (kind) {
-      case 'voucher': return vouchers.map(v => ({ id: v.id, name: v.name }));
-      case 'therapy': return therapyPkgs.map((t: any) => ({ id: t.id, name: t.name }));
-      case 'credit_package': return creditPkgs.map((c: any) => ({ id: c.id, name: c.name }));
+      case 'product': return products.map((p: any) => ({ id: p.id, name: p.name, sku: p.sku }));
+      case 'voucher': return vouchers.map((v: any) => ({ id: v.id, name: v.name, sku: v.code }));
+      case 'therapy': return therapyPkgs.map((t: any) => ({ id: t.id, name: t.name, sku: t.sku }));
+      case 'credit_package': return creditPkgs.map((c: any) => ({ id: c.id, name: c.name, sku: c.sku }));
       // A promotion cannot offer itself. The other nesting rules — two levels
       // only, and nothing that has its own choice groups — are enforced by the
       // database, which refuses with a sentence worth showing.
-      case 'promotion': return rows.filter(r => r.id !== parentId).map(r => ({ id: r.id, name: r.name }));
-      default: return products.map(pr => ({ id: pr.id, name: pr.name }));
+      case 'promotion': return rows.filter(r => r.id !== parentId).map((r: any) => ({ id: r.id, name: r.name, sku: r.code }));
+      default: {
+        // Deliberate: assigning to `never` makes the compiler reject a new
+        // ChoiceKind that nobody listed above. Without it a missing case falls
+        // through silently, which is the bug this replaced — a group set to
+        // "promotion" quietly listed credit packages. tsconfig does not set
+        // noImplicitReturns, so a bare missing return would not be caught.
+        const unhandled: never = kind;
+        throw new Error(`Unhandled choice-group kind: ${unhandled}`);
+      }
     }
+  };
+  /** What one option is called, given only its id. */
+  const optionName = (kind: ChoiceKind, id: string) =>
+    optionChoices(kind, null).find(x => x.id === id)?.name ?? id;
+  /** The same, given a saved option row, which holds the id in a column per kind. */
+  const optionLabel = (kind: ChoiceKind, o: any) => {
+    const id = kind === 'voucher' ? o.voucher_id
+      : kind === 'therapy' ? o.therapy_package_id
+      : kind === 'credit_package' ? o.credit_package_id
+      : kind === 'promotion' ? o.child_promotion_id
+      : o.product_id;
+    const icon = kind === 'voucher' ? '🎟 ' : kind === 'therapy' ? '✨ '
+      : kind === 'credit_package' ? '💳 ' : kind === 'promotion' ? '🧩 ' : '';
+    return `${icon}${id ? optionName(kind, id) : '—'}`;
   };
   const itemLabel = (it: PromotionItem) => {
     switch (it.item_type) {
@@ -555,10 +576,7 @@ const PromotionsPage: React.FC = () => {
                     <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       {g.option_ids.map(id => (
                         <span key={id} className="badge badge-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          {g.item_kind === 'product' ? pName(id)
-                            : g.item_kind === 'voucher' ? vName(id)
-                            : g.item_kind === 'therapy' ? (therapyPkgs.find(t => t.id === id)?.name ?? id)
-                            : (creditPkgs.find(c => c.id === id)?.name ?? id)}
+                          {optionName(g.item_kind, id)}
                           <X size={11} style={{ cursor: 'pointer' }} onClick={() => setDGroups(gs => gs.map((x, j) => j === gi ? { ...x, option_ids: x.option_ids.filter(o => o !== id) } : x))} />
                         </span>
                       ))}
@@ -569,13 +587,7 @@ const PromotionsPage: React.FC = () => {
                         value={dgOptSel[gi] ?? ''}
                         onChange={v => setDgOptSel(s2 => ({ ...s2, [gi]: v }))}
                         exclude={g.option_ids}
-                        options={(g.item_kind === 'product'
-                            ? products.map((p: any) => ({ id: p.id, name: p.name, sku: p.sku }))
-                            : g.item_kind === 'voucher'
-                            ? vouchers.map((v: any) => ({ id: v.id, name: v.name, sku: v.code }))
-                            : g.item_kind === 'therapy'
-                            ? therapyPkgs.map((t: any) => ({ id: t.id, name: t.name, sku: t.sku }))
-                            : creditPkgs.map((c: any) => ({ id: c.id, name: c.name, sku: c.sku })))
+                        options={optionChoices(g.item_kind, null)
                           .map(x => ({ value: x.id, label: x.name, sublabel: x.sku ?? undefined, search: `${x.name} ${x.sku ?? ''}` }))} />
                       <button className="btn btn-secondary btn-sm" onClick={() => addDraftOption(gi)} disabled={!dgOptSel[gi]}><Plus size={13} /> Option</button>
                     </div>
