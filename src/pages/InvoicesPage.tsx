@@ -1074,7 +1074,12 @@ const InvoicesPage: React.FC = () => {
     const selByItem: Record<string, Record<string, Record<string, number>>> = {};
     for (const s0 of detailSelections) {
       const it = s0.invoice_item_id as string, g = s0.group_id as string;
-      const key = (s0.product_id ?? s0.voucher_id) as string;
+      // Whatever the group offered. Reading only product-or-voucher silently
+      // dropped a therapy, credit-package or promotion choice when an invoice
+      // was reopened or corrected, so the cashier was shown an unanswered group
+      // and the original pick was lost on save.
+      const key = (s0.product_id ?? s0.voucher_id ?? (s0 as any).therapy_package_id
+                ?? (s0 as any).credit_package_id ?? (s0 as any).child_promotion_id) as string;
       if (!key) continue;
       selByItem[it] = selByItem[it] ?? {};
       selByItem[it][g] = selByItem[it][g] ?? {};

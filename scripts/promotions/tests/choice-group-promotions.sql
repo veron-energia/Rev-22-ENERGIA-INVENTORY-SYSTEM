@@ -185,6 +185,27 @@ begin
       raise exception 'FAIL: refused for the wrong reason (%)', v_msg; end if;
   end;
 
-  raise notice 'PASS: the till takes a promotion choice, charges the bundle price with no top-up, and refuses a promotion the group never offered';
+  -- And the choice is written down. 346 and 347 let a promotion be offered and
+  -- validated; neither stored it, so the row recording the pick had group_id
+  -- and a quantity with every item column null (349).
+  declare v_recorded uuid; v_rows int;
+  begin
+    select count(*) into v_rows
+      from invoice_promotion_selections s
+      join invoice_items ii on ii.id = s.invoice_item_id
+     where ii.invoice_id = inv;
+    select s.child_promotion_id into v_recorded
+      from invoice_promotion_selections s
+      join invoice_items ii on ii.id = s.invoice_item_id
+     where ii.invoice_id = inv limit 1;
+    if v_rows <> 1 then
+      raise exception 'FAIL: expected one recorded choice, found %', v_rows; end if;
+    if v_recorded is null then
+      raise exception 'FAIL: the invoice records that a choice was made but not which promotion was chosen'; end if;
+    if v_recorded <> child_b then
+      raise exception 'FAIL: the invoice records the wrong promotion as chosen'; end if;
+  end;
+
+  raise notice 'PASS: the till takes a promotion choice, charges the bundle price with no top-up, records which promotion was chosen, and refuses one the group never offered';
 end $$;
 rollback;
