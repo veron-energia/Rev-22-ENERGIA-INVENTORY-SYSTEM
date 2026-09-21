@@ -669,7 +669,7 @@ export interface PromotionChoiceGroup {
   id: string;
   promotion_id: string;
   label: string;
-  item_kind: 'product' | 'voucher' | 'therapy' | 'credit_package';
+  item_kind: 'product' | 'voucher' | 'therapy' | 'credit_package' | 'promotion';
   base_mode?: 'cheapest' | 'highest';
   choose_qty: number;
   created_at: string;
@@ -678,8 +678,13 @@ export interface PromotionChoiceGroup {
 export interface PromotionChoiceOption {
   id: string;
   group_id: string;
+  // Exactly one of these names what the option is; which one is decided by the
+  // group's item_kind, and the database enforces both halves of that.
   product_id: string | null;
   voucher_id: string | null;
+  therapy_package_id: string | null;
+  credit_package_id: string | null;
+  child_promotion_id: string | null;
   created_at: string;
 }
 

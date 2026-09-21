@@ -874,9 +874,25 @@ const InvoicesPage: React.FC = () => {
             group_id: groupId,
             options: Object.entries(l.selections[groupId] ?? {})
               .filter(([, q]) => (q || 0) > 0)
-              .map(([itemId, q]) => ((g?.item_kind === 'product' || (!g && saved?.product_id))
-                ? { product_id: itemId, voucher_id: null, quantity: q }
-                : { product_id: null, voucher_id: itemId, quantity: q })),
+              .map(([itemId, q]) => {
+                // Which column the picked id belongs in is decided by the
+                // group's kind. It used to be product-or-voucher only, so a
+                // therapy, credit-package or promotion pick was sent as a
+                // voucher and refused by the server.
+                const kind = g?.item_kind ?? (saved?.product_id ? 'product' : 'voucher');
+                const blank = {
+                  product_id: null as string | null, voucher_id: null as string | null,
+                  therapy_package_id: null as string | null, credit_package_id: null as string | null,
+                  child_promotion_id: null as string | null,
+                };
+                switch (kind) {
+                  case 'voucher':        return { ...blank, voucher_id: itemId, quantity: q };
+                  case 'therapy':        return { ...blank, therapy_package_id: itemId, quantity: q };
+                  case 'credit_package': return { ...blank, credit_package_id: itemId, quantity: q };
+                  case 'promotion':      return { ...blank, child_promotion_id: itemId, quantity: q };
+                  default:               return { ...blank, product_id: itemId, quantity: q };
+                }
+              }),
           }); }),
           ...ovr(l), ...foc(l),
         }
@@ -3152,22 +3168,40 @@ const InvoicesPage: React.FC = () => {
                         const done = got === need;
                         const isProd = g.item_kind === 'product';
                         const baseline = isProd ? groupBaseline(g.id, effMember) : null;
+                        // Which column holds the option's id depends on the
+                        // group's kind. This was product-or-voucher only, so a
+                        // therapy, credit-package or promotion group showed an
+                        // empty picker with nothing to choose.
+                        const optionIdOf = (o: any): string | null =>
+                          g.item_kind === 'voucher' ? o.voucher_id
+                          : g.item_kind === 'therapy' ? o.therapy_package_id
+                          : g.item_kind === 'credit_package' ? o.credit_package_id
+                          : g.item_kind === 'promotion' ? o.child_promotion_id
+                          : o.product_id;
                         const optionItemIds = optionsFor(g.id)
-                          .map(o => (isProd ? o.product_id : o.voucher_id))
+                          .map(optionIdOf)
                           .filter((x): x is string => !!x)
                           .filter(x => !isProd || stockQty(cStore, x) > 0);
                         const pickedIds = Object.entries(line.selections[g.id] ?? {}).filter(([, q]) => (q || 0) > 0).map(([id]) => id);
                         const extraIds = pickedIds.filter(id => !optionItemIds.includes(id));
                         const displayIds = [...optionItemIds, ...extraIds];
-                        const itemName = (id: string) => isProd
-                          ? (products.find(p => p.id === id)?.name ?? '—')
-                          : (vouchers.find(v => v.id === id)?.name ?? '—');
+                        const itemName = (id: string) =>
+                          g.item_kind === 'voucher' ? (vouchers.find(v => v.id === id)?.name ?? '—')
+                          : g.item_kind === 'therapy' ? (therapyPackages.find((t: any) => t.id === id)?.name ?? '—')
+                          : g.item_kind === 'credit_package' ? (creditPkgs.find((c: any) => c.id === id)?.name ?? '—')
+                          : g.item_kind === 'promotion' ? (promotions.find(pr => pr.id === id)?.name ?? '—')
+                          : (products.find(p => p.id === id)?.name ?? '—');
                         // Display value inside a promotion choice picker. Products use
                         // the mode-aware store price; the voucher branch shows its
                         // Member/Non-Member store price (no legacy selling_price).
-                        const itemPrice = (id: string): number | null => isProd
-                          ? priceFor(activeStore, id)
-                          : voucherPrice(id);
+                        // Shown for information. Only a product group can add a
+                        // top-up; every other kind is covered by the promotion's
+                        // own price, so these figures never change what is charged.
+                        const itemPrice = (id: string): number | null =>
+                          g.item_kind === 'voucher' ? voucherPrice(id)
+                          : g.item_kind === 'promotion' ? promoPrice(id)
+                          : isProd ? priceFor(activeStore, id)
+                          : null;
                         // The quantity can now be TYPED, not only stepped, since a group
                         // may call for 60 or more. The cap lives here rather than on the
                         // "+" button alone, so a typed figure cannot exceed what the

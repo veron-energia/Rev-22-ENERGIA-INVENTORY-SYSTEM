@@ -34,6 +34,7 @@
     "check:permissions": "ENERGIA_INVOICE_DB=energia_integration_test node scripts/permissions/client-rpcs-are-granted.mjs",
     "test:invoice-live": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-live/tests/publication.sql",
     "test:invoice-pagination": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-pagination/tests/list-page.sql -f scripts/invoice-pagination/tests/date-range.sql",
+    "test:promotions": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/promotions/tests/choice-group-promotions.sql",
     "test:invoice-discounts": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-discounts/tests/manual-discount-reason.sql",
     "test:affiliate-directory": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/affiliate-directory/tests/staff-directory.sql",
     "test:save-earth": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/save-earth/tests/removed.sql",

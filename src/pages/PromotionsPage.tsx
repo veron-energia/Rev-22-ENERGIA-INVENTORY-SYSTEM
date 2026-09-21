@@ -20,7 +20,7 @@ const blankPromo = (p?: Promotion) => ({
   is_active: p?.is_active ?? true, description: p?.description ?? '', terms: p?.terms ?? '',
 });
 
-type ChoiceKind = 'product' | 'voucher' | 'therapy' | 'credit_package';
+type ChoiceKind = 'product' | 'voucher' | 'therapy' | 'credit_package' | 'promotion';
 
 const PromotionsPage: React.FC = () => {
   const { profile } = useAuth();
@@ -210,6 +210,7 @@ const PromotionsPage: React.FC = () => {
             voucher_id: g.item_kind === 'voucher' ? optId : null,
             therapy_package_id: g.item_kind === 'therapy' ? optId : null,
             credit_package_id: g.item_kind === 'credit_package' ? optId : null,
+            child_promotion_id: g.item_kind === 'promotion' ? optId : null,
           });
           if (error && !firstErr) firstErr = error.message;
         }
@@ -268,6 +269,7 @@ const PromotionsPage: React.FC = () => {
       voucher_id: g.item_kind === 'voucher' ? noItem : null,
       therapy_package_id: g.item_kind === 'therapy' ? noItem : null,
       credit_package_id: g.item_kind === 'credit_package' ? noItem : null,
+      child_promotion_id: g.item_kind === 'promotion' ? noItem : null,
     });
     if (error) { setGrpErr(error.message); return; }
     setNoItem('');
@@ -327,6 +329,29 @@ const PromotionsPage: React.FC = () => {
   const pName = (id: string | null) => products.find(p => p.id === id)?.name ?? '—';
   const vName = (id: string | null) => vouchers.find(v => v.id === id)?.name ?? '—';
   const promoName = (id: string | null) => rows.find(r => r.id === id)?.name ?? '—';
+  /** What one choice option is called, whatever kind its group offers. */
+  const optionLabel = (kind: ChoiceKind, o: any) => {
+    switch (kind) {
+      case 'voucher': return `🎟 ${vName(o.voucher_id)}`;
+      case 'therapy': return `✨ ${therapyPkgs.find((t: any) => t.id === o.therapy_package_id)?.name ?? 'Therapy'}`;
+      case 'credit_package': return `💳 ${creditPkgs.find((c: any) => c.id === o.credit_package_id)?.name ?? 'Credit package'}`;
+      case 'promotion': return `🧩 ${promoName(o.child_promotion_id)}`;
+      default: return pName(o.product_id);
+    }
+  };
+  /** What may be offered in a choice group of this kind. */
+  const optionChoices = (kind: ChoiceKind, parentId: string | null) => {
+    switch (kind) {
+      case 'voucher': return vouchers.map(v => ({ id: v.id, name: v.name }));
+      case 'therapy': return therapyPkgs.map((t: any) => ({ id: t.id, name: t.name }));
+      case 'credit_package': return creditPkgs.map((c: any) => ({ id: c.id, name: c.name }));
+      // A promotion cannot offer itself. The other nesting rules — two levels
+      // only, and nothing that has its own choice groups — are enforced by the
+      // database, which refuses with a sentence worth showing.
+      case 'promotion': return rows.filter(r => r.id !== parentId).map(r => ({ id: r.id, name: r.name }));
+      default: return products.map(pr => ({ id: pr.id, name: pr.name }));
+    }
+  };
   const itemLabel = (it: PromotionItem) => {
     switch (it.item_type) {
       case 'product': return `📦 ${pName(it.product_id)}`;
@@ -563,6 +588,7 @@ const PromotionsPage: React.FC = () => {
                     <option value="voucher">Vouchers</option>
                     <option value="therapy">Therapy</option>
                     <option value="credit_package">Credit packages</option>
+                    <option value="promotion">Promotions</option>
                   </select>
                   {dgKind === 'product' && (
                     <select value={dgBase} onChange={e => setDgBase(e.target.value as any)} style={{ width: 140 }} title="Which option sets the base price">
@@ -657,7 +683,7 @@ const PromotionsPage: React.FC = () => {
                   <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {options.filter(o => o.group_id === g.id).map(o => (
                       <span key={o.id} className="badge badge-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        {g.item_kind === 'product' ? pName(o.product_id) : vName(o.voucher_id)}
+                        {optionLabel(g.item_kind as ChoiceKind, o)}
                         <X size={11} style={{ cursor: 'pointer' }} onClick={() => removeOption(o.id)} />
                       </span>
                     ))}
@@ -666,7 +692,7 @@ const PromotionsPage: React.FC = () => {
                   <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                     <select value={noFor === g.id ? noItem : ''} onChange={e => { setNoFor(g.id); setNoItem(e.target.value); }} style={{ flex: 1 }}>
                       <option value="">— Add {g.item_kind} option —</option>
-                      {(g.item_kind === 'product' ? products.map(p => ({ id: p.id, name: p.name })) : vouchers.map(v => ({ id: v.id, name: v.name })))
+                      {optionChoices(g.item_kind as ChoiceKind, itemsFor?.id ?? null)
                         .map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
                     </select>
                     <button className="btn btn-secondary btn-sm" onClick={() => addOption(g)} disabled={noFor !== g.id || !noItem}><Plus size={13} /> Option</button>
@@ -675,9 +701,12 @@ const PromotionsPage: React.FC = () => {
               ))}
               <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input value={ngLabel} onChange={e => setNgLabel(e.target.value)} placeholder='Group label, e.g. "Choose your product"' style={{ flex: 1, minWidth: 170 }} />
-                <select value={ngKind} onChange={e => setNgKind(e.target.value as 'product' | 'voucher')} style={{ width: 110 }}>
+                <select value={ngKind} onChange={e => setNgKind(e.target.value as ChoiceKind)} style={{ width: 130 }}>
                   <option value="product">Products</option>
                   <option value="voucher">Vouchers</option>
+                  <option value="therapy">Therapy</option>
+                  <option value="credit_package">Credit packages</option>
+                  <option value="promotion">Promotions</option>
                 </select>
                 <input type="number" min={1} value={ngQty || ''} onChange={e => setNgQty(+e.target.value)} placeholder="N" style={{ width: 64 }} title="How many the customer chooses" />
                 <button className="btn btn-secondary btn-sm" onClick={addGroup}><Plus size={13} /> Group</button>
