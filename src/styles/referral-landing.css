@@ -1,0 +1,170 @@
+/*
+ * The public referral landing page (/r/:referralCode).
+ *
+ * Deliberately NOT built from the application's design tokens. This page is the
+ * first thing a stranger sees when an affiliate shares their link, and it is
+ * meant to match energia.sg/free rather than the staff till. The values below
+ * were measured from that page rather than guessed:
+ *
+ *   page background   #FFFCF2   warm cream
+ *   alternate band    #F2F2F2
+ *   headline          #272727 / #3A3A3A, 700
+ *   accent            #FF0000   "FREE GIVEAWAY", "$216", struck prices
+ *   call to action    #0ABAB5   teal, white text
+ *   field             #F7F7F7   flat, square corners
+ *
+ * Everything is scoped under .rl- so it cannot leak into the staff application,
+ * which shares the same bundle.
+ */
+
+.rl-page {
+  --rl-cream: #fffcf2;
+  --rl-band: #f2f2f2;
+  --rl-ink: #272727;
+  --rl-ink-soft: #3a3a3a;
+  --rl-accent: #ff0000;
+  --rl-teal: #0abab5;
+  --rl-field: #f7f7f7;
+  --rl-line: #e4e0d5;
+  background: var(--rl-cream);
+  color: var(--rl-ink);
+  min-height: 100vh;
+  font-family: -apple-system, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  line-height: 1.55;
+}
+
+.rl-wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+.rl-band { background: var(--rl-band); }
+.rl-section { padding: 46px 0; }
+
+/* ── hero ─────────────────────────────────────────────────────────────── */
+.rl-logo { display: block; margin: 0 auto 26px; width: 190px; max-width: 60%; }
+.rl-h1 {
+  font-size: clamp(30px, 6vw, 61px);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.5px;
+  text-align: center;
+  margin: 0 0 18px;
+}
+.rl-accent { color: var(--rl-accent); }
+.rl-lede { text-align: center; font-size: clamp(14px, 2.2vw, 17px); font-weight: 600; margin: 0 auto 6px; max-width: 720px; }
+.rl-lede-soft { text-align: center; font-size: 14px; color: #5f5f5f; margin: 0 auto 26px; max-width: 720px; }
+.rl-invited {
+  display: inline-block;
+  background: #fff;
+  border: 1px solid var(--rl-line);
+  border-radius: 999px;
+  padding: 7px 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.rl-invited-row { text-align: center; margin-bottom: 26px; }
+.rl-hero-img { display: block; width: 100%; max-width: 620px; margin: 0 auto 30px; }
+
+/* ── the form ─────────────────────────────────────────────────────────── */
+.rl-form-card {
+  background: #fff;
+  border: 1px solid var(--rl-line);
+  border-radius: 10px;
+  padding: 26px;
+  max-width: 560px;
+  margin: 0 auto;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.06);
+}
+.rl-form-title { font-size: clamp(19px, 3.4vw, 26px); font-weight: 700; text-align: center; margin: 0 0 20px; }
+.rl-label { display: block; font-size: 13px; font-weight: 700; margin: 0 0 6px; color: var(--rl-ink-soft); }
+.rl-req { color: var(--rl-accent); }
+.rl-field { margin-bottom: 14px; }
+.rl-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 520px) { .rl-row2 { grid-template-columns: 1fr; } }
+
+/* Flat, square and grey, as on the giveaway page. The phone control is a shared
+   component, so it is reached by descendant selector rather than by class. */
+.rl-page .rl-field input,
+.rl-page .rl-field select {
+  width: 100%;
+  background: var(--rl-field);
+  border: 1px solid #ddd8cc;
+  border-radius: 0;
+  padding: 12px 13px;
+  font-size: 16px;   /* 16px stops iOS zooming the page on focus */
+  color: #333;
+  font-family: inherit;
+}
+.rl-page .rl-field input:focus,
+.rl-page .rl-field select:focus { outline: 2px solid var(--rl-teal); outline-offset: -2px; }
+
+/* The phone control is a shared component with its own flex layout: a
+   fixed-width country select beside a number field that takes the rest. The
+   generic rule above is TWO classes plus an element, so it outranks the
+   component's own ".phone-input select" and its width:100% made the country
+   list fill the row, collapsing the number box to a sliver. Restored here, at a
+   width that fits "Singapore (+65)" at this page's larger type. */
+.rl-page .rl-field .phone-input { display: flex; gap: 8px; min-width: 0; }
+.rl-page .rl-field .phone-input select { flex: 0 0 auto; width: 168px; min-width: 0; }
+.rl-page .rl-field .phone-input input { flex: 1 1 auto; width: auto; min-width: 0; }
+
+/* Below this the two will not sit side by side without the number box becoming
+   unusable, so they stack. */
+@media (max-width: 430px) {
+  .rl-page .rl-field .phone-input { flex-direction: column; }
+  .rl-page .rl-field .phone-input select,
+  .rl-page .rl-field .phone-input input { width: 100%; }
+}
+
+.rl-cta {
+  display: block;
+  width: 100%;
+  background: var(--rl-teal);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 15px 20px;
+  font-size: clamp(15px, 2.6vw, 18px);
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: center;
+  text-decoration: none;
+}
+.rl-cta:hover { filter: brightness(0.94); }
+.rl-cta:disabled { opacity: 0.6; cursor: default; }
+.rl-cta-note { text-align: center; font-size: 13px; color: #6b6b6b; margin-top: 10px; }
+.rl-error { color: #b3261e; font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+
+/* ── what you get ─────────────────────────────────────────────────────── */
+.rl-h2 { font-size: clamp(22px, 4vw, 32px); font-weight: 700; text-align: center; color: var(--rl-ink-soft); margin: 0 0 28px; }
+.rl-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+@media (max-width: 800px) { .rl-grid3 { grid-template-columns: 1fr; } }
+.rl-card { background: #fff; border: 1px solid var(--rl-line); border-radius: 10px; padding: 20px; }
+.rl-card h3 { font-size: 17px; font-weight: 700; margin: 0 0 8px; }
+.rl-price { font-size: 20px; font-weight: 700; margin: 0 0 10px; }
+.rl-was { color: #9a9a9a; text-decoration: line-through; margin-right: 8px; font-weight: 600; }
+.rl-now { color: var(--rl-accent); }
+.rl-card p { font-size: 14px; color: #555; margin: 0; }
+
+/* ── bonuses ──────────────────────────────────────────────────────────── */
+.rl-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 800px) { .rl-grid2 { grid-template-columns: 1fr; } }
+.rl-bonus-tag { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--rl-teal); margin: 0 0 6px; }
+
+/* ── faq ──────────────────────────────────────────────────────────────── */
+.rl-faq { max-width: 760px; margin: 0 auto; }
+.rl-faq details { background: #fff; border: 1px solid var(--rl-line); border-radius: 8px; margin-bottom: 10px; }
+.rl-faq summary { cursor: pointer; padding: 14px 16px; font-weight: 700; font-size: 15px; list-style: none; }
+.rl-faq summary::-webkit-details-marker { display: none; }
+.rl-faq summary::after { content: '+'; float: right; font-weight: 700; color: var(--rl-teal); }
+.rl-faq details[open] summary::after { content: '–'; }
+.rl-faq p { margin: 0; padding: 0 16px 14px; font-size: 14.5px; color: #555; }
+
+/* ── trust strip ──────────────────────────────────────────────────────── */
+.rl-trust { display: flex; flex-wrap: wrap; gap: 26px; align-items: center; justify-content: center; }
+.rl-trust img { height: 30px; width: auto; opacity: 0.75; }
+
+/* ── the outcome screen ───────────────────────────────────────────────── */
+.rl-done { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid var(--rl-line); border-radius: 10px; padding: 30px; text-align: center; }
+.rl-done h2 { font-size: 24px; font-weight: 700; margin: 0 0 10px; }
+.rl-done p { font-size: 15px; color: #555; margin: 0 0 8px; }
+.rl-link { color: var(--rl-teal); font-weight: 700; text-decoration: none; }
+.rl-foot { text-align: center; padding: 30px 0 46px; font-size: 13px; color: #777; }
