@@ -513,7 +513,7 @@ const PromotionsPage: React.FC = () => {
                     <option value="voucher">Voucher</option>
                     <option value="promotion">Promotion</option>
                     <option value="therapy">Therapy</option>
-                    <option value="credit_package">Credit package</option>
+                    {/* 352: a credit package inside a promotion is never issued — the customer would pay and receive nothing. Removed from the editor until the issuing side is finished; the database refuses it too. */}
                     <option value="treatment">Treatment</option>
                   </select>
                   {niType === 'product' && (
@@ -599,7 +599,7 @@ const PromotionsPage: React.FC = () => {
                     <option value="product">Products</option>
                     <option value="voucher">Vouchers</option>
                     <option value="therapy">Therapy</option>
-                    <option value="credit_package">Credit packages</option>
+                    {/* 352: a credit package inside a promotion is never issued — the customer would pay and receive nothing. Removed from the editor until the issuing side is finished; the database refuses it too. */}
                     <option value="promotion">Promotions</option>
                   </select>
                   {dgKind === 'product' && (
@@ -717,7 +717,7 @@ const PromotionsPage: React.FC = () => {
                   <option value="product">Products</option>
                   <option value="voucher">Vouchers</option>
                   <option value="therapy">Therapy</option>
-                  <option value="credit_package">Credit packages</option>
+                  {/* 352: a credit package inside a promotion is never issued — the customer would pay and receive nothing. Removed from the editor until the issuing side is finished; the database refuses it too. */}
                   <option value="promotion">Promotions</option>
                 </select>
                 <input type="number" min={1} value={ngQty || ''} onChange={e => setNgQty(+e.target.value)} placeholder="N" style={{ width: 64 }} title="How many the customer chooses" />
@@ -736,7 +736,7 @@ const PromotionsPage: React.FC = () => {
                   <option value="voucher">Voucher</option>
                   <option value="promotion">Promotion</option>
                   <option value="therapy">Therapy</option>
-                  <option value="credit_package">Credit package</option>
+                  {/* 352: a credit package inside a promotion is never issued — the customer would pay and receive nothing. Removed from the editor until the issuing side is finished; the database refuses it too. */}
                   <option value="treatment">Treatment</option>
                 </select>
                 {niType === 'product' && (

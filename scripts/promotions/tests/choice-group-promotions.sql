@@ -37,21 +37,29 @@ begin
   insert into promotions(name,code) values ('CG Other','CG-OTH') returning id into other;
   insert into promotion_items(promotion_id,item_type,product_id,quantity) values (child,'product',prod,1);
 
-  -- ---- the two kinds that never worked -----------------------------------
-  if tp is not null then
+  -- ---- the kind that never worked, and now does --------------------------
+  -- Therapy only. 346 also unblocked credit_package groups, but nothing ever
+  -- ISSUED one: a customer could choose a package and receive nothing. 352
+  -- withdrew that kind for exactly that reason, so this test asserts the
+  -- refusal rather than the save. A therapy choice IS issued, by
+  -- invoice_therapy_entitlements_due, which is why it stays.
+  if tp is null then
+    raise exception 'FIXTURE: needed a therapy package to test that kind'; end if;
+  insert into promotion_choice_groups(promotion_id,label,item_kind,choose_qty)
+    values (parent,'Pick a therapy','therapy',1) returning id into g;
+  insert into promotion_choice_options(group_id, therapy_package_id) values (g, tp);
+  n := n + 1;
+
+  if cp is null then
+    raise exception 'FIXTURE: needed a credit package to test that it is refused'; end if;
+  begin
     insert into promotion_choice_groups(promotion_id,label,item_kind,choose_qty)
-      values (parent,'Pick a therapy','therapy',1) returning id into g;
-    insert into promotion_choice_options(group_id, therapy_package_id) values (g, tp);
-    n := n + 1;
-  end if;
-  if cp is not null then
-    insert into promotion_choice_groups(promotion_id,label,item_kind,choose_qty)
-      values (parent,'Pick a package','credit_package',1) returning id into g;
-    insert into promotion_choice_options(group_id, credit_package_id) values (g, cp);
-    n := n + 1;
-  end if;
-  if n < 2 then
-    raise exception 'FIXTURE: needed a therapy package and a credit package to test those kinds'; end if;
+      values (parent,'Pick a package','credit_package',1);
+    raise exception 'FAIL: a choice group still offers credit packages, which are never issued (352)';
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    if v_msg like 'FAIL:%' then raise; end if;
+  end;
 
   -- ---- the new kind --------------------------------------------------------
   insert into promotion_choice_groups(promotion_id,label,item_kind,choose_qty)
@@ -116,7 +124,7 @@ begin
     if v_msg like 'FAIL:%' then raise; end if;
   end;
 
-  raise notice 'PASS: a choice group can offer a promotion under the existing nesting rules, and therapy and credit-package options can be saved at all';
+  raise notice 'PASS: a choice group can offer a promotion under the existing nesting rules, therapy options can be saved, and credit packages are refused because nothing issues them';
 end $$;
 rollback;
 
