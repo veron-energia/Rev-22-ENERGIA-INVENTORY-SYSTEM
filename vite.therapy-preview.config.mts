@@ -14,6 +14,8 @@ export default defineConfig({
       // Every component reaches supabase through this one module.
       { find: abs('./src/lib/supabase.ts'), replacement: abs('./scripts/therapy/preview/supabase-stub.ts') },
       { find: /^.*\/lib\/supabase$/, replacement: abs('./scripts/therapy/preview/supabase-stub.ts') },
+      // The Therapy page asks who is signed in; the preview is an Owner.
+      { find: /^.*\/context\/AuthContext$/, replacement: abs('./scripts/therapy/preview/auth-stub.tsx') },
     ],
   },
   server: { port: 5199, strictPort: true },

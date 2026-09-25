@@ -77,6 +77,10 @@ const TherapyServicesPage: React.FC = () => {
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [vouchers, setVouchers] = useState<VoucherRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // Where each service is used: the packages whose unlimited therapy covers it
+  // and the vouchers that give it. Read-only here; packages are edited on
+  // Therapy → Packages, vouchers on the tab next door.
+  const [usedIn, setUsedIn] = useState<Record<string, { packages: string[]; vouchers: string[]; viaVoucher: string[] }>>({});
 
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'active' | 'draft' | 'archived' | 'all'>('active');
@@ -99,6 +103,42 @@ const TherapyServicesPage: React.FC = () => {
     setRows((cat.data as CatalogueRow[]) ?? []);
     setStores((st.data as StoreRow[]) ?? []);
     setVouchers((vc.data as VoucherRow[]) ?? []);
+    const [ps, pk, comp, cs, vn, pv] = await Promise.all([
+      supabase.from('therapy_package_services').select('package_id,service_id'),
+      supabase.from('unlimited_therapy_packages').select('id,name,is_active,entitlement_kind,voucher_id').is('deleted_at', null),
+      supabase.from('therapy_voucher_components').select('id,voucher_id,service_id'),
+      supabase.from('therapy_voucher_component_services').select('component_id,service_id'),
+      supabase.from('vouchers').select('id,name').is('deleted_at', null),
+      supabase.from('therapy_package_vouchers').select('package_id,voucher_id'),
+    ]);
+    const pkgName = new Map(((pk.data as any[]) ?? []).map(x => [x.id, x.is_active ? x.name : `${x.name} (inactive)`]));
+    const vName = new Map(((vn.data as any[]) ?? []).map(x => [x.id, x.name]));
+    const compVoucher = new Map(((comp.data as any[]) ?? []).map(x => [x.id, x.voucher_id]));
+    const map: Record<string, { packages: Set<string>; vouchers: Set<string>; viaVoucher: Set<string> }> = {};
+    const at = (sid: string) => (map[sid] ??= { packages: new Set(), vouchers: new Set(), viaVoucher: new Set() });
+    const servicesOfVoucher = new Map<string, Set<string>>();
+    const give = (vid: string, sid: string) => { if (!servicesOfVoucher.has(vid)) servicesOfVoucher.set(vid, new Set()); servicesOfVoucher.get(vid)!.add(sid); };
+    for (const r of (ps.data as any[]) ?? []) { const n = pkgName.get(r.package_id); if (n) at(r.service_id).packages.add(n); }
+    for (const r of (comp.data as any[]) ?? []) {
+      if (r.service_id) { give(r.voucher_id, r.service_id); const n = vName.get(r.voucher_id); if (n) at(r.service_id).vouchers.add(n); }
+    }
+    for (const r of (cs.data as any[]) ?? []) {
+      const vid = compVoucher.get(r.component_id);
+      if (vid) give(vid, r.service_id);
+      const n = vName.get(vid); if (n) at(r.service_id).vouchers.add(n);
+    }
+    // A package can also give a service through its vouchers: a vouchers-only
+    // package's voucher, or the vouchers a choice package offers instead.
+    const pkgVouchers: [string, string][] = [
+      ...(((pk.data as any[]) ?? []).filter(x => x.entitlement_kind === 'voucher' && x.voucher_id).map(x => [x.id, x.voucher_id] as [string, string])),
+      ...(((pv.data as any[]) ?? []).map(x => [x.package_id, x.voucher_id] as [string, string])),
+    ];
+    for (const [pid, vid] of pkgVouchers) {
+      const n = pkgName.get(pid);
+      if (n) for (const sid of servicesOfVoucher.get(vid) ?? []) at(sid).viaVoucher.add(n);
+    }
+    setUsedIn(Object.fromEntries(Object.entries(map).map(([k, v]) =>
+      [k, { packages: [...v.packages].sort(), vouchers: [...v.vouchers].sort(), viaVoucher: [...v.viaVoucher].sort() }])));
     setLoading(false);
   }, [storeFilter]);
 
@@ -287,7 +327,8 @@ const TherapyServicesPage: React.FC = () => {
           <h2>Therapy Services</h2>
           <p>
             What one therapy session is, what it costs at each store, and how often it may be
-            taken. Unlimited-therapy packages are separate and stay on the Therapy page.
+            taken. Each service lists the vouchers that give it and the unlimited-therapy
+            packages that cover it; a package's services are chosen on Therapy → Packages.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
@@ -374,6 +415,12 @@ const TherapyServicesPage: React.FC = () => {
                           <strong>{r.name}</strong>
                           <div className="therapy-cell-sub">{r.service_code}</div>
                           {r.description && <div className="therapy-cell-sub">{r.description}</div>}
+                          {(usedIn[r.id]?.packages.length ?? 0) > 0 && (
+                            <div className="therapy-cell-sub">Unlimited in: {usedIn[r.id].packages.join(', ')}</div>)}
+                          {(usedIn[r.id]?.vouchers.length ?? 0) > 0 && (
+                            <div className="therapy-cell-sub">Given by: {usedIn[r.id].vouchers.join(', ')}</div>)}
+                          {(usedIn[r.id]?.viaVoucher.length ?? 0) > 0 && (
+                            <div className="therapy-cell-sub">As vouchers in: {usedIn[r.id].viaVoucher.join(', ')}</div>)}
                           {/* On a phone the frequency column is hidden, so the rule
                               moves here rather than disappearing. */}
                           <div className="therapy-cell-sub therapy-only-mobile">

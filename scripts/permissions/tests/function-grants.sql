@@ -32,7 +32,9 @@ declare
                              'invoice_sales_credit_split','invoice_staff_sales_ledger','commission_unpaid_amount',
                              -- 356: released credit follows its lot
                              'credit_lot_chain','credit_lot_current','trim_released_paid_credit',
-                             'reclaim_released_credit_of_removed_lines','refuse_settled_credit_line_raise'];
+                             'reclaim_released_credit_of_removed_lines','refuse_settled_credit_line_raise',
+                             -- 359: package coverage and the refund rule's "used"
+                             'therapy_services_coverage','therapy_unit_consumed'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

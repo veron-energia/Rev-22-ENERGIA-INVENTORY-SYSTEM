@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { ExpiryExplanation, CoverageNotice } from './ExpiryExplanation';
+import { CoverageLine } from './coverage';
 import './therapy.css';
 
 /**
@@ -137,6 +138,13 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
             </div>
             <span className="therapy-remaining-hint">{u.entitlement_no}</span>
           </div>
+          {/* What it covers: any of these, as often as they like while it runs. */}
+          {(u.covers ?? []).length > 0 && (
+            <CoverageLine services={u.covers}
+              lead={u.expiry_date && ['active', 'scheduled'].includes(u.status)
+                ? `Unlimited until ${fmt(u.expiry_date)}:` : 'Covers'}
+              style={{ marginTop: 4, fontSize: 12 }} />
+          )}
           <div style={{ marginTop: 6 }}>
             <ExpiryExplanation data={u.explanation} coverage={u.coverage}
                                daysRemaining={u.calendar_days_remaining} />
@@ -160,7 +168,9 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
           <h4 style={{ fontSize: 12.5, margin: '14px 0 6px' }}>Unclaimed — not yet usable</h4>
           {data.pending.map((p: any, i: number) => (
             <div className="therapy-kv" key={i}>
-              <span className="k">{p.entitlement_no} · {p.reward_kind}</span>
+              <span className="k">{p.entitlement_no} · {p.reward_kind === 'choice'
+                ? `unlimited ${p.months ?? ''} mo or ${p.voucher_qty ?? ''} vouchers — not chosen yet`
+                : p.reward_kind}</span>
               <span className="v therapy-remaining-hint">claim by {fmt(p.deadline)}</span>
             </div>
           ))}

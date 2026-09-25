@@ -18,7 +18,7 @@ type Plan = {
   invoice_no: string; action: Action; refund_amount: number; refund_due: number;
   window: { created_on: string; deadline: string; within: boolean; days_remaining: number; override_required: boolean; creation_reliable: boolean; review_note?: string };
   lines: PlanLine[]; stock: PlanStock[]; sources: { payment_id: string; method: string; wallet: boolean; amount: number }[];
-  overrides_required: { code: string; message: string; amount_required?: boolean }[];
+  overrides_required: { code: string; message: string; amount_required?: boolean; default_amount?: number | null; invoice_item_id?: string }[];
   blockers: { code: string; message: string }[];
   summary: string[]; requires_override: boolean; blocked: boolean; plan_hash: string;
   status?: string;
@@ -59,6 +59,34 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const [plan, setPlan] = useState<Plan | null>(null);
   const [stockConfirm, setStockConfirm] = useState<Record<string, { sellable_quantity: number; damaged_quantity: number; not_returned_quantity: number }>>({});
   const [overrideReasons, setOverrideReasons] = useState<Record<string, string>>({});
+  // Some overrides carry an amount the Owner/Manager states — terminating
+  // therapy that has started, or a package whose vouchers were collected, has
+  // no valuation rule, so the server refuses the override without one.
+  const [overrideAmounts, setOverrideAmounts] = useState<Record<string, string>>({});
+  /** The amount box for one override: what was typed, else the plan's figure. */
+  const typedAmount = (o: Plan['overrides_required'][number]) =>
+    overrideAmounts[o.code] ?? (o.default_amount != null ? String(o.default_amount) : '');
+  // The server matches a stated amount to its line by the override's code, so
+  // two lines needing an amount under one code cannot each get their own yet.
+  // Those are refunded one line at a time (Partial refund) instead.
+  const amountOverrides = (plan?.overrides_required ?? []).filter(o => o.amount_required);
+  const sharedAmountCode = amountOverrides.some((o, i) => amountOverrides.findIndex(x => x.code === o.code) !== i);
+  const amountProblem = (() => {
+    if (sharedAmountCode) return 'More than one line on this invoice needs an amount stated by an Owner or Manager. Refund those lines one at a time with Partial refund, so each gets its own amount.';
+    for (const o of amountOverrides) {
+      const t = typedAmount(o).trim();
+      const n = Number(t);
+      if (t === '' || !Number.isFinite(n) || n < 0) return 'Enter the amount to refund (S$0 or more) for each override that asks for one.';
+      if (!(overrideReasons[o.code] ?? '').trim()) return 'Give a reason for each override.';
+    }
+    return null;
+  })();
+  /** What will actually be refunded: the plan, with each stated amount in place of its line's figure. */
+  const statedRefund = (() => {
+    const base = Number(plan?.refund_amount ?? 0);
+    if (!amountOverrides.length || sharedAmountCode) return base;
+    return amountOverrides.reduce((sum, o) => sum - Number(o.default_amount ?? 0) + (Number(typedAmount(o)) || 0), base);
+  })();
   const [recordRefund, setRecordRefund] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -204,7 +232,13 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const approve = async (requestRecordId: string) => {
     setBusy(true); setError('');
     const stock = Object.entries(stockConfirm).map(([movement_id, q]) => ({ movement_id, ...q }));
-    const overrides = (plan?.overrides_required ?? []).map(o => ({ code: o.code, reason: overrideReasons[o.code] ?? '' }));
+    if (amountProblem) { setBusy(false); setError(amountProblem); return; }
+    const overrides = (plan?.overrides_required ?? []).map(o => {
+      const typed = typedAmount(o);
+      return o.amount_required
+        ? { code: o.code, reason: overrideReasons[o.code] ?? '', amount: typed.trim() === '' ? null : Number(typed) }
+        : { code: o.code, reason: overrideReasons[o.code] ?? '' };
+    });
     const { data, error } = await supabase.rpc('resolve_invoice_action_v2', {
       p_request_id: requestRecordId, p_approve: true, p_note: reason.trim(),
       p_plan_hash: plan?.plan_hash ?? null, p_overrides: overrides,
@@ -251,7 +285,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     (!reviewing && reason.trim().length > 0)
     || returnNotes.trim().length > 0
     || Object.values(quantities).some(q => q > 0)
-    || Object.values(overrideReasons).some(r => (r ?? '').trim().length > 0);
+    || Object.values(overrideReasons).some(r => (r ?? '').trim().length > 0)
+    || Object.keys(overrideAmounts).length > 0;
 
   // The project's existing pattern for abandoning work is a confirm(); a
   // finished success message closes straight away, with nothing to lose.
@@ -522,13 +557,28 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             {canApprove && plan.overrides_required.length > 0 && (
               <fieldset className="invoice-guided-overrides">
                 <legend>Override reasons</legend>
-                {plan.overrides_required.map(o => (
-                  <label key={o.code}><span>{o.message}</span>
-                    <input type="text" value={overrideReasons[o.code] ?? ''} required
-                      aria-label={`Reason for override: ${o.code}`}
-                      onChange={e => setOverrideReasons({ ...overrideReasons, [o.code]: e.target.value })} />
-                  </label>
+                {plan.overrides_required.map((o, i) => (
+                  <div key={`${o.code}:${o.invoice_item_id ?? i}`}>
+                    <label><span>{o.message}</span>
+                      <input type="text" value={overrideReasons[o.code] ?? ''} required
+                        aria-label={`Reason for override: ${o.code}`}
+                        onChange={e => setOverrideReasons({ ...overrideReasons, [o.code]: e.target.value })} />
+                    </label>
+                    {o.amount_required && (
+                      <label><span>Amount to refund for this (S$)</span>
+                        <input type="number" min={0} step="0.01" required
+                          value={overrideAmounts[o.code] ?? (o.default_amount != null ? String(o.default_amount) : '')}
+                          aria-label={`Amount for override: ${o.code}`}
+                          onChange={e => setOverrideAmounts({ ...overrideAmounts, [o.code]: e.target.value })} />
+                      </label>)}
+                  </div>
                 ))}
+                {amountOverrides.length > 0 && !sharedAmountCode && Math.abs(statedRefund - Number(plan.refund_amount ?? 0)) > 0.004 && (
+                  <p className="invoice-guided-warn" role="status">
+                    Refund stated by override: {money(statedRefund)} (the plan above shows {money(plan.refund_amount)}).
+                  </p>
+                )}
+                {amountProblem && <p className="invoice-guided-warn" role="alert">{amountProblem}</p>}
               </fieldset>
             )}
 
@@ -579,9 +629,10 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             {reviewing && rejecting
               ? <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Confirm rejection</button>
               : <button className="btn btn-primary"
-                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending')} onClick={submit}>
+                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending') || (canApprove && !!amountProblem)} onClick={submit}>
                   {(() => {
-                    const amount = Number(plan.refund_amount ?? 0);
+                    // The amount an Owner/Manager stated for an override is what is refunded.
+                    const amount = canApprove ? statedRefund : Number(plan.refund_amount ?? 0);
                     if (!canApprove && !reviewing) {
                       return action === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
                     }

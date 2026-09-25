@@ -9,6 +9,7 @@ import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
+import { CoverageLine } from '../components/therapy/coverage';
 
 // join_person_name() in the database: the two parts, trimmed, single-spaced,
 // with either side allowed to be empty. Mirrored here so the name the form
@@ -616,7 +617,21 @@ const CustomersPage: React.FC = () => {
               {overview.purchased_therapy?.length > 0 && (
                 <section>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>Purchased therapy</div>
-                  {overview.purchased_therapy.map((t: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t.no} · {t.package} · {String(t.status).replace('_', ' ')}{t.expiry ? ` · expires ${new Date(t.expiry).toLocaleDateString('en-GB')}` : ''}</div>)}
+                  {overview.purchased_therapy.map((t: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                    {/* A closed unit says so first; the benefit wording is for open ones. */}
+                    {t.no} · {t.package} · {['cancelled', 'refunded', 'expired'].includes(t.status)
+                      ? `${t.status}${t.benefit === 'voucher' ? ' (was taken as vouchers)' : ''}`
+                      : t.benefit === 'voucher' ? 'taken as vouchers'
+                      : t.offers_choice && !t.benefit ? 'not claimed yet — therapy or vouchers'
+                      : String(t.status).replace('_', ' ')}
+                    {t.benefit !== 'voucher' && t.expiry && !['cancelled', 'refunded', 'expired'].includes(t.status)
+                      ? ` · expires ${new Date(t.expiry).toLocaleDateString('en-GB')}` : ''}
+                    {/* What an open unlimited period covers, and each service's own limit. */}
+                    {t.benefit !== 'voucher' && !['cancelled', 'refunded', 'expired'].includes(t.status) && (t.covers ?? []).length > 0 && (
+                      <CoverageLine services={t.covers}
+                        lead={t.expiry && ['active', 'scheduled'].includes(t.status)
+                          ? `Unlimited until ${new Date(t.expiry).toLocaleDateString('en-GB')}:` : 'Covers'} />)}
+                  </div>)}
                 </section>
               )}
               {overview.legacy_therapy?.length > 0 && (

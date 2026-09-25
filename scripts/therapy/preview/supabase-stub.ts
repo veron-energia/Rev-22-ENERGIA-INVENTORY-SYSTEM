@@ -138,16 +138,129 @@ const COUNTRIES = [
   { code: 'MY', name: 'Malaysia', is_active: true, requires_region: true, notes: null },
 ];
 
+// ---- 359: the Therapy page itself — packages covering services, one-step Claim.
+const SERVICES = [
+  { id: 'sv-pr', name: 'PowerRecharge', service_code: 'PR', is_active: true, deleted_at: null,
+    frequency_kind: 'per_hours', frequency_max_per_period: 1, frequency_interval_hours: 5 },
+  { id: 'sv-meol', name: 'MEOL', service_code: 'MEOL', is_active: true, deleted_at: null,
+    frequency_kind: 'unrestricted', frequency_max_per_period: 1, frequency_interval_hours: null },
+  { id: 'sv-3in1', name: '3-in-1', service_code: '3IN1', is_active: true, deleted_at: null,
+    frequency_kind: 'unrestricted', frequency_max_per_period: 1, frequency_interval_hours: null },
+  { id: 'sv-old', name: 'Old Facial', service_code: 'OLD', is_active: false, deleted_at: '2026-09-01T00:00:00Z',
+    frequency_kind: 'unrestricted', frequency_max_per_period: 1, frequency_interval_hours: null },
+];
+const VOUCHERS = [
+  { id: 'vc-meol', name: 'MEOL Voucher', code: 'MEOL', voucher_kind: 'normal', reward_eligible: true, qty_type: 'limited', is_active: true, deleted_at: null },
+  { id: 'vc-3in1', name: '3-in-1 Vouchers', code: '3IN1', voucher_kind: 'normal', reward_eligible: true, qty_type: 'unlimited', is_active: true, deleted_at: null },
+  { id: 'vc-50', name: 'Staff Own Discount (50 %)', code: 'S50', voucher_kind: 'percentage_discount', reward_eligible: true, qty_type: 'unlimited', is_active: true, deleted_at: null },
+];
+const PACKAGES = [
+  { id: 'pk-pr', name: '3 months - Unlimited Power Recharge Therapy', sku: 'PR-3', duration_months: 3,
+    description: null, is_active: true, entitlement_kind: 'unlimited', voucher_qty: null, voucher_id: null, deleted_at: null },
+  { id: 'pk-ch', name: '1 month - Unlimited MEOL and 3-in-1 Therapy', sku: null, duration_months: 1,
+    description: 'Or 10 vouchers', is_active: true, entitlement_kind: 'choice', voucher_qty: 10, voucher_id: null, deleted_at: null },
+  { id: 'pk-v', name: '5 Eye Spa vouchers', sku: null, duration_months: 1,
+    description: null, is_active: true, entitlement_kind: 'voucher', voucher_qty: 5, voucher_id: 'vc-meol', deleted_at: null },
+];
+const PKG_SERVICES = [
+  { package_id: 'pk-pr', service_id: 'sv-pr' },
+  { package_id: 'pk-ch', service_id: 'sv-meol' }, { package_id: 'pk-ch', service_id: 'sv-3in1' },
+];
+const PKG_VOUCHERS = [{ package_id: 'pk-ch', voucher_id: 'vc-meol' }, { package_id: 'pk-ch', voucher_id: 'vc-3in1' }];
+const PTE = [
+  { id: 'e-choice', entitlement_no: 'UTP-0000013', customer_id: 'c1', store_id: 's1', package_id: 'pk-ch',
+    package_name: '1 month - Unlimited MEOL and 3-in-1 Therapy', duration_months: 1, price_snapshot: 0,
+    purchase_date: '2026-09-24', activation_deadline: '2027-09-24', scheduled_date: null, activation_date: null,
+    expiry_date: null, status: 'pending_activation', eligible_service_ids: ['sv-meol', 'sv-3in1'],
+    holiday_country: null, holiday_region: null, created_at: '2026-09-24T02:00:00Z' },
+  { id: 'e-active', entitlement_no: 'UTP-0000012', customer_id: 'c2', store_id: 's1', package_id: 'pk-pr',
+    package_name: '3 months - Unlimited Power Recharge Therapy', duration_months: 3, price_snapshot: 386,
+    purchase_date: '2026-09-20', activation_deadline: '2027-09-20', scheduled_date: null, activation_date: '2026-09-21',
+    expiry_date: '2026-12-25', status: 'active', eligible_service_ids: ['sv-pr'],
+    holiday_country: 'SG', holiday_region: null, created_at: '2026-09-20T02:00:00Z' },
+  { id: 'e-vouch', entitlement_no: 'UTP-0000011', customer_id: 'c3', store_id: 's1', package_id: 'pk-ch',
+    package_name: '1 month - Unlimited MEOL and 3-in-1 Therapy', duration_months: 1, price_snapshot: 0,
+    purchase_date: '2026-09-10', activation_deadline: '2027-09-10', scheduled_date: null, activation_date: null,
+    expiry_date: null, status: 'pending_activation', eligible_service_ids: ['sv-meol', 'sv-3in1'],
+    holiday_country: null, holiday_region: null, created_at: '2026-09-10T02:00:00Z' },
+  { id: 'e-sched', entitlement_no: 'UTP-0000010', customer_id: 'c2', store_id: 's1', package_id: 'pk-pr',
+    package_name: '3 months - Unlimited Power Recharge Therapy', duration_months: 3, price_snapshot: 386,
+    purchase_date: '2026-09-05', activation_deadline: '2027-09-05', scheduled_date: '2026-10-05', activation_date: '2026-10-05',
+    expiry_date: '2027-01-06', status: 'scheduled', eligible_service_ids: ['sv-pr'],
+    holiday_country: 'SG', holiday_region: null, created_at: '2026-09-05T02:00:00Z' },
+];
+const unit = (e: any, extra: any) => ({
+  purchased_id: e.id, entitlement_no: e.entitlement_no, customer_id: e.customer_id, customer_name: '',
+  store_id: e.store_id, package_name: e.package_name, unit_index: 1, unit_count: 1,
+  unit_label: `${e.package_name} — Unit 1 of 1`, invoice_id: 'i', invoice_no: 'INV-2026-0301',
+  offers_choice: false, benefit_choice: 'unlimited', choice_pending: false, choice_deadline: e.activation_deadline,
+  choice_deadline_passed: false, status: e.status, duration_months: e.duration_months,
+  scheduled_date: e.scheduled_date, activation_date: e.activation_date, expiry_date: e.expiry_date,
+  activation_deadline: e.activation_deadline, days_remaining: e.expiry_date ? 91 : null,
+  voucher_entitlement_id: null, voucher_entitled: null, voucher_claimed: null, voucher_remaining: null, ...extra });
+const UNITS = [
+  unit(PTE[0], { offers_choice: true, benefit_choice: null, choice_pending: true }),
+  unit(PTE[1], {}),
+  unit(PTE[2], { offers_choice: true, benefit_choice: 'voucher', voucher_entitlement_id: 'te-1',
+                 voucher_entitled: 10, voucher_claimed: 3, voucher_remaining: 7 }),
+  unit(PTE[3], {}),
+];
+const COVERS = (ids: string[]) => SERVICES.filter(s => ids.includes(s.id)).map(s => ({
+  service_id: s.id, name: s.name, archived: !!s.deleted_at,
+  limit: s.frequency_kind === 'per_hours' ? 'At most once every 5 hours, measured from the start of the previous session.' : null }));
+const UNIT_STATE: Record<string, unknown> = {
+  'e-choice': { ...UNITS[0], offered_choices: ['unlimited', 'voucher'], voucher_qty: 10, vouchers: null,
+    eligible_vouchers: [{ voucher_id: 'vc-3in1', name: '3-in-1 Vouchers' }, { voucher_id: 'vc-meol', name: 'MEOL Voucher' }],
+    eligible_services: COVERS(['sv-meol', 'sv-3in1']), can_switch: false, holiday_country: null, holiday_region: null },
+  'e-vouch': { ...UNITS[2], offered_choices: ['unlimited', 'voucher'], voucher_qty: 10,
+    vouchers: { entitled: 10, claimed: 3, remaining: 7, deadline_passed: false },
+    eligible_vouchers: [{ voucher_id: 'vc-3in1', name: '3-in-1 Vouchers' }, { voucher_id: 'vc-meol', name: 'MEOL Voucher' }],
+    eligible_services: COVERS(['sv-meol', 'sv-3in1']), can_switch: false, holiday_country: null, holiday_region: null },
+  'e-sched': { ...UNITS[3], offered_choices: ['unlimited'], voucher_qty: 0, vouchers: null, eligible_vouchers: [],
+    eligible_services: COVERS(['sv-pr']), can_switch: false, holiday_country: 'SG', holiday_region: null },
+};
+(DETAIL.unlimited[0] as any).covers = COVERS(['sv-pr']);
+
+const TABLES: Record<string, unknown[]> = {
+  therapy_holiday_countries: COUNTRIES, therapy_closure_dates: CLOSURES,
+  therapy_services: SERVICES, vouchers: VOUCHERS, unlimited_therapy_packages: PACKAGES,
+  therapy_package_services: PKG_SERVICES, therapy_package_vouchers: PKG_VOUCHERS,
+  purchased_therapy_entitlements: PTE, stores: [{ id: 's1', name: 'Energia Rev 22 (Adelphi)' }],
+  voucher_store_stock: [{ voucher_id: 'vc-meol', current_qty: 40 }],
+};
+
+export async function fetchCustomersByIds(_ids: unknown[]) {
+  return [{ id: 'c1', full_name: 'Moh Leng Chan', phone: '+19729483114' },
+          { id: 'c2', full_name: 'Moses Toh', phone: '+6581113059' },
+          { id: 'c3', full_name: 'Nurul Aisyah', phone: '+6591230001' }];
+}
+export function mergeCustomers<T extends { id: string }>(existing: T[], extra: any[]): T[] {
+  const seen = new Set(existing.map(x => x.id));
+  return [...existing, ...extra.filter(x => !seen.has(x.id))];
+}
+
 export const supabase = {
-  rpc: async (name: string, _args?: unknown) => ({ data: RESPONSES[name] ?? null, error: null }),
+  rpc: async (name: string, args?: any) => {
+    if (name === 'purchased_therapy_units') return { data: UNITS, error: null };
+    if (name === 'purchased_therapy_unit_state') return { data: UNIT_STATE[args?.p_purchased_id] ?? null, error: null };
+    if (name === 'claim_purchased_therapy') {
+      return { data: args?.p_choice === 'unlimited'
+        ? { success: true, choice: 'unlimited', activation: { status: 'active', activation_date: args.p_activation_date,
+            expiry_date: '2026-10-26', base_expiry: '2026-10-24', closure_days_added: 2 } }
+        : { success: true, choice: 'voucher', claim: args?.p_voucher_selections ? { claimed_now: 2, invoice_no: 'VC-INV-0007',
+            issued: [{ quantity: 2, name: 'MEOL Voucher' }], state: { remaining: 5 } } : null }, error: null };
+    }
+    if (name === 'save_therapy_package') return { data: 'pk-new', error: null };
+    return { data: RESPONSES[name] ?? null, error: null };
+  },
   from: (table: string) => {
-    const rows = table === 'therapy_holiday_countries' ? COUNTRIES
-               : table === 'therapy_closure_dates' ? CLOSURES : [];
-    const result = { data: rows, error: null };
-    const chain: any = {
-      select: () => chain, is: () => chain, gte: () => chain, lte: () => chain,
-      order: () => result, then: (r: any) => r(result),
-    };
+    let rows: any[] = (TABLES[table] ?? []) as any[];
+    const chain: any = {};
+    for (const m of ['select', 'is', 'gte', 'lte', 'order', 'limit', 'range', 'neq', 'not'])
+      chain[m] = () => chain;
+    chain.eq = (col: string, val: unknown) => { rows = rows.filter(r => !(col in r) || r[col] === val); return chain; };
+    chain.in = (col: string, vals: unknown[]) => { rows = rows.filter(r => !(col in r) || vals.includes(r[col])); return chain; };
+    chain.then = (r: any, j?: any) => Promise.resolve({ data: rows, error: null }).then(r, j);
     return chain;
   },
 };
