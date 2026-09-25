@@ -75,7 +75,14 @@ begin
   raise exception 'FAIL: audit rows for the two payment changes'; end if;
  if not exists (select 1 from invoice_revisions where invoice_id=inv and edit_reason='Keyed the wrong amounts') then raise exception 'FAIL: no revision'; end if;
  -- Commission followed the invoice through its reconciliation, and money is reported on the corrected date.
- if (select count(*) from commissions where invoice_id=inv and status='earned')=0 then raise exception 'FAIL: commission not re-earned'; end if;
+ -- Now part-paid: no settlement commission may stay earned on it (that was the
+ -- double-pay path, 357). Once part-payment commission is on, the money still
+ -- held earns on the instalment layer.
+ if exists (select 1 from commissions where invoice_id=inv and status='earned' and earning_basis='settlement') then
+   raise exception 'FAIL: settlement commission kept on a part-paid invoice'; end if;
+ if (select instalment_commission_from from app_settings where id=true) is not null
+    and not exists (select 1 from commissions where invoice_id=inv and status='earned' and earning_basis='instalment') then
+   raise exception 'FAIL: commission did not follow the money still held'; end if;
  if invoice_net_sales_between(inv,'2026-09-10','2026-09-10')<>50 then raise exception 'FAIL: the corrected receipt date is not what reports use'; end if;
  fin:=invoice_financial_position(inv);
  if (fin->>'outstanding')::numeric<>50 or (fin->>'refund_due')::numeric<>0 then raise exception 'FAIL: financial position %', fin; end if;

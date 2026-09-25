@@ -22,6 +22,8 @@ const CommissionsPage: React.FC = () => {
 
   // Editable commission rates.
   const [rates, setRates] = useState({ t1_own: 15, t1_third: 4.5, t2_own: 5, t2_third: 5 });
+  // Part payments earn only once the owner has registered earlier ones (357).
+  const [partPaymentsEarn, setPartPaymentsEarn] = useState(false);
   const [ratesOpen, setRatesOpen] = useState(false);
   const [ratesDraft, setRatesDraft] = useState({ t1_own: 15, t1_third: 4.5, t2_own: 5, t2_third: 5 });
   const [ratesBusy, setRatesBusy] = useState(false);
@@ -37,8 +39,16 @@ const CommissionsPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('app_settings').select('commission_tier1_own_rate,commission_tier1_third_rate,commission_tier2_own_rate,commission_tier2_third_rate').eq('id', true).single();
-    if (data) setRates({ t1_own: Number(data.commission_tier1_own_rate), t1_third: Number(data.commission_tier1_third_rate), t2_own: Number(data.commission_tier2_own_rate), t2_third: Number(data.commission_tier2_third_rate) });
+    // The switch is read on its own: a database without it (before 357) must not
+    // cost the page its real rates.
+    const [{ data }, { data: sw }] = await Promise.all([
+      supabase.from('app_settings').select('commission_tier1_own_rate,commission_tier1_third_rate,commission_tier2_own_rate,commission_tier2_third_rate').eq('id', true).single(),
+      supabase.from('app_settings').select('instalment_commission_from').eq('id', true).maybeSingle(),
+    ]);
+    if (data) {
+      setRates({ t1_own: Number(data.commission_tier1_own_rate), t1_third: Number(data.commission_tier1_third_rate), t2_own: Number(data.commission_tier2_own_rate), t2_third: Number(data.commission_tier2_third_rate) });
+    }
+    setPartPaymentsEarn(!!(sw as any)?.instalment_commission_from);
     setLoading(false);
   }, []);
   useEffect(() => { if (hasAccess) void load(); }, [load, hasAccess]);
@@ -82,7 +92,7 @@ const CommissionsPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns on each paid invoice; Tier 2 earns a share of Tier 1.</p></div>
+        <div><h2>Commissions</h2><p>Two-tier referral commission. Tier 1 earns {partPaymentsEarn ? "on each payment a referred customer makes, part payments included" : "when a referred customer's invoice is fully paid"}; Tier 2 earns a share of Tier 1.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           {tab === 'referrers' && <ExcelExportButton rows={referrers} filename="commission-referrers" sheetName="Referrers" columns={[
             { header: 'Referrer', value: (r: any) => r.full_name || '' }, { header: 'Phone', value: (r: any) => r.phone || '' },

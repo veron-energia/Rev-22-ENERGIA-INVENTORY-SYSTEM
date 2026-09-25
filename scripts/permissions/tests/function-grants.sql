@@ -24,7 +24,15 @@ declare
                              'restore_invoice_stock','revoke_unclaimed_entitlement_vouchers',
                              'revoke_affiliate_reward_vouchers','tiktok_adjust_product_stock',
                              'tiktok_adjust_voucher_stock','merge_customer_records','next_invoice_no',
-                             'issue_credit_lines_for_invoice','lock_settled_invoice','correct_invoice_created_by'];
+                             'issue_credit_lines_for_invoice','lock_settled_invoice','correct_invoice_created_by',
+                             -- 357/358: part-payment commission and staff-sales credit
+                             'sync_instalment_commissions','trg_sync_instalment_commissions',
+                             'invoice_instalment_commission_targets','invoice_instalment_commission_active',
+                             'invoice_affiliate_commission_preview','invoice_package_commission_preview',
+                             'invoice_sales_credit_split','invoice_staff_sales_ledger','commission_unpaid_amount',
+                             -- 356: released credit follows its lot
+                             'credit_lot_chain','credit_lot_current','trim_released_paid_credit',
+                             'reclaim_released_credit_of_removed_lines','refuse_settled_credit_line_raise'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

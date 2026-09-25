@@ -14,6 +14,9 @@ begin
  insert into profiles(id,full_name,email,role) values
    (own,'Owner','xin-own@tests.invalid','owner'),(cc,'Staff C','xin-c@tests.invalid','staff');
  perform set_config('request.jwt.claim.sub',own::text,true);
+ -- Part payments earn commission as they arrive (357), once the owner has
+ -- turned it on. This file checks the rule as it runs after that.
+ update app_settings set instalment_commission_from=sg_today() where id=true;
  insert into stores(name,code,country_code) values('XIN Store','XIN','SG') returning id into st;
  insert into user_store_assignments(user_id,store_id) values(cc,st);
  insert into customers(full_name,phone) values('XIN Buyer','+6598908001') returning id into cust;
@@ -59,10 +62,12 @@ begin
  -- the promise is not a receipt
  if (select coalesce(sum(amount),0) from invoice_payments where invoice_id=exinv)<>100 then
   raise exception 'The instalment promise was recorded as money'; end if;
- -- and no commission has been earned on money nobody has
- if exists(select 1 from commissions where invoice_id=exinv and status='earned')
-    or exists(select 1 from staff_commissions where invoice_id=exinv and status='earned') then
-  raise exception 'Commission was earned on an unpaid instalment arrangement'; end if;
+ -- commission follows the 100 that arrived, never the 900 promised
+ if (select coalesce(sum(commission_amount),0) from staff_commissions where invoice_id=exinv and status in ('earned','paid'))
+    <> round(100 * (select coalesce(staff_commission_rate,0) from app_settings where id=true) / 100.0, 2)
+    or exists(select 1 from commissions where invoice_id=exinv and status='earned') then
+  raise exception 'Commission should follow the 100 received, not the 900 promised: staff %',
+    (select coalesce(sum(commission_amount),0) from staff_commissions where invoice_id=exinv and status in ('earned','paid')); end if;
 
  -- ---- a later receipt joins the SAME arrangement --------------------------
  select arrangement_id::uuid into arr from jsonb_to_recordset(pos->'arrangements') as t(arrangement_id text) limit 1;
@@ -78,9 +83,11 @@ begin
   raise exception 'The arrangement should have 500 left, got %',pos->>'instalment_remaining'; end if;
  if (select count(*) from invoice_payment_arrangements where invoice_id=exinv)<>1 then
   raise exception 'A later receipt created a second arrangement'; end if;
- -- still not fully paid, so still no commission
- if exists(select 1 from commissions where invoice_id=exinv and status='earned') then
-  raise exception 'Commission was earned before the charge was met'; end if;
+ -- still not fully paid: commission on the 500 received, none on the 500 owed
+ if (select coalesce(sum(commission_amount),0) from staff_commissions where invoice_id=exinv and status in ('earned','paid'))
+    <> round(500 * (select coalesce(staff_commission_rate,0) from app_settings where id=true) / 100.0, 2)
+    or exists(select 1 from commissions where invoice_id=exinv and status='earned') then
+  raise exception 'Commission should follow the 500 received so far, not the charge'; end if;
  -- and no stock or benefit work was repeated
  if (select count(*) from stock_movements where invoice_id=exinv)
     <> (select count(*) from stock_movements where invoice_id=exinv) then
@@ -105,6 +112,11 @@ begin
     (select coalesce(sum(amount),0) from invoice_payments where invoice_id=exinv); end if;
  if (pos->>'instalment_remaining')::numeric<>0 then
   raise exception 'The arrangement should be fully collected, % left',pos->>'instalment_remaining'; end if;
+ -- settled: exactly what settling in one go would have paid
+ if (select coalesce(sum(commission_amount),0) from staff_commissions where invoice_id=exinv and status in ('earned','paid'))
+    <> round(1000 * (select coalesce(staff_commission_rate,0) from app_settings where id=true) / 100.0, 2) then
+  raise exception 'Settled commission should be on the full 1000, got %',
+    (select coalesce(sum(commission_amount),0) from staff_commissions where invoice_id=exinv and status in ('earned','paid')); end if;
 
  -- ---- an equal-value exchange asks for nothing ----------------------------
  perform set_product_prices(st,p2,500,500,'available');
@@ -136,6 +148,6 @@ begin
   if sqlerrm like 'An overpayment%' then raise; end if;
   if sqlerrm not like '%more than the amount due%' then raise; end if; end;
 
- raise notice 'PASS: an exchange takes part of its additional charge now and the rest under an instalment; the replacement invoice reports received and outstanding truthfully and is never stamped paid early; a promise earns no commission; later receipts join the same arrangement without repeating stock work; the receipt that completes the charge settles the invoice; equal-value exchanges ask for nothing; overpayment is still refused';
+ raise notice 'PASS: an exchange takes part of its additional charge now and the rest under an instalment; the replacement invoice reports received and outstanding truthfully and is never stamped paid early; commission follows the money received, never the promise; later receipts join the same arrangement without repeating stock work; the receipt that completes the charge settles the invoice; equal-value exchanges ask for nothing; overpayment is still refused';
 end $$;
 rollback;

@@ -278,6 +278,9 @@ const InvoicesPage: React.FC = () => {
   const [payMethodsByInvoice, setPayMethodsByInvoice] = useState<Record<string, string[]>>({});
   const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
+  // Every name on the open invoice, resolved by invoice_display_names():
+  // unaffected by RLS on deleted records or by the page's active-only lists.
+  const [detailNames, setDetailNames] = useState<any>(null);
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number; instalment?: InstalmentPortion }[]>([]);
   /** Per-line instalment problems, shown beside the line they belong to. */
   const [payLineErrors, setPayLineErrors] = useState<Record<number, string>>({});
@@ -445,7 +448,6 @@ const InvoicesPage: React.FC = () => {
   // the database just named.
   const custName = (id: string) => customerOf(id)?.full_name ?? nameById[id] ?? '—';
   const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
-  const methodName = (id: string) => methods.find(m => m.id === id)?.name ?? '—';
   // Credit Package / Premium Bundle lines carry their name in plan_name_snapshot
   // so a historical invoice keeps its name even if the package is later renamed.
   const creditLineName = (it: any): string | null =>
@@ -1094,7 +1096,8 @@ const InvoicesPage: React.FC = () => {
       if (it.line_kind === 'therapy') {
         lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', therapy_service_id: (it as any).therapy_service_id ?? '', therapy_service_name: (it as any).therapy_service_name_snapshot ?? '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'credit_package') {
-        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr });
+        // ...foc: a package given away with Make FOC must go back unchanged, or the save re-charges it.
+        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'premium_bundle') {
         // Rebuild the reward-voucher basket from the stored selection so editing
         // shows what was chosen and re-validates against the same rule.
@@ -1102,7 +1105,7 @@ const InvoicesPage: React.FC = () => {
         const raw = (it as any).bundle_voucher_selection;
         const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : []);
         for (const s of (arr as any[])) { if (s && s.voucher_id) basket[s.voucher_id] = (basket[s.voucher_id] ?? 0) + Number(s.quantity ?? 0); }
-        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {}, ...ovr });
+        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'voucher') {
         lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'promotion') {
@@ -1277,6 +1280,9 @@ const InvoicesPage: React.FC = () => {
     setDetail(inv); setDetailFinancial(null);
     setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
     setDetailTherapy(null);
+    setDetailNames(null);
+    supabase.rpc('invoice_display_names', { p_invoice_id: inv.id })
+      .then(({ data }) => { if (!superseded()) setDetailNames(data ?? null); });
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
     setSendErr(null); setSendNote(null);
@@ -1870,11 +1876,56 @@ const InvoicesPage: React.FC = () => {
     sortField === field ? (sortDir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
 
   // Shared by the printed document and the WhatsApp / email message.
+  const KIND_LABEL: Record<string, string> = { product: 'Product', voucher: 'Voucher', promotion: 'Promotion',
+    therapy: 'Therapy', credit_package: 'Credit Package', premium_bundle: 'Premium Bundle',
+    special_product: 'Special product', rental: 'Rental', treatment: 'Treatment' };
+  const txt = (v: any): string => (typeof v === 'string' ? v.trim() : '');
+  const srvName = (id: any): string => (id ? txt(detailNames?.names?.[id]) : '');
+  /** The line's own name: sale-time snapshot, then the server, then the page's
+   *  lists, then the kind. Never blank, never a dash. */
+  const itemName = (it: any): string =>
+    txt(it.item_name_snapshot) || txt(detailNames?.lines?.[it.id])
+    || ((it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? txt(it.plan_name_snapshot) : '')
+    // A therapy line is a session or an unlimited package; the id that is set
+    // decides, because a session edited into a package keeps the old session name.
+    || (it.line_kind === 'therapy' ? (it.therapy_package_id
+          ? (txt(it.plan_name_snapshot) || txt(it.therapy_service_name_snapshot))
+          : (txt(it.therapy_service_name_snapshot) || txt(it.plan_name_snapshot))) : '')
+    || txt(it.line_kind === 'voucher' ? vouchers.find(v => v.id === it.voucher_id)?.name
+         : it.line_kind === 'promotion' ? promotions.find(p => p.id === it.promotion_id)?.name
+         : (it.line_kind === 'special_product' || it.line_kind === 'rental') ? specialProducts.find((p: any) => p.id === it.special_product_id)?.name
+         : products.find(p => p.id === it.product_id)?.name)
+    || KIND_LABEL[it.line_kind ?? 'product'] || 'Item';
+  /** A promotion's content (fixed item or chosen option), by id first because
+   *  a chosen option carries the id without an item_type. */
+  const contentName = (x: any): string => {
+    const pick = (id: any, list: any[], fb: string) => srvName(id) || txt(list.find((r: any) => r.id === id)?.name) || fb;
+    if (x.product_id) return pick(x.product_id, products, 'Product');
+    if (x.voucher_id) return pick(x.voucher_id, vouchers, 'Voucher');
+    if (x.child_promotion_id) return pick(x.child_promotion_id, promotions, 'Promotion');
+    if (x.therapy_package_id) return pick(x.therapy_package_id, therapyPackages, 'Therapy');
+    if (x.credit_package_id) return srvName(x.credit_package_id) || 'Credit package';
+    return txt(x.treatment_name) || KIND_LABEL[x.item_type] || 'Item';
+  };
   const lineName = (it: InvoiceItem) =>
-    it.line_kind === 'voucher' ? `Voucher: ${vouchers.find(v => v.id === it.voucher_id)?.name ?? ''}`
-    : it.line_kind === 'promotion' ? `Promotion: ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? ''}`
-    : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? creditLineName(it)!
-    : prodName(it.product_id ?? '');
+    it.line_kind === 'voucher' ? `Voucher: ${itemName(it)}`
+    : it.line_kind === 'promotion' ? `Promotion: ${itemName(it)}`
+    : it.line_kind === 'rental' ? `Rental: ${itemName(it)}`
+    : itemName(it);
+  // Served-by and the signature come from the server so a member of staff who
+  // has since left is still named, and nobody else's name is ever signed.
+  const servedBy = (): { id: string; name: string; work_phone?: string | null }[] =>
+    detailNames?.service_staff
+    ?? detailServiceStaff.map(id => ({ id, name: profiles.find(p => p.id === id)?.full_name ?? 'Former staff member',
+         work_phone: profiles.find(p => p.id === id)?.work_phone ?? null }));
+  const creatorName = (d: any): string =>
+    txt(detailNames?.created_by_name) || txt(profiles.find(u => u.id === d?.created_by)?.full_name)
+    || (d?.created_by ? '' : (profile?.full_name ?? ''));
+  // The server resolves these whatever state the record is in now, so a
+  // deactivated payment method, a deleted voucher or customer still prints.
+  const printedMethod = (id: any): string => srvName(id) || txt(methods.find(m => m.id === id)?.name);
+  const printedVoucher = (id: any): string => srvName(id) || txt(vouchers.find(v => v.id === id)?.name);
+  const printedCustomer = (d: any): string => txt(detailNames?.customer_name) || txt(customerOf(d?.customer_id)?.full_name) || '—';
 
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [sendBusy, setSendBusy] = useState<'whatsapp' | 'email' | null>(null);
@@ -1891,11 +1942,11 @@ const InvoicesPage: React.FC = () => {
       docNo: detail.invoice_no,
       date: displayInvoiceDate(detail),
       status: String(INVOICE_STATUS_LABELS[detail.status as InvoiceStatus] ?? detail.status).toUpperCase(),
-      storeName: store.name ?? null,
+      storeName: store.name ?? (txt(detailNames?.store_name) || null),
       storeAddress: store.address ?? null,
       storePhone: [store.phone, store.whatsapp_phone ? `WhatsApp ${store.whatsapp_phone}` : '']
         .filter(Boolean).join(' · ') || null,
-      customerName: `${cust?.full_name ?? '—'} (${billToSource || '-'})`,
+      customerName: `${printedCustomer(detail)} (${billToSource || '-'})`,
       customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
       lines: detailItems.map(it => {
         const focQty = Number((it as any).foc_quantity ?? 0);
@@ -1916,7 +1967,7 @@ const InvoicesPage: React.FC = () => {
       ],
       grandTotal: ['Total', `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
       payments: detailPayments.map((pm: any) => [
-        `${methods.find(m => m.id === pm.payment_method_id)?.name ?? 'Payment'} · ${new Date(pm.effective_at || pm.created_at).toLocaleDateString('en-SG')}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
+        `${printedMethod(pm.payment_method_id) || 'Payment'} · ${new Date(pm.effective_at || pm.created_at).toLocaleDateString('en-SG')}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
         `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
       ] as [string, string]),
       payDetails: [
@@ -1924,7 +1975,7 @@ const InvoicesPage: React.FC = () => {
         store.paynow_uen ? `CIMB UEN: ${store.paynow_uen}` : '',
         store.bank_account ? `CIMB corporate account: ${store.bank_account}` : '',
       ].filter(Boolean),
-      staffName: (profiles.find(u => u.id === (detail as any).created_by)?.full_name) ?? profile?.full_name ?? '',
+      staffName: creatorName(detail),
       policyText: store.policy_text ?? null,
       footerBits: [
         store.phone ? `DID: ${store.phone}` : '',
@@ -1984,12 +2035,10 @@ const InvoicesPage: React.FC = () => {
     // as a dash so the two slots stay readable.
     // Affiliate if the invoice has one, otherwise the customer's source,
     // otherwise a dash. Matches invoice_bill_to_source() in migration 103.
-    const billTo = `${cust?.full_name ?? '—'} (${billToSource || '-'})`;
+    const billTo = `${printedCustomer(detail)} (${billToSource || '-'})`;
     // The staff signature is printed, not signed by hand. Use whoever raised the
     // invoice; fall back to the person printing it if that is not recorded.
-    const signedByName =
-      (profiles.find(u => u.id === (detail as any).created_by)?.full_name)
-      ?? profile?.full_name ?? '';
+    const signedByName = creatorName(detail);
     const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
@@ -1998,13 +2047,7 @@ const InvoicesPage: React.FC = () => {
       // therapy printed "— × 1 (included)" with a blank name: the row appeared
       // but the therapy itself was invisible once the invoice was created. The
       // creation form resolves these correctly; this list did not.
-      const nameOf = (x: any) => x.product_id ? (products.find(p => p.id === x.product_id)?.name ?? '')
-        : x.voucher_id ? (vouchers.find(v => v.id === x.voucher_id)?.name ?? '')
-        : x.child_promotion_id ? (promotions.find(p => p.id === x.child_promotion_id)?.name ?? '')
-        : x.therapy_service_id ? (x.therapy_service_name_snapshot || 'Therapy session')
-        : x.therapy_package_id ? (therapyPackages.find((t: any) => t.id === x.therapy_package_id)?.name ?? 'Therapy')
-        : x.credit_package_id ? 'Credit package'
-        : (x.treatment_name ?? '');
+      const nameOf = contentName;
       return [
         ...fixed.map(f => `<tr class="sub"><td colspan="3">— ${esc(nameOf(f))} × ${f.quantity * it.quantity} (included)</td><td></td></tr>`),
         ...chosen.map(s => `<tr class="sub"><td colspan="3">— ${esc(nameOf(s))} × ${s.quantity} (chosen)</td><td></td></tr>`),
@@ -2012,7 +2055,7 @@ const InvoicesPage: React.FC = () => {
     };
     const itemRows = detailItems.map(it => {
       const lv = (it as any).line_voucher_id
-        ? `<div class="mut">Voucher ${esc(vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? '')} −S$${Number((it as any).line_discount ?? 0).toFixed(2)}</div>` : '';
+        ? `<div class="mut">Voucher ${esc(printedVoucher((it as any).line_voucher_id))} −S$${Number((it as any).line_discount ?? 0).toFixed(2)}</div>` : '';
       const tu = Number((it as any).topup_amount ?? 0) > 0 ? `<div class="mut">incl. top-up S$${Number((it as any).topup_amount).toFixed(2)}</div>` : '';
       const md = '';
       const ov = it.price_overridden ? `<div class="mut"><b>Manual Override</b>${it.override_reason ? ` — ${esc(it.override_reason)}` : ''}</div>` : '';
@@ -2029,12 +2072,10 @@ const InvoicesPage: React.FC = () => {
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
-      `<tr><td>${esc(methods.find(m => m.id === p.payment_method_id)?.name ?? '')}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG'))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
+      `<tr><td>${esc(printedMethod(p.payment_method_id))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG'))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
 
     // Service Provided By = the invoice's service staff, each with their work phone.
-    const staffRows = detailServiceStaff
-      .map(id => profiles.find(p => p.id === id))
-      .filter((p): p is Profile => !!p);
+    const staffRows = servedBy().map(p => ({ full_name: p.name, work_phone: p.work_phone }));
     const authorisedBlock = staffRows.length
       ? `<h2>Service Provided By</h2><div>${staffRows.map(p =>
           `<div>${esc(p.full_name)}${p.work_phone ? ` — ${esc(p.work_phone)}` : ''}</div>`).join('')}</div>`
@@ -2135,7 +2176,7 @@ const InvoicesPage: React.FC = () => {
           <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div>
             <div class="copytag">${copyLabel}</div></div>
           <div style="text-align:right"><h1>${esc(detail.invoice_no)}</h1>
-            <div class="mut">${esc(store?.name ?? '')}</div>
+            <div class="mut">${esc(store?.name ?? txt(detailNames?.store_name))}</div>
             ${st.address ? `<div class="mut">${esc(st.address)}</div>` : ''}
             ${storePhone ? `<div class="mut">Tel: ${esc(storePhone)}</div>` : ''}
             ${st.whatsapp_phone ? `<div class="mut">Shop WhatsApp: ${esc(st.whatsapp_phone)}</div>` : ''}
@@ -2600,13 +2641,16 @@ const InvoicesPage: React.FC = () => {
                           {money(Number(p2.amount))}
                         </span>
                         <span style={{ flex: 1, fontSize: 12.5, color: 'var(--text-muted)' }}>
-                          {methods.find(m => m.id === p2.payment_method_id)?.name} — wallet credit; corrected from the payment list, not here
+                          {printedMethod(p2.payment_method_id) || '—'} — wallet credit; corrected from the payment list, not here
                         </span>
                       </div>
                     );
                     const setPart = (idx: number, patch: Partial<PayPart>) =>
                       setEdit({ parts: e.parts.map((x, j) => j === idx ? { ...x, ...patch } : x) });
-                    const methodOptions = methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }));
+                    const activeOptions = methods.filter(m => !(m as any).is_wallet_credit).map(m => ({ value: m.id, label: m.name }));
+                    // A method deactivated since the payment still shows by name, so the row is not blank.
+                    const methodOptionsFor = (id: string) => !id || activeOptions.some(o => o.value === id) ? activeOptions
+                      : [...activeOptions, { value: id, label: `${printedMethod(id) || 'Payment method'} (no longer active)` }];
                     return (
                       <div key={p2.id} style={{ marginBottom: 6 }}>
                         {e.parts.map((part, idx) => (
@@ -2617,9 +2661,9 @@ const InvoicesPage: React.FC = () => {
                             <input type="date" aria-label="Date received" value={part.date}
                               disabled={e.remove} onChange={ev => setPart(idx, { date: ev.target.value })} />
                             {e.remove
-                              ? <span style={{ fontSize: 12.5 }}>{methods.find(m => m.id === part.payment_method_id)?.name}</span>
+                              ? <span style={{ fontSize: 12.5 }}>{printedMethod(part.payment_method_id) || '—'}</span>
                               : <InvoiceSearchSelect value={part.payment_method_id} onChange={id => setPart(idx, { payment_method_id: id })}
-                                  options={methodOptions} />}
+                                  options={methodOptionsFor(part.payment_method_id)} />}
                             {idx === 0 ? (
                               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEdit({ remove: !e.remove })}
                                 title={e.remove ? 'Keep this payment' : 'This receipt was recorded by mistake'}>
@@ -2799,7 +2843,7 @@ const InvoicesPage: React.FC = () => {
                 <div className="alert alert-info" style={{ marginBottom: 0 }}>
                   <span>ℹ️</span>
                   <div>{referrer
-                    ? <>Commission referrer: <strong>{referrer.full_name}</strong> earns Tier 1 when this invoice is fully paid{referrer.referred_by ? ', and their referrer earns Tier 2.' : '.'}</>
+                    ? <>Commission referrer: <strong>{referrer.full_name}</strong> earns Tier 1 on this invoice{referrer.referred_by ? ', and their referrer earns Tier 2.' : '.'}</>
                     : <>This customer has no referrer set, so no commission will be earned. You can set a referrer on the Customers page.</>}</div>
                 </div>
               );
@@ -3518,7 +3562,7 @@ const InvoicesPage: React.FC = () => {
             {/* Summary */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{storeName(detail.store_id)} · {custName(detail.customer_id)}</div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{stores.find(s => s.id === detail.store_id)?.name ?? (txt(detailNames?.store_name) || '—')} · {custName(detail.customer_id)}</div>
                 <div style={{ marginTop: 4 }}><StatusBadge s={detail.status} /></div>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -3655,21 +3699,13 @@ const InvoicesPage: React.FC = () => {
                     // once the invoice existed, even though the creation form
                     // named it correctly. Checked by id as well as item_type,
                     // since a chosen option carries the id without the type.
-                    const subLabel = (x: any): string => {
-                      if (x.item_type === 'product' || x.product_id) return `📦 ${prodName(x.product_id ?? '')}`;
-                      if (x.item_type === 'voucher' || x.voucher_id) return `🎟 ${vouchers.find(v => v.id === x.voucher_id)?.name ?? 'Voucher'}`;
-                      if (x.item_type === 'promotion') return `🧩 ${promotions.find(p => p.id === x.child_promotion_id)?.name ?? 'Promotion'}`;
-                      if (x.item_type === 'therapy' || x.therapy_package_id)
-                        return `🧖 ${therapyPackages.find((t: any) => t.id === x.therapy_package_id)?.name ?? 'Therapy'}`;
-                      if (x.item_type === 'credit_package' || x.credit_package_id) return '💳 Credit package';
-                      if (x.item_type === 'treatment') return `💆 ${x.treatment_name}`;
-                      return '—';
-                    };
+                    const subLabel = (x: any): string =>
+                      `${x.product_id ? '📦' : x.voucher_id ? '🎟' : x.child_promotion_id ? '🧩' : x.therapy_package_id ? '🧖' : x.credit_package_id ? '💳' : '💆'} ${contentName(x)}`;
                     return (
                       <React.Fragment key={it.id}>
                         <tr>
-                          <td>{it.line_kind === 'voucher' ? `🎟 ${vouchers.find(v => v.id === it.voucher_id)?.name ?? 'Voucher'}` : isPromo ? `🧩 ${promotions.find(p => p.id === (it as any).promotion_id)?.name ?? 'Promotion'}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${creditLineName(it)}` : it.line_kind === 'therapy' ? ((it as any).therapy_service_name_snapshot || (it as any).plan_name_snapshot || 'Therapy') : prodName(it.product_id ?? '')}
-                            {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {vouchers.find(v => v.id === (it as any).line_voucher_id)?.name ?? 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
+                          <td>{it.line_kind === 'voucher' ? `🎟 ${itemName(it)}` : isPromo ? `🧩 ${itemName(it)}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${itemName(it)}` : it.line_kind === 'rental' ? `Rental: ${itemName(it)}` : itemName(it)}
+                            {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {printedVoucher((it as any).line_voucher_id) || 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {Number(it.foc_quantity ?? 0) === 0 && detail.status !== 'paid' && detail.status !== 'completed_foc'
                               && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
@@ -3721,7 +3757,7 @@ const InvoicesPage: React.FC = () => {
               <div>
                 <label>Served by</label>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-                  {detailServiceStaff.map(id => <span key={id} className="badge badge-primary">{staffName(id)}</span>)}
+                  {servedBy().map(p => <span key={p.id} className="badge badge-primary">{p.name}</span>)}
                 </div>
               </div>
             )}
@@ -3732,7 +3768,7 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
                   {detailPayments.map(p => (
                     <div key={p.id} className="invoice-payment-record">
-                      <span className="invoice-payment-record-label">{methodName(p.payment_method_id)} · {new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG')}
+                      <span className="invoice-payment-record-label">{printedMethod(p.payment_method_id) || '—'} · {new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG')}
                         {(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</span>
                       <span className="invoice-payment-record-actions">
                         <span style={{ fontWeight: 600 }}>{money(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1))}</span>

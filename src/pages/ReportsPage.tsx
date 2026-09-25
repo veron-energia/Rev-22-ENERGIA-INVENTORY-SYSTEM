@@ -102,7 +102,10 @@ const ReportsPage: React.FC = () => {
   const [rentals, setRentals] = useState<any[]>([]);
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<any[]>([]);
-  const [serviceStaff, setServiceStaff] = useState<any[]>([]);
+  // Sales by Service Staff, computed on the server (358) so it reconciles to
+  // revenue to the cent and credits invoices with no "Served by" to their creator.
+  const [staffSales, setStaffSales] = useState<any>(null);
+  const [staffLoading, setStaffLoading] = useState(false);
   const [repPricing, setRepPricing] = useState<any[]>([]);
   const [repAffiliate, setRepAffiliate] = useState<any[]>([]);
   const [repTherapy, setRepTherapy] = useState<any[]>([]);
@@ -136,7 +139,7 @@ const ReportsPage: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [inv, st, pr, co, cu, wh, wi, si, it, vc, pm, rd, ss, re, sp, prof, iss, rf, events] = await Promise.all([
+      const [inv, st, pr, co, cu, wh, wi, si, it, vc, pm, rd, ss, re, sp, prof, rf, events] = await Promise.all([
         fetchReportRows(() => supabase.from('invoices').select('*').is('deleted_at', null)),
         fetchReportRows(() => supabase.from('stores').select('*')),
         fetchReportRows(() => supabase.from('products').select('*')),
@@ -153,7 +156,6 @@ const ReportsPage: React.FC = () => {
         fetchReportRows(() => supabase.from('rentals').select('*')),
         fetchReportRows(() => supabase.from('special_products').select('*')),
         fetchReportRows(() => supabase.from('profiles').select('id,full_name,role')),
-        fetchReportRows(() => supabase.from('invoice_service_staff').select('id,invoice_id,staff_id')),
         fetchReportRows(() => supabase.from('invoice_refunds').select('id,invoice_id,request_id,amount,credit_returned,outcome')),
         fetchReportRows(() => supabase.rpc('invoice_sales_ledger'), ['sales_date', 'event_id']),
       ]);
@@ -168,7 +170,7 @@ const ReportsPage: React.FC = () => {
       setCommissions(co as Commission[]); setCustomers(cu as Customer[]); setWarehouses(wh as Warehouse[]);
       setWhInv(wi as WarehouseInventory[]); setStInv(si as StoreInventory[]); setItems(it);
       setVouchers(vc); setPromotions(pm); setRedemptions(rd); setSpecialSales(ss); setRentals(re);
-      setSpecialProducts(sp); setProfiles(prof); setServiceStaff(iss); setRefunds(rf); setSalesEvents(events as SalesEvent[]);
+      setSpecialProducts(sp); setProfiles(prof); setRefunds(rf); setSalesEvents(events as SalesEvent[]);
       setRepAffiliate(ra); setRepTherapy(rt); setRepSources(rsrc);
       setTtSummary(tts[0] ?? null); setTtRows(ttr); setSalesError('');
     } catch (error: any) {
@@ -187,6 +189,13 @@ const ReportsPage: React.FC = () => {
     };
     const loadPeriodReports = async () => {
       setPeriodLoading(true);
+      // Sales by Service Staff loads on its own: a failure in it never blanks the
+      // other period reports, and a failure in them never blanks it.
+      setStaffLoading(true);
+      supabase.rpc('report_sales_by_service_staff', { p_from: dFrom || null, p_to: dTo || null, p_store_id: null })
+        .then(r => { if (!cancelled) setStaffSales(r.error ? { error: r.error.message } : r.data); },
+              (e: any) => { if (!cancelled) setStaffSales({ error: e?.message || 'Unable to load the selected period.' }); })
+        .then(() => { if (!cancelled) setStaffLoading(false); });
       try {
         const [pricing, discounts, focLines, focSummaryResult, reconciliation] = await Promise.all([
           fetchReportRows(() => dated('report_pricing'), ['invoice_id', 'line_kind', 'item_name', 'quantity', 'unit_price']),
@@ -301,24 +310,13 @@ const ReportsPage: React.FC = () => {
     return Array.from(map.values()).filter(r => r.count > 0).sort((a, b) => b.total - a.total);
   })();
 
-  // Sales by service staff — shared performance, equal split of each paid
-  // invoice's total across its service staff.
-  const salesByServiceStaff = (() => {
-    const byInv = new Map<string, string[]>();
-    serviceStaff.forEach(r => {
-      const arr = byInv.get(r.invoice_id) ?? []; arr.push(r.staff_id); byInv.set(r.invoice_id, arr);
-    });
-    const map = new Map<string, { name: string; invoices: number; shared: number; fullTotal: number }>();
-    paid.forEach(i => {
-      const staff = byInv.get(i.id); if (!staff || staff.length === 0) return;
-      const share = Number(i.total_amount) / staff.length;
-      staff.forEach(sid => {
-        const g = map.get(sid) ?? { name: staffPName(sid), invoices: 0, shared: 0, fullTotal: 0 };
-        g.invoices += 1; g.shared += share; g.fullTotal += Number(i.total_amount); map.set(sid, g);
-      });
-    });
-    return Array.from(map.values()).filter(r => r.invoices > 0).sort((a, b) => b.shared - a.shared);
-  })();
+  // Sales by service staff: one row per person from report_sales_by_service_staff.
+  const salesByServiceStaff: any[] = ((staffSales?.rows as any[]) ?? []).map(r => ({
+    name: r.staff_name ?? '—', is_active: r.is_active !== false,
+    invoices: Number(r.invoices_served), shared: Number(r.shared_sales),
+    as_creator: Number(r.credited_as_creator), moved_in: Number(r.backfilled_in),
+    fullTotal: Number(r.receipts_on_invoices_served),
+  }));
 
   const totalRevenue = paid.reduce((s, i) => s + Number(i.total_amount), 0);
 
@@ -444,7 +442,10 @@ const ReportsPage: React.FC = () => {
       sales_store: salesByStore, sales_affiliate: salesByReferrer, commission: commissionRows,
       top_products: topProducts, customers: custRows, stock: stockExport,
       vouchers: voucherRows, promotions: promoRows, specials: specialRows,
-      sales_creator: salesByCreator, sales_service_staff: salesByServiceStaff,
+      sales_creator: salesByCreator,
+      sales_service_staff: salesByServiceStaff.map(r => ({ staff: r.name, invoices_served: r.invoices, shared_sales: r.shared,
+        of_which_no_served_by_credited_as_creator: r.as_creator, of_which_earlier_receipts_credited_here: r.moved_in,
+        receipts_on_invoices_served_not_split: r.fullTotal })),
       r_pricing: repPricing.map(({ paid_date, ...row }) => ({ ...row, business_date: paid_date })), r_affiliate: repAffiliate,
       r_therapy: repTherapy,
       r_discounts: repDiscounts.map(({ paid_date, ...row }) => ({ ...row, business_date: paid_date })),
@@ -455,8 +456,11 @@ const ReportsPage: React.FC = () => {
   };
   const currentReportRows = (): any[] => (reportDump()[tab] ?? []) as any[];
   const isPeriodReport = ['r_pricing', 'r_discounts', 'r_foc', 'r_salesrecon'].includes(tab);
-  const reportBusy = loading || (isPeriodReport && periodLoading);
+  const staffTab = tab === 'sales_service_staff';
+  const reportBusy = loading || (isPeriodReport && periodLoading) || (staffTab && staffLoading);
   const reportFailed = !!salesError || (isPeriodReport && !!periodError);
+  // Its error is shown on the tab itself; the export must not produce an empty sheet.
+  const staffFailed = staffTab && !!staffSales?.error;
 
   if (!hasAccess) return <NoAccess message="Only Owners, Admins, and Managers can view reports." />;
 
@@ -472,7 +476,7 @@ const ReportsPage: React.FC = () => {
             filename={`report-${tab}`}
             sheetName={(TABS.find(t => t.id === tab)?.label ?? 'Report').slice(0, 31)}
             label="Export Excel"
-            disabled={reportBusy || reportFailed}
+            disabled={reportBusy || reportFailed || staffFailed}
             columns={Object.keys(currentReportRows()[0] ?? {}).map(k => ({
               header: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
               value: (r: any) => r[k],
@@ -518,8 +522,8 @@ const ReportsPage: React.FC = () => {
         </div>
         <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 8 }}>
           {dFrom || dTo
-            ? `Showing invoice sales ${dFrom ? `from ${dFrom.split('-').reverse().join('/')}` : ''}${dTo ? ` to ${dTo.split('-').reverse().join('/')}` : ''}. Receipts use the invoice business date; refunds use the refund date.`
-            : 'Showing all time. Receipts use the invoice business date; refunds use the refund date.'}
+            ? `Showing invoice sales ${dFrom ? `from ${dFrom.split('-').reverse().join('/')}` : ''}${dTo ? ` to ${dTo.split('-').reverse().join('/')}` : ''}. Receipts use the date the money was received; refunds use the refund date.`
+            : 'Showing all time. Receipts use the date the money was received; refunds use the refund date.'}
           <div>Pricing, discounts and FOC show invoice measures by business date. Stock and catalogue reports show the current position; commission payouts retain their actual dates.</div>
         </div>
       </div>
@@ -605,7 +609,7 @@ const ReportsPage: React.FC = () => {
               {tab === 'sales_affiliate' && (
                 <table>
                   <thead><tr><th>Referrer</th><th style={{ textAlign: 'right' }}>Referred invoices with sales activity</th><th style={{ textAlign: 'right' }}>Recognized sales</th><th style={{ textAlign: 'right' }}>Commission</th></tr></thead>
-                  <tbody>{salesByReferrer.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No referred sales yet — commission is earned when a referred customer's invoice is fully paid</td></tr>
+                  <tbody>{salesByReferrer.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No referred sales yet in this period</td></tr>
                     : salesByReferrer.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right' }}>{r.count}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.total)}</td><td style={{ textAlign: 'right', color: 'var(--primary)' }}>{money(r.commission)}</td></tr>)}</tbody>
                 </table>
               )}
@@ -645,11 +649,53 @@ const ReportsPage: React.FC = () => {
                 </table>
               )}
               {tab === 'sales_service_staff' && (
-                <table>
-                  <thead><tr><th>Service Staff</th><th style={{ textAlign: 'right' }}>Invoices Served</th><th style={{ textAlign: 'right' }}>Shared Sales (equal split)</th><th style={{ textAlign: 'right' }}>Invoice Value Touched</th></tr></thead>
-                  <tbody>{salesByServiceStaff.length === 0 ? <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No service-staff sales yet — add "Served by" staff when creating invoices</td></tr>
-                    : salesByServiceStaff.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right' }}>{r.invoices}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.shared)}</td><td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(r.fullTotal)}</td></tr>)}</tbody>
-                </table>
+                <>
+                  {staffSales?.error && <div role="alert" className="alert alert-danger" style={{ margin: 12 }}>
+                    Sales by Service Staff could not be loaded: {staffSales.error}</div>}
+                  {staffSales && !staffSales.error && (() => {
+                    const revenue = Number(staffSales.revenue ?? 0), movedIn = Number(staffSales.backfill_in ?? 0);
+                    const movedOut = Number(staffSales.backfill_out ?? 0), staffTotal = Number(staffSales.staff_total ?? 0);
+                    const off = Math.abs(Number(staffSales.difference ?? 0)) >= 0.005;
+                    // The headline comes from the money loaded when the page opened (or was
+                    // refreshed); this report is fetched again for every period. Money
+                    // recorded in between makes them differ until Refresh.
+                    const headlineOff = !off && Math.abs(revenue - totalRevenue) >= 0.005;
+                    return (
+                      <div style={{ padding: '10px 14px', fontSize: 12.5, borderBottom: '1px solid var(--border)' }}>
+                        <div>
+                          Revenue <strong>{money(revenue)}</strong>
+                          {movedIn !== 0 && <> + earlier part payments credited to this period <strong>{money(movedIn)}</strong></>}
+                          {movedOut !== 0 && <> − part payments credited to a later period <strong>{money(movedOut)}</strong></>}
+                          {' '}= staff total <strong>{money(staffTotal)}</strong>
+                          {Number(staffSales.credited_as_creator ?? 0) !== 0 && <span style={{ color: 'var(--text-muted)' }}>
+                            {' '}· {money(Number(staffSales.credited_as_creator))} is on invoices with no "Served by", credited to whoever created them</span>}
+                        </div>
+                        {Number(staffSales.wallet_credit_not_counted ?? 0) !== 0 && <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>
+                          Not counted: {money(Number(staffSales.wallet_credit_not_counted))} of purchases paid with wallet credit — credit bought with money was counted when it was bought; adjusted and opening-balance credit was never revenue.
+                        </div>}
+                        {off && <div role="alert" className="alert alert-danger" style={{ marginTop: 8, marginBottom: 0 }}>
+                          The staff total is {money(Number(staffSales.difference))} away from revenue for this period. Please report this.
+                        </div>}
+                        {headlineOff && <div role="status" className="alert alert-warning" style={{ marginTop: 8, marginBottom: 0 }}>
+                          Money was recorded or changed after this page loaded: this report counts {money(revenue)}, the headline
+                          still shows {money(totalRevenue)}. Press Refresh to bring them together.
+                        </div>}
+                      </div>
+                    );
+                  })()}
+                  {!staffSales?.error && <table>
+                    <thead><tr><th>Staff</th><th style={{ textAlign: 'right' }}>Invoices Served</th><th style={{ textAlign: 'right' }}>Shared Sales</th><th style={{ textAlign: 'right' }}>Of which: no "Served by"</th><th style={{ textAlign: 'right' }}>Of which: earlier part payments</th><th style={{ textAlign: 'right' }}>Receipts on Invoices Served</th></tr></thead>
+                    <tbody>{salesByServiceStaff.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No sales in this period</td></tr>
+                      : salesByServiceStaff.map((r, i) => <tr key={i}>
+                          <td><strong>{r.name}</strong>{!r.is_active && <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}> · inactive</span>}</td>
+                          <td style={{ textAlign: 'right' }}>{r.invoices}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.shared)}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{r.as_creator ? money(r.as_creator) : '—'}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{r.moved_in ? money(r.moved_in) : '—'}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{money(r.fullTotal)}</td>
+                        </tr>)}</tbody>
+                  </table>}
+                </>
               )}
               {tab === 'customers' && (
                 <table>

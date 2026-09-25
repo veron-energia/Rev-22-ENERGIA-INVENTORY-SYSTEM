@@ -405,6 +405,8 @@ export interface InvoiceRevision {
 }
 
 export interface InvoiceItem {
+  // The name the line was sold under (354); never blank for lines written since.
+  item_name_snapshot?: string | null;
   id: string;
   invoice_id: string;
   product_id: string | null;
@@ -573,6 +575,8 @@ export interface Commission {
   reversal_reason: string | null;
   created_at: string;
   reversed_at: string | null;
+  /** 'instalment': earned on a part payment while the invoice was still being paid (357). */
+  earning_basis?: 'settlement' | 'instalment';
 }
 
 export interface CommissionPayout {
@@ -729,6 +733,15 @@ export interface StaffCommission {
   invoice_total: number; share_ratio: number; rate: number; commission_amount: number;
   status: 'earned' | 'reversed' | 'paid'; invoice_paid_date: string | null;
   payout_id: string | null; reversed_at: string | null; reversal_reason: string | null; created_at: string;
+  /** 'instalment': earned on a part payment while the invoice was still being paid (357). */
+  earning_basis?: 'settlement' | 'instalment';
+}
+/** One row of commission_instalment_backfill: what registering earlier part payments would add.
+ *  'sales' rows are not money owed: they are earlier receipts moved into this month in the
+ *  Sales by Service Staff report (358). */
+export interface InstalmentBackfillRow {
+  ledger: 'staff' | 'affiliate' | 'sales'; beneficiary_id: string; beneficiary_name: string | null;
+  invoice_id: string; invoice_no: string; earned_amount: number; blocked_amount: number; credit_date: string;
 }
 export interface StaffCommissionPayout {
   id: string; payout_month: string; staff_id: string; total_amount: number;
