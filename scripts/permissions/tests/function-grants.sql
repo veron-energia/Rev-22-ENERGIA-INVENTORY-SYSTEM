@@ -38,7 +38,10 @@ declare
                              -- 360: what stops a voucher unit switching back
                              'therapy_switch_back_blocker',
                              -- 361: the products a promotion line holds
-                             'invoice_line_stock_products'];
+                             'invoice_line_stock_products',
+                             -- 362: a correction settles the therapy of the lines it changes
+                             'create_purchased_therapy_for_invoice','therapy_units_before_correction',
+                             'settle_corrected_therapy_units','issue_therapy_of_corrected_lines'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

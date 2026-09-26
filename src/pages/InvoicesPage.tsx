@@ -53,6 +53,16 @@ const currentPaymentsOf = (pays: InvoicePayment[]) => pays.filter(p =>
   && !pays.some(r => (r as any).corrects_payment_id === p.id && (r as any).entry_kind === 'correction_reversal'));
 /** The calendar day the money was received, in the business's time zone. */
 const sgDateOf = (p: InvoicePayment) => calendarDate((p as any).effective_at || p.created_at, 'Asia/Singapore');
+/** 362: what a correction did to the therapy of the lines it changed, as one
+ *  sentence, or null when it did nothing. */
+const correctionTherapyNote = (t: { closed?: string[]; moved?: string[]; issued?: string[] } | null | undefined): string | null => {
+  const parts = [
+    t?.closed?.length ? `closed unused therapy ${t.closed.join(', ')}` : null,
+    t?.moved?.length ? `moved ${t.moved.join(', ')} to the new line` : null,
+    t?.issued?.length ? `issued ${t.issued.join(', ')}` : null,
+  ].filter(Boolean);
+  return parts.length ? `This correction ${parts.join('; ')}.` : null;
+};
 
 const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   const cls = s === 'completed_foc' ? 'badge-success' : s === 'paid' ? 'badge-success' : s === 'partially_paid' ? 'badge-primary'
@@ -294,6 +304,9 @@ const InvoicesPage: React.FC = () => {
   // A created invoice whose detail view could not be opened. Held so the id is
   // never lost and the operator is never told to create it again.
   const [createdPending, setCreatedPending] = useState<{ id: string; message: string } | null>(null);
+  // 362: therapy a saved correction closed, moved or issued. Said once, so the
+  // operator can tell the customer; the units' own history keeps the detail.
+  const [therapyNote, setTherapyNote] = useState<string | null>(null);
   // Set when a correction is refused because the invoice predates stock
   // snapshots. The review replaces the bare error with the actual evidence.
   const [stockReviewFor, setStockReviewFor] = useState<string | null>(null);
@@ -1021,6 +1034,7 @@ const InvoicesPage: React.FC = () => {
       return;
     }
     const newInvoiceId = editingInvoiceId ? null : (typeof data === 'string' ? data : (data as any)?.id ?? null);
+    if (editingInvoiceId) setTherapyNote(correctionTherapyNote((data as any)?.therapy));
     noteLocalChangeRef.current([newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[]);
     setCorrectionPreview(null);
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
@@ -3981,6 +3995,13 @@ const InvoicesPage: React.FC = () => {
             })()}
           </div>
         </Modal>
+      )}
+
+      {therapyNote && (
+        <div role="status" className="alert alert-info" data-testid="correction-therapy-note" style={{ margin: '12px 0' }}>
+          <div>{therapyNote}</div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setTherapyNote(null)}>Dismiss</button>
+        </div>
       )}
 
       {/* Refund / cancel request modal */}
