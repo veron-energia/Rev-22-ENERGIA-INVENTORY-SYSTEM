@@ -34,7 +34,9 @@ declare
                              'credit_lot_chain','credit_lot_current','trim_released_paid_credit',
                              'reclaim_released_credit_of_removed_lines','refuse_settled_credit_line_raise',
                              -- 359: package coverage and the refund rule's "used"
-                             'therapy_services_coverage','therapy_unit_consumed'];
+                             'therapy_services_coverage','therapy_unit_consumed',
+                             -- 360: what stops a voucher unit switching back
+                             'therapy_switch_back_blocker'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

@@ -42,9 +42,10 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * so a failure leaves nothing half-done — and an overlapping start date asks
  * first and records nothing until it is confirmed.
  *
- * Vouchers can be collected a few at a time up to the number, as before. Who
- * may hand them over is unchanged: an Owner or Manager. Anyone at the counter
- * can record the choice and start therapy, which is what they could do before.
+ * Vouchers can be collected a few at a time up to the number. Anyone at the
+ * counter can record the choice, start therapy and hand vouchers over, as
+ * anyone can when claiming a Legacy entitlement as vouchers; the page still
+ * passes canCollectVouchers so a narrower rule can be put back in one place.
  */
 export const PurchasedClaimPanel: React.FC<{
   purchasedId: string;

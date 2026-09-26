@@ -11,16 +11,18 @@
 --     still be started;
 --   * collected vouchers make a unit "used" for refunds, in the guided flow and
 --     in the engine; uncollected ones are withdrawn;
---   * a unit taken as vouchers is not listed as unlimited therapy, is listed
---     as unclaimed only while vouchers are owed, and — unchanged — still stops
---     the same package being bought again while it is current.
+--   * a unit taken as vouchers is not listed as unlimited therapy, and is
+--     listed as unclaimed only while vouchers are owed;
+--   * (360) a unit taken as vouchers no longer stops the same package being
+--     bought again, vouchers-only packages included, and cannot then be
+--     switched back into a second current period of that package.
 --
 -- Disposable database only; everything is rolled back.
 begin;
 do $$
 declare own uuid:=gen_random_uuid(); stf uuid:=gen_random_uuid(); tag text:=substr(md5(random()::text),1,6);
  st uuid; c uuid; c2 uuid; c3 uuid; c4 uuid; c5 uuid; pm uuid; inv5 uuid; inv6 uuid; inv7 uuid; u5 uuid; u6 uuid;
- u7 uuid; ua uuid; ub uuid; uc uuid; d6 date; svc_pr uuid; svc_f uuid; svc_old uuid; v1 uuid; v2 uuid; vdisc uuid;
+ u7 uuid; ua uuid; ub uuid; uc uuid; d6 date; inv8 uuid; u9 uuid; svc_pr uuid; svc_f uuid; svc_old uuid; v1 uuid; v2 uuid; vdisc uuid;
  p_unl uuid; p_ch uuid; p_v uuid; inv uuid; inv2 uuid; inv3 uuid; inv4 uuid; it uuid;
  u uuid; u2 uuid; u3 uuid; u4 uuid; r jsonb; plan jsonb; req jsonb; res jsonb; rq uuid; n int; s text;
  ent uuid;
@@ -204,19 +206,20 @@ begin
  r:=customer_overview(c2);
  if not exists(select 1 from jsonb_array_elements(r->'purchased_therapy') x where x->>'benefit'='voucher') then
   raise exception 'The customer overview does not say the unit was taken as vouchers'; end if;
- -- … and, as before, the same package cannot be bought again while it is current
+ -- … and (360) the same package can be bought again. Left unpaid here, so no
+ -- second unit changes what the checks below see.
  perform set_config('request.jwt.claim.sub',own::text,true);
- begin
-  perform create_invoice(st,c2,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_ch,'quantity',1)));
-  raise exception 'The repurchase rule changed';
- exception when others then if sqlerrm not like '%already has a current entitlement%' then raise; end if; end;
+ perform create_invoice(st,c2,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_ch,'quantity',1)));
+ -- a vouchers-only package can be bought, and paid for, a second time
  insert into unlimited_therapy_store_prices(package_id,store_id,selling_price,available_at_store) values(p_v,st,200,true);
  inv5:=create_invoice(st,c4,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_v,'quantity',1)));
  perform record_invoice_payment(inv5,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',200)),gen_random_uuid());
- begin
-  perform create_invoice(st,c4,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_v,'quantity',1)));
-  raise exception 'A second vouchers-only package was sold next to a current one';
- exception when others then if sqlerrm not like '%already has a current entitlement%' then raise; end if; end;
+ inv5:=create_invoice(st,c4,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_v,'quantity',1)));
+ perform record_invoice_payment(inv5,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',200)),gen_random_uuid());
+ if (select count(*) from purchased_therapy_entitlements where customer_id=c4 and package_id=p_v and status='active')<>2 then
+  raise exception 'A second vouchers-only package could not be paid for'; end if;
+ if (select coalesce(sum(quantity),0) from customer_reward_vouchers where customer_id=c4 and voucher_id=v1 and status='held')<>10 then
+  raise exception 'The second vouchers-only package did not issue its vouchers'; end if;
 
  -- a pending choice is listed as a choice still to be made
  inv4:=create_invoice(st,c3,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_ch,'quantity',1)));
@@ -297,6 +300,14 @@ begin
  if (select (status, scheduled_date, benefit_choice) from purchased_therapy_entitlements where id=uc)
     is distinct from ('pending_activation'::text, null::date, 'voucher'::text) then
   raise exception 'Taking vouchers on a rescheduled choice unit failed'; end if;
+ -- (360) an unpaid repurchase also stops it switching back, and the switch is not offered
+ inv8:=create_invoice(st,c5,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_ch,'quantity',1)));
+ if (purchased_therapy_unit_state(uc)->>'can_switch')::boolean then
+  raise exception 'Switch still offered with an unpaid repurchase: %', purchased_therapy_unit_state(uc)->>'switch_blocked_reason'; end if;
+ begin
+  perform switch_therapy_benefit(uc,'unlimited','changed mind',gen_random_uuid());
+  raise exception 'A voucher unit was switched back while a repurchase was unpaid';
+ exception when others then if sqlerrm not like '%an unpaid invoice%' then raise; end if; end;
 
  -- ---- 6. refunds: collected vouchers are used ----------------------------------
  -- the Purchased-tab refund cannot terminate it
@@ -341,6 +352,20 @@ begin
  perform set_config('request.jwt.claim.sub',stf::text,true);
  perform claim_purchased_therapy(u4,'voucher',null,null,null,false,null,gen_random_uuid(),null);
  perform set_config('request.jwt.claim.sub',own::text,true);
+ -- (360) the customer buys the package again; the voucher unit can then not be
+ -- switched back into a second current period of it
+ inv8:=create_invoice(st,c3,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_package_id',p_ch,'quantity',1)));
+ perform record_invoice_payment(inv8,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',500)),gen_random_uuid());
+ select e.id into u9 from purchased_therapy_entitlements e where e.invoice_id=inv8;
+ if u9 is null then raise exception 'The repurchase created no unit'; end if;
+ begin
+  if (purchased_therapy_unit_state(u4)->>'can_switch')::boolean then
+   raise exception 'Switch still offered next to a later purchase'; end if;
+  perform switch_therapy_benefit(u4,'unlimited','customer changed mind',gen_random_uuid());
+  raise exception 'A voucher unit was switched into a second current period of the package';
+ exception when others then if sqlerrm not like '%cannot be switched to unlimited therapy%' then raise; end if; end;
+ if (select benefit_choice from purchased_therapy_entitlements where id=u4)<>'voucher' then
+  raise exception 'A refused switch changed the unit'; end if;
  plan:=invoice_action_plan(inv4,'refund_full');
  if exists(select 1 from jsonb_array_elements(plan->'overrides_required') x where x->>'code'='therapy_activated') then
   raise exception 'Vouchers chosen but not collected were treated as used'; end if;
@@ -350,6 +375,6 @@ begin
  select status into s from therapy_entitlements where id=(select voucher_entitlement_id from purchased_therapy_entitlements where id=u4);
  if s<>'cancelled' then raise exception 'The uncollected voucher allowance was not withdrawn (status %)', s; end if;
 
- raise notice 'PASS: packages save any kind with SKU, services and session-voucher lists; units copy services with their limits; Claim chooses and starts therapy or hands over vouchers in one step, an overlap asks first and records nothing, retries do not repeat; collected vouchers make a unit used in the guided flow and the engine while uncollected ones are withdrawn; a scheduled unit can be moved or started early; a unit taken as vouchers is not shown as unlimited therapy, is listed only while vouchers are owed, and the repurchase rule is unchanged';
+ raise notice 'PASS: packages save any kind with SKU, services and session-voucher lists; units copy services with their limits; Claim chooses and starts therapy or hands over vouchers in one step, an overlap asks first and records nothing, retries do not repeat; collected vouchers make a unit used in the guided flow and the engine while uncollected ones are withdrawn; a scheduled unit can be moved or started early; a unit taken as vouchers is not shown as unlimited therapy, is listed only while vouchers are owed, lets the package be bought again, and cannot be switched into a second current period';
 end $$;
 rollback;

@@ -1481,7 +1481,10 @@ const TherapyPage: React.FC = () => {
       {claimFor && (
         <PurchasedClaimPanel purchasedId={claimFor.id}
           customerName={cName(claimFor.customer_id)} customerPhone={cPhone(claimFor.customer_id)}
-          canCollectVouchers={canManage} canSwitch={canManage}
+          // Anyone at the counter hands a purchase's vouchers over, as anyone
+          // can when claiming a Legacy entitlement as vouchers (owner's
+          // decision, 25 Sep 2026). Switching stays Owner/Manager.
+          canCollectVouchers canSwitch={canManage}
           onDone={() => { void load(); }}
           onSwitch={() => { const id = claimFor.id; setClaimFor(null); setBenefitFor(id); }}
           onClose={() => setClaimFor(null)} />
@@ -1492,7 +1495,11 @@ const TherapyPage: React.FC = () => {
           onClose={() => setBenefitFor(null)} />
       )}
       {claimVouchersFor && (
-        <VoucherClaimPanel entitlementId={claimVouchersFor} canClaim={canManage}
+        <VoucherClaimPanel entitlementId={claimVouchersFor}
+          // A purchase's voucher allowance is also listed on the Legacy tab; it
+          // follows the purchase's rule there too. Other voucher rewards (credit
+          // packages, premium bundles) stay Owner/Manager, as before.
+          canClaim={canManage || legacy.find(l => l.id === claimVouchersFor)?.claim_source_type === 'therapy_package'}
           onClaimed={() => { void load(); }}
           onClose={() => setClaimVouchersFor(null)} />
       )}
