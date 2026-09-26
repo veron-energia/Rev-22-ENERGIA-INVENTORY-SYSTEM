@@ -36,7 +36,9 @@ declare
                              -- 359: package coverage and the refund rule's "used"
                              'therapy_services_coverage','therapy_unit_consumed',
                              -- 360: what stops a voucher unit switching back
-                             'therapy_switch_back_blocker'];
+                             'therapy_switch_back_blocker',
+                             -- 361: the products a promotion line holds
+                             'invoice_line_stock_products'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

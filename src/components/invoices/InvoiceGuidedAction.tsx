@@ -249,6 +249,15 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     const r = data as any;
     if (r?.confirmation_required) {
       setPlan(r.revised_plan);
+      // The revised plan can list goods the first one did not (a promotion's
+      // stock, since 361); give each its default so the fields show and the
+      // next confirmation carries them. Figures already entered are kept.
+      setStockConfirm(cur => ({
+        ...Object.fromEntries(((r.revised_plan?.stock ?? []) as PlanStock[]).map(s => [s.movement_id,
+          { sellable_quantity: s.proposed_sellable, damaged_quantity: 0, not_returned_quantity: 0 }])),
+        ...Object.fromEntries(Object.entries(cur).filter(([id]) =>
+          ((r.revised_plan?.stock ?? []) as PlanStock[]).some(s => s.movement_id === id))),
+      }));
       setError('What this would do has changed since the request was raised. The revised effects are shown below — review them and confirm again.');
       return;
     }
