@@ -137,6 +137,10 @@ planNow = () => basePlan({ action: 'refund_partial', refund_amount: 100,
   effects: { money_returned: { total: 100, destinations: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 100 }] },
              benefits: [{ kind: 'paid', holder: 'Jenny Lim', credit_removed: 50, accounting_value: 47.62, line: 'Credit Package' }],
              stock_returned: [{ movement_id: 'M1', product_name: 'Pet Corset', store_name: 'Adelphi', outstanding: 2, proposed_sellable: 1 }],
+             therapy_closed: [
+               { entitlement_no: 'UTP-0000042', package: '3 months - Unlimited', used: false, benefit: 'unlimited', line: 'Bundle A' },
+               { entitlement_no: 'UTP-0000043', package: 'Choice', used: false, benefit: 'voucher', line: 'Bundle B' },
+               { entitlement_no: 'UTP-0000044', package: '6 months - Unlimited', used: true, benefit: 'unlimited', line: 'Bundle C' }],
              overrides: [] } });
 await click(byText('button', 'Continue'));
 check('asks for a reason', text().includes('Reason'));
@@ -151,6 +155,11 @@ check('reporting the credit actually removed, not the accounting share',
   text().includes('S$50.00 of paid credit') && !text().includes('S$47.62 of paid credit'));
 check('naming who holds it', text().includes('Jenny Lim'));
 check('stock is its own section', text().includes('Stock returned') && text().includes('Adelphi'));
+// 363: therapy a promotion granted is named, and a used unit says it needs the override.
+check('therapy closed is its own section', text().includes('Therapy closed') && text().includes('UTP-0000042'));
+check('an unused unit says so', /UTP-0000042[^]*not used yet/.test(text()));
+check('uncollected vouchers are said to be withdrawn', /UTP-0000043[^]*vouchers not yet collected are withdrawn/.test(text()));
+check('a used unit ends only with the override', /UTP-0000044[^]*has been used[^]*override/.test(text()));
 check('names the payment destination', text().includes('PayNow'));
 check('and does not imply money is sent automatically',
   text().includes('does not send money anywhere'));
@@ -210,6 +219,76 @@ await click(byText('button', 'Confirm cancellation'));
 check('reports the cancellation', text().includes('Invoice cancelled.'));
 check('does not claim a refund that was not recorded', !text().includes('Refund of'));
 check('and keeps the follow-up visible', text().includes('S$200.00 is still due back'));
+
+// ---------------------------------------------------------------------
+// 363: two lines whose therapy has been used, each with its own override.
+// ---------------------------------------------------------------------
+calls.length = 0;
+const therapyOverride = (id, name) => ({ code: 'therapy_activated', amount_required: true, default_amount: 0, invoice_item_id: id,
+  message: `Therapy from ${name} has been started or has ended (UTP-${id}). An Owner or Manager must state the refund amount.` });
+planNow = () => basePlan({ action: 'cancel', refund_amount: 0, refund_due: 0,
+  lines: [{ invoice_item_id: 'LA', name: 'Bundle A', line_kind: 'promotion', quantity: 1, selected_quantity: 1, amount: 0 },
+          { invoice_item_id: 'LB', name: 'Bundle B', line_kind: 'promotion', quantity: 1, selected_quantity: 1, amount: 0 }],
+  stock: [], sources: [],
+  overrides_required: [therapyOverride('LA', 'Bundle A'), therapyOverride('LB', 'Bundle B')], requires_override: true,
+  summary: ['Cancel INV-2026-0207 and clear what is still owed.'],
+  effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [],
+             therapy_closed: [{ entitlement_no: 'UTP-A', package: '3 months', used: true, line: 'Bundle A' },
+                              { entitlement_no: 'UTP-B', package: 'Choice', used: true, line: 'Bundle B' }],
+             therapy_left: [{ entitlement_no: 'UTP-OLD', package: '6 months', line: 'no invoice line' }] } });
+stub.resolveResult = { status: 'approved', refund_recorded: false, refunded_amount: 0,
+  cancellation: { success: true }, refund: null, goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true });
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Customer withdrew');
+await click(byText('button', 'Continue'));
+check('therapy left running is shown to the approver', text().includes('Therapy left running') && text().includes('UTP-OLD'));
+check('two lines needing the same override are not sent back one at a time', !text().includes('one at a time'));
+const field = label => document.querySelector(`input[aria-label="${label}"]`);
+check('each line has its own reason and amount',
+  !!field('Reason for override: therapy_activated (Bundle A)') && !!field('Reason for override: therapy_activated (Bundle B)')
+  && !!field('Amount for override: therapy_activated (Bundle A)') && !!field('Amount for override: therapy_activated (Bundle B)'));
+await type(field('Reason for override: therapy_activated (Bundle A)'), 'A month used');
+await type(field('Amount for override: therapy_activated (Bundle A)'), '100');
+await type(field('Reason for override: therapy_activated (Bundle B)'), 'One facial collected');
+await type(field('Amount for override: therapy_activated (Bundle B)'), '50');
+await click(byText('button', 'Confirm cancellation'));
+const sent = calls.find(c => c.name === 'resolve_invoice_action_v2')?.args.p_overrides ?? [];
+check('each override is sent with its own line, reason and amount',
+  JSON.stringify(sent) === JSON.stringify([
+    { code: 'therapy_activated', reason: 'A month used', amount: 100, invoice_item_id: 'LA' },
+    { code: 'therapy_activated', reason: 'One facial collected', amount: 50, invoice_item_id: 'LB' }]),
+  JSON.stringify(sent));
+
+// ---------------------------------------------------------------------
+// 363: a reason-only override still needs its reason, and a cancellation
+// that records its refund states the amount the approver gave.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = () => basePlan({ action: 'cancel', refund_amount: 0, refund_due: 610,
+  lines: [{ invoice_item_id: 'LV', name: 'Voucher Bundle', line_kind: 'promotion', quantity: 1, selected_quantity: 1, amount: 500 },
+          { invoice_item_id: 'LP', name: 'Therapy Bundle', line_kind: 'promotion', quantity: 1, selected_quantity: 1, amount: 110 }],
+  stock: [], sources: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 610 }],
+  overrides_required: [
+    { code: 'therapy_activated', amount_required: false, default_amount: 500, invoice_item_id: 'LV', message: 'Therapy from Voucher Bundle has been started. The refund for this line is the value of its unused vouchers or credit, as shown above; an Owner or Manager must give a reason.' },
+    { code: 'therapy_activated', amount_required: true, default_amount: 110, invoice_item_id: 'LP', message: 'Therapy from Therapy Bundle has been started. An Owner or Manager must state the refund amount.' }],
+  requires_override: true, summary: ['Cancel INV-2026-0207 and clear what is still owed.'],
+  effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [] } });
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 600, cancellation: { success: true }, refund: {}, goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true });
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Customer withdrew');
+await click(byText('button', 'Continue'));
+await type(field('Reason for override: therapy_activated (Therapy Bundle)'), 'A month used');
+await type(field('Amount for override: therapy_activated (Therapy Bundle)'), '100');
+check('a reason-only override without its reason keeps Confirm disabled',
+  byText('button', 'Confirm cancellation')?.disabled === true && text().includes('Give a reason for each override.'));
+await type(field('Reason for override: therapy_activated (Voucher Bundle)'), 'Vouchers unused');
+check('once every reason is given Confirm is enabled', byText('button', 'Confirm cancellation')?.disabled === false);
+check('a cancellation compares the stated figure with the refund due, not with 0',
+  text().includes('Refund stated by override: S$600.00') && text().includes('the plan above shows S$610.00'));
+await click(document.querySelector('.invoice-guided-refunddue input'));
+check('recording the refund names the amount that will be refunded', !!byText('button', 'Confirm cancellation and S$600.00 refund'));
 
 // ---------------------------------------------------------------------
 // Layout, and abandoning a half-filled form.

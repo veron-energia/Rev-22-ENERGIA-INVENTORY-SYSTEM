@@ -109,7 +109,7 @@ rules and the completed payout functionality are untouched.
 |---|---|---|---|
 | Products | Yes | outstanding deductions, defaulted to the store they left | outside the window |
 | Vouchers (issued) | Yes | unused units revoked; tracked stock restored | any unit redeemed |
-| Promotions | Yes | the components actually issued on that invoice | as for their components |
+| Promotions | Yes | the components actually issued on that invoice, including its goods and its unused therapy units (363; see PROMOTION_THERAPY_REFUNDS.md) | as for their components: therapy that has been used ends only with an amount |
 | Purchased therapy | Yes | unused entitlements cancelled | **activated — terminated on an override with a stated amount** |
 | Therapy Services | Yes | undelivered sessions; capped at the unused portion | any session delivered |
 | Credit packages | Yes | remaining paid and bonus credit | any credit spent |
