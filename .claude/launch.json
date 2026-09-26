@@ -39,6 +39,16 @@
         "vite.therapy-services-preview.config.mts"
       ],
       "port": 5197
+    },
+    {
+      "name": "affiliate-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.affiliate-preview.config.mts"
+      ],
+      "port": 5196
     }
   ]
 }

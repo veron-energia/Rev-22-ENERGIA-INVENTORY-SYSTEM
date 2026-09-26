@@ -26,20 +26,20 @@ const AffiliateLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
     <>
       {NAV.map(({ to, label, icon: Icon }) => (
         <NavLink key={to} to={to} onClick={() => setOpen(false)}
-          className={({ isActive }) => 'aff-navlink' + (isActive ? ' active' : '')}>
+          className={({ isActive }) => 'portal-navlink' + (isActive ? ' active' : '')}>
           <Icon size={18} /> {label}
         </NavLink>
       ))}
-      <button className="aff-navlink danger" onClick={doSignOut}>
+      <button className="portal-navlink danger" onClick={doSignOut}>
         <LogOut size={18} /> Sign Out
       </button>
     </>
   );
 
   return (
-    <div className="affiliate-shell">
+    <div className="portal-shell">
       {/* Sidebar (desktop) */}
-      <aside className="affiliate-sidebar">
+      <nav className="portal-sidebar" aria-label="Affiliate portal">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px 16px' }}>
           <div style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Leaf size={20} color="#fff" />
@@ -50,27 +50,27 @@ const AffiliateLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
           </div>
         </div>
         {links}
-      </aside>
+      </nav>
 
       {/* Mobile header (sticky, above content) */}
-      <header className="affiliate-mobile-header">
-        <div className="affiliate-mobile-bar">
-          <div className="affiliate-brand">
+      <header className="portal-mobile-header">
+        <div className="portal-mobile-bar">
+          <div className="portal-brand">
             <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto' }}>
               <Leaf size={17} color="#fff" />
             </div>
             <span>Energia Affiliate</span>
           </div>
-          <button className="affiliate-hamburger" aria-label={open ? 'Close menu' : 'Open menu'}
-            aria-expanded={open} aria-controls="affiliate-mobile-nav" onClick={() => setOpen(v => !v)}>
+          <button className="portal-hamburger" aria-label={open ? 'Close menu' : 'Open menu'}
+            aria-expanded={open} aria-controls="portal-mobile-nav" onClick={() => setOpen(v => !v)}>
             {open ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
-        {open && <nav id="affiliate-mobile-nav" className="affiliate-mobile-nav">{links}</nav>}
+        {open && <nav id="portal-mobile-nav" className="portal-mobile-nav">{links}</nav>}
       </header>
 
-      <main className="affiliate-main">
-        <div className="affiliate-content">{children}</div>
+      <main className="portal-main">
+        <div className="portal-content">{children}</div>
       </main>
     </div>
   );

@@ -110,7 +110,7 @@ const AffiliateJoinPage: React.FC = () => {
         therapy stay exactly as they are. If anything needs checking we will review it and come
         back to you — nothing is duplicated and nothing is lost.
       </p>
-      <div className="affiliate-form-grid-2">
+      <div className="portal-form-grid-2">
         <Field label="First Name"><input className="input" value={f.first} onChange={on('first')} /></Field>
         <Field label="Last Name"><input className="input" value={f.last} onChange={on('last')} /></Field>
       </div>

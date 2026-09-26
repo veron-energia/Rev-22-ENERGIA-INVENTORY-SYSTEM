@@ -17,7 +17,7 @@ const AffiliateDashboardPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your Energia affiliate overview</p>
-      {err && <p className="affiliate-break" style={{ color: 'var(--danger)' }}>{err}</p>}
+      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
       {!d ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>My Network</h3>

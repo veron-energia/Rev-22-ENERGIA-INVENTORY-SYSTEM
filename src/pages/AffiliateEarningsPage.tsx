@@ -15,7 +15,7 @@ const AffiliateEarningsPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Earnings</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>A full breakdown of the commission your network has generated.</p>
-      {err && <p className="affiliate-break" style={{ color: 'var(--danger)' }}>{err}</p>}
+      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
       {!e ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <StatGrid>
@@ -35,7 +35,7 @@ const AffiliateEarningsPage: React.FC = () => {
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>By Month</h3>
           {/* By Month is compact enough to stay a (scrollable) table on phones */}
           <div className="card" style={{ padding: 0, marginBottom: 22 }}>
-            <div className="affiliate-table-wrap">
+            <div className="portal-table-wrap">
               <table className="table" style={{ width: '100%' }}>
                 <thead><tr><th>Month</th><th style={{ textAlign: 'right' }}>Tier 1</th><th style={{ textAlign: 'right' }}>Tier 2</th><th style={{ textAlign: 'right' }}>Total</th></tr></thead>
                 <tbody>

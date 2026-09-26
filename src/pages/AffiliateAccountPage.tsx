@@ -5,7 +5,7 @@ import { portalRpc, dateStr } from '../lib/affiliatePortal';
 import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
-  <div className="affiliate-kv">
+  <div className="portal-kv">
     <span className="k">{label}</span>
     <span className="v">{value}</span>
   </div>
@@ -39,7 +39,7 @@ const AffiliateAccountPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Account</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your affiliate account details.</p>
-      {err && <p className="affiliate-break" style={{ color: 'var(--danger)' }}>{err}</p>}
+      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
       {!me ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <div className="card" style={{ padding: 18, marginBottom: 20 }}>

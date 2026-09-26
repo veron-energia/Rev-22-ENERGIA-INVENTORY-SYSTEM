@@ -14,7 +14,7 @@ const AffiliatePayoutsPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Payout History</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Payouts issued to you by Energia.</p>
-      {err && <p className="affiliate-break" style={{ color: 'var(--danger)' }}>{err}</p>}
+      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
       {!rows ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <DesktopTableCard>

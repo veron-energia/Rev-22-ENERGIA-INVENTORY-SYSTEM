@@ -169,13 +169,13 @@ export const ReconciliationPanel: React.FC<{ t: SettlementTotals }> = ({ t }) =>
   return (
     <div className="card" style={{ padding: 14, marginTop: 12 }}>
       <h4 style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Reconciliation</h4>
-      <div className="affiliate-kv"><span className="k">Total Settlement (ours)</span>
+      <div className="portal-kv"><span className="k">Total Settlement (ours)</span>
         <span className="v">{money(t.settlement)} — revenue less fees, before expenses</span></div>
-      <div className="affiliate-kv"><span className="k">Total Income (ours)</span>
+      <div className="portal-kv"><span className="k">Total Income (ours)</span>
         <span className="v">{money(t.income)} — settlement less expenses</span></div>
-      <div className="affiliate-kv"><span className="k">TikTok reported net settlement</span>
+      <div className="portal-kv"><span className="k">TikTok reported net settlement</span>
         <span className="v">{money(t.tiktok_net_settlement)} — imported source total, used for reconciliation</span></div>
-      <div className="affiliate-kv"><span className="k">Difference (Income − TikTok)</span>
+      <div className="portal-kv"><span className="k">Difference (Income − TikTok)</span>
         <span className="v" style={{ color: diff === 0 ? 'var(--success)' : 'var(--warning, #b45309)' }}>
           {money(diff)}
           {diff === 0

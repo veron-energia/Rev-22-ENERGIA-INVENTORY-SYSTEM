@@ -50,14 +50,14 @@ const QRCodeCard: React.FC<Props> = ({ url, title, caption, filename }) => {
   const canShare = typeof navigator !== 'undefined' && !!(navigator as any).share;
 
   return (
-    <div className="card affiliate-qr-card">
+    <div className="card portal-qr-card">
       {title && <h3 style={{ marginBottom: 6, fontSize: 15 }}>{title}</h3>}
       <div style={{ display: 'flex', justifyContent: 'center', padding: 8 }}>
         {err ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{err}</p>
              : <canvas ref={canvasRef} />}
       </div>
-      <div className="affiliate-break" style={{ fontSize: 12, color: 'var(--text-muted)', margin: '6px 0 12px' }}>{url}</div>
-      <div className="affiliate-qr-actions">
+      <div className="portal-break" style={{ fontSize: 12, color: 'var(--text-muted)', margin: '6px 0 12px' }}>{url}</div>
+      <div className="portal-qr-actions">
         <button className="btn btn-secondary" onClick={copy} style={{ gap: 6 }}>
           {copied ? <Check size={15} /> : <Copy size={15} />}{copied ? 'Copied' : 'Copy Link'}
         </button>
