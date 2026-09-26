@@ -29,6 +29,11 @@ type Plan = {
     benefits: { kind: string; holder?: string; credit_removed?: number | null; units_revoked?: number | null; accounting_value?: number; line?: string }[];
     stock_returned: PlanStock[];
     overrides: { code: string; message: string }[];
+    /** Therapy a promotion granted, closed with its line (363). A used unit
+     *  ends only on the override that states the amount. */
+    therapy_closed?: { entitlement_no: string; package?: string; used: boolean; benefit?: string | null; line?: string }[];
+    /** Used therapy on no invoice line (a correction removed it), which the action leaves running. */
+    therapy_left?: { entitlement_no: string; package?: string; line?: string }[];
   };
 };
 
@@ -63,28 +68,39 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   // therapy that has started, or a package whose vouchers were collected, has
   // no valuation rule, so the server refuses the override without one.
   const [overrideAmounts, setOverrideAmounts] = useState<Record<string, string>>({});
+  /** One override's own key: an override that names its line is that line's
+   *  alone, so two lines needing the same override each get their own reason
+   *  and amount (the server matches them by line, 363). */
+  const overrideKey = (o: Plan['overrides_required'][number]) =>
+    o.invoice_item_id ? `${o.code}:${o.invoice_item_id}` : o.code;
+  /** The line an override belongs to, by name, for its labels. */
+  const overrideLine = (o: Plan['overrides_required'][number]) =>
+    o.invoice_item_id ? plan?.lines.find(l => l.invoice_item_id === o.invoice_item_id)?.name : undefined;
   /** The amount box for one override: what was typed, else the plan's figure. */
   const typedAmount = (o: Plan['overrides_required'][number]) =>
-    overrideAmounts[o.code] ?? (o.default_amount != null ? String(o.default_amount) : '');
-  // The server matches a stated amount to its line by the override's code, so
-  // two lines needing an amount under one code cannot each get their own yet.
-  // Those are refunded one line at a time (Partial refund) instead.
+    overrideAmounts[overrideKey(o)] ?? (o.default_amount != null ? String(o.default_amount) : '');
   const amountOverrides = (plan?.overrides_required ?? []).filter(o => o.amount_required);
-  const sharedAmountCode = amountOverrides.some((o, i) => amountOverrides.findIndex(x => x.code === o.code) !== i);
+  // Two amounts under one key cannot be told apart (an override that names no
+  // line); those lines are refunded one at a time (Partial refund) instead.
+  const sharedAmountKey = amountOverrides.some((o, i) => amountOverrides.findIndex(x => overrideKey(x) === overrideKey(o)) !== i);
   const amountProblem = (() => {
-    if (sharedAmountCode) return 'More than one line on this invoice needs an amount stated by an Owner or Manager. Refund those lines one at a time with Partial refund, so each gets its own amount.';
+    if (sharedAmountKey) return 'More than one line on this invoice needs an amount stated by an Owner or Manager. Refund those lines one at a time with Partial refund, so each gets its own amount.';
     for (const o of amountOverrides) {
       const t = typedAmount(o).trim();
       const n = Number(t);
       if (t === '' || !Number.isFinite(n) || n < 0) return 'Enter the amount to refund (S$0 or more) for each override that asks for one.';
-      if (!(overrideReasons[o.code] ?? '').trim()) return 'Give a reason for each override.';
     }
+    // Every override needs its reason, including those that take no amount.
+    if ((plan?.overrides_required ?? []).some(o => !(overrideReasons[overrideKey(o)] ?? '').trim()))
+      return 'Give a reason for each override.';
     return null;
   })();
+  /** What the plan returns: a refund's amount, or on a cancellation the refund due. */
+  const planFigure = Number((plan?.action === 'cancel' ? plan?.refund_due : plan?.refund_amount) ?? 0);
   /** What will actually be refunded: the plan, with each stated amount in place of its line's figure. */
   const statedRefund = (() => {
-    const base = Number(plan?.refund_amount ?? 0);
-    if (!amountOverrides.length || sharedAmountCode) return base;
+    const base = planFigure;
+    if (!amountOverrides.length || sharedAmountKey) return base;
     return amountOverrides.reduce((sum, o) => sum - Number(o.default_amount ?? 0) + (Number(typedAmount(o)) || 0), base);
   })();
   const [recordRefund, setRecordRefund] = useState(false);
@@ -235,9 +251,10 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     if (amountProblem) { setBusy(false); setError(amountProblem); return; }
     const overrides = (plan?.overrides_required ?? []).map(o => {
       const typed = typedAmount(o);
+      const line = o.invoice_item_id ? { invoice_item_id: o.invoice_item_id } : {};
       return o.amount_required
-        ? { code: o.code, reason: overrideReasons[o.code] ?? '', amount: typed.trim() === '' ? null : Number(typed) }
-        : { code: o.code, reason: overrideReasons[o.code] ?? '' };
+        ? { code: o.code, reason: overrideReasons[overrideKey(o)] ?? '', amount: typed.trim() === '' ? null : Number(typed), ...line }
+        : { code: o.code, reason: overrideReasons[overrideKey(o)] ?? '', ...line };
     });
     const { data, error } = await supabase.rpc('resolve_invoice_action_v2', {
       p_request_id: requestRecordId, p_approve: true, p_note: reason.trim(),
@@ -487,6 +504,26 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                       </li>))}</ul>
                   </section>
                 )}
+                {(fx.therapy_closed ?? []).length > 0 && (
+                  <section className="invoice-guided-section">
+                    <h5>Therapy closed</h5>
+                    <ul>{(fx.therapy_closed ?? []).map(t => (
+                      <li key={t.entitlement_no}>{t.entitlement_no}{t.package ? <> — {t.package}</> : null}
+                        {t.used
+                          ? <> <strong>has been used</strong>: ends only with the override below</>
+                          : <> not used yet{t.benefit === 'voucher' ? '; vouchers not yet collected are withdrawn' : ''}</>}
+                        {t.line ? <span className="muted"> ({t.line})</span> : null}
+                      </li>))}</ul>
+                  </section>
+                )}
+                {(fx.therapy_left ?? []).length > 0 && (
+                  <section className="invoice-guided-section">
+                    <h5>Therapy left running</h5>
+                    <ul>{(fx.therapy_left ?? []).map(t => (
+                      <li key={t.entitlement_no}>{t.entitlement_no}{t.package ? <> — {t.package}</> : null}: has been used and
+                        is on no invoice line (a correction removed its line), so this does not end it.</li>))}</ul>
+                  </section>
+                )}
                 {(fx.stock_returned ?? []).length > 0 && (
                   <section className="invoice-guided-section">
                     <h5>Stock returned</h5>
@@ -498,7 +535,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                 {(plan.overrides_required ?? []).length > 0 && (
                   <section className="invoice-guided-section">
                     <h5>Overrides required</h5>
-                    <ul>{plan.overrides_required.map(o => <li key={o.code}>{o.message}</li>)}</ul>
+                    <ul>{plan.overrides_required.map((o, n) => <li key={`${overrideKey(o)}:${n}`}>{o.message}</li>)}</ul>
                   </section>
                 )}
               </>);
@@ -567,24 +604,24 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               <fieldset className="invoice-guided-overrides">
                 <legend>Override reasons</legend>
                 {plan.overrides_required.map((o, i) => (
-                  <div key={`${o.code}:${o.invoice_item_id ?? i}`}>
-                    <label><span>{o.message}</span>
-                      <input type="text" value={overrideReasons[o.code] ?? ''} required
-                        aria-label={`Reason for override: ${o.code}`}
-                        onChange={e => setOverrideReasons({ ...overrideReasons, [o.code]: e.target.value })} />
+                  <div key={`${overrideKey(o)}:${i}`}>
+                    <label><span>{overrideLine(o) ? <strong>{overrideLine(o)}: </strong> : null}{o.message}</span>
+                      <input type="text" value={overrideReasons[overrideKey(o)] ?? ''} required
+                        aria-label={`Reason for override: ${o.code}${overrideLine(o) ? ` (${overrideLine(o)})` : ''}`}
+                        onChange={e => setOverrideReasons({ ...overrideReasons, [overrideKey(o)]: e.target.value })} />
                     </label>
                     {o.amount_required && (
                       <label><span>Amount to refund for this (S$)</span>
                         <input type="number" min={0} step="0.01" required
-                          value={overrideAmounts[o.code] ?? (o.default_amount != null ? String(o.default_amount) : '')}
-                          aria-label={`Amount for override: ${o.code}`}
-                          onChange={e => setOverrideAmounts({ ...overrideAmounts, [o.code]: e.target.value })} />
+                          value={typedAmount(o)}
+                          aria-label={`Amount for override: ${o.code}${overrideLine(o) ? ` (${overrideLine(o)})` : ''}`}
+                          onChange={e => setOverrideAmounts({ ...overrideAmounts, [overrideKey(o)]: e.target.value })} />
                       </label>)}
                   </div>
                 ))}
-                {amountOverrides.length > 0 && !sharedAmountCode && Math.abs(statedRefund - Number(plan.refund_amount ?? 0)) > 0.004 && (
+                {amountOverrides.length > 0 && !sharedAmountKey && Math.abs(statedRefund - planFigure) > 0.004 && (
                   <p className="invoice-guided-warn" role="status">
-                    Refund stated by override: {money(statedRefund)} (the plan above shows {money(plan.refund_amount)}).
+                    Refund stated by override: {money(statedRefund)} (the plan above shows {money(planFigure)}).
                   </p>
                 )}
                 {amountProblem && <p className="invoice-guided-warn" role="alert">{amountProblem}</p>}
@@ -647,7 +684,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                     }
                     if (action === 'cancel') {
                       return recordRefund && Number(plan.refund_due ?? 0) > 0
-                        ? `Confirm cancellation and ${money(plan.refund_due)} refund`
+                        ? `Confirm cancellation and ${money(canApprove ? statedRefund : plan.refund_due)} refund`
                         : 'Confirm cancellation';
                     }
                     return amount > 0 ? `Confirm ${money(amount)} refund` : 'Confirm refund';
