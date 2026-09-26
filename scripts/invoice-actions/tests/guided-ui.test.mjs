@@ -18,6 +18,8 @@ const built = await build({
     resolveDir: process.cwd(), loader: 'ts',
   },
   bundle: true, write: false, format: 'esm', jsx: 'automatic',
+  // The dialog imports its own stylesheet; a static render has no use for it.
+  loader: { '.css': 'empty' },
   // The component only talks to Supabase inside effects, which do not run in a
   // static render; the stub keeps the import graph resolvable.
   plugins: [{ name: 'stub', setup(b) {

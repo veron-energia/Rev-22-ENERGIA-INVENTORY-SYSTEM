@@ -16,6 +16,19 @@ const TYPE_META: Record<string, { label: string; icon: React.ReactNode; cls: str
   adjustment: { label: 'Adjustment', icon: <SlidersHorizontal size={13} />, cls: 'badge-primary' },
 };
 
+/** One line under the invoice number: what was asked for. A guided request
+ *  records its action, its figure (a cancellation's refund due, otherwise the
+ *  amount returned) and the stock its plan takes back; an older request only
+ *  whether stock was to come back. */
+function invoiceRequestSummary(p: AdjustmentRequest['payload']): string {
+  if (!p?.plan) return p?.return_stock ? 'Return stock' : 'No stock return';
+  const cancel = p.action === 'cancel';
+  const what = cancel ? 'Cancel' : p.action === 'refund_partial' ? 'Refund some items' : 'Refund everything';
+  const figure = `S$${Number((cancel ? p.plan.refund_due : p.requested_amount) || 0).toFixed(2)}${cancel ? ' refund due' : ''}`;
+  const n = (p.plan.stock ?? []).length;
+  return `${what} · ${figure} · ${n === 0 ? 'no stock to take back' : `${n} stock line${n === 1 ? '' : 's'} to take back`}`;
+}
+
 const ApprovalsPage: React.FC = () => {
   const { profile } = useAuth();
   const navigate = useNavigate();
@@ -139,7 +152,7 @@ const ApprovalsPage: React.FC = () => {
                       <td style={{ fontSize: 13 }}>
                         {req.request_type === 'adjustment'
                           ? <><strong>{pName(p?.product_id)}</strong><div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{p?.current_qty} → {p?.new_qty} ({(p?.difference ?? 0) >= 0 ? '+' : ''}{p?.difference})</div></>
-                          : <>Invoice {p?.invoice_no}<div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{p?.return_stock ? 'Return stock' : 'No stock return'}</div></>}
+                          : <>Invoice {p?.invoice_no}<div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{invoiceRequestSummary(p)}</div></>}
                       </td>
                       <td style={{ fontSize: 12.5 }}>{locName(p)}</td>
                       <td style={{ fontSize: 12.5, color: 'var(--text-secondary)', maxWidth: 200 }}>{req.reason || '—'}</td>

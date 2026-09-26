@@ -69,6 +69,8 @@ const built = await build({
     resolveDir: process.cwd(), loader: 'ts',
   },
   bundle: true, write: false, format: 'esm', jsx: 'automatic',
+  // The dialog imports its own stylesheet; a static render has no use for it.
+  loader: { '.css': 'empty' },
   define: { 'process.env.NODE_ENV': '"development"' },
   plugins: [{ name: 'stub', setup(b) {
     b.onResolve({ filter: /(^|\/)supabase$/ }, () => ({ path: 'stub', namespace: 'st' }));

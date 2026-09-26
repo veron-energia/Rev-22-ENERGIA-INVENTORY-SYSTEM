@@ -92,9 +92,25 @@ begin
   if bad is not null then
     raise exception 'FAIL: a function the database evaluates as the caller is not reachable by staff, so policies and constraints will fail: %', bad; end if;
 
+  -- 5. No two functions of one name take the same parameter names. The API
+  --    server picks an overload by parameter names alone, whoever may execute
+  --    it, so such a pair fails every call to that name (364: every transfer an
+  --    Owner or Manager created failed this way). Revoking one does not help.
+  select string_agg(proname || '(' || args || ')', '; ') into bad from (
+    select p.proname,
+           coalesce((select string_agg(nm, ',' order by nm)
+                       from unnest(p.proargnames) with ordinality a(nm, i)
+                      where coalesce(p.proargmodes[i]::text, 'i') in ('i','b','v')), '') args
+      from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
+     where n2.nspname = 'public' and p.prokind = 'f'
+       and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
+  ) f group by proname, args having count(*) > 1;
+  if bad is not null then
+    raise exception 'FAIL: the API cannot choose between functions with the same parameter names: %', bad; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names', n;
 end $$;

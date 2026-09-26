@@ -1,7 +1,35 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+// The popup's own styles. Approvals opens it from a separate page bundle, so it
+// cannot rely on the invoices page having loaded them first.
+import './invoice-controls.css';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
+
+/** What moved between the plan a request was raised with and the plan now, in
+ *  words. The server only says "changed"; the approver needs to know what. */
+function planChanges(asked: Plan | null | undefined, now: Plan | null | undefined): string[] {
+  if (!asked || !now) return [];
+  const out: string[] = [];
+  // A cancellation's figure is the refund due; a refund's is the amount returned.
+  const cancel = now.action === 'cancel';
+  const fig = (p: Plan) => Number((cancel ? p.refund_due : p.refund_amount) || 0);
+  if (fig(asked).toFixed(2) !== fig(now).toFixed(2))
+    out.push(`the ${cancel ? 'refund due' : 'amount'} is now ${money(fig(now))} rather than ${money(fig(asked))}`);
+  const stockKey = (p: Plan) => (p.stock ?? []).map(s => `${s.movement_id}:${s.outstanding}:${s.proposed_sellable}`).sort().join('|');
+  if (stockKey(asked) !== stockKey(now)) {
+    const a = (asked.stock ?? []).length, b = (now.stock ?? []).length;
+    out.push(a === b ? 'the stock to take back is different'
+      : `the stock to take back is now ${b} item line${b === 1 ? '' : 's'} rather than ${a}`);
+  }
+  const srcKey = (p: Plan) => (p.sources ?? []).map(s => `${s.payment_id}:${Number(s.amount || 0).toFixed(2)}`).sort().join('|');
+  if (srcKey(asked) !== srcKey(now)) out.push('the payments the money goes back to are different');
+  const overKey = (p: Plan) => (p.overrides_required ?? []).map(o => o.code).sort().join('|');
+  if (overKey(asked) !== overKey(now)) out.push('what needs an override is different');
+  const lineKey = (p: Plan) => (p.lines ?? []).map(l => `${l.invoice_item_id}:${l.selected_quantity}`).sort().join('|');
+  if (lineKey(asked) !== lineKey(now)) out.push('the items it covers are different');
+  return out;
+}
 /** 2026-09-12 -> 12 Sep 2026. Falls back to whatever it was given. */
 const readableDate = (iso?: string | null) => {
   if (!iso) return '';
@@ -433,17 +461,20 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                 : detail.action === 'refund_partial' ? 'refund some items' : 'refund everything'}
               {' '}· {detail.store}</div>
             <div className="muted">“{detail.reason}”{detail.return_notes ? ` · ${detail.return_notes}` : ''}</div>
-            {detail.requested_amount != null && (
-              <div>Amount when asked: {money(detail.requested_amount)}</div>)}
+            {detail.action === 'cancel'
+              ? detail.requested_plan && <div>Refund due when asked: {money(detail.requested_plan.refund_due)}</div>
+              : detail.requested_amount != null && <div>Amount when asked: {money(detail.requested_amount)}</div>}
             {(detail.requested_lines ?? []).length > 0 && (
               <div>Items requested: {(detail.requested_lines as any[]).map((l: any) =>
                 `${line(l.invoice_item_id)?.name ?? 'item'} × ${l.quantity}`).join(', ')}</div>)}
-            {detail.changed && (
-              <p className="invoice-guided-warn" role="status">
-                This is no longer what it was when it was asked for. It is now{' '}
-                {money(detail.current_plan?.refund_amount ?? detail.current_plan?.refund_due)} rather than{' '}
-                {money(detail.requested_amount)}. Review the current effects below before approving.
-              </p>)}
+            {detail.changed && (() => {
+              const moved = planChanges(detail.requested_plan, detail.current_plan);
+              return (
+                <p className="invoice-guided-warn" role="status">
+                  Something has changed since this was asked for
+                  {moved.length > 0 ? `: ${moved.join('; ')}` : ''}. Review the current effects below before approving.
+                </p>);
+            })()}
             {detail.status !== 'pending' && (
               <p className="invoice-guided-warn" role="status">
                 Already {detail.status}

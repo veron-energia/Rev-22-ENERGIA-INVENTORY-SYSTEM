@@ -159,7 +159,7 @@ export type ApprovalStatus =
   | 'pending' | 'approved' | 'partially_approved' | 'rejected' | 'cancelled'
   // Phase 11 transfer lifecycle
   | 'in_transit' | 'received' | 'received_with_discrepancy' | 'completed';
-export type TransferType = 'warehouse_to_warehouse' | 'warehouse_to_store' | 'store_to_store';
+export type TransferType = 'warehouse_to_warehouse' | 'warehouse_to_store' | 'store_to_store' | 'store_to_warehouse';
 
 export type TransferLineKind = 'product' | 'manual';
 
@@ -552,6 +552,11 @@ export interface AdjustmentRequest {
     invoice_id?: string;
     invoice_no?: string;
     return_stock?: boolean;
+    /** Guided refund/cancellation requests (295): what was asked, the amount
+     *  then, and the plan it was raised with. Older requests carry none. */
+    action?: 'cancel' | 'refund_full' | 'refund_partial';
+    requested_amount?: number | string;
+    plan?: { stock?: unknown[]; refund_amount?: number | string; refund_due?: number | string } | null;
   } | null;
   created_at: string;
   approved_at: string | null;

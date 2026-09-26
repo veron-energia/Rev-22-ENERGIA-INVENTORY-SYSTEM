@@ -59,6 +59,16 @@
         "vite.commissions-preview.config.mts"
       ],
       "port": 5195
+    },
+    {
+      "name": "transfers-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.transfers-preview.config.mts"
+      ],
+      "port": 5194
     }
   ]
 }

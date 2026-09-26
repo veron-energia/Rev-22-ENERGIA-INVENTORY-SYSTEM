@@ -30,7 +30,20 @@ const TRANSFER_TYPES: { value: TransferType; label: string; src: LocationType; d
   { value: 'warehouse_to_store', label: 'Warehouse → Store', src: 'warehouse', dest: 'store' },
   { value: 'warehouse_to_warehouse', label: 'Warehouse → Warehouse', src: 'warehouse', dest: 'warehouse' },
   { value: 'store_to_store', label: 'Store → Store', src: 'store', dest: 'store' },
+  // Stock returned from a store to a warehouse (364): Owner or Manager only,
+  // with a reason; it arrives at the warehouse as sellable stock on receipt.
+  { value: 'store_to_warehouse', label: 'Store → Warehouse', src: 'store', dest: 'warehouse' },
 ];
+const isReturn = (t: TransferType | null | undefined) => t === 'store_to_warehouse';
+
+/** A transfer's type as it now stands. An Owner or Manager can change where a
+ *  transfer comes from or goes to, so the label follows the locations; a
+ *  request whose source is still to be chosen keeps the type it was raised as. */
+const transferTypeLabel = (r: Pick<TransferRequest, 'transfer_type' | 'source_type' | 'source_id' | 'dest_type'>) =>
+  (r.source_id && r.source_type
+    ? TRANSFER_TYPES.find(t => t.src === r.source_type && t.dest === r.dest_type)?.label
+    : undefined)
+  ?? TRANSFER_TYPES.find(t => t.value === r.transfer_type)?.label ?? r.transfer_type ?? '';
 
 const isOverdue = (r: TransferRequest) =>
   r.status === 'in_transit' && !!r.dispatched_at &&
@@ -92,6 +105,8 @@ const TransfersPage: React.FC = () => {
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
+  // What the chosen store holds, for a return to a warehouse.
+  const [sourceStock, setSourceStock] = useState<{ product_id: string; current_qty: number }[] | null>(null);
 
   // Review / approval
   const [approveReq, setApproveReq] = useState<TransferRequest | null>(null);
@@ -162,6 +177,27 @@ const TransfersPage: React.FC = () => {
   useEffect(() => { void loadAll(); }, [loadAll]);
 
   const cfg = TRANSFER_TYPES.find(t => t.value === tType)!;
+  const createTypes = TRANSFER_TYPES.filter(t => !isReturn(t.value) || canApprove);
+  const returning = isReturn(tType);
+
+  // A return offers only what the store it comes from holds.
+  useEffect(() => {
+    if (!createOpen || !returning || !sourceId) { setSourceStock(null); return; }
+    let cancelled = false;
+    setSourceStock(null);
+    void supabase.from('store_inventory').select('product_id,current_qty')
+      .eq('store_id', sourceId).gt('current_qty', 0)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        // A failed load is not an empty store: say so, and keep what was chosen.
+        if (error) { setCreateErr(`Could not load what this store holds: ${error.message}`); return; }
+        const held = (data as { product_id: string; current_qty: number }[]) ?? [];
+        setSourceStock(held);
+        setLines(ls => ls.map(l => l.line_kind === 'product' && l.product_id && !held.some(h => h.product_id === l.product_id)
+          ? { ...l, product_id: '' } : l));
+      });
+    return () => { cancelled = true; };
+  }, [createOpen, returning, sourceId]);
   const sourceOptions = cfg.src === 'warehouse' ? warehouses : stores;
   const destOptions = (cfg.dest === 'warehouse' ? warehouses : stores).filter(o => o.id !== sourceId);
 
@@ -183,6 +219,11 @@ const TransfersPage: React.FC = () => {
   const productOptionsForStore = (storeId?: string | null) => products
     .filter(p => productHasStorePrice(storeId, p.id))
     .map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }));
+  const productOptionsHeld = (held: { product_id: string; current_qty: number }[]) => products
+    .flatMap(p => {
+      const h = held.find(x => x.product_id === p.id);
+      return h ? [{ value: p.id, label: `${p.name} (${p.sku}) — ${h.current_qty} in store`, search: `${p.name} ${p.sku}` }] : [];
+    });
 
   const validDraftLine = (l: TransferLine) => {
     if (!Number.isFinite(l.quantity) || l.quantity <= 0) return false;
@@ -221,6 +262,7 @@ const TransfersPage: React.FC = () => {
     }
 
     if (!sourceId || !destId) { setSaving(false); setCreateErr('Select source and destination.'); return; }
+    if (returning && !note.trim()) { setSaving(false); setCreateErr('Give the reason for returning this stock to the warehouse.'); return; }
     const { error } = await supabase.rpc('create_transfer_request', {
       p_transfer_type: tType, p_source_type: cfg.src, p_source_id: sourceId,
       p_dest_type: cfg.dest, p_dest_id: destId, p_lines: validLines, p_note: note.trim() || null,
@@ -250,6 +292,7 @@ const TransfersPage: React.FC = () => {
   const saveEdit = async () => {
     if (!editReq) return;
     if (!editReason.trim()) { setEditErr('An edit reason is required.'); return; }
+    if (isReturn(editReq.transfer_type) && !editNote.trim()) { setEditErr('Give the reason for returning this stock to the warehouse.'); return; }
     const payload = serializeDraftLines(editLines);
     if (payload.length !== editLines.length || payload.length === 0) {
       setEditErr('Complete every item before saving.'); return;
@@ -485,7 +528,7 @@ const TransfersPage: React.FC = () => {
             dateOf={(r: TransferRequest) => r.created_at} dateLabel="Requested"
             columns={[
               { header: 'Date', value: (r: TransferRequest) => new Date(r.created_at).toLocaleDateString('en-GB') },
-              { header: 'Type', value: (r: TransferRequest) => r.transfer_type ?? '' },
+              { header: 'Type', value: (r: TransferRequest) => transferTypeLabel(r) },
               { header: 'From', value: (r: TransferRequest) => locName(r.source_type, r.source_id) },
               { header: 'To', value: (r: TransferRequest) => locName(r.dest_type, r.dest_id) },
               { header: 'Status', value: (r: TransferRequest) => r.status ?? '' },
@@ -509,7 +552,7 @@ const TransfersPage: React.FC = () => {
                       <tr>
                         <td><button className="btn btn-secondary btn-sm btn-icon" onClick={() => setExpanded(isOpen ? null : req.id)}>{isOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</button></td>
                         <td style={{ whiteSpace: 'nowrap', fontSize: 12.5 }}>{new Date(req.created_at).toLocaleDateString()}</td>
-                        <td style={{ fontSize: 12.5 }}>{TRANSFER_TYPES.find(t => t.value === req.transfer_type)?.label ?? req.transfer_type}</td>
+                        <td style={{ fontSize: 12.5 }}>{transferTypeLabel(req)}</td>
                         <td style={{ fontSize: 12.5 }}>{req.source_id ? locName(req.source_type, req.source_id) : <em>source deferred</em>} → {locName(req.dest_type, req.dest_id)}</td>
                         <td>{reqLines.length ? <>{reqLines.length} item{reqLines.length !== 1 ? 's' : ''}</> : 'See assigned-store details'}</td>
                         <td>
@@ -574,7 +617,7 @@ const TransfersPage: React.FC = () => {
               : <strong>{stores.find(s => s.id === selectedStaffDestId)?.name ?? 'No store assigned'}</strong>}.
             An Owner or Manager chooses the product source location(s) during Review.
           </div></div> : <>
-            <div className="form-group"><label>Transfer Type</label><select value={tType} onChange={e => { setTType(e.target.value as TransferType); setSourceId(''); setDestId(''); }}>{TRANSFER_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}</select></div>
+            <div className="form-group"><label>Transfer Type</label><select value={tType} onChange={e => { setTType(e.target.value as TransferType); setSourceId(''); setDestId(''); }}>{createTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}</select></div>
             <div className="form-grid-2">
               <div className="form-group"><label>From ({cfg.src})</label><select value={sourceId} onChange={e => { setSourceId(e.target.value); if (e.target.value === destId) setDestId(''); }}><option value="">— Select —</option>{sourceOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
               <div className="form-group"><label>To ({cfg.dest})</label><select value={destId} onChange={e => setDestId(e.target.value)}><option value="">— Select —</option>{destOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></div>
@@ -584,11 +627,15 @@ const TransfersPage: React.FC = () => {
           <div><label>Items</label><div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {lines.map((line, i) => <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               {line.line_kind === 'product' ? <div style={{ flex: 1 }}><SearchSelect
-                options={productOptionsForStore(isStaff ? selectedStaffDestId : (cfg.dest === 'store' ? destId : null))}
+                options={!isStaff && returning
+                  ? productOptionsHeld(sourceStock ?? [])
+                  : productOptionsForStore(isStaff ? selectedStaffDestId : (cfg.dest === 'store' ? destId : null))}
                 value={line.product_id ?? ''}
                 exclude={lines.filter((x, j) => j !== i && x.line_kind === 'product').map(x => x.product_id ?? '').filter(Boolean)}
                 onChange={v => setLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: v } : l))}
-                placeholder="Search product name or SKU…" /></div>
+                placeholder={!isStaff && returning
+                  ? (!sourceId ? 'Choose the store first' : sourceStock === null ? 'Loading what this store holds…' : 'Search product name or SKU…')
+                  : 'Search product name or SKU…'} /></div>
                 : <><input style={{ flex: 1 }} value={line.manual_item_name ?? ''} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, manual_item_name: e.target.value } : l))} placeholder="Manual item name (e.g. A4 Paper)" />
                   <input style={{ width: 105 }} value={line.manual_uom ?? ''} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, manual_uom: e.target.value } : l))} placeholder="Unit / UOM" /></>}
               <input type="number" min={1} value={line.quantity || ''} placeholder="Qty" style={{ width: 90 }} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, quantity: +e.target.value } : l))} />
@@ -598,8 +645,16 @@ const TransfersPage: React.FC = () => {
               <button className="btn btn-secondary btn-sm" onClick={() => setLines(ls => [...ls, newProductLine()])}><Plus size={13} /> Add Product</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setLines(ls => [...ls, newManualLine()])}><Plus size={13} /> Add Manual Item</button>
             </div></div>
-          <div className="form-group"><label>Note (optional)</label><input value={note} onChange={e => setNote(e.target.value)} placeholder="Reason for transfer" /></div>
-          <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Normal Products require a destination-store price and use inventory. Manual items exist only on this transfer and never create a Product, SKU, price, inventory row or stock movement.</div></div>
+          {!isStaff && returning
+            ? <div className="form-group"><label>Reason for the return *</label><textarea rows={2} value={note} onChange={e => setNote(e.target.value)} required placeholder="Why is this stock going back to the warehouse?" /></div>
+            : <div className="form-group"><label>Note (optional)</label><input value={note} onChange={e => setNote(e.target.value)} placeholder="Reason for transfer" /></div>}
+          <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
+            {!isStaff && returning
+              ? 'Only products this store holds are listed. The stock leaves the store when an Owner or Manager approves and dispatches the return, and is added to the warehouse as sellable stock when receipt is confirmed there.'
+              : !isStaff && cfg.dest === 'warehouse'
+                ? 'Products use inventory: stock leaves the source on dispatch and is added to the warehouse when receipt is confirmed.'
+                : 'Normal Products require a destination-store price and use inventory.'}
+            {' '}Manual items exist only on this transfer and never create a Product, SKU, price, inventory row or stock movement.</div></div>
         </div>
       </Modal>}
 
@@ -686,7 +741,7 @@ const TransfersPage: React.FC = () => {
         </div>
       </Modal>}
 
-      {editReq && <Modal title={`Edit Transfer — ${TRANSFER_TYPES.find(t => t.value === editReq.transfer_type)?.label ?? ''}`} maxWidth={660} onClose={() => setEditReq(null)}
+      {editReq && <Modal title={`Edit Transfer — ${transferTypeLabel(editReq)}`} maxWidth={660} onClose={() => setEditReq(null)}
         footer={<><button className="btn btn-secondary" onClick={() => setEditReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveEdit()} disabled={editBusy}>{editBusy ? 'Saving…' : 'Save Changes'}</button></>}>
         <div className="form-grid">
           {editErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{editErr}</div></div>}
@@ -694,8 +749,8 @@ const TransfersPage: React.FC = () => {
           {!canApprove && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>You can edit Products, Manual Items and the note. An unsourced Staff request is not stock-validated until an Owner/Manager allocates a source during Review.</div></div>}
           {canApprove && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div className="form-group" style={{ marginBottom: 0 }}><label>Source</label><select value={editSourceId ? `${editSourceType}:${editSourceId}` : ''} onChange={e => { if (!e.target.value) return; const [ty, id] = e.target.value.split(':'); setEditSourceType(ty as LocationType); setEditSourceId(id); }}>
-              {!editReq.source_id && <option value="">— Deferred; choose during Review —</option>}{warehouses.map(w => <option key={w.id} value={`warehouse:${w.id}`}>🏭 {w.name}</option>)}{stores.map(s => <option key={s.id} value={`store:${s.id}`}>🏪 {s.name}</option>)}</select></div>
-            <div className="form-group" style={{ marginBottom: 0 }}><label>Destination</label><select value={`${editDestType}:${editDestId}`} onChange={e => { const [ty, id] = e.target.value.split(':'); setEditDestType(ty as LocationType); setEditDestId(id); }}>{warehouses.map(w => <option key={w.id} value={`warehouse:${w.id}`}>🏭 {w.name}</option>)}{stores.map(s => <option key={s.id} value={`store:${s.id}`}>🏪 {s.name}</option>)}</select></div>
+              {!editReq.source_id && <option value="">— Deferred; choose during Review —</option>}{!isReturn(editReq.transfer_type) && warehouses.map(w => <option key={w.id} value={`warehouse:${w.id}`}>🏭 {w.name}</option>)}{stores.filter(s => isReturn(editReq.transfer_type) || editDestType !== 'warehouse' || (editSourceType === 'store' && editSourceId === s.id)).map(s => <option key={s.id} value={`store:${s.id}`}>🏪 {s.name}</option>)}</select></div>
+            <div className="form-group" style={{ marginBottom: 0 }}><label>Destination</label><select value={`${editDestType}:${editDestId}`} onChange={e => { const [ty, id] = e.target.value.split(':'); setEditDestType(ty as LocationType); setEditDestId(id); }}>{warehouses.filter(w => isReturn(editReq.transfer_type) || editSourceType !== 'store' || !editSourceId || (editDestType === 'warehouse' && editDestId === w.id)).map(w => <option key={w.id} value={`warehouse:${w.id}`}>🏭 {w.name}</option>)}{!isReturn(editReq.transfer_type) && stores.map(s => <option key={s.id} value={`store:${s.id}`}>🏪 {s.name}</option>)}</select></div>
           </div>}
           <div><label>Items</label><div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 5 }}>
             {editLines.map((l, i) => <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -708,7 +763,9 @@ const TransfersPage: React.FC = () => {
               <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setEditLines(ls => ls.filter((_, j) => j !== i))} disabled={editLines.length === 1}><X size={13} /></button>
             </div>)}
           </div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><button className="btn btn-secondary btn-sm" onClick={() => setEditLines(ls => [...ls, newProductLine()])}><Plus size={13} /> Add Product</button><button className="btn btn-secondary btn-sm" onClick={() => setEditLines(ls => [...ls, newManualLine()])}><Plus size={13} /> Add Manual Item</button></div></div>
-          <div className="form-group" style={{ marginBottom: 0 }}><label>Note</label><input value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Optional note" /></div>
+          {isReturn(editReq.transfer_type)
+            ? <div className="form-group" style={{ marginBottom: 0 }}><label>Reason for the return *</label><input value={editNote} onChange={e => setEditNote(e.target.value)} required placeholder="Why is this stock going back to the warehouse?" /></div>
+            : <div className="form-group" style={{ marginBottom: 0 }}><label>Note</label><input value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Optional note" /></div>}
           <div className="form-group" style={{ marginBottom: 0 }}><label>Edit reason *</label><textarea rows={2} value={editReason} onChange={e => setEditReason(e.target.value)} placeholder="Why is this transfer being edited?" /></div>
         </div>
       </Modal>}
