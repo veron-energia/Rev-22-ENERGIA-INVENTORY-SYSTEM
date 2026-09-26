@@ -49,6 +49,16 @@
         "vite.affiliate-preview.config.mts"
       ],
       "port": 5196
+    },
+    {
+      "name": "commissions-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.commissions-preview.config.mts"
+      ],
+      "port": 5195
     }
   ]
 }
