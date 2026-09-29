@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
 import { fetchAllFrom } from '../lib/supabasePaging';
 import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
-import { settledDateSgt, reportingMonthFor, periodLabel } from '../lib/tiktok/settlementPeriod.mjs';
+import { settledDateSgt, reportingMonthFor, periodLabel, settlementPeriod, toIsoDate } from '../lib/tiktok/settlementPeriod.mjs';
 import { classifyTransaction, CATEGORY } from '../lib/tiktok/classification.mjs';
 import { useAuth } from '../context/AuthContext';
 import { Store, Product, isOwnerOrManager } from '../types';
@@ -114,6 +114,41 @@ const STATUS_BADGE: Record<string, string> = {
 };
 const CONFIRMABLE = new Set(['New — Will Deduct', 'Updated — Additional Deduction', 'Updated — Stock Return', 'Negative Stock Warning', 'No Stock Change', 'Already Imported']);
 
+// A database from before 368 has no left-out function. PostgREST then answers
+// PGRST202 ("Could not find the function public.tiktok_left_out_settlement…").
+// That says the lines cannot be listed, never that nothing was left out. Any
+// other error — 42883 from inside the function included — is a real error.
+const isMissingLeftOut = (e: { code?: string; message?: string }) =>
+  e.code === 'PGRST202' && /tiktok_left_out_settlement/.test(e.message ?? '');
+// The left-out lines of a store (null: every store) settled in a reporting month.
+const fetchLeftOut = async (storeId: string | null, year: number, month: number) => {
+  const period = settlementPeriod(year, month);
+  const { data, error } = await supabase.rpc('tiktok_left_out_settlement', {
+    p_store_id: storeId, p_from: toIsoDate(period.start), p_to: toIsoDate(period.end),
+  });
+  return { rows: ((data as any[]) ?? []), error, missing: !!error && isMissingLeftOut(error) };
+};
+// One left-out line, as tiktok_left_out_settlement returns it: the id is a
+// representative staged row, and the settled day is already Singapore's.
+const leftOutId = (r: any): string => String(r.row_id ?? r.id);
+const leftOutDay = (r: any): string | null => settledDateSgt(r.settled_date ?? r.settled_on ?? r.settled_time);
+// What including a left-out line adds to the totals. A restatement replaces a
+// line that is already counted, so only the difference; net_change says so.
+const leftOutNet = (r: any): number => Number(r.net_change ?? r.settlement_amount ?? 0);
+const isRestatement = (r: any) => r.replaces_settlement != null;
+// What leaving a staged row unticked keeps out of the totals, or null when the
+// page cannot tell. An 'Updated' row restates a line that is already counted:
+// only the difference is missing. Staging records the replaced line's figures
+// in value_diff (against previous_row_id); no settlement_amount entry there
+// means the amount did not change.
+const stagedNet = (r: any): number | null => {
+  const amount = Number(r.settlement_amount ?? 0);
+  if (!String(r.staging_status ?? '').startsWith('Updated')) return amount;
+  if (!r.previous_row_id || !r.value_diff || typeof r.value_diff !== 'object') return null;
+  const d = r.value_diff.settlement_amount;
+  return d == null ? 0 : amount - Number(d.old ?? 0);
+};
+
 const TikTokImportPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
@@ -161,6 +196,20 @@ const TikTokImportPage: React.FC = () => {
   const [negAck, setNegAck] = useState(false); const [negReason, setNegReason] = useState('');
   const [corrDelta, setCorrDelta] = useState(0);
   const [corrReason, setCorrReason] = useState('');
+  // Settled lines left unticked when their file was confirmed. They are in no
+  // total, so they are listed beside the month's figures to be included on
+  // purpose rather than stranded.
+  const [leftOut, setLeftOut] = useState<{ rows: any[]; error: string | null; loading: boolean }>({ rows: [], error: null, loading: false });
+  // Whether this database can list (and so include) left-out lines: null until
+  // it has answered. Nothing promises "include them later" before it is true.
+  const [leftOutReady, setLeftOutReady] = useState<boolean | null>(null);
+  const [leftOutSel, setLeftOutSel] = useState<Record<string, boolean>>({});
+  const [includeReason, setIncludeReason] = useState('');
+  const [includeErr, setIncludeErr] = useState<string | null>(null);
+  // Bumped after an include, so the list, the month's figures and the
+  // transactions under them are all read again.
+  const [settleReload, setSettleReload] = useState(0);
+  const leftOutRequest = useRef(0);
   const orderInput = useRef<HTMLInputElement>(null);
   const settleInput = useRef<HTMLInputElement>(null);
 
@@ -259,6 +308,13 @@ const TikTokImportPage: React.FC = () => {
         .then(rows => ({ data: rows })),
     ]);
     setSettleBatch(b ?? null);
+    // The preview promises that unticked rows can be included later only once
+    // this database is known to list them.
+    if (b?.status === 'staged' && leftOutReady === null) {
+      void fetchLeftOut(b.store_id ?? null, reportMonth.year, reportMonth.month).then(res => {
+        if (!res.error) setLeftOutReady(true); else if (res.missing) setLeftOutReady(false);
+      });
+    }
     const rr = (r as any[]) ?? [];
     setSettleRows(rr);
     const sel: Record<string, boolean> = {};
@@ -270,17 +326,73 @@ const TikTokImportPage: React.FC = () => {
     setSettleSel(sel);
   };
 
+  // Rows that could be confirmed but are not ticked. Confirming leaves them out
+  // of every total; with 368 they can be included later from the Settlements tab.
+  const settleUnticked = settleBatch?.status !== 'staged' ? [] : settleRows.filter(r =>
+    !r.excluded && !r.confirmed && SETTLE_CONFIRMABLE.has(r.staging_status) && !settleSel[r.id]);
+  // What they keep out of the totals: a restatement only its difference. One the
+  // page cannot price counts in full, and the figure says it includes it.
+  const settleUntickedNets = settleUnticked.map(stagedNet);
+  const settleUntickedTotal = settleUnticked.reduce((sum, r, i) => sum + (settleUntickedNets[i] ?? Number(r.settlement_amount ?? 0)), 0);
+  const restatedPriced = settleUnticked.filter((r, i) => String(r.staging_status).startsWith('Updated') && settleUntickedNets[i] !== null).length;
+  const restatedUnpriced = settleUntickedNets.filter(n => n === null).length;
+  const settleUntickedFigure = `S$${settleUntickedTotal.toFixed(2)} settled`
+    + (restatedPriced > 0 ? `; ${restatedPriced} restated line${restatedPriced === 1 ? ' counts only its' : 's count only their'} change` : '')
+    + (restatedUnpriced > 0 ? `; includes ${restatedUnpriced} restated line${restatedUnpriced === 1 ? '' : 's'}` : '');
+
   const confirmSettleBatch = async () => {
     if (!settleBatch) return;
     const ids = settleRows.filter(r => settleSel[r.id]).map(r => r.id);
     if (ids.length === 0) { setErr('Select at least one settlement row to confirm.'); return; }
+    const leftOutNote = settleUnticked.length > 0
+      ? `\n\n${settleUnticked.length} unticked row(s) (${settleUntickedFigure}) are left out of the settlement totals.`
+        + (leftOutReady ? ' An Owner or Manager can include them later under Settlements → Left out at confirmation.' : '')
+      : '';
     setBusy('sconfirm'); setErr(null);
     const { data, error } = await supabase.rpc('confirm_tiktok_settlement_batch', { p_batch_id: settleBatch.id, p_row_ids: ids });
     setBusy(null);
     if (error) { setErr(error.message); return; }
     const res = data as any;
-    alert(`Settlement confirmed: ${res.applied} rows (${res.versioned_updates} versioned updates, ${res.pending} pending order match, ${res.unreconciled} reconciliation warnings), ${res.skipped} skipped.`);
+    alert(`Settlement confirmed: ${res.applied} rows (${res.versioned_updates} versioned updates, ${res.pending} pending order match, ${res.unreconciled} reconciliation warnings), ${res.skipped} skipped.${leftOutNote}`);
     await load(); await loadSettleRows(settleBatch.id);
+  };
+
+  // The left-out lines of the store and reporting month on screen. Only the
+  // latest request may land, so a slow answer for the previous month never
+  // sits under the new one's figures.
+  useEffect(() => {
+    if (pageTab !== 'settlements') return;
+    const request = ++leftOutRequest.current;
+    setLeftOut({ rows: [], error: null, loading: true });
+    setLeftOutSel({}); setIncludeErr(null);
+    void (async () => {
+      const res = await fetchLeftOut(effectiveStore || null, reportMonth.year, reportMonth.month);
+      if (request !== leftOutRequest.current) return;
+      if (res.missing) { setLeftOutReady(false); setLeftOut({ rows: [], error: null, loading: false }); return; }
+      if (res.error) { setLeftOut({ rows: [], error: res.error.message, loading: false }); return; }
+      setLeftOutReady(true);
+      setLeftOut({ rows: res.rows, error: null, loading: false });
+    })();
+  }, [pageTab, effectiveStore, reportMonth, settleReload]);
+
+  const leftOutPicked = leftOut.rows.filter(r => leftOutSel[leftOutId(r)]);
+  const leftOutPickedTotal = leftOutPicked.reduce((sum, r) => sum + leftOutNet(r), 0);
+  const leftOutPickedRestated = leftOutPicked.filter(isRestatement).length;
+
+  const includeLeftOut = async () => {
+    const ids = leftOutPicked.map(leftOutId);
+    const reason = includeReason.trim();
+    if (ids.length === 0 || !reason) return;
+    setBusy('include'); setIncludeErr(null);
+    const { data, error } = await supabase.rpc('include_tiktok_settlement_rows', { p_row_ids: ids, p_reason: reason });
+    setBusy(null);
+    if (error) { setIncludeErr(error.message); return; }
+    const res = (data ?? {}) as any;
+    const skipped = Number(res.skipped ?? 0);
+    alert(`Included in the settlement totals: ${res.included ?? ids.length} line(s)`
+      + (skipped > 0 ? `, ${skipped} skipped (already counted).` : '.'));
+    setIncludeReason('');
+    setSettleReload(n => n + 1);
   };
 
   // Per-tab data (fetched on demand).
@@ -340,7 +452,7 @@ const TikTokImportPage: React.FC = () => {
     let cancelled = false;
     fetchTab();
     return () => { cancelled = true; };
-  }, [pageTab, effectiveStore]);
+  }, [pageTab, effectiveStore, settleReload]);
 
   // ── Worksheet range repair ────────────────────────────────────────────────
   //
@@ -670,6 +782,19 @@ const TikTokImportPage: React.FC = () => {
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
                 Settlement imports never change inventory. Total Settlement Amount is the main figure; updates show the differences and require your confirmation to become a new version.
               </p>
+              {settleUnticked.length > 0 && (
+                <div className="alert alert-warning" data-testid="settle-unticked" style={{ fontSize: 12.5, marginBottom: 8 }}>
+                  <span>⚠</span>
+                  <div>
+                    {settleUnticked.length} row{settleUnticked.length === 1 ? ' is' : 's are'} not ticked
+                    ({settleUntickedFigure}). Confirming leaves {settleUnticked.length === 1 ? 'it' : 'them'} out
+                    of the settlement totals{leftOutReady
+                      ? <> — not lost: an Owner or Manager can include {settleUnticked.length === 1 ? 'it' : 'them'} later
+                        under Settlements → Left out at confirmation.</>
+                      : '.'}
+                  </div>
+                </div>
+              )}
               <table>
                 <thead><tr>
                   {settleBatch.status === 'staged' && <th></th>}
@@ -790,7 +915,72 @@ const TikTokImportPage: React.FC = () => {
                 year={reportMonth.year}
                 month={reportMonth.month}
                 onChangeMonth={(year, month) => setReportMonth({ year, month })}
+                reloadKey={settleReload}
+                leftOutPointer="They are listed under Left out at confirmation below."
               />
+
+              {/* Settled lines left unticked when their file was confirmed */}
+              <div data-testid="left-out">
+                <h3 style={{ fontSize: 14.5, margin: '22px 0 4px' }}>Left out at confirmation</h3>
+                {leftOutReady !== false && <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                  Lines TikTok settled in this reporting month that were left unticked when their file was
+                  confirmed — usually because their order had not been imported yet. They are in none of the
+                  figures above until included; a restated line then replaces the one it restates.
+                  {canManage ? ' Tick the ones to count, give a reason, and include them.' : ' An Owner or Manager can include them.'}
+                </p>}
+                {leftOut.loading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
+                : leftOut.error ? <div className="alert alert-danger" role="alert">Left-out lines could not be loaded: {leftOut.error}</div>
+                : leftOutReady === false ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                    Left-out lines cannot be listed until the database is updated. Until then, rows left unticked at
+                    confirmation are in none of the figures above.</div>
+                : leftOut.rows.length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Nothing was left out for this period.</div>
+                : <>
+                  <table>
+                    <thead><tr>
+                      {canManage && <th><input type="checkbox" aria-label="Select all left-out lines" style={{ width: 'auto' }}
+                        checked={leftOutPicked.length === leftOut.rows.length}
+                        onChange={e => setLeftOutSel(Object.fromEntries(leftOut.rows.map(r => [leftOutId(r), e.target.checked])))} /></th>}
+                      <th>Settled (SGT)</th><th>Order/Adj ID</th><th>Type</th><th>Match</th>
+                      <th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>File</th>
+                    </tr></thead>
+                    <tbody>{leftOut.rows.map(r => (
+                      <tr key={leftOutId(r)}>
+                        {canManage && <td><input type="checkbox" checked={!!leftOutSel[leftOutId(r)]} style={{ width: 'auto' }}
+                          onChange={e => setLeftOutSel(x => ({ ...x, [leftOutId(r)]: e.target.checked }))} /></td>}
+                        <td style={{ fontSize: 12 }}>{leftOutDay(r) ?? '—'}</td>
+                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}</td>
+                        <td style={{ fontSize: 12 }}>{r.transaction_type ?? '—'}</td>
+                        <td>{matchBadge(r.match_status)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}
+                          {isRestatement(r) && <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)' }}
+                            title="Including it replaces the counted line, so the totals change by the difference">
+                            restates S${Number(r.replaces_settlement).toFixed(2)}</div>}</td>
+                        <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
+                        <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
+                        <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.file_name ?? '—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                  {canManage && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 10 }}>
+                      <div style={{ flex: '1 1 280px' }}>
+                        <label>Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
+                        <input value={includeReason} onChange={e => setIncludeReason(e.target.value)}
+                          placeholder="e.g. settled by TikTok; the order was never imported" />
+                      </div>
+                      <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                        {leftOutPicked.length} selected · S${leftOutPickedTotal.toFixed(2)}
+                        {leftOutPickedRestated > 0 && ` net (${leftOutPickedRestated} restate${leftOutPickedRestated === 1 ? 's a counted line' : ' counted lines'})`}
+                      </span>
+                      <button className="btn btn-primary btn-sm" disabled={busy !== null || leftOutPicked.length === 0 || !includeReason.trim()}
+                        onClick={() => void includeLeftOut()}>
+                        <CheckCircle2 size={13} /> {busy === 'include' ? 'Including…' : 'Include selected'}
+                      </button>
+                    </div>
+                  )}
+                  {includeErr && <div className="alert alert-danger" role="alert" style={{ marginTop: 8 }}>{includeErr}</div>}
+                </>}
+              </div>
 
               <h3 style={{ fontSize: 14.5, margin: '22px 0 8px' }}>Settlement Transactions (current versions)</h3>
               <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>

@@ -35,6 +35,10 @@ export interface SettlementTotals {
   by_category: Record<string, number>;
   unknown_count: number; balance_movement_count: number; pending_match_count: number;
   currency_count: number; undated_count: number; needs_review: boolean;
+  /** Settled lines staged in a confirmed file but left unticked at
+   *  confirmation, and what including them would change Total Income by (a
+   *  restated line counts only its difference). Absent before 368. */
+  left_out_count?: number; left_out_settlement?: number;
 }
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
@@ -116,6 +120,32 @@ export const SettlementCards: React.FC<{ t: SettlementTotals }> = ({ t }) => (
       hint="Settlement less expenses." />
   </div>
 );
+
+/** Where the left-out lines can be reviewed, for a page that does not list them itself. */
+const LEFT_OUT_POINTER = 'Review them in TikTok Sales Import → Settlements, where an Owner or Manager can include them.';
+
+/**
+ * Settled money that TikTok paid but these totals do not count: lines staged in
+ * a confirmed file and left unticked at confirmation. Without this the gap to
+ * TikTok's own balance is silent. The amount is what including them would
+ * change the totals by, which for a restated line is only its difference. A
+ * database from before the key existed reports nothing, so it shows nothing.
+ */
+export const LeftOutNotice: React.FC<{ t: SettlementTotals; pointer?: React.ReactNode }> = ({ t, pointer = LEFT_OUT_POINTER }) => {
+  const count = Number(t.left_out_count ?? 0);
+  if (!(count > 0)) return null;
+  const net = Number(t.left_out_settlement ?? 0);
+  return (
+    <div className="alert alert-warning" data-testid="left-out-notice" style={{ marginTop: 12 }}>
+      <AlertTriangle size={15} />
+      <div>
+        <strong>{count} settled TikTok line{count === 1 ? '' : 's'}</strong> {count === 1 ? 'was' : 'were'} left out at confirmation.
+        Including {count === 1 ? 'it' : 'them'} would {net < 0 ? 'take' : 'add'} <strong>{money(Math.abs(net))}</strong> {net < 0 ? 'off' : 'to'} these
+        totals. {pointer}
+      </div>
+    </div>
+  );
+};
 
 /**
  * Everything that stops a figure being taken at face value: rows that could not
@@ -234,7 +264,9 @@ export const SettlementSummary: React.FC<{
   showPicker?: boolean;
   /** Change it to load the figures again. */
   reloadKey?: number;
-}> = ({ storeId, year, month, onChangeMonth, showPicker = true, reloadKey = 0 }) => {
+  /** Where left-out lines can be included, when this page lists them itself. */
+  leftOutPointer?: React.ReactNode;
+}> = ({ storeId, year, month, onChangeMonth, showPicker = true, reloadKey = 0, leftOutPointer }) => {
   const { totals, error, loading, reload } = useSettlementTotals(year, month, storeId, reloadKey);
   const isOpenPeriod = useMemo(() => {
     const now = currentSgtMonth();
@@ -256,6 +288,7 @@ export const SettlementSummary: React.FC<{
       {totals && (
         <>
           <SettlementCards t={totals} />
+          <LeftOutNotice t={totals} pointer={leftOutPointer} />
           <SettlementNotices t={totals} isOpenPeriod={isOpenPeriod} />
           <ReconciliationPanel t={totals} />
         </>
