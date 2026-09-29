@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { periodLabel, settlementPeriod, toIsoDate } from '../../lib/tiktok/settlementPeriod.mjs';
@@ -191,23 +191,38 @@ export const ReconciliationPanel: React.FC<{ t: SettlementTotals }> = ({ t }) =>
   );
 };
 
-/** Loads the totals for a month and store. Returns null while loading. */
-export function useSettlementTotals(year: number, month: number, storeId: string | null) {
+/**
+ * Loads the totals for a month and store. Returns null while another month or
+ * store is loading, so its figures never sit under the new month's banner; a
+ * change of `reloadKey` (the Reports page's Refresh) reloads the same month and
+ * keeps its figures on screen meanwhile.
+ */
+export function useSettlementTotals(year: number, month: number, storeId: string | null, reloadKey = 0) {
   const [totals, setTotals] = useState<SettlementTotals | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Only the latest request may set the figures: after a quick change of month,
+  // a slower answer for the earlier month would otherwise land under the new
+  // month's banner.
+  const latest = useRef(0);
+  // Which month and store the figures on screen belong to.
+  const shown = useRef('');
 
   const load = useCallback(async () => {
+    const request = ++latest.current;
+    const key = `${year}-${month}-${storeId ?? ''}`;
+    if (shown.current !== key) { shown.current = key; setTotals(null); }
     setLoading(true); setError(null);
     const { data, error } = await supabase.rpc('tiktok_settlement_totals', {
       p_year: year, p_month: month, p_store_id: storeId || null,
     });
+    if (request !== latest.current) return;
     setLoading(false);
     if (error) { setError(error.message); setTotals(null); return; }
     setTotals(data as SettlementTotals);
   }, [year, month, storeId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, reloadKey]);
   return { totals, error, loading, reload: load };
 }
 
@@ -217,8 +232,10 @@ export const SettlementSummary: React.FC<{
   year: number; month: number;
   onChangeMonth: (year: number, month: number) => void;
   showPicker?: boolean;
-}> = ({ storeId, year, month, onChangeMonth, showPicker = true }) => {
-  const { totals, error, loading, reload } = useSettlementTotals(year, month, storeId);
+  /** Change it to load the figures again. */
+  reloadKey?: number;
+}> = ({ storeId, year, month, onChangeMonth, showPicker = true, reloadKey = 0 }) => {
+  const { totals, error, loading, reload } = useSettlementTotals(year, month, storeId, reloadKey);
   const isOpenPeriod = useMemo(() => {
     const now = currentSgtMonth();
     const end = settlementPeriod(year, month).end;

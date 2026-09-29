@@ -41,7 +41,9 @@ declare
                              'invoice_line_stock_products',
                              -- 362: a correction settles the therapy of the lines it changes
                              'create_purchased_therapy_for_invoice','therapy_units_before_correction',
-                             'settle_corrected_therapy_units','issue_therapy_of_corrected_lines'];
+                             'settle_corrected_therapy_units','issue_therapy_of_corrected_lines',
+                             -- 367: when a TikTok settlement row reconciles
+                             'tiktok_settlement_row_reconciled'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

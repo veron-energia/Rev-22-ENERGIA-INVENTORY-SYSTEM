@@ -69,6 +69,16 @@
         "vite.transfers-preview.config.mts"
       ],
       "port": 5194
+    },
+    {
+      "name": "reports-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.reports-preview.config.mts"
+      ],
+      "port": 5193
     }
   ]
 }
