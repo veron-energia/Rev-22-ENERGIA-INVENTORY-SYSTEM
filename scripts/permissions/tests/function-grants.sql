@@ -45,7 +45,14 @@ declare
                              -- 367: when a TikTok settlement row reconciles
                              'tiktok_settlement_row_reconciled',
                              -- 368: which TikTok settlement lines were left out at confirmation
-                             'tiktok_settlement_left_out_rows'];
+                             'tiktok_settlement_left_out_rows',
+                             -- 370: the event rules behind tickets, guests and event sales
+                             'event_is_staff','event_can_run','event_ticket_price','event_ticket_line_check',
+                             'event_sync_ticket_line','event_sync_ticket_names','trg_event_ticket_line_removed',
+                             'trg_event_guests_follow_invoice','event_invoice_membership',
+                             'event_candidate_invoices','event_day_load','event_summary',
+                             'event_ticket_people_given','event_ticket_line_refunded','event_ticket_line_money',
+                             'event_ticket_guests_follow_line','trg_event_guests_follow_refund','event_ticket_price_date'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

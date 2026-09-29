@@ -79,6 +79,26 @@
         "vite.reports-preview.config.mts"
       ],
       "port": 5193
+    },
+    {
+      "name": "event-invoices-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.event-invoices-preview.config.mts"
+      ],
+      "port": 5191
+    },
+    {
+      "name": "events-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.events-preview.config.mts"
+      ],
+      "port": 5192
     }
   ]
 }

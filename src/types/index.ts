@@ -411,7 +411,10 @@ export interface InvoiceItem {
   invoice_id: string;
   product_id: string | null;
   line_kind?: 'product' | 'voucher' | 'promotion' | 'therapy'
-    | 'credit_package' | 'premium_bundle' | 'special_product' | 'rental';
+    | 'credit_package' | 'premium_bundle' | 'special_product' | 'rental' | 'event_ticket';
+  // An event ticket (370): its option and the day(s) it covers.
+  event_ticket_option_id?: string | null;
+  event_days?: string[] | null;
   // Credit Packages and Premium Bundles bought on an invoice (Phase 28/31).
   credit_package_id?: string | null;
   premium_bundle_id?: string | null;

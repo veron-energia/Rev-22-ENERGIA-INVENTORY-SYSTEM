@@ -71,7 +71,10 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   return <span className={`badge ${cls}`}>{INVOICE_STATUS_LABELS[s]}</span>;
 };
 
-interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup?: number; kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle';
+interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup?: number; kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle' | 'event_ticket';
+  // An event ticket (370): the option, the day(s) it covers, and a name for
+  // every person — the quantity is the number of people named.
+  event_ticket_option_id?: string; event_days?: string[]; attendees?: TicketPerson[];
   special_product_id?: string; rental_rate_type?: 'day' | 'week' | 'month' | 'year';
   rental_periods?: number; rental_start_date?: string; rental_return_date?: string; product_id: string; voucher_id: string; promotion_id: string; therapy_package_id?: string; therapy_service_id?: string; therapy_service_name?: string; therapy_benefit_intent?: '' | 'unlimited' | 'voucher';
   // Credit purchases bought directly on the invoice (Phase 31). The price and
@@ -79,6 +82,18 @@ interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup
   // chosen package/bundle and, for a bundle, the reward-voucher mix.
   credit_package_id?: string; premium_bundle_id?: string; bundle_voucher_selection?: Record<string, number>;
   quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
+
+// A person on an event ticket. guest_id keeps a saved person (and their
+// check-ins) when the invoice is corrected.
+interface TicketPerson { guest_id?: string; name: string; phone?: string; customer_id?: string }
+// A ticket option the invoice can carry (event_ticket_options_for_sale), or
+// the option a saved line already has (invoice_event_guests).
+interface TicketOption {
+  option_id: string; option_name: string; days_count: number; price: number; unit_price: number;
+  early_bird: boolean; early_bird_until: string | null; event_id: string; event_name: string;
+  days: { day: string; capacity: number | null; registered: number }[];
+}
+const shortDay = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString('en-SG', { weekday: 'short', day: 'numeric', month: 'short' });
 
 const InvoicesPage: React.FC = () => {
   const { profile, session } = useAuth();
@@ -282,6 +297,13 @@ const InvoicesPage: React.FC = () => {
   const [detailItems, setDetailItems] = useState<InvoiceItem[]>([]);
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
   const [detailSelections, setDetailSelections] = useState<any[]>([]);      // chosen items for this invoice
+  // The event this invoice is a sale of, and the people on its ticket lines (370).
+  const [detailEvent, setDetailEvent] = useState<any | null>(null);
+  const [eventOptionsForTag, setEventOptionsForTag] = useState<{ id: string; name: string }[]>([]);
+  const [eventTagBusy, setEventTagBusy] = useState(false);
+  const [eventTagErr, setEventTagErr] = useState<string | null>(null);
+  // Which event each listed invoice is a sale of.
+  const [eventByInvoice, setEventByInvoice] = useState<Record<string, string>>({});
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
   // Payment methods per invoice for the whole list, so the table can show them
   // and the search can match on them. Keyed by invoice for a direct lookup.
@@ -355,6 +377,11 @@ const InvoicesPage: React.FC = () => {
   // New Invoice store; the reward-voucher options for a selected bundle are
   // loaded lazily and cached by bundle id.
   const [creditPkgs, setCreditPkgs] = useState<any[]>([]);
+  // Event tickets on sale at the chosen store on the invoice's business date
+  // (their price is the early-bird or full price for that date), and the
+  // options of saved ticket lines that are no longer on sale.
+  const [ticketOptions, setTicketOptions] = useState<TicketOption[]>([]);
+  const [keptTicketOptions, setKeptTicketOptions] = useState<TicketOption[]>([]);
   const [creditBundles, setCreditBundles] = useState<any[]>([]);
   const [bundleVoucherOpts, setBundleVoucherOpts] = useState<Record<string, any[]>>({});
   const [legacyDiag, setLegacyDiag] = useState<any>(null);
@@ -502,6 +529,27 @@ const InvoicesPage: React.FC = () => {
     return () => { cancelled = true; };
   }, [createOpen, activeStore]);
 
+  // Event tickets on sale at the chosen store, priced for the business date:
+  // on or before an event's early-bird day the early-bird price, after it the
+  // full price. The server prices the line the same way when it saves.
+  useEffect(() => {
+    if (!createOpen || !activeStore || !cBusinessDate) { setTicketOptions([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.rpc('event_ticket_options_for_sale',
+        { p_store_id: activeStore, p_business_date: cBusinessDate });
+      if (cancelled) return;
+      setTicketOptions(((data as any[]) ?? []).map(o => ({ ...o, price: Number(o.price), unit_price: Number(o.unit_price) })));
+    })();
+    return () => { cancelled = true; };
+  }, [createOpen, activeStore, cBusinessDate]);
+  const ticketOption = (id?: string) => ticketOptions.find(o => o.option_id === id) ?? keptTicketOptions.find(o => o.option_id === id);
+  // The first person on a new ticket is the invoice's customer, as a start.
+  const firstTicketPerson = (): TicketPerson => {
+    const c = cCustomer ? customerById[cCustomer] : null;
+    return c ? { name: c.full_name ?? '', phone: c.phone ?? '', customer_id: c.id } : { name: '' };
+  };
+
   // Reward-voucher choices for any Premium Bundle line currently selected.
   // Loaded once per bundle and cached; mirrors the old Buy Credit chooser:
   // only vouchers eligible for that bundle AND stocked at this store appear.
@@ -610,6 +658,7 @@ const InvoicesPage: React.FC = () => {
     })()
     : l.kind === 'voucher' ? (l.voucher_id ? voucherPrice(l.voucher_id, lineMember(l)) : null)
     : l.kind === 'promotion' ? (l.promotion_id ? promoPrice(l.promotion_id, lineMember(l)) : null)
+    : l.kind === 'event_ticket' ? (ticketOptions.find(o => o.option_id === l.event_ticket_option_id)?.unit_price ?? null)
     : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
 
   // Phase 12 — the charged quantity is what the customer actually pays for.
@@ -619,7 +668,7 @@ const InvoicesPage: React.FC = () => {
       const price = lineUnit(l);
       return sum + (price ? price * (l.foc_quantity ?? 0) : 0);
     }, 0),
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles]);
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles, ticketOptions]);
   const createSubtotal = useMemo(() =>
     cLines.reduce((sum, l) => {
       const price = lineUnit(l);
@@ -627,7 +676,7 @@ const InvoicesPage: React.FC = () => {
     }, 0),
     // B: every input that can change a line's applied price must be here,
     // or totals go stale when the pricing mode flips.
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles]);
+    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles, ticketOptions]);
 
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
@@ -792,6 +841,7 @@ const InvoicesPage: React.FC = () => {
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCDiscountReason(''); setDiscountReasonErr(null); setDiscountBeforeEdit(0);
     setEditConflict(null); editBaseRef.current = null;
+    setKeptTicketOptions([]);
   };
 
   // What the correction sends about money. Amount or date changes go through
@@ -844,8 +894,22 @@ const InvoicesPage: React.FC = () => {
       : (l.kind === 'special_product' || l.kind === 'rental') ? l.special_product_id
       : l.kind === 'credit_package' ? l.credit_package_id
       : l.kind === 'premium_bundle' ? l.premium_bundle_id
+      : l.kind === 'event_ticket' ? l.event_ticket_option_id
       : l.promotion_id));
-    if (activeLines.length === 0) { setCErr('Add at least one product, voucher, promotion, therapy, credit package or premium bundle line.'); return; }
+    if (activeLines.length === 0) { setCErr('Add at least one product, voucher, promotion, therapy, credit package, premium bundle or event ticket line.'); return; }
+    // An event ticket covers its option's number of days and names every
+    // person (the server checks the same).
+    for (const l of activeLines) {
+      if (l.kind !== 'event_ticket') continue;
+      const o = ticketOption(l.event_ticket_option_id);
+      const label = o ? `"${o.event_name} — ${o.option_name}"` : 'The event ticket';
+      if (o && (l.event_days ?? []).length !== o.days_count) {
+        setCErr(`${label}: choose ${o.days_count} day${o.days_count === 1 ? '' : 's'}.`); return;
+      }
+      if ((l.attendees ?? []).length === 0 || (l.attendees ?? []).some(a => !a.name.trim())) {
+        setCErr(`${label}: give the name of every person.`); return;
+      }
+    }
     // Choice-group completeness check (client-side; server re-validates).
     for (const l of activeLines) {
       if (l.kind !== 'promotion' || unchangedDraft(l)) continue;
@@ -926,6 +990,12 @@ const InvoicesPage: React.FC = () => {
                 .filter(([, q]) => (q || 0) > 0)
                 .map(([voucher_id, quantity]) => ({ voucher_id, quantity }))
         }
+      : l.kind === 'event_ticket'
+      ? { kind: 'event_ticket', event_ticket_option_id: l.event_ticket_option_id,
+          quantity: (l.attendees ?? []).length, event_days: [...(l.event_days ?? [])].sort(),
+          attendees: (l.attendees ?? []).map(a => ({ ...(a.guest_id ? { guest_id: a.guest_id } : {}),
+            name: a.name.trim(), phone: a.phone?.trim() || null, customer_id: a.customer_id || null })),
+          ...ovr(l), ...foc(l) }
       : l.kind === 'special_product'
       ? { kind: 'special_product', special_product_id: l.special_product_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
       : l.kind === 'rental'
@@ -1124,6 +1194,20 @@ const InvoicesPage: React.FC = () => {
         lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'promotion') {
         lines.push({ kind: 'promotion', product_id: '', voucher_id: '', promotion_id: (it as any).promotion_id ?? '', quantity: it.quantity, line_voucher_id: '', selections: selByItem[it.id] ?? {}, ...ovr, ...foc });
+      } else if (it.line_kind === 'event_ticket') {
+        // The people come from the guest list, by guest id, so a correction
+        // keeps each person's record and check-ins.
+        const saved = ((detailEvent?.lines ?? []) as any[]).find(x => x.invoice_item_id === it.id);
+        lines.push({ kind: 'event_ticket', product_id: '', voucher_id: '', promotion_id: '',
+          event_ticket_option_id: it.event_ticket_option_id ?? '',
+          event_days: ((it.event_days ?? []) as string[]).map(d => String(d).slice(0, 10)),
+          // One person per person paid for: a missing name is left blank to be
+          // filled in, never taken as fewer people.
+          attendees: [
+            ...((saved?.guests ?? []) as any[]).map(g => ({ guest_id: g.guest_id, name: g.name ?? '', phone: g.phone ?? '', customer_id: g.customer_id ?? undefined })),
+            ...Array.from({ length: Math.max(0, it.quantity - ((saved?.guests ?? []) as any[]).length) }, () => ({ name: '' })),
+          ],
+          quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
       } else if (it.line_kind === 'special_product' || it.line_kind === 'rental') {
         // Without this branch a special or rental line fell through to
         // 'product' with an empty product_id, and reopening the invoice
@@ -1142,6 +1226,11 @@ const InvoicesPage: React.FC = () => {
       }
     }
     setOriginalDrafts(lines);
+    // A saved ticket keeps its option in the form even when it is no longer on sale.
+    setKeptTicketOptions(((detailEvent?.lines ?? []) as any[]).map(x => ({
+      option_id: x.option_id, option_name: x.option_name, days_count: Number(x.days_count), price: 0, unit_price: 0,
+      early_bird: false, early_bird_until: null, event_id: x.event_id, event_name: x.event_name,
+      days: ((x.event_days ?? []) as string[]).map(d => ({ day: String(d).slice(0, 10), capacity: null, registered: 0 })) })));
     setCStore(detail.store_id);
     setCBusinessDate((detail as any).business_date ?? ''); setCNotes((detail as any).notes ?? '');
     setCInstalment({ instalment_category: (detail as any).instalment_category ?? '',
@@ -1198,6 +1287,27 @@ const InvoicesPage: React.FC = () => {
     setDetail(null);
     setCErr(null);
     setCreateOpen(true);
+  };
+
+  // Event sales (370). An invoice is an event's sale when it is dated on an
+  // event day at one of the event's stores, or holds a ticket to it; staff can
+  // mark it otherwise, and undo that.
+  const canTagEvents = ['owner', 'admin', 'manager', 'staff'].includes(String(profile?.role ?? ''));
+  const loadEventsForTag = async () => {
+    if (eventOptionsForTag.length > 0) return;
+    const { data } = await supabase.rpc('events_list');
+    setEventOptionsForTag(((data as any[]) ?? []).map(e => ({ id: e.id, name: e.name })));
+  };
+  const changeInvoiceEvent = async (choice: string) => {
+    if (!detail) return;
+    setEventTagBusy(true); setEventTagErr(null);
+    const { error } = choice === 'auto'
+      ? await supabase.rpc('clear_invoice_event', { p_invoice_id: detail.id })
+      : await supabase.rpc('set_invoice_event', { p_invoice_id: detail.id, p_event_id: choice === 'none' ? null : choice, p_reason: null });
+    if (error) { setEventTagErr(error.message); setEventTagBusy(false); return; }
+    const { data } = await supabase.rpc('invoice_event_guests', { p_invoice_id: detail.id });
+    setDetailEvent(data ?? null); setEventTagBusy(false);
+    setEventByInvoice(prev => ({ ...prev, [detail.id]: (data as any)?.event?.event_name ?? '' }));
   };
 
   const loadAffiliateOptions = async () => {
@@ -1316,14 +1426,18 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('customer_credit_balances', { p_customer_id: inv.customer_id })
         .then(({ data }) => setPayWallet(data ?? null));
     } else { setPayWallet(null); }
-    const [items, pays, svc, ther, financial] = await Promise.all([
+    setDetailEvent(null); setEventTagErr(null);
+    const [items, pays, svc, ther, financial, evt] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
       supabase.rpc('invoice_therapy_summary', { p_invoice_id: inv.id }),
       supabase.rpc('invoice_financial_position', { p_invoice_id: inv.id }),
+      // Which event this is a sale of, and the people on its tickets (370).
+      supabase.rpc('invoice_event_guests', { p_invoice_id: inv.id }),
     ]);
     if (superseded()) return;
+    setDetailEvent(evt.error ? null : (evt.data ?? null));
     setDetailTherapy(ther.data ?? null);
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
@@ -1628,6 +1742,17 @@ const InvoicesPage: React.FC = () => {
    *  add to what the page already resolved. Each request stamps the invoices
    *  it is about to label; a slower, older response may not write a label a
    *  newer request has since claimed. */
+  // The event each listed invoice is a sale of (370).
+  const loadEventsFor = useCallback(async (ids: string[]) => {
+    const wanted = ids.filter(Boolean);
+    if (wanted.length === 0) return;
+    const { data, error } = await supabase.rpc('invoice_events', { p_invoice_ids: wanted });
+    if (error || !mountedRef.current) return;
+    const out: Record<string, string> = Object.fromEntries(wanted.map(id => [id, '']));
+    for (const r of ((data as any[]) ?? [])) out[r.invoice_id] = r.event_name ?? '';
+    setEventByInvoice(prev => ({ ...prev, ...out }));
+  }, []);
+
   const loadPaymentMethodsFor = useCallback(async (ids: string[]) => {
     const missing = ids.filter(Boolean);
     if (missing.length === 0) return;
@@ -1684,6 +1809,7 @@ const InvoicesPage: React.FC = () => {
       setPageError(null); setRefreshError(null);
       rememberNames(res.rows as any[]);
       void loadPaymentMethodsFor(res.rows.map(r => r.id));
+      void loadEventsFor(res.rows.map(r => r.id));
       return true;
     } catch (e: any) {
       if (ticket !== pageRequestRef.current || !mountedRef.current) return true;
@@ -1892,7 +2018,15 @@ const InvoicesPage: React.FC = () => {
   // Shared by the printed document and the WhatsApp / email message.
   const KIND_LABEL: Record<string, string> = { product: 'Product', voucher: 'Voucher', promotion: 'Promotion',
     therapy: 'Therapy', credit_package: 'Credit Package', premium_bundle: 'Premium Bundle',
-    special_product: 'Special product', rental: 'Rental', treatment: 'Treatment' };
+    special_product: 'Special product', rental: 'Rental', treatment: 'Treatment', event_ticket: 'Event ticket' };
+  // An event ticket's days and people, as the guest list holds them now.
+  const ticketDetail = (it: any): { days: string; people: string } | null => {
+    if (it.line_kind !== 'event_ticket') return null;
+    const saved = ((detailEvent?.lines ?? []) as any[]).find(x => x.invoice_item_id === it.id);
+    const days = ((it.event_days ?? []) as string[]).map(d => shortDay(String(d).slice(0, 10))).join(', ');
+    const people = ((saved?.guests ?? []) as any[]).map(g => g.name).join(', ');
+    return { days, people };
+  };
   const txt = (v: any): string => (typeof v === 'string' ? v.trim() : '');
   const srvName = (id: any): string => (id ? txt(detailNames?.names?.[id]) : '');
   /** The line's own name: sale-time snapshot, then the server, then the page's
@@ -1967,6 +2101,11 @@ const InvoicesPage: React.FC = () => {
         const notes: string[] = [];
         if (focQty > 0) notes.push(`FOC ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`}`);
         if (it.price_overridden) notes.push('Manual price override');
+        const tk = ticketDetail(it);
+        if (tk) {
+          if (tk.days) notes.push(`Day${(it as any).event_days?.length === 1 ? '' : 's'}: ${tk.days}`);
+          if (tk.people) notes.push(`For: ${tk.people}`);
+        }
         return {
           name: lineName(it), qty: it.quantity,
           unit: Number(it.unit_price ?? 0), total: Number(it.line_total ?? 0), notes,
@@ -2082,7 +2221,9 @@ const InvoicesPage: React.FC = () => {
       const amountCell = focQty === it.quantity && focQty > 0
         ? `<s>S$${(Number(it.line_total) + focAmt).toFixed(2)}</s> <b>FOC</b>`
         : `<b>S$${Number(it.line_total).toFixed(2)}</b>`;
-      return `<tr><td>${esc(lineName(it))}${md}${ov}${mem}${lv}${tu}${fc}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r">${amountCell}</td></tr>` +
+      const tk = ticketDetail(it);
+      const td = tk ? `${tk.days ? `<div class="mut">Day${(it as any).event_days?.length === 1 ? '' : 's'}: ${esc(tk.days)}</div>` : ''}${tk.people ? `<div class="mut">For: ${esc(tk.people)}</div>` : ''}` : '';
+      return `<tr><td>${esc(lineName(it))}${td}${md}${ov}${mem}${lv}${tu}${fc}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r">${amountCell}</td></tr>` +
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
@@ -2462,6 +2603,9 @@ const InvoicesPage: React.FC = () => {
                           no value, so say so rather than let a S$0.00 row read as one. */}
                       {(inv as any).is_voucher_claim && (
                         <div><span className="badge badge-muted" style={{ fontSize: 10 }}>Voucher claim</span></div>
+                      )}
+                      {eventByInvoice[inv.id] && (
+                        <div><span className="badge badge-primary" style={{ fontSize: 10 }} title="Event sale">🎉 {eventByInvoice[inv.id]}</span></div>
                       )}</td>
                     <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
@@ -2936,6 +3080,9 @@ const InvoicesPage: React.FC = () => {
                         <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
                             credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
+                            event_ticket_option_id: '', event_days: [],
+                            attendees: e.target.value === 'event_ticket' ? [firstTicketPerson()] : [],
+                            ...(e.target.value === 'event_ticket' ? { quantity: 1 } : {}),
                             rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 130 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
@@ -2945,6 +3092,7 @@ const InvoicesPage: React.FC = () => {
                           {creditBundles.length > 0 && <option value="premium_bundle">Premium Bundle</option>}
                           {specialProducts.length > 0 && <option value="special_product">Special Product</option>}
                           {specialProducts.length > 0 && <option value="rental">Rental</option>}
+                          {(ticketOptions.length > 0 || line.kind === 'event_ticket') && <option value="event_ticket">Event ticket</option>}
                         </select>
                         {(line.kind === 'special_product' || line.kind === 'rental') ? (
                           <div style={{ flex: 1, minWidth: 0 }}>
@@ -3000,6 +3148,22 @@ const InvoicesPage: React.FC = () => {
                               </div>
                             )}
                           </div>
+                        ) : line.kind === 'event_ticket' ? (
+                          <SearchSelect style={{ flex: 1 }} placeholder="Search event or ticket…"
+                            value={line.event_ticket_option_id ?? ''}
+                            onChange={v => setCLines(ls => ls.map((l, j) => {
+                              if (j !== i) return l;
+                              const o = ticketOption(v);
+                              // A ticket covering every day of its event takes them all.
+                              const all = o ? o.days.map(d => d.day) : [];
+                              return { ...l, event_ticket_option_id: v, unit_price: undefined,
+                                event_days: o && o.days_count === all.length ? all : [] };
+                            }))}
+                            options={[...ticketOptions, ...keptTicketOptions.filter(k => !ticketOptions.some(o => o.option_id === k.option_id))].map(o => ({
+                              value: o.option_id,
+                              label: `🎟 ${o.event_name} — ${o.option_name}${o.unit_price ? ` — ${money(o.unit_price)}${o.early_bird ? ' (early bird)' : ''}` : ' (saved)'}`,
+                              sublabel: `${o.days.map(d => shortDay(d.day)).join(', ')} · covers ${o.days_count} day${o.days_count === 1 ? '' : 's'}`,
+                              search: `${o.event_name} ${o.option_name}`, searchPrices: [o.unit_price] }))} />
                         ) : line.kind === 'product' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
                             value={line.product_id}
@@ -3089,8 +3253,9 @@ const InvoicesPage: React.FC = () => {
                         <input type="number" min={1} max={9999}
                           value={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 1 : (line.quantity || '')}
                           placeholder="Qty" style={{ width: 70 }}
-                          disabled={line.kind === 'credit_package' || line.kind === 'premium_bundle'}
-                          title={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 'Credit purchases are always quantity 1' : undefined}
+                          disabled={line.kind === 'credit_package' || line.kind === 'premium_bundle' || line.kind === 'event_ticket'}
+                          title={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 'Credit purchases are always quantity 1'
+                            : line.kind === 'event_ticket' ? 'One ticket per person named below' : undefined}
                           onChange={e => setCLines(ls => ls.map((l, j) => j === i
                             ? { ...l, quantity: Math.min(Math.max(0, Math.floor(+e.target.value || 0)), 9999) } : l))} />
                         <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
@@ -3103,7 +3268,8 @@ const InvoicesPage: React.FC = () => {
                       {/* Phase 12 — FOC. Quantity stays full (stock still moves); only the charge drops.
                           Credit purchases don't take a product-style FOC. */}
                       {line.kind !== 'credit_package' && line.kind !== 'premium_bundle'
-                        && (line.kind !== 'product' || line.product_id) && (line.quantity ?? 0) > 0 && (
+                        && (line.kind !== 'product' || line.product_id)
+                        && (line.kind !== 'event_ticket' || line.event_ticket_option_id) && (line.quantity ?? 0) > 0 && (
                         <div className="invoice-choice-group" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC:</span>
                           <select
@@ -3156,6 +3322,78 @@ const InvoicesPage: React.FC = () => {
                           {line.line_voucher_id && price ? <span style={{ fontSize: 11.5, color: 'var(--success)' }}>− {money(voucherDiscAmount(vouchers.find(v => v.id === line.line_voucher_id), price * line.quantity))}</span> : null}
                         </div>
                       )}
+                      {line.kind === 'event_ticket' && line.event_ticket_option_id && (() => {
+                        const o = ticketOption(line.event_ticket_option_id);
+                        if (!o) return null;
+                        const people = line.attendees ?? [];
+                        const days = line.event_days ?? [];
+                        const setLine = (fn: (l: LineDraft) => Partial<LineDraft>) =>
+                          setCLines(ls => ls.map((l, j) => j === i ? { ...l, ...fn(l) } : l));
+                        const setPeople = (next: TicketPerson[]) => setLine(() => ({ attendees: next, quantity: next.length,
+                          foc_quantity: Math.min(line.foc_quantity ?? 0, next.length) }));
+                        const chooseDays = o.days_count < o.days.length;
+                        // Adding people beyond a day's capacity only warns. A saved person
+                        // already counts on the days their line already covered.
+                        const savedDays = originalDrafts.find(x => x.invoice_item_id && x.invoice_item_id === line.invoice_item_id)?.event_days ?? [];
+                        const addingOn = (day: string) => people.filter(a => !a.guest_id || !savedDays.includes(day)).length;
+                        const full = o.days.filter(d => days.includes(d.day) && d.capacity != null && d.registered + addingOn(d.day) > d.capacity);
+                        return (
+                          <div className="invoice-choice-group" style={{ marginLeft: 28, marginTop: 6, marginBottom: 6 }}>
+                            {chooseDays ? (
+                              <div style={{ marginBottom: 6 }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                                  Day{o.days_count === 1 ? '' : 's'} — choose {o.days_count} ({days.length}/{o.days_count})
+                                </div>
+                                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                                  {o.days.map(d => (
+                                    <label key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, whiteSpace: 'nowrap' }}>
+                                      <input type="checkbox" style={{ width: 'auto' }} checked={days.includes(d.day)}
+                                        onChange={e => setLine(l => ({ event_days: e.target.checked
+                                          ? [...(l.event_days ?? []).filter(x => x !== d.day), d.day].sort()
+                                          : (l.event_days ?? []).filter(x => x !== d.day) }))} />
+                                      {shortDay(d.day)}
+                                      {d.capacity != null && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>({d.registered}/{d.capacity})</span>}
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                                Covers {o.days.map(d => shortDay(d.day)).join(' and ')}.
+                              </div>
+                            )}
+                            {full.length > 0 && (
+                              <div className="alert alert-warning" style={{ fontSize: 12, padding: '6px 9px', marginBottom: 6 }}>
+                                Over capacity: {full.map(d => `${shortDay(d.day)} (${d.registered + addingOn(d.day)} of ${d.capacity})`).join(', ')}. You can still sell the ticket.
+                              </div>
+                            )}
+                            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                              {people.length} {people.length === 1 ? 'person' : 'people'} — name every person
+                              {o.early_bird && o.early_bird_until && line.unit_price === undefined && (
+                                <span style={{ fontWeight: 400, color: 'var(--success)', marginLeft: 6 }}>
+                                  early-bird price until {shortDay(o.early_bird_until)}
+                                </span>
+                              )}
+                            </div>
+                            {people.map((a, k) => (
+                              <div key={a.guest_id ?? `new-${k}`} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
+                                <span style={{ width: 18, fontSize: 11.5, color: 'var(--text-muted)' }}>{k + 1}.</span>
+                                <input type="text" placeholder="Name" value={a.name} style={{ flex: 2, minWidth: 0 }}
+                                  aria-label={`Ticket person ${k + 1} name`}
+                                  onChange={e => setPeople(people.map((x, m) => m === k ? { ...x, name: e.target.value } : x))} />
+                                <input type="text" placeholder="Phone (optional)" value={a.phone ?? ''} style={{ flex: 1, minWidth: 0 }}
+                                  aria-label={`Ticket person ${k + 1} phone`}
+                                  onChange={e => setPeople(people.map((x, m) => m === k ? { ...x, phone: e.target.value } : x))} />
+                                <button className="btn btn-secondary btn-sm btn-icon" title="Remove this person"
+                                  disabled={people.length === 1}
+                                  onClick={() => setPeople(people.filter((_, m) => m !== k))}><X size={13} /></button>
+                              </div>
+                            ))}
+                            <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
+                              onClick={() => setPeople([...people, { name: '' }])}>+ Add person</button>
+                          </div>
+                        );
+                      })()}
                       {line.kind === 'premium_bundle' && line.premium_bundle_id && (() => {
                         const need = bundleGrants(line.premium_bundle_id);
                         if (need <= 0) {
@@ -3698,6 +3936,34 @@ const InvoicesPage: React.FC = () => {
                 ).join(' · ')}
               </div>
             )}
+            {/* The event this invoice is a sale of (370). */}
+            {(detailEvent?.event || canTagEvents) && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>
+                <strong>Event:</strong>
+                {detailEvent?.event
+                  ? <span className="badge badge-primary">🎉 {detailEvent.event.event_name}</span>
+                  : <span style={{ color: 'var(--text-muted)' }}>{detailEvent?.marked_not_event ? 'Marked as not an event sale' : 'Not an event sale'}</span>}
+                {detailEvent?.event && (
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
+                    {detailEvent.event.source === 'event_day' ? '(dated on an event day at an event store)'
+                      : detailEvent.event.source === 'ticket' ? '(holds a ticket)' : '(marked by staff)'}
+                  </span>
+                )}
+                {canTagEvents && !['cancelled', 'refunded'].includes(String(detail.status)) && (
+                  <select aria-label="Event sale" disabled={eventTagBusy} style={{ maxWidth: 260, fontSize: 12 }}
+                    value="" onFocus={() => void loadEventsForTag()}
+                    onChange={e => { if (e.target.value) void changeInvoiceEvent(e.target.value); }}>
+                    <option value="">Change…</option>
+                    {(detailEvent?.event?.override || detailEvent?.marked_not_event) && <option value="auto">Undo: let the date, store and tickets decide</option>}
+                    <option value="none">Not an event sale</option>
+                    {eventOptionsForTag.filter(e => e.id !== detailEvent?.event?.event_id).map(e => (
+                      <option key={e.id} value={e.id}>Sale of {e.name}</option>
+                    ))}
+                  </select>
+                )}
+                {eventTagErr && <span style={{ color: 'var(--danger)', fontSize: 11.5 }}>{eventTagErr}</span>}
+              </div>
+            )}
             {/* Items */}
             <div>
               <label>Items</label>
@@ -3720,6 +3986,11 @@ const InvoicesPage: React.FC = () => {
                         <tr>
                           <td>{it.line_kind === 'voucher' ? `🎟 ${itemName(it)}` : isPromo ? `🧩 ${itemName(it)}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${itemName(it)}` : it.line_kind === 'rental' ? `Rental: ${itemName(it)}` : itemName(it)}
                             {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {printedVoucher((it as any).line_voucher_id) || 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
+                            {(() => { const tk = ticketDetail(it); return tk ? (
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                {tk.days && <div>Day{((it as any).event_days ?? []).length === 1 ? '' : 's'}: {tk.days}</div>}
+                                {tk.people && <div>For: {tk.people}</div>}
+                              </div>) : null; })()}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {Number(it.foc_quantity ?? 0) === 0 && detail.status !== 'paid' && detail.status !== 'completed_foc'
                               && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (

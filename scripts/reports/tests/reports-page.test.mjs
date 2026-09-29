@@ -257,6 +257,11 @@ function createBackend(fx) {
     report_tiktok_qty_sold: () => fx.ttQty,
     report_tiktok_orders_by_status: () => fx.ttStatus,
     report_exchange_invoices: a => fx.exchanges.filter(e => inPeriod(sgtDate(e.created_at), a?.p_from, a?.p_to) || (!a?.p_from && !a?.p_to)),
+    report_events: () => [{ event_id: 'ev-1', name: 'Fixture Event', is_active: true, first_day: '2026-09-22', last_day: '2026-09-23', early_bird_until: '2026-09-10',
+      days: [{ day: '2026-09-22', capacity: 40, registered: 41, attended: 30, ticket: 30, free: 11 }, { day: '2026-09-23', capacity: null, registered: 20, attended: 12, ticket: 15, free: 5 }],
+      options: [{ option_id: 'eo-1', name: '1 Day', days_count: 1, price: 61, people: 20, early_bird_people: 12, foc_people: 1, revenue: 853.5 },
+                { option_id: 'eo-2', name: '2 Days', days_count: 2, price: 94, people: 10, early_bird_people: 4, foc_people: 0, revenue: 752 }],
+      sales: [{ store_id: 'st-1', store_name: 'Store One', invoices: 12, total_amount: 3400, paid_amount: 3100 }] }],
     report_transfer_receipts: () => fx.trReceipts,
     report_transfer_discrepancies: () => fx.trDisc,
     report_transfers_overdue: () => fx.trOverdue,
@@ -353,12 +358,12 @@ after(async () => { if (root) await act(async () => root.unmount()); dom.window.
 
 const TABS = ['Sales by Store', 'Top Products', 'Sales by Creator', 'Sales by Service Staff', 'Sales by Referrer', 'Vouchers', 'Promotions',
   'Specials & Rentals', 'Commission', 'Customers', 'Stock Balance', 'Pricing', 'Affiliate', 'Therapy', 'Discounts', 'FOC', 'Sources', 'TikTok',
-  'Exchange Invoices', 'Transfers', 'Sales Reconciliation'];
+  'Exchange Invoices', 'Transfers', 'Sales Reconciliation', 'Events'];
 const INVOICE_SALES = ['Sales by Store', 'Top Products', 'Sales by Creator', 'Sales by Service Staff', 'Sales by Referrer', 'Vouchers', 'Promotions',
   'Specials & Rentals', 'Customers', 'Sales Reconciliation'];
 
 // ── tests ──────────────────────────────────────────────────────────────────
-test('all 21 tabs render, and the export of each carries the headings of the table on screen', async () => {
+test('all 22 tabs render, and the export of each carries the headings of the table on screen', async () => {
   await mount();
   assert.equal(headline(), 'S$2260.00');
   for (const label of TABS) {

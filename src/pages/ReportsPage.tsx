@@ -8,7 +8,7 @@ import {
   WarehouseInventory, StoreInventory, Warehouse, isManagerOrAbove,
 } from '../types';
 import { NoAccess } from '../components/ui';
-import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award, CreditCard, Sparkles, Gift } from 'lucide-react';
+import { RefreshCw, BarChart3, TrendingUp, Package, Star, Users, Download, Ticket, Package2, KeyRound, UserCircle, Award, CreditCard, Sparkles, Gift, PartyPopper } from 'lucide-react';
 import { SearchSelect } from '../components/SearchSelect';
 import { MiniBarChart } from '../components/MiniBarChart';
 import { ExcelExportButton, ExcelColumn } from '../components/ExcelExport';
@@ -109,14 +109,14 @@ const newestSettledFirst = (a: any, b: any) =>
   || String(b.financial_date ?? '').localeCompare(String(a.financial_date ?? ''))
   || String(a.order_adjustment_id ?? '').localeCompare(String(b.order_adjustment_id ?? ''));
 
-type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok' | 'r_exchange_inv' | 'r_transfers' | 'r_salesrecon';
+type Tab = 'sales_store' | 'sales_affiliate' | 'commission' | 'stock' | 'top_products' | 'customers' | 'vouchers' | 'promotions' | 'specials' | 'sales_creator' | 'sales_service_staff' | 'r_pricing' | 'r_affiliate' | 'r_therapy' | 'r_discounts' | 'r_foc' | 'r_sources' | 'r_tiktok' | 'r_exchange_inv' | 'r_transfers' | 'r_salesrecon' | 'r_events';
 
 // The tabs whose figures are invoice sales for the selected period; the
 // headline cards belong to these only.
 const INVOICE_SALES_TABS: Tab[] = ['sales_store', 'top_products', 'sales_creator', 'sales_service_staff', 'sales_affiliate',
   'vouchers', 'promotions', 'specials', 'customers', 'r_salesrecon'];
 // Tabs that do not use the invoice records, so a failure there never blanks them.
-const SEPARATE_TABS: Tab[] = ['r_affiliate', 'r_therapy', 'r_sources', 'r_tiktok', 'r_exchange_inv', 'r_transfers'];
+const SEPARATE_TABS: Tab[] = ['r_affiliate', 'r_therapy', 'r_sources', 'r_tiktok', 'r_exchange_inv', 'r_transfers', 'r_events'];
 // One line for each tab that does not simply follow the Period filter.
 const PERIOD_NOTE: Partial<Record<Tab, string>> = {
   commission: 'Lifetime figures: the Period filter does not apply to this report.',
@@ -126,6 +126,7 @@ const PERIOD_NOTE: Partial<Record<Tab, string>> = {
   r_tiktok: 'Uses the reporting month chosen below, not the Period filter. Tables marked "all periods" cover every import.',
   r_transfers: 'Receipts follow the Period filter (received date, SGT). Overdue transfers and discrepancy lines are the current position.',
   r_sources: 'Surveys follow the Period filter (submitted date, SGT). Customers are counted by their current source, whatever the period.',
+  r_events: 'Events with a day in the Period. Tickets count whenever they were bought; cancelled and refunded invoices are left out.',
 };
 
 type TableExport = { rows: any[]; columns: ExcelColumn<any>[]; sheet: string; name?: string };
@@ -253,6 +254,12 @@ const ReportsPage: React.FC = () => {
   const ttStatusLoad = useReportLoad(onTikTok, String(refreshKey), async () =>
     (await fetchReportRows(() => supabase.rpc('report_tiktok_orders_by_status', { p_store_id: null }), ['order_status']))
       .sort((a, b) => Number(b.order_items) - Number(a.order_items)), NO_ROWS);
+  // One entry per event: its days, tickets by option, and event sales by store (370).
+  const eventsLoad = useReportLoad(tab === 'r_events', `${refreshKey}|${dFrom}|${dTo}`, async () => {
+    const { data, error } = await supabase.rpc('report_events', { p_from: dFrom || null, p_to: dTo || null });
+    if (error) throw error;
+    return (data as any[]) ?? [];
+  }, NO_ROWS);
   const exchLoad = useReportLoad(tab === 'r_exchange_inv', `${refreshKey}|${dFrom}|${dTo}`, async () =>
     (await fetchReportRows(() => supabase.rpc('report_exchange_invoices', { p_store_id: null, p_from: dFrom || null, p_to: dTo || null }), ['exchange_id']))
       .sort((a, b) => time(b.created_at) - time(a.created_at)), NO_ROWS);
@@ -445,11 +452,11 @@ const ReportsPage: React.FC = () => {
   const totalRevenue = useMemo(() => paid.reduce((s, i) => s + Number(i.total_amount), 0), [paid]);
   const coreReady = coreLoaded && !salesError;
 
-  // Grouping shown as a sublabel in the picker, so 21 reports are findable.
+  // Grouping shown as a sublabel in the picker, so 22 reports are findable.
   const REPORT_GROUP: Record<string, string> = {
     sales_store: 'Sales', top_products: 'Sales', sales_creator: 'Sales',
     sales_service_staff: 'Sales', sales_affiliate: 'Sales', r_tiktok: 'Sales',
-    r_salesrecon: 'Sales',
+    r_salesrecon: 'Sales', r_events: 'Sales',
     vouchers: 'Products & Offers', promotions: 'Products & Offers',
     specials: 'Products & Offers', r_therapy: 'Products & Offers',
     r_pricing: 'Products & Offers',
@@ -480,6 +487,7 @@ const ReportsPage: React.FC = () => {
     { id: 'r_exchange_inv', label: 'Exchange Invoices', icon: <Ticket size={15} /> },
     { id: 'r_transfers', label: 'Transfers', icon: <Package size={15} /> },
     { id: 'r_salesrecon', label: 'Sales Reconciliation', icon: <BarChart3 size={15} /> },
+    { id: 'r_events', label: 'Events', icon: <PartyPopper size={15} /> },
   ];
 
   // 5G-2: voucher / promotion / special reports (paid invoices only). A voucher,
@@ -685,6 +693,12 @@ const ReportsPage: React.FC = () => {
         col('From', r => r.source_name), col('To', r => r.dest_name), col('Received', r => new Date(r.received_at).toLocaleString()),
         col('By', r => r.received_by_name ?? null), col('Units', r => Number(r.received_units)),
         col('Discrepancy', r => r.had_discrepancy ? (r.discrepancy_resolved ? 'Resolved' : 'Open') : 'Clean')] };
+      case 'r_events': return { rows: eventsLoad.data.flatMap((e: any) => (e.options ?? []).map((o: any) => ({ ...o, event: e }))),
+        sheet: 'Event tickets', columns: [
+        col('Event', r => r.event.name), col('First day', r => r.event.first_day), col('Last day', r => r.event.last_day),
+        col('Ticket', r => r.name), col('Days covered', r => Number(r.days_count)), col('Price', r => cents(r.price)),
+        col('People', r => Number(r.people)), col('Early bird', r => Number(r.early_bird_people)),
+        col('FOC', r => Number(r.foc_people)), col('Money', r => cents(r.revenue))] };
       case 'r_salesrecon': return { rows: [...salesRecon, { channel: 'Total', transactions: salesRecon.reduce((a, r) => a + Number(r.transactions), 0),
         amount: salesRecon.reduce((a, r) => a + Number(r.amount), 0), total: true }], sheet: 'Sales Reconciliation', columns: [
         col('Channel', r => r.total ? 'Total' : String(r.channel).replace(/_/g, ' ')), col('Transactions', r => Number(r.transactions)),
@@ -697,7 +711,8 @@ const ReportsPage: React.FC = () => {
   const usesCore = !SEPARATE_TABS.includes(tab);
   // The separately loaded report behind a single-table tab.
   const tabLoad: ReportLoad<any> | null = tab === 'commission' || tab === 'r_affiliate' ? affiliatesLoad
-    : tab === 'r_therapy' ? therapyLoad : tab === 'r_sources' ? sourcesLoad : tab === 'r_exchange_inv' ? exchLoad : null;
+    : tab === 'r_therapy' ? therapyLoad : tab === 'r_sources' ? sourcesLoad : tab === 'r_exchange_inv' ? exchLoad
+    : tab === 'r_events' ? eventsLoad : null;
   // TikTok and Transfers show several tables, each with its own loading and
   // error state; the page Export carries the main one.
   const multiTable = onTikTok || onTransfers;
@@ -1136,6 +1151,65 @@ const ReportsPage: React.FC = () => {
                   </table>
                 </>
               )}
+              {tab === 'r_events' && (() => {
+                // The page Export carries the first table: tickets by event and option.
+                const day = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString('en-SG', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+                const rows = exportFor('r_events')?.rows ?? [];
+                return (
+                  <>
+                    <table>
+                      <thead><tr><th>Event</th><th>First day</th><th>Last day</th><th>Ticket</th><th style={{ textAlign: 'right' }}>Days covered</th><th style={{ textAlign: 'right' }}>Price</th><th style={{ textAlign: 'right' }}>People</th><th style={{ textAlign: 'right' }}>Early bird</th><th style={{ textAlign: 'right' }}>FOC</th><th style={{ textAlign: 'right' }}>Money</th></tr></thead>
+                      <tbody>{rows.length === 0 ? <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No events in this period</td></tr>
+                        : rows.map((o: any) => (
+                          <tr key={o.option_id}>
+                            <td style={{ fontWeight: 600 }}>{o.event.name}</td>
+                            <td style={{ fontSize: 12 }}>{o.event.first_day}</td>
+                            <td style={{ fontSize: 12 }}>{o.event.last_day}</td>
+                            <td>{o.name}</td>
+                            <td style={{ textAlign: 'right' }}>{o.days_count}</td>
+                            <td style={{ textAlign: 'right' }}>{money(Number(o.price))}</td>
+                            <td style={{ textAlign: 'right' }}>{o.people}</td>
+                            <td style={{ textAlign: 'right' }}>{o.early_bird_people}</td>
+                            <td style={{ textAlign: 'right' }}>{o.foc_people}</td>
+                            <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(o.revenue))}</td>
+                          </tr>))}</tbody>
+                    </table>
+                    {eventsLoad.data.map((e: any) => (
+                      <div key={e.event_id} style={{ marginTop: 18 }}>
+                        <h3 style={{ margin: '4px 0 6px', fontSize: 15 }}>{e.name}
+                          <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 12.5, marginLeft: 8 }}>
+                            {e.first_day === e.last_day ? day(e.first_day) : `${day(e.first_day)} – ${day(e.last_day)}`}
+                            {e.early_bird_until ? ` · early bird until ${day(e.early_bird_until)}` : ''}
+                          </span>
+                        </h3>
+                        <table>
+                          <thead><tr><th>Day</th><th style={{ textAlign: 'right' }}>Capacity</th><th style={{ textAlign: 'right' }}>Registered</th><th style={{ textAlign: 'right' }}>Ticket</th><th style={{ textAlign: 'right' }}>Free</th><th style={{ textAlign: 'right' }}>Attended</th></tr></thead>
+                          <tbody>{(e.days ?? []).map((d: any) => (
+                            <tr key={d.day}>
+                              <td>{day(d.day)}</td>
+                              <td style={{ textAlign: 'right' }}>{d.capacity ?? '—'}</td>
+                              <td style={{ textAlign: 'right', color: d.capacity != null && Number(d.registered) > Number(d.capacity) ? 'var(--danger)' : 'inherit', fontWeight: 600 }}>{d.registered}</td>
+                              <td style={{ textAlign: 'right' }}>{d.ticket}</td>
+                              <td style={{ textAlign: 'right' }}>{d.free}</td>
+                              <td style={{ textAlign: 'right' }}>{d.attended}</td>
+                            </tr>))}</tbody>
+                        </table>
+                        <table style={{ marginTop: 8 }}>
+                          <thead><tr><th>Event sales by store</th><th style={{ textAlign: 'right' }}>Invoices</th><th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>Paid</th></tr></thead>
+                          <tbody>{(e.sales ?? []).length === 0 ? <tr><td colSpan={4} style={{ color: 'var(--text-muted)' }}>No event sales</td></tr>
+                            : (e.sales ?? []).map((x: any) => (
+                              <tr key={x.store_id}>
+                                <td>{x.store_name}</td>
+                                <td style={{ textAlign: 'right' }}>{x.invoices}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(x.total_amount))}</td>
+                                <td style={{ textAlign: 'right' }}>{money(Number(x.paid_amount))}</td>
+                              </tr>))}</tbody>
+                        </table>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
               {tab === 'r_exchange_inv' && (
                 <table>
                   <thead><tr><th>Exchange</th><th>Invoice</th><th>Store</th><th>Customer</th><th>Date</th><th style={{ textAlign: 'right' }}>Credit</th><th style={{ textAlign: 'right' }}>Replacement</th><th style={{ textAlign: 'right' }}>Top-up</th><th style={{ textAlign: 'right' }}>Non-refundable</th><th>FOC</th></tr></thead>
