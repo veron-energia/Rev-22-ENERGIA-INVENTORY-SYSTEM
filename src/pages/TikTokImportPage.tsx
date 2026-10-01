@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import { fetchAllFrom } from '../lib/supabasePaging';
 import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
 import { TikTokXeroExportButton } from '../components/tiktok/TikTokXeroExport';
+import { describeBalanceCounts, describeWithdrawals, readWithdrawalRecords } from '../lib/tiktok/withdrawals.mjs';
 import { settledDateSgt, reportingMonthFor, periodLabel, settlementPeriod, toIsoDate } from '../lib/tiktok/settlementPeriod.mjs';
 import { classifyTransaction, CATEGORY } from '../lib/tiktok/classification.mjs';
 import { useAuth } from '../context/AuthContext';
@@ -164,6 +165,9 @@ const TikTokImportPage: React.FC = () => {
   const [batches, setBatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  // What else a settlement file carried: its Withdrawal records (375).
+  const [importNote, setImportNote] = useState<string | null>(null);
+  const [settleBalance, setSettleBalance] = useState<{ payouts: number; others: number } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const [activeBatch, setActiveBatch] = useState<any>(null);
@@ -301,14 +305,18 @@ const TikTokImportPage: React.FC = () => {
   const SETTLE_CONFIRMABLE = new Set(['New — Matched', 'New — Pending Order', 'New — No Match Needed', 'Updated — Requires Confirmation']);
 
   const loadSettleRows = async (batchId: string) => {
-    const [{ data: b }, { data: r }] = await Promise.all([
+    const [{ data: b }, { data: r }, balance] = await Promise.all([
       supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
       // As above, and this one is money: the ids of the rows ticked here are
       // what confirm_tiktok_settlement_batch is given.
       fetchAllFrom('tiktok_settlement_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id'])
         .then(rows => ({ data: rows })),
+      // The Withdrawal records the file brought (375); none if it cannot say.
+      supabase.rpc('tiktok_batch_balance_counts', { p_batch_id: batchId }),
     ]);
     setSettleBatch(b ?? null);
+    const counts = balance.error ? null : balance.data as { payouts?: number; others?: number } | null;
+    setSettleBalance({ payouts: Number(counts?.payouts ?? 0), others: Number(counts?.others ?? 0) });
     // The preview promises that unticked rows can be included later only once
     // this database is known to list them.
     if (b?.status === 'staged' && leftOutReady === null) {
@@ -337,6 +345,11 @@ const TikTokImportPage: React.FC = () => {
   const settleUntickedTotal = settleUnticked.reduce((sum, r, i) => sum + (settleUntickedNets[i] ?? Number(r.settlement_amount ?? 0)), 0);
   const restatedPriced = settleUnticked.filter((r, i) => String(r.staging_status).startsWith('Updated') && settleUntickedNets[i] !== null).length;
   const restatedUnpriced = settleUntickedNets.filter(n => n === null).length;
+  const settleRecords = settleBalance ? settleBalance.payouts + settleBalance.others : 0;
+  const settlePayouts = settleBalance?.payouts ?? 0;
+  const settleConfirmable = settleRows.some(r => !r.excluded && !r.confirmed && SETTLE_CONFIRMABLE.has(r.staging_status));
+  const settleRecordsText = settleBalance ? describeBalanceCounts(settleBalance.payouts, settleBalance.others) : '';
+  const settleTicked = settleRows.filter(r => settleSel[r.id]).length;
   const settleUntickedFigure = `S$${settleUntickedTotal.toFixed(2)} settled`
     + (restatedPriced > 0 ? `; ${restatedPriced} restated line${restatedPriced === 1 ? ' counts only its' : 's count only their'} change` : '')
     + (restatedUnpriced > 0 ? `; includes ${restatedUnpriced} restated line${restatedUnpriced === 1 ? '' : 's'}` : '');
@@ -344,17 +357,25 @@ const TikTokImportPage: React.FC = () => {
   const confirmSettleBatch = async () => {
     if (!settleBatch) return;
     const ids = settleRows.filter(r => settleSel[r.id]).map(r => r.id);
-    if (ids.length === 0) { setErr('Select at least one settlement row to confirm.'); return; }
     const leftOutNote = settleUnticked.length > 0
       ? `\n\n${settleUnticked.length} unticked row(s) (${settleUntickedFigure}) are left out of the settlement totals.`
         + (leftOutReady ? ' An Owner or Manager can include them later under Settlements → Left out at confirmation.' : '')
       : '';
+    // A file whose lines were all imported before still brings TikTok's payouts:
+    // it is confirmed for its Withdrawal records alone, once someone says so.
+    // Leaving out lines that could be confirmed for that is for an Owner or
+    // Manager (an old export re-uploaded can restate lines with older figures).
+    if (ids.length === 0 && (settlePayouts === 0 || (settleConfirmable && !canManage))) {
+      setErr('Select at least one settlement row to confirm.'); return;
+    }
+    if (ids.length === 0 && !confirm(`No settlement row is ticked. Confirm "${settleBatch.file_name}" only to save TikTok's Withdrawal records (${settleRecordsText}) for the Xero export?${leftOutNote}`)) return;
     setBusy('sconfirm'); setErr(null);
     const { data, error } = await supabase.rpc('confirm_tiktok_settlement_batch', { p_batch_id: settleBatch.id, p_row_ids: ids });
     setBusy(null);
     if (error) { setErr(error.message); return; }
     const res = data as any;
-    alert(`Settlement confirmed: ${res.applied} rows (${res.versioned_updates} versioned updates, ${res.pending} pending order match, ${res.unreconciled} reconciliation warnings), ${res.skipped} skipped.${leftOutNote}`);
+    alert(`Settlement confirmed: ${res.applied} rows (${res.versioned_updates} versioned updates, ${res.pending} pending order match, ${res.unreconciled} reconciliation warnings), ${res.skipped} skipped.${leftOutNote}`
+      + (settlePayouts > 0 ? `\n\nTikTok's Withdrawal records (${settleRecordsText}) now count for the Xero export.` : ''));
     await load(); await loadSettleRows(settleBatch.id);
   };
 
@@ -516,7 +537,7 @@ const TikTokImportPage: React.FC = () => {
   };
 
   const handleUpload = async (file: File, kind: 'order' | 'settlement') => {
-    setErr(null);
+    setErr(null); setImportNote(null);
     if (!effectiveStore) { setErr('Please select a store first.'); return; }
     setBusy(kind);
     try {
@@ -539,10 +560,23 @@ const TikTokImportPage: React.FC = () => {
         });
       if (payload.length === 0) { setErr('The detected sheet has no data rows.'); setBusy(null); return; }
 
-      const { data, error } = await supabase.rpc(kind === 'order' ? 'stage_tiktok_orders' : 'stage_tiktok_settlement', {
-        p_store_id: effectiveStore, p_file_name: file.name, p_sheet_name: sheet.sheetName, p_rows: payload,
-      });
+      // A settlement file also brings TikTok's Withdrawal records (the real bank
+      // payouts), saved with it and counted once it is confirmed (375).
+      const balance = kind === 'settlement' ? readWithdrawalRecords(grids, sheet.sheetName) : null;
+      const { data, error } = kind === 'order'
+        ? await supabase.rpc('stage_tiktok_orders', {
+            p_store_id: effectiveStore, p_file_name: file.name, p_sheet_name: sheet.sheetName, p_rows: payload,
+          })
+        : await supabase.rpc('stage_tiktok_settlement_file', {
+            p_store_id: effectiveStore, p_file_name: file.name, p_sheet_name: sheet.sheetName, p_rows: payload,
+            p_balance_rows: balance?.rows ?? [],
+          });
       if (error) throw new Error(error.message);
+      if (kind === 'settlement') {
+        setImportNote(balance?.rows.length
+          ? `"${file.name}" also has TikTok's Withdrawal records: ${describeWithdrawals(balance.rows)}. They count once this file is confirmed, for the Xero export on the Settlements tab.`
+          : `"${file.name}" has no Withdrawal records sheet, so it brings no TikTok payouts for the Xero export.`);
+      }
       await load();
       if (kind === 'order' && data) await loadBatchRows(data as string);
       if (kind === 'settlement' && data) await loadSettleRows(data as string);
@@ -611,6 +645,7 @@ const TikTokImportPage: React.FC = () => {
       </div>
 
       {err && <div className="alert alert-danger" style={{ marginBottom: 14 }}>{err}</div>}
+      {importNote && <div className="alert alert-info" role="status" data-testid="import-note" style={{ marginBottom: 14 }}>{importNote}</div>}
 
       {loading ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
         <>
@@ -776,13 +811,28 @@ const TikTokImportPage: React.FC = () => {
                 <h3 style={{ fontSize: 14.5, flex: 1 }}>{settleBatch.file_name} — {settleBatch.status === 'staged' ? 'Settlement Preview' : 'Settlement Confirmed (locked)'}</h3>
                 {settleBatch.status === 'staged' && (
                   <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={confirmSettleBatch}>
-                    <CheckCircle2 size={13} /> {busy === 'sconfirm' ? 'Confirming…' : 'Confirm Selected Rows'}
+                    <CheckCircle2 size={13} /> {busy === 'sconfirm' ? 'Confirming…'
+                      : settleTicked === 0 && settlePayouts > 0 && !settleConfirmable ? 'Confirm Withdrawal Records Only' : 'Confirm Selected Rows'}
                   </button>
                 )}
               </div>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
                 Settlement imports never change inventory. Total Settlement Amount is the main figure; updates show the differences and require your confirmation to become a new version.
               </p>
+              {settleRecords > 0 && (
+                <div className="alert alert-info" data-testid="settle-balance" style={{ fontSize: 12.5, marginBottom: 8 }}>
+                  <div>
+                    This file also brought TikTok's Withdrawal records: {settleRecordsText}.{' '}
+                    {settlePayouts === 0
+                      ? 'With no payout among them, they add nothing to the Xero export.'
+                      : settleBatch.status !== 'staged'
+                      ? 'They count for the Xero export on the Settlements tab.'
+                      : settleConfirmable
+                        ? 'They count for the Xero export once this file is confirmed.'
+                        : 'None of its lines are new, so confirm it to save the records alone; they then count for the Xero export.'}
+                  </div>
+                </div>
+              )}
               {settleUnticked.length > 0 && (
                 <div className="alert alert-warning" data-testid="settle-unticked" style={{ fontSize: 12.5, marginBottom: 8 }}>
                   <span>⚠</span>
@@ -912,8 +962,8 @@ const TikTokImportPage: React.FC = () => {
             <div className="card" style={{ padding: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                 <h3 style={{ fontSize: 14.5, margin: 0 }}>Settlement Figures</h3>
-                {/* TikTok's Wednesday payouts of the month on screen, every store together (374). */}
-                {canManage && <TikTokXeroExportButton year={reportMonth.year} month={reportMonth.month} />}
+                {/* TikTok's bank payouts between two dates, every store together (375). */}
+                {canManage && <TikTokXeroExportButton />}
               </div>
               <SettlementSummary
                 storeId={effectiveStore || null}

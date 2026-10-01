@@ -1,9 +1,11 @@
-// The TikTok "Xero Export" on TikTok Sales Import → Settlements (374): who sees it,
-// what it shows for the month on screen, and the CSV it downloads.
+// The TikTok "Xero Export" on TikTok Sales Import → Settlements (375), and the
+// Withdrawal records a settlement file brings: who sees the export, what it
+// sends and downloads, and what an upload stages.
 //
 // The actual src/pages/TikTokImportPage.tsx is bundled with esbuild and mounted in
-// jsdom, as in left-out-settlement.test.mjs. Only the Supabase client, the auth
-// context, xlsx and papaparse are stubbed. Every amount below is invented.
+// jsdom, as in left-out-settlement.test.mjs. Only the Supabase client and the
+// auth context are stubbed; the workbook is a real .xlsx built here. Every
+// amount, Reference ID and bank account below is invented.
 //
 // Run: node --test scripts/tiktok/tests/xero-export.test.mjs
 import { test, after } from 'node:test';
@@ -11,7 +13,10 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
-import { settlementPeriod, toIsoDate } from '../../../src/lib/tiktok/settlementPeriod.mjs';
+import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
+// Today in Singapore, as the dialog's default end date.
+const singaporeToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -21,8 +26,6 @@ for (const k of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLInputEle
   'KeyboardEvent', 'MouseEvent', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'MutationObserver']) {
   Object.defineProperty(globalThis, k, { value: dom.window[k], configurable: true, writable: true });
 }
-// The export remembers account codes in the browser's storage.
-Object.defineProperty(globalThis, 'localStorage', { value: dom.window.localStorage, configurable: true, writable: true });
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 // As in the Reports page test: act() hands work over on a MessageChannel whose
 // ports would keep the runner alive after the last test.
@@ -61,14 +64,10 @@ const built = await build({
     // lib/supabasePaging imports the client as './supabase'.
     b.onResolve({ filter: /(^|\/)lib\/supabase$|^\.\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
     b.onResolve({ filter: /(^|\/)context\/AuthContext$/ }, () => ({ path: 'auth', namespace: 'stub' }));
-    b.onResolve({ filter: /^(xlsx|papaparse)$/ }, a => ({ path: a.path, namespace: 'stub' }));
     b.onLoad({ filter: /^supabase$/, namespace: 'stub' }, () => ({ loader: 'js',
       contents: 'export const supabase = { from: (...a) => globalThis.__backend.client.from(...a), rpc: (...a) => globalThis.__backend.client.rpc(...a) };' }));
     b.onLoad({ filter: /^auth$/, namespace: 'stub' }, () => ({ loader: 'js',
       contents: 'export const useAuth = () => globalThis.__auth; export const AuthProvider = ({ children }) => children;' }));
-    // No file is parsed here; the page only needs the imports to resolve.
-    b.onLoad({ filter: /^xlsx$/, namespace: 'stub' }, () => ({ loader: 'js', contents: 'export const read = () => { throw new Error("xlsx"); }; export const utils = {};' }));
-    b.onLoad({ filter: /^papaparse$/, namespace: 'stub' }, () => ({ loader: 'js', contents: 'export default { parse: () => { throw new Error("papaparse"); } };' }));
   } }],
 });
 const { TikTokImportPage, SettlementSummary, createRoot, act, React, ErrorBoundary } =
@@ -76,54 +75,43 @@ const { TikTokImportPage, SettlementSummary, createRoot, act, React, ErrorBounda
 
 // ── fixture ────────────────────────────────────────────────────────────────
 const STORE = 'st-1';
-const week = (payout_date, extra = {}) => {
-  const start = new Date(`${payout_date}T00:00:00Z`); start.setUTCDate(start.getUTCDate() - 6);
-  return { payout_date, week_start: start.toISOString().slice(0, 10), week_end: payout_date, finished: true, row_count: 3,
-    revenue: 0, fee: 0, expense: 0, payout: 0, tiktok_net: 0, unknown_count: 0, balance_movement_count: 0,
-    other_currency_count: 0, left_out_count: 0, left_out_settlement: 0, uncovered_days: [], ...extra };
+const payout = (paid_on, wednesday, amount, extra = {}) => {
+  const start = new Date(`${wednesday}T00:00:00Z`); start.setUTCDate(start.getUTCDate() - 6);
+  return { reference_id: `36000000000000${paid_on.replace(/-/g, '').slice(2)}`, paid_on, amount, status: 'Transferred', transferred: true,
+    wednesday, week_start: start.toISOString().slice(0, 10), app_payout: amount, app_rows: 3, uncovered_days: [], left_out_count: 0, ...extra };
 };
-// Whatever month is asked for, its own Wednesdays: the first pays 120.00, the
-// second is negative, the third has a left-out line, the fourth is empty and
-// the fifth (when there is one) is not over yet.
-const SHAPES = [
-  { revenue: 150, fee: 30, payout: 120, tiktok_net: 120 },
-  { revenue: 30, fee: 6, expense: 50, payout: -26, tiktok_net: -26 },
-  { revenue: 190, fee: 41, payout: 149, tiktok_net: 149, left_out_count: 1, left_out_settlement: 12 },
-  { row_count: 0 },
-  { finished: false, revenue: 10, fee: 2, payout: 8, tiktok_net: 8 },
-];
-const payouts = (year, month) => {
-  const p = settlementPeriod(year, month);
-  const first = new Date(Date.UTC(p.start.y, p.start.m - 1, p.start.d));
-  first.setUTCDate(first.getUTCDate() + ((3 - first.getUTCDay() + 7) % 7));
-  const days = [];
-  for (const d = new Date(first); d.toISOString().slice(0, 10) <= toIsoDate(p.end); d.setUTCDate(d.getUTCDate() + 7)) days.push(d.toISOString().slice(0, 10));
-  const weeks = days.map((d, i) => week(d, SHAPES[i] ?? {}));
-  const income = weeks.reduce((s, w) => s + w.payout, 0);
-  return { year, month, period_start: toIsoDate(p.start), period_end: toIsoDate(p.end), today: '', timezone: 'Asia/Singapore',
-    undated_count: 0, income, month_income: income, weeks };
-};
+const payouts = (from, to, over = {}) => ({
+  from, to, today: '', timezone: 'Asia/Singapore',
+  payouts: [payout('2026-09-02', '2026-09-02', 713), payout('2026-09-09', '2026-09-09', 61.97, { app_payout: 70 })],
+  wednesdays_without_payout: [{ wednesday: '2026-09-30', week_start: '2026-09-24', app_payout: 242.97, app_rows: 4, uncovered_days: [] }],
+  ...over,
+});
 
 // ── fake backend ───────────────────────────────────────────────────────────
 function createBackend() {
-  const b = { calls: [], failures: new Map(), held: new Map() };
-  b.hold = name => { let release; const gate = new Promise(r => { release = r; }); b.held.set(name, gate); return () => release(); };
+  const b = { calls: [], failures: new Map(), payouts };
   const tables = {
     stores: [{ id: STORE, name: 'North Store', deleted_at: null, is_active: true }],
     products: [], vouchers: [], promotions: [], tiktok_status_mappings: [], tiktok_physical_returns: [],
-    tiktok_import_batches: [], tiktok_settlement_rows: [],
+    tiktok_import_batches: [{ id: 'b-9', file_name: 'income_sample.xlsx', file_kind: 'settlement', status: 'staged', store_id: STORE }],
+    tiktok_settlement_rows: [],
   };
   const rpcs = {
     my_assigned_store_id: () => null,
     report_tiktok_imports: () => [],
     report_tiktok_settlement: () => [],
-    tiktok_settlement_totals: a => ({ year: a.p_year, month: a.p_month, period_start: '', period_end: '', timezone: 'Asia/Singapore', row_count: 9,
-      revenue: 380, fee: 79, settlement: 301, expense: 50, income: 251, tiktok_net_settlement: 246, by_category: {}, unknown_count: 0,
+    tiktok_settlement_totals: a => ({ year: a.p_year, month: a.p_month, period_start: '', period_end: '', timezone: 'Asia/Singapore', row_count: 0,
+      revenue: 0, fee: 0, settlement: 0, expense: 0, income: 0, tiktok_net_settlement: 0, by_category: {}, unknown_count: 0,
       balance_movement_count: 0, pending_match_count: 0, currency_count: 1, undated_count: 0, needs_review: false,
       left_out_count: 0, left_out_settlement: 0 }),
     tiktok_left_out_settlement: () => [],
-    tiktok_xero_payouts: a => payouts(a.p_year, a.p_month),
+    tiktok_bank_payouts: a => b.payouts(a.p_from, a.p_to),
+    stage_tiktok_settlement_file: () => 'b-9',
+    stage_tiktok_orders: () => 'b-order',
+    tiktok_batch_balance_counts: () => ({ payouts: 0, others: 0 }),
+    confirm_tiktok_settlement_batch: () => ({ applied: 0, versioned_updates: 0, pending: 0, unreconciled: 0, skipped: 1 }),
   };
+  b.tables = tables; b.rpcs = rpcs;
   class Query {
     constructor(kind, name, args) { Object.assign(this, { kind, name, args, filters: [], orders: [], rangeV: null, one: false }); }
     select() { return this; }
@@ -134,8 +122,6 @@ function createBackend() {
     single() { this.one = true; return this; }
     async exec() {
       b.calls.push({ name: this.name, args: this.args });
-      const gate = b.held.get(this.name);
-      if (gate) { b.held.delete(this.name); await gate; }
       await Promise.resolve();
       if (b.failures.has(this.name)) return { data: null, error: { code: 'P0001', message: b.failures.get(this.name) } };
       const src = this.kind === 'table' ? tables[this.name] : rpcs[this.name]?.(this.args);
@@ -154,7 +140,11 @@ function createBackend() {
 // ── driving the page ───────────────────────────────────────────────────────
 let root = null;
 let backend = null;
-globalThis.alert = () => {};
+let alerts = [];
+let confirms = [];
+let confirmAnswer = true;
+globalThis.alert = text => { alerts.push(String(text)); };
+globalThis.confirm = text => { confirms.push(String(text)); return confirmAnswer; };
 // The download: the CSV handed to URL.createObjectURL and the link's filename.
 let downloads = [];
 URL.createObjectURL = blob => { downloads.push({ blob }); return 'blob:tiktok-xero'; };
@@ -167,8 +157,7 @@ async function mount({ role = 'owner', setup } = {}) {
   backend = createBackend();
   globalThis.__backend = backend; globalThis.__renderErrors = []; globalThis.__assigned = null;
   globalThis.__auth = { profile: { id: 'u-1', full_name: 'Test User', role } };
-  downloads = [];
-  try { dom.window.localStorage.clear(); } catch { /* none */ }
+  downloads = []; alerts = []; confirms = []; confirmAnswer = true;
   setup?.(backend);
   root = createRoot(document.getElementById('root'));
   await act(async () => root.render(React.createElement(ErrorBoundary, null, React.createElement(TikTokImportPage))));
@@ -179,32 +168,18 @@ const button = (label, scope = document) => [...scope.querySelectorAll('button')
 const footer = () => document.querySelector('.modal-footer');
 const openTab = label => click([...document.querySelectorAll('button')].find(x => x.textContent.trim() === label));
 const callsOf = name => backend.calls.filter(c => c.name === name);
-const title = () => [...document.querySelectorAll('h2, h3, .modal-title')].map(h => h.textContent).find(t => t.startsWith('Export TikTok payouts')) ?? '';
-const weeks = () => [...document.querySelectorAll('[data-testid="tiktok-xero-weeks"] tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent));
-// A field, found by its visible label (the label is tied to the input).
-const field = text => {
-  const label = [...document.querySelectorAll('label')].find(l => l.textContent.trim().replace(/ \*$/, '') === text);
-  return label && document.getElementById(label.htmlFor);
-};
-const tickBox = day => document.querySelector(`input[type="checkbox"][aria-label="Export the payout of ${day}"]`);
+const field = id => document.getElementById(id);
 async function setValue(el, value, event = 'input') {
   const proto = el.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype;
   await act(async () => { Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value); el.dispatchEvent(new dom.window.Event(event, { bubbles: true })); });
   await tick();
 }
-// The month selects of the Settlements tab.
-async function pickMonth(year, month) {
-  const [monthSel, yearSel] = document.querySelector('[data-testid="left-out"]').parentElement.querySelectorAll('select');
-  await setValue(yearSel, String(year), 'change');
-  await setValue(monthSel, String(month), 'change');
-}
-async function openExport(opts, { year = 2026, month = 9 } = {}) {
-  await mount(opts); await openTab('Settlements'); await pickMonth(year, month); await click(button('Xero Export'));
-}
+async function openExport(opts) { await mount(opts); await openTab('Settlements'); await click(button('Xero Export')); }
 const csvOf = async d => (await d.blob.text()).split('\r\n').filter(Boolean);
+const warnings = () => document.querySelector('[data-testid="tiktok-xero-warnings"]')?.textContent ?? '';
 after(async () => { if (root) await act(async () => root.unmount()); dom.window.close(); });
 
-// ── tests ──────────────────────────────────────────────────────────────────
+// ── tests: the export ──────────────────────────────────────────────────────
 test('Owners and Managers see the TikTok Xero Export on Settlements; staff do not', async () => {
   for (const role of ['owner', 'manager']) {
     await mount({ role });
@@ -217,65 +192,69 @@ test('Owners and Managers see the TikTok Xero Export on Settlements; staff do no
   assert.deepEqual(globalThis.__renderErrors, []);
 });
 
-test('it reads the payouts of the month on screen and lists each Wednesday', async () => {
+test('like the invoice export: From, To, one account code and the tax rate, with this month so far', async () => {
   await openExport();
-  assert.deepEqual(callsOf('tiktok_xero_payouts').map(c => c.args), [{ p_year: 2026, p_month: 9 }]);
-  assert.equal(title(), 'Export TikTok payouts for Xero — September 2026');
-  assert.deepEqual(weeks(), [
-    ['Wed 2 Sep', 'Thu 27 Aug – Wed 2 Sep 2026', 'S$150.00', '-S$30.00', 'S$0.00', 'S$120.00', 'Export'],
-    ['Wed 9 Sep', 'Thu 3 Sep – Wed 9 Sep 2026', 'S$30.00', '-S$6.00', '-S$50.00', '-S$26.00', 'Export ⚠'],
-    ['Wed 16 Sep', 'Thu 10 Sep – Wed 16 Sep 2026', 'S$190.00', '-S$41.00', 'S$0.00', 'S$149.00', 'Export ⚠'],
-    ['Wed 23 Sep', 'Thu 17 Sep – Wed 23 Sep 2026', 'S$0.00', 'S$0.00', 'S$0.00', 'S$0.00', 'Nothing to pay ⚠'],
-    ['Wed 30 Sep', 'Thu 24 Sep – Wed 30 Sep 2026', 'S$10.00', '-S$2.00', 'S$0.00', 'S$8.00', 'Not over yet'],
-  ]);
-  const total = document.querySelector('[data-testid="tiktok-xero-total"]').textContent;
-  assert.ok(total.includes('Ticked: S$243.00 in 3 payouts.') && total.includes('Total Income for every store is S$251.00 (some Wednesdays are not over yet)'), total);
-  const warnings = document.querySelector('[data-testid="tiktok-xero-warnings"]').textContent;
-  assert.ok(warnings.includes('Wed 9 Sep: This week is negative (-S$26.00)'), warnings);
-  assert.ok(warnings.includes('Wed 16 Sep: 1 settled line was left out at confirmation (S$12.00)'), warnings);
-  assert.ok(warnings.includes('Wed 23 Sep: No settled lines were imported for this week'), warnings);
-  assert.deepEqual(globalThis.__renderErrors, []);
+  const today = singaporeToday();
+  assert.equal(field('tiktok-xero-from').value, `${today.slice(0, 7)}-01`);
+  assert.equal(field('tiktok-xero-to').value, today);
+  assert.equal(field('tiktok-xero-code').value, '1011');
+  assert.equal(field('tiktok-xero-tax').value, 'No Tax (0%)');
+  assert.equal(document.querySelectorAll('[data-testid="tiktok-xero"] input').length, 4, 'nothing else to fill in');
+  assert.equal(document.querySelector('[data-testid="tiktok-xero"] table'), null, 'no table of weeks');
 });
 
-test('Export CSV downloads the ticked Wednesdays, a negative week with its credit note, and remembers the codes', async () => {
+test('Export CSV downloads one invoice per TikTok payout between the dates, for what TikTok paid, and lists what to check', async () => {
   await openExport();
-  assert.equal(field('Account for TikTok sales').value, '1011');
-  assert.equal(field('Xero tax rate').value, 'No Tax (0%)');
-  await setValue(field('Account for TikTok fees'), '6100');
-  await setValue(field('Account for TikTok ads'), '6200');
+  await setValue(field('tiktok-xero-from'), '2026-09-01');
+  await setValue(field('tiktok-xero-to'), '2026-09-30');
   await click(button('Export CSV', footer()));
+  assert.deepEqual(callsOf('tiktok_bank_payouts').map(c => c.args), [{ p_from: '2026-09-01', p_to: '2026-09-30' }]);
   assert.equal(downloads.length, 1);
-  assert.equal(downloads[0].name, 'xero-tiktok-payouts-2026-09.csv');
+  assert.equal(downloads[0].name, 'xero-tiktok-payouts-2026-09-01-to-2026-09-30.csv');
   const csv = await csvOf(downloads[0]);
-  assert.equal(csv.length, 1 + 2 + 1 + 2 + 2, 'the header, 2 Sep (2 lines), 9 Sep (1 + a credit note of 2), 16 Sep (2)');
-  assert.ok(csv[1].startsWith('TikTok Shop,,,,,,,,,,TT-PAYOUT-2026-09-02,'));
-  assert.ok(csv.some(l => l.includes(',TT-PAYOUT-2026-09-09-CN,') && l.includes(',-50.00,') && l.includes(',6200,')));
-  assert.ok(!csv.some(l => l.includes('2026-09-30') || l.includes('2026-09-23')), 'unfinished and empty weeks are not exported');
-  assert.ok(document.querySelector('[role="status"]').textContent.includes('Downloaded 3 Wednesday payouts, 1 of them with a credit note, totalling S$243.00'));
-  assert.equal(button('Downloaded', footer()).disabled, true, 'the same file is not downloaded twice');
-  assert.deepEqual(JSON.parse(dom.window.localStorage.getItem('energia.tiktokXeroCodes')),
-    { salesCode: '1011', feesCode: '6100', adsCode: '6200', taxType: 'No Tax (0%)' });
-  // Opened again, the codes are still there.
-  await click(button('Close', footer()));
-  await click(button('Xero Export'));
-  assert.equal(field('Account for TikTok ads').value, '6200');
+  assert.equal(csv.length, 3, 'the header and one line per payout');
+  assert.ok(csv[1].startsWith('TikTok Shop,,,,,,,,,,TT-PAYOUT-2026-09-02,TikTok 36000000000000260902,02/09/2026,02/09/2026,,,'), csv[1]);
+  assert.ok(csv[1].includes(',713.00,') && csv[1].includes(',1011,No Tax (0%),0,'), csv[1]);
+  assert.ok(csv[2].includes('TT-PAYOUT-2026-09-09') && csv[2].includes(',61.97,'));
+  assert.ok(document.querySelector('[role="status"]').textContent.includes('Downloaded 2 TikTok payouts totalling S$774.97'));
+  const w = warnings();
+  assert.ok(w.includes("Wed 9 Sep: TikTok paid S$61.97, but the app's settled lines for Thu 3 Sep – Wed 9 Sep 2026 come to S$70.00"), w);
+  assert.ok(w.includes('Wed 30 Sep: no TikTok payout has been imported'), w);
 });
 
-test('unticking a Wednesday leaves it out, and its code is no longer needed', async () => {
-  await openExport();
-  await setValue(field('Account for TikTok fees'), '6100');
-  await click(tickBox('Wed 9 Sep'));
-  assert.ok(document.querySelector('[data-testid="tiktok-xero-total"]').textContent.includes('Ticked: S$269.00 in 2 payouts.'));
+test('no payouts between the dates: nothing downloads, and it says where payouts come from', async () => {
+  await openExport({ setup: b => { b.payouts = (from, to) => payouts(from, to, { payouts: [], wednesdays_without_payout: [] }); } });
   await click(button('Export CSV', footer()));
-  const csv = await csvOf(downloads[0]);
-  assert.ok(!csv.some(l => l.includes('TT-PAYOUT-2026-09-09')), 'the unticked week is not in the file');
-  assert.equal(csv.length, 1 + 2 + 2, 'and the ads account was not needed');
+  assert.equal(downloads.length, 0);
+  assert.match(document.querySelector('[role="alert"]').textContent,
+    /No TikTok payouts have been imported for those dates\..*can be uploaded again and confirmed for its Withdrawal records/);
+});
+
+test('payouts between the dates that cannot be exported: nothing downloads, and it points to the notes, not to "none"', async () => {
+  await openExport({ setup: b => { b.payouts = (from, to) => payouts(from, to, { wednesdays_without_payout: [], payouts: [
+    payout('2026-09-02', '2026-09-02', 713, { file_name: 'a.xlsx', disagreeing: [{ amount: 7130, file_name: 'b.xlsx' }] }),
+  ] }); } });
+  await click(button('Export CSV', footer()));
+  assert.equal(downloads.length, 0);
+  assert.match(warnings(), /imported TikTok files disagree on payout/);
+  assert.equal(document.querySelector('[role="alert"]').textContent.trim(), '⚠None of the TikTok payouts between those dates can be exported: see the notes above.');
+});
+
+test('the dates and the account details are checked before anything is asked', async () => {
+  await openExport();
+  await setValue(field('tiktok-xero-code'), '');
+  await click(button('Export CSV', footer()));
+  assert.ok(document.querySelector('[role="alert"]').textContent.includes('Enter the Xero account code and tax rate.'));
+  await setValue(field('tiktok-xero-code'), '1011');
+  await setValue(field('tiktok-xero-from'), '2026-09-30');
+  await setValue(field('tiktok-xero-to'), '2026-09-01');
+  await click(button('Export CSV', footer()));
+  assert.ok(document.querySelector('[role="alert"]').textContent.includes('The end date cannot be before the start date.'));
+  assert.equal(callsOf('tiktok_bank_payouts').length, 0);
 });
 
 test('a double click downloads once', async () => {
   await openExport();
-  await setValue(field('Account for TikTok fees'), '6100');
-  await setValue(field('Account for TikTok ads'), '6200');
   const exportButton = button('Export CSV', footer());
   await act(async () => {
     exportButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
@@ -283,59 +262,182 @@ test('a double click downloads once', async () => {
   });
   await tick();
   assert.equal(downloads.length, 1);
+  assert.equal(callsOf('tiktok_bank_payouts').length, 1);
 });
 
-test('a missing account code stops the export with the reason, next to the button', async () => {
-  await openExport();
-  await setValue(field('Account for TikTok fees'), '6100');
+test('a refusal from the database is shown', async () => {
+  await openExport({ setup: b => b.failures.set('tiktok_bank_payouts', 'Only an Owner or Manager can see the TikTok payouts') });
   await click(button('Export CSV', footer()));
+  assert.ok(document.querySelector('[role="alert"]').textContent.includes('Only an Owner or Manager can see the TikTok payouts'));
   assert.equal(downloads.length, 0);
-  const alert = document.querySelector('[role="alert"]');
-  assert.ok(alert.textContent.includes('Enter the Xero account code for TikTok ads.'));
-  assert.equal(alert.parentElement.lastElementChild, alert, 'the reason is the last thing before the buttons');
-  assert.equal(field('Account for TikTok ads').getAttribute('aria-required'), 'true');
 });
 
-test('a slow answer for the month before never lands under the new month', async () => {
-  let release;
+// ── tests: the Withdrawal records a settlement file brings ─────────────────
+const incomeWorkbook = ({ withdrawals = true } = {}) => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['Order/Adjustment ID', 'Type', 'Order settled time', 'Currency', 'Total settlement amount', 'Total Revenue', 'Total Fees'],
+    ['5800000000000001', 'Order', '2026/09/02', 'SGD', '80', '100', '-20'],
+  ]), 'Order details');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Total revenue', '100']]), 'Reports');
+  if (withdrawals) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['Transaction type', 'Reference ID', 'Request time', 'Amount', 'Status', 'Success time', 'Bank account'],
+      ['Payments', '3600000000000000001', '2026/09/02', '-713', 'Transferred', '2026/09/02', 'DBS ****1234'],
+      ['Earnings', '3600000000000000002', '2026/09/01', '96.5', 'Transferred', '2026/09/01', ''],
+    ]), 'Withdrawal records');
+  }
+  return new File([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], 'income_test.xlsx');
+};
+async function uploadSettlement(file, which = 1) {
+  await setValue(document.querySelector('select'), STORE, 'change');
+  const input = document.querySelectorAll('input[type="file"]')[which];
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  await act(async () => { input.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+  await tick(30);
+}
+
+test('a settlement file is staged with its Withdrawal records, without the bank account', async () => {
   await mount();
-  await openTab('Settlements');
-  await pickMonth(2026, 9);
-  release = backend.hold('tiktok_xero_payouts');
-  await click(button('Xero Export'));
-  await click(button('Close', footer()));
-  await pickMonth(2026, 8);
-  await click(button('Xero Export'));
-  assert.equal(title(), 'Export TikTok payouts for Xero — August 2026');
-  release();
-  await tick();
-  assert.equal(title(), 'Export TikTok payouts for Xero — August 2026');
-  assert.deepEqual(weeks().map(w => w[0]), ['Wed 5 Aug', 'Wed 12 Aug', 'Wed 19 Aug', 'Wed 26 Aug'], 'August\'s Wednesdays, not September\'s');
-  await setValue(field('Account for TikTok fees'), '6100');
-  await setValue(field('Account for TikTok ads'), '6200');
-  await click(button('Export CSV', footer()));
-  assert.equal(downloads[0].name, 'xero-tiktok-payouts-2026-08.csv');
-  assert.ok((await csvOf(downloads[0])).slice(1).every(l => l.includes('TT-PAYOUT-2026-08-')));
+  await uploadSettlement(incomeWorkbook());
+  const [call] = callsOf('stage_tiktok_settlement_file');
+  assert.ok(call, 'the file went to stage_tiktok_settlement_file');
+  assert.equal(call.args.p_store_id, STORE);
+  assert.equal(call.args.p_sheet_name, 'Order details');
+  assert.equal(call.args.p_rows.length, 1);
+  assert.deepEqual(call.args.p_balance_rows, [
+    { transaction_type: 'Payments', reference_id: '3600000000000000001', request_time: '2026/09/02', amount: '-713', status: 'Transferred', success_time: '2026/09/02' },
+    { transaction_type: 'Earnings', reference_id: '3600000000000000002', request_time: '2026/09/01', amount: '96.5', status: 'Transferred', success_time: '2026/09/01' },
+  ]);
+  assert.ok(!JSON.stringify(call.args).includes('1234'), 'the bank account is not sent');
+  assert.equal(callsOf('stage_tiktok_settlement').length, 0);
+  assert.ok(document.querySelector('[data-testid="import-note"]').textContent.includes('1 payout and 1 other balance record'));
+  assert.deepEqual(globalThis.__renderErrors, []);
 });
 
-test('changing the month on the page while the export is open reads the new month', async () => {
-  await openExport();
-  assert.equal(title(), 'Export TikTok payouts for Xero — September 2026');
-  await pickMonth(2026, 8);
-  assert.deepEqual(callsOf('tiktok_xero_payouts').map(c => c.args.p_month), [9, 8]);
-  assert.equal(title(), 'Export TikTok payouts for Xero — August 2026');
-  assert.equal(weeks()[0][0], 'Wed 5 Aug');
+test('a settlement file without Withdrawal records is staged as before, and says it brings no payouts', async () => {
+  await mount();
+  await uploadSettlement(incomeWorkbook({ withdrawals: false }));
+  const [call] = callsOf('stage_tiktok_settlement_file');
+  assert.deepEqual(call.args.p_balance_rows, []);
+  assert.ok(document.querySelector('[data-testid="import-note"]').textContent.includes('has no Withdrawal records sheet'));
 });
 
-test('payouts that come back for another month are not shown or exported', async () => {
-  await openExport({ setup: b => { const real = b.client.rpc; b.client.rpc = (name, args) => real(name, name === 'tiktok_xero_payouts' ? { ...args, p_month: 8 } : args); } });
-  assert.ok(document.querySelector('[role="alert"]').textContent.includes('The payouts came back for another month'));
-  assert.deepEqual(weeks(), []);
-  assert.equal(button('Export CSV', footer()).disabled, true);
+test('an order file is staged as before: no Withdrawal records, no note', async () => {
+  await mount();
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['Order ID', 'Order Status', 'Seller SKU', 'Quantity'],
+    ['5800000000000001', 'Completed', 'SKU-1', '1'],
+  ]), 'OrderSKUList');
+  await uploadSettlement(new File([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], 'orders_test.xlsx'), 0);
+  const [call] = callsOf('stage_tiktok_orders');
+  assert.ok(call, 'the file went to stage_tiktok_orders');
+  assert.deepEqual(Object.keys(call.args).sort(), ['p_file_name', 'p_rows', 'p_sheet_name', 'p_store_id']);
+  assert.equal(callsOf('stage_tiktok_settlement_file').length, 0);
+  assert.equal(document.querySelector('[data-testid="import-note"]'), null);
 });
 
-test('a refusal from the database is shown, and nothing can be exported', async () => {
-  await openExport({ setup: b => b.failures.set('tiktok_xero_payouts', 'Only an Owner or Manager can export TikTok payouts for Xero') });
-  assert.ok(document.querySelector('[role="alert"]').textContent.includes('Only an Owner or Manager can export TikTok payouts for Xero'));
-  assert.equal(button('Export CSV', footer()).disabled, true);
+test('a settlement CSV is staged as before, with no Withdrawal records', async () => {
+  await mount();
+  const csv = 'Order/Adjustment ID,Type,Order settled time,Currency,Total settlement amount,Total Revenue,Total Fees\n'
+    + '5800000000000001,Order,2026/09/02,SGD,80,100,-20\n';
+  await uploadSettlement(new File([csv], 'income_test.csv'));
+  const [call] = callsOf('stage_tiktok_settlement_file');
+  assert.equal(call.args.p_sheet_name, 'CSV');
+  assert.equal(call.args.p_rows.length, 1);
+  assert.deepEqual(call.args.p_balance_rows, []);
+  assert.ok(document.querySelector('[data-testid="import-note"]').textContent.includes('has no Withdrawal records sheet'));
+});
+
+test('TikTok\'s own workbook says its Withdrawal records sheet ends on row 2: every record is still sent', async () => {
+  await mount();
+  // TikTok writes a stale <dimension> (A1:G2 for a sheet of many rows); the
+  // page must not trust it.
+  const zip = await JSZip.loadAsync(await incomeWorkbook().arrayBuffer());
+  const sheet = Object.keys(zip.files).find(n => /^xl\/worksheets\/sheet3\.xml$/.test(n));
+  const xml = await zip.file(sheet).async('string');
+  assert.match(xml, /<dimension ref="A1:G3"\/>/);
+  zip.file(sheet, xml.replace('<dimension ref="A1:G3"/>', '<dimension ref="A1:G2"/>'));
+  const stale = new File([await zip.generateAsync({ type: 'uint8array' })], 'income_test.xlsx');
+  await uploadSettlement(stale);
+  const [call] = callsOf('stage_tiktok_settlement_file');
+  assert.deepEqual(call.args.p_balance_rows.map(r => r.transaction_type), ['Payments', 'Earnings']);
+});
+
+// A staged file whose only line was imported before, as when an income export
+// from before 375 is uploaded again for its payouts.
+const alreadyImported = b => {
+  b.tables.tiktok_settlement_rows.push({ id: 'r-1', batch_id: 'b-9', store_id: STORE, row_no: 1, order_id: '5800000000000001',
+    transaction_type: 'Order', settlement_amount: 80, revenue_amount: 100, fee_amount: -20, currency: 'SGD',
+    settled_time: '2026-09-01T16:00:00+00:00', staging_status: 'Already Imported', excluded: true, confirmed: false, match_status: 'matched' });
+};
+
+test('a file whose lines were all imported before is confirmed for its Withdrawal records alone, once someone says so', async () => {
+  await mount({ setup: b => { alreadyImported(b); b.rpcs.tiktok_batch_balance_counts = () => ({ payouts: 5, others: 34 }); } });
+  await uploadSettlement(incomeWorkbook());
+  assert.equal(callsOf('tiktok_batch_balance_counts').at(-1).args.p_batch_id, 'b-9');
+  assert.match(document.querySelector('[data-testid="settle-balance"]').textContent,
+    /5 payouts and 34 other balance records\. None of its lines are new, so confirm it to save the records alone/);
+  confirmAnswer = false;
+  await click(button('Confirm Withdrawal Records Only'));
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0], /only to save TikTok's Withdrawal records \(5 payouts and 34 other balance records\)/);
+  assert.equal(callsOf('confirm_tiktok_settlement_batch').length, 0, 'nothing is confirmed when the person says no');
+  confirmAnswer = true;
+  await click(button('Confirm Withdrawal Records Only'));
+  const [call] = callsOf('confirm_tiktok_settlement_batch');
+  assert.deepEqual(call.args, { p_batch_id: 'b-9', p_row_ids: [] }, 'no line is confirmed');
+  assert.match(alerts.at(-1), /Withdrawal records \(5 payouts and 34 other balance records\) now count for the Xero export/);
+  assert.equal(document.querySelector('[role="alert"]'), null);
+});
+
+test('a file with nothing ticked and no Withdrawal records still asks for a row, as before', async () => {
+  await mount({ setup: b => { alreadyImported(b); b.failures.set('tiktok_batch_balance_counts', 'function not found'); } });
+  await uploadSettlement(incomeWorkbook({ withdrawals: false }));
+  assert.equal(document.querySelector('[data-testid="settle-balance"]'), null);
+  await click(button('Confirm Selected Rows'));
+  assert.equal(confirms.length, 0);
+  assert.equal(callsOf('confirm_tiktok_settlement_batch').length, 0);
+  assert.ok(document.body.textContent.includes('Select at least one settlement row to confirm.'));
+});
+
+test('a file with new lines, none ticked: staff are asked to tick one; an Owner may confirm the records alone, leaving the lines out', async () => {
+  const fresh = b => {
+    b.tables.tiktok_settlement_rows.push({ id: 'r-2', batch_id: 'b-9', store_id: STORE, row_no: 1, order_id: '5800000000000002',
+      transaction_type: 'Order', settlement_amount: 40, revenue_amount: 50, fee_amount: -10, currency: 'SGD',
+      settled_time: '2026-09-01T16:00:00+00:00', staging_status: 'New — Pending Order', excluded: false, confirmed: false, match_status: 'pending' });
+    b.rpcs.tiktok_batch_balance_counts = () => ({ payouts: 1, others: 1 });
+  };
+  await mount({ role: 'staff', setup: b => { fresh(b); b.rpcs.my_assigned_store_id = () => STORE; } });
+  const input = document.querySelectorAll('input[type="file"]')[1];
+  Object.defineProperty(input, 'files', { value: [incomeWorkbook()], configurable: true });
+  await act(async () => { input.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+  await tick(30);
+  assert.equal(callsOf('stage_tiktok_settlement_file')[0].args.p_store_id, STORE, 'staff upload into their store');
+  assert.match(document.querySelector('[data-testid="settle-balance"]').textContent, /They count for the Xero export once this file is confirmed/);
+  await click(button('Confirm Selected Rows'));
+  assert.equal(confirms.length, 0);
+  assert.equal(callsOf('confirm_tiktok_settlement_batch').length, 0);
+  assert.ok(document.body.textContent.includes('Select at least one settlement row to confirm.'));
+
+  await mount({ role: 'owner', setup: fresh });
+  await uploadSettlement(incomeWorkbook());
+  assert.equal(button('Confirm Withdrawal Records Only'), undefined, 'the button does not suggest leaving the new line out');
+  await click(button('Confirm Selected Rows'));
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0], /only to save TikTok's Withdrawal records \(1 payout and 1 other balance record\)[\s\S]*1 unticked row\(s\) \(S\$40\.00 settled\) are left out of the settlement totals/);
+  assert.deepEqual(callsOf('confirm_tiktok_settlement_batch')[0].args, { p_batch_id: 'b-9', p_row_ids: [] });
+});
+
+test('Withdrawal records without a payout add nothing: no records-only confirm', async () => {
+  await mount({ setup: b => { alreadyImported(b); b.rpcs.tiktok_batch_balance_counts = () => ({ payouts: 0, others: 5 }); } });
+  await uploadSettlement(incomeWorkbook());
+  assert.match(document.querySelector('[data-testid="settle-balance"]').textContent,
+    /0 payouts and 5 other balance records\. With no payout among them, they add nothing to the Xero export\./);
+  assert.equal(button('Confirm Withdrawal Records Only'), undefined);
+  await click(button('Confirm Selected Rows'));
+  assert.equal(confirms.length, 0);
+  assert.equal(callsOf('confirm_tiktok_settlement_batch').length, 0);
+  assert.ok(document.body.textContent.includes('Select at least one settlement row to confirm.'));
 });

@@ -57,6 +57,7 @@
     "test:web-orders:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/web-orders/tests/web-orders.sql",
     "test:tiktok:db": "node scripts/tiktok/tests/database.mjs",
     "test:tiktok:xero:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/tiktok/tests/xero-payouts.sql",
+    "test:tiktok:payouts:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/tiktok/tests/bank-payouts.sql",
     "test:therapy": "node --test scripts/therapy/tests/*.test.mjs",
     "test:therapy:db": "node scripts/therapy/tests/database.mjs",
     "test:users:db": "node scripts/users/tests/database.mjs",

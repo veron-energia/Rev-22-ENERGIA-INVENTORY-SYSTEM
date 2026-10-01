@@ -1,27 +1,26 @@
-// TikTok's Wednesday payouts as Xero sales invoices (the owner's rules, 1 Oct 2026).
+// TikTok's bank payouts as Xero sales invoices (the owner's rules, 1 Oct 2026).
 //
-// TikTok pays the shop's balance into the bank every Wednesday: everything it
-// settled from the Thursday before through that Wednesday, less the ads (GMV
-// Pay) it took from the balance that week. tiktok_xero_payouts (374) gives a
-// reporting month's Wednesdays with those figures; this turns them into rows of
-// Xero's Sales Invoice template, the same template as the invoice export:
+// TikTok pays the shop's balance into the bank every Wednesday. The payouts
+// come from TikTok's own "Withdrawal records" (imported with the settlement
+// files, 375); tiktok_bank_payouts gives those paid between two dates. Each
+// becomes one draft invoice in Xero's Sales Invoice template (the same as the
+// invoice export), with one line for exactly what TikTok paid:
 //
-//   one draft invoice per Wednesday, to the contact "TikTok Shop", numbered
-//   TT-PAYOUT-<date>, dated that Wednesday, with up to three lines
-//     TikTok sales                         Total Revenue of the week
-//     TikTok fees, commissions, shipping   less Total Fee (TikTok's "Total Fees")
-//     TikTok ads and subscriptions         less Total Expense
-//   so the invoice total is the money paid into the bank. A line of 0.00 is
-//   left out.
+//   *ContactName   TikTok Shop
+//   *InvoiceNumber TT-PAYOUT-<date paid>
+//   Reference      TikTok's Reference ID of the payout
+//   *Description   TikTok payout, settled Thu 27 Aug – Wed 2 Sep 2026
+//   *UnitAmount    what TikTok paid, on the one account code given
 //
-// A negative week (ads and refunds above sales) is a credit note. So that
-// every document has one sign, whatever Xero does with mixed signs, its
-// positive lines stay on invoice TT-PAYOUT-<date> and its negative lines go on
-// credit note TT-PAYOUT-<date>-CN; together they are the week.
-//
-// Which weeks go out: those whose Wednesday is over and that have money in
-// them, and of those the ones the person ticks. Anything that could make a
-// week differ from TikTok's payout comes with a warning to read first.
+// Before exporting, a person reads what could be wrong:
+//   - a payout that differs from the app's own figure for its week (files not
+//     imported, lines left out, or a negative week carried into it);
+//   - a Wednesday with no payout imported, whose week the app says should pay
+//     out, which no imported file reaches, or whose lines were left out;
+//   - a payout TikTok has not transferred yet (not exported);
+//   - a payout two imported files give different amounts for (not exported:
+//     it is checked in TikTok and entered in Xero by hand);
+//   - a payout in the imported files with no date (in no export).
 //
 // Amounts are handled as whole cents, so the file adds up exactly.
 
@@ -41,15 +40,15 @@ export function toCents(amount) {
   return m[1] && cents !== 0 ? -cents : cents;
 }
 
-/** Cents as dollars for a person to read, e.g. -2600 -> "-S$26.00". */
-export function sgd(cents) {
-  return `${cents < 0 ? '-' : ''}S$${formatCents(Math.abs(cents))}`;
-}
-
 /** Cents as an amount with two decimals, e.g. -2600 -> "-26.00". */
 export function formatCents(cents) {
   const abs = Math.abs(cents);
   return `${cents < 0 ? '-' : ''}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
+}
+
+/** Cents as dollars for a person to read, e.g. -2600 -> "-S$26.00". */
+export function sgd(cents) {
+  return `${cents < 0 ? '-' : ''}S$${formatCents(Math.abs(cents))}`;
 }
 
 function isoDay(iso) {
@@ -78,150 +77,98 @@ export function xeroDate(iso) {
 }
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-const list = days => days.map(dayLabel).join(', ');
+
+/** "no imported file reaches Tue 15 Sep, Wed 16 Sep", or the whole week. */
+function unreached(days, week) {
+  return days.length >= 7 ? `no imported file reaches ${weekLabel(week)}` : `no imported file reaches ${days.map(dayLabel).join(', ')}`;
+}
 
 /**
- * The month's Wednesdays, each with its lines in cents, whether it goes out,
- * and what to read before exporting it.
- *
- *   status 'export'        its Wednesday is over and it has money in it
- *   status 'not_finished'  its Wednesday is today or later
- *   status 'nothing'       its Wednesday is over but there is nothing to pay
+ * The payouts that go out (TikTok transferred them), and what to read first.
+ * `data` is tiktok_bank_payouts' answer.
  */
-export function planTikTokPayouts(data) {
-  const weeks = (Array.isArray(data?.weeks) ? data.weeks : []).map(w => {
-    const sales = toCents(w.revenue);
-    const fees = -toCents(w.fee);
-    const ads = -toCents(w.expense);
-    const payout = toCents(w.payout);
-    if (sales + fees + ads !== payout) {
-      throw new Error(`The payout of ${dayLabel(w.payout_date)} does not add up. Reload before exporting.`);
+export function planBankPayouts(data) {
+  const warnings = [];
+  const exportable = [];
+  const payouts = Array.isArray(data?.payouts) ? data.payouts : [];
+  for (const p of payouts) {
+    const cents = toCents(p.amount);
+    const week = { week_start: p.week_start, week_end: p.wednesday };
+    if (!p.transferred) {
+      warnings.push(`${dayLabel(p.paid_on)}: a TikTok payout of ${sgd(cents)} is "${p.status ?? 'not transferred'}", not transferred, so it is not exported.`);
+      continue;
     }
-    const status = !w.finished ? 'not_finished' : (sales === 0 && fees === 0 && ads === 0 ? 'nothing' : 'export');
-    return { ...w, cents: { sales, fees, ads, payout }, status, warnings: [] };
-  });
-
-  weeks.forEach((w, i) => {
-    if (!w.finished) return;
-    const warn = t => w.warnings.push(t);
+    const disagreeing = Array.isArray(p.disagreeing) ? p.disagreeing : [];
+    if (disagreeing.length) {
+      warnings.push(`${dayLabel(p.paid_on)}: imported TikTok files disagree on payout ${p.reference_id}: ${sgd(cents)} in "${p.file_name}", but `
+        + disagreeing.map(o => `${sgd(toCents(o.amount))} in "${o.file_name}"`).join(', ')
+        + '. It is not exported: check it in TikTok Seller Center and enter it in Xero by hand.');
+      continue;
+    }
+    exportable.push({ ...p, cents });
+    if (p.app_payout !== null && p.app_payout !== undefined) {
+      const app = toCents(p.app_payout);
+      if (app !== cents) {
+        const why = [];
+        const uncovered = Array.isArray(p.uncovered_days) ? p.uncovered_days : [];
+        if (uncovered.length) why.push(unreached(uncovered, week));
+        if (Number(p.left_out_count ?? 0) > 0) why.push(`${plural(Number(p.left_out_count), 'line was', 'lines were')} left out at confirmation`);
+        warnings.push(`${dayLabel(p.paid_on)}: TikTok paid ${sgd(cents)}, but the app's settled lines for ${weekLabel(week)} come to ${sgd(app)}`
+          + (why.length ? ` (${why.join('; ')})` : ' (for example, a negative week before it that TikTok took from this payout)')
+          + '. The invoice uses what TikTok paid.');
+      }
+    }
+  }
+  for (const w of Array.isArray(data?.wednesdays_without_payout) ? data.wednesdays_without_payout : []) {
+    const week = { week_start: w.week_start, week_end: w.wednesday };
+    const app = toCents(w.app_payout ?? 0);
     const uncovered = Array.isArray(w.uncovered_days) ? w.uncovered_days : [];
-    if (Number(w.row_count ?? 0) === 0) {
-      warn('No settled lines were imported for this week. If TikTok paid out, import its file first.');
-    } else if (uncovered.length) {
-      warn(`No imported file reaches ${list(uncovered)}. If TikTok settled anything on ${uncovered.length === 1 ? 'that day' : 'those days'}, import that file first, or this payout is short.`);
-    }
-    const leftOut = Number(w.left_out_count ?? 0);
-    if (leftOut > 0) {
-      warn(`${plural(leftOut, 'settled line was', 'settled lines were')} left out at confirmation (${sgd(toCents(w.left_out_settlement ?? 0))}) and ${leftOut === 1 ? 'is' : 'are'} not in this payout. Include ${leftOut === 1 ? 'it' : 'them'} on this page first if ${leftOut === 1 ? 'it belongs' : 'they belong'}.`);
-    }
-    const unknown = Number(w.unknown_count ?? 0);
-    if (unknown > 0) {
-      warn(`${plural(unknown, 'line has', 'lines have')} a TikTok type the app does not know, and ${unknown === 1 ? 'adds' : 'add'} nothing to this payout.`);
-    }
-    const moves = Number(w.balance_movement_count ?? 0);
-    if (moves > 0) {
-      warn(`${plural(moves, 'line moves', 'lines move')} money in or out of the TikTok balance (a reserve, withdrawal or financing) and ${moves === 1 ? 'is' : 'are'} not in this payout.`);
-    }
-    const other = Number(w.other_currency_count ?? 0);
-    if (other > 0) warn(`${plural(other, 'line is', 'lines are')} not in SGD.`);
-    const tiktokNet = toCents(w.tiktok_net ?? w.payout);
-    if (tiktokNet !== w.cents.payout) {
-      warn(`TikTok's own total for these lines is ${sgd(tiktokNet)}, not ${sgd(w.cents.payout)}. Check the week in TikTok before exporting.`);
-    }
-    if (w.status === 'export' && w.cents.payout < 0) {
-      warn(`This week is negative (${sgd(w.cents.payout)}): TikTok pays nothing this Wednesday and takes ${sgd(-w.cents.payout)} from a later payout. It goes to Xero with credit note TT-PAYOUT-${w.payout_date}-CN; allocate that against the next payout's invoice.`);
-    }
-    const before = weeks[i - 1];
-    if (before && before.status === 'export' && before.cents.payout < 0 && w.status === 'export') {
-      warn(`TikTok takes the ${sgd(-before.cents.payout)} of ${dayLabel(before.payout_date)} from a payout from here on, so the bank may receive less than this invoice.`);
-    }
-  });
-
-  const monthWarnings = [];
-  const undated = Number(data?.undated_count ?? 0);
+    const why = [];
+    if (uncovered.length) why.push(unreached(uncovered, week));
+    if (Number(w.left_out_count ?? 0) > 0) why.push(`${plural(Number(w.left_out_count), 'line was', 'lines were')} left out at confirmation`);
+    warnings.push(`${dayLabel(w.wednesday)}: no TikTok payout has been imported, `
+      + (app > 0
+        ? `but the app's settled lines for ${weekLabel(week)} come to ${sgd(app)}${why.length ? ` (${why.join('; ')})` : ''}`
+        : `and ${why.length ? why.join('; ') : `the app's settled lines for ${weekLabel(week)} come to ${sgd(app)}`}`)
+      + '. Import the TikTok income export that covers it, then export again.');
+  }
+  const undated = Number(data?.undated_payout_count ?? 0);
   if (undated > 0) {
-    monthWarnings.push(`${plural(undated, 'counted settled line has', 'counted settled lines have')} no settled date, so ${undated === 1 ? 'it is' : 'they are'} in no week.`);
+    warnings.push(`${plural(undated, 'TikTok payout', 'TikTok payouts')} in the imported files ${undated === 1 ? 'has' : 'have'} no date, so ${undated === 1 ? 'it is' : 'they are'} in no export: check ${undated === 1 ? 'it' : 'them'} in TikTok Seller Center.`);
   }
-  const exportable = weeks.filter(w => w.status === 'export');
-  return {
-    year: data?.year, month: data?.month,
-    weeks, exportable, monthWarnings,
-    exportCents: exportable.reduce((s, w) => s + w.cents.payout, 0),
-    // The month's Total Income for every store, worked out separately (tiktok_settlement_totals).
-    monthIncomeCents: toCents(data?.month_income ?? data?.income ?? 0),
-  };
+  return { from: data?.from, to: data?.to, exportable, warnings, payoutCount: payouts.length };
 }
 
-const LINES = [
-  { key: 'sales', code: 'salesCode', name: 'sales', text: 'TikTok sales (revenue after discounts and refunds)' },
-  { key: 'fees', code: 'feesCode', name: 'fees', text: 'TikTok fees, commissions and shipping (TikTok\'s Total Fees)' },
-  { key: 'ads', code: 'adsCode', name: 'ads', text: 'TikTok ads and subscriptions (GMV Pay)' },
-];
-
-/** The weeks to export: the ones chosen (by Wednesday), or every one that can go out. */
-function chosen(plan, payoutDates) {
-  if (!payoutDates) return plan.exportable;
-  const want = new Set(payoutDates);
-  return plan.exportable.filter(w => want.has(w.payout_date));
-}
-
-/** The account codes the chosen weeks need (a code is only needed when its line is). */
-export function neededCodes(plan, payoutDates) {
-  const weeks = chosen(plan, payoutDates);
-  return LINES.filter(l => weeks.some(w => w.cents[l.key] !== 0)).map(l => l.code);
-}
-
-/**
- * Rows of Xero's Sales Invoice template for the chosen weeks (every week that
- * can go out when none are given). codes: { salesCode, feesCode, adsCode, taxType }.
- */
-export function buildTikTokPayoutRows(plan, codes, payoutDates) {
-  const weeks = chosen(plan, payoutDates);
-  const taxType = String(codes?.taxType ?? '').trim();
-  if (!taxType) throw new Error('Enter the Xero tax rate.');
-  const need = neededCodes(plan, payoutDates);
-  for (const l of LINES) {
-    if (need.includes(l.code) && !String(codes?.[l.code] ?? '').trim()) {
-      throw new Error(`Enter the Xero account code for TikTok ${l.name}.`);
-    }
-  }
+/** Rows of Xero's Sales Invoice template: one invoice per payout, one line each. */
+export function buildBankPayoutRows(plan, accountCode, taxType) {
+  const code = String(accountCode ?? '').trim();
+  const tax = String(taxType ?? '').trim();
+  if (!code || !tax) throw new Error('Enter the Xero account code and tax rate.');
   const rows = [];
-  const documents = new Set();
+  const used = new Map();
   let totalCents = 0;
-  let creditNotes = 0;
-  for (const w of weeks) {
-    const date = xeroDate(w.payout_date);
-    const span = weekLabel(w);
-    const reference = `TikTok payout ${dayLabel(w.payout_date)} ${isoDay(w.payout_date).getUTCFullYear()}`;
-    const negative = w.cents.payout < 0;
-    for (const l of LINES) {
-      const cents = w.cents[l.key];
-      if (cents === 0) continue;
-      // A negative week: its negative lines make the credit note.
-      const number = negative && cents < 0 ? `TT-PAYOUT-${w.payout_date}-CN` : `TT-PAYOUT-${w.payout_date}`;
-      documents.add(number);
-      rows.push({
-        '*ContactName': TIKTOK_XERO_CONTACT,
-        '*InvoiceNumber': number,
-        Reference: reference,
-        '*InvoiceDate': date, '*DueDate': date,
-        '*Description': `${l.text}, settled ${span}`,
-        '*Quantity': 1, '*UnitAmount': formatCents(cents),
-        '*AccountCode': String(codes[l.code]).trim(), '*TaxType': taxType, TaxAmount: 0, Currency: 'SGD',
-      });
-    }
-    totalCents += w.cents.payout;
-    if (negative) creditNotes += 1;
+  for (const p of plan.exportable) {
+    // Two payouts on one day would share a number; the second gets -2.
+    const n = (used.get(p.paid_on) ?? 0) + 1;
+    used.set(p.paid_on, n);
+    const date = xeroDate(p.paid_on);
+    rows.push({
+      '*ContactName': TIKTOK_XERO_CONTACT,
+      '*InvoiceNumber': `TT-PAYOUT-${p.paid_on}${n > 1 ? `-${n}` : ''}`,
+      Reference: `TikTok ${p.reference_id}`,
+      '*InvoiceDate': date, '*DueDate': date,
+      '*Description': `TikTok payout, settled ${weekLabel({ week_start: p.week_start, week_end: p.wednesday })}`,
+      '*Quantity': 1, '*UnitAmount': formatCents(p.cents),
+      '*AccountCode': code, '*TaxType': tax, TaxAmount: 0, Currency: 'SGD',
+    });
+    totalCents += p.cents;
   }
   const missing = findMissingMandatory(rows);
   if (missing.length) throw new Error(`Row ${missing[0].row} has no ${missing[0].field}. Complete the details before exporting.`);
-  return {
-    rows, headers: XERO_SALES_INVOICE_HEADERS,
-    weeks: weeks.length, documents: documents.size, creditNotes, total: formatCents(totalCents),
-  };
+  return { rows, headers: XERO_SALES_INVOICE_HEADERS, payouts: rows.length, totalCents };
 }
 
-/** "xero-tiktok-payouts-2026-09.csv" */
-export function tiktokXeroFilename(year, month) {
-  return `xero-tiktok-payouts-${year}-${String(month).padStart(2, '0')}.csv`;
+/** "xero-tiktok-payouts-2026-09-01-to-2026-09-30.csv" */
+export function tiktokXeroFilename(from, to) {
+  return `xero-tiktok-payouts-${from}-to-${to}.csv`;
 }

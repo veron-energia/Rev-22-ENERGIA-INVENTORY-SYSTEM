@@ -2,24 +2,6 @@
 // TikTok figures behind a fake client. Every amount is made up.
 // Add ?fail=<rpc name> to the URL to make that call fail and see the error state.
 
-const week = (payout_date: string, week_start: string, extra: Record<string, unknown> = {}) => ({
-  payout_date, week_start, week_end: payout_date, finished: true, row_count: 3,
-  revenue: 0, fee: 0, expense: 0, payout: 0, tiktok_net: 0,
-  unknown_count: 0, balance_movement_count: 0, other_currency_count: 0, left_out_count: 0, left_out_settlement: 0,
-  uncovered_days: [] as string[], ...extra,
-});
-// The reporting month's Wednesdays; the last one of the current month is not over.
-const payouts = (year: number, month: number) => ({
-  year, month, period_start: '', period_end: '', today: '', timezone: 'Asia/Singapore',
-  undated_count: 0, income: 480.4, month_income: 480.4,
-  weeks: [
-    week('2026-09-02', '2026-08-27', { revenue: 512.3, fee: 81.25, expense: 36.9, payout: 394.15, tiktok_net: 394.15 }),
-    week('2026-09-09', '2026-09-03', { revenue: 40, fee: 6.2, expense: 75.5, payout: -41.7, tiktok_net: -41.7 }),
-    week('2026-09-16', '2026-09-10', { revenue: 96.5, fee: 15.05, expense: 0, payout: 81.45, tiktok_net: 81.45, left_out_count: 1, left_out_settlement: 18.6 }),
-    week('2026-09-23', '2026-09-17', { revenue: 0, fee: 0, expense: 0, payout: 0, tiktok_net: -4, row_count: 1, unknown_count: 1, uncovered_days: ['2026-09-17', '2026-09-18'] }),
-    week('2026-09-30', '2026-09-24', { finished: false, revenue: 60, fee: 9.5, expense: 4, payout: 46.5, tiktok_net: 46.5 }),
-  ],
-});
 const tables: Record<string, any[]> = {
   stores: [{ id: 'st-1', name: 'Preview Store', deleted_at: null, is_active: true }],
   products: [], vouchers: [], promotions: [], tiktok_status_mappings: [], tiktok_physical_returns: [],
@@ -34,7 +16,27 @@ const rpcs: Record<string, (a: any) => unknown> = {
     unknown_count: 1, balance_movement_count: 0, pending_match_count: 0, currency_count: 1, undated_count: 0, needs_review: true,
     left_out_count: 1, left_out_settlement: 18.6 }),
   tiktok_left_out_settlement: () => [],
-  tiktok_xero_payouts: a => payouts(a.p_year, a.p_month),
+  // TikTok's real payouts (375): one differs from the app's figure, two files
+  // disagree on another, and two Wednesdays have none yet.
+  tiktok_bank_payouts: a => ({ from: a.p_from, to: a.p_to, today: '', timezone: 'Asia/Singapore',
+    payouts: [
+      { reference_id: '3600000000000000101', paid_on: '2026-09-02', amount: 394.15, status: 'Transferred', transferred: true,
+        file_name: 'income_preview_1.xlsx', disagreeing: [],
+        wednesday: '2026-09-02', week_start: '2026-08-27', app_payout: 394.15, app_rows: 5, uncovered_days: [], left_out_count: 0 },
+      { reference_id: '3600000000000000102', paid_on: '2026-09-09', amount: 20, status: 'Transferred', transferred: true,
+        file_name: 'income_preview_1.xlsx', disagreeing: [{ amount: 200, file_name: 'income_preview_2.xlsx' }],
+        wednesday: '2026-09-09', week_start: '2026-09-03', app_payout: 20, app_rows: 2, uncovered_days: [], left_out_count: 0 },
+      { reference_id: '3600000000000000103', paid_on: '2026-09-16', amount: 39.75, status: 'Transferred', transferred: true,
+        file_name: 'income_preview_2.xlsx', disagreeing: [],
+        wednesday: '2026-09-16', week_start: '2026-09-10', app_payout: 81.45, app_rows: 4, uncovered_days: [], left_out_count: 1 },
+    ],
+    wednesdays_without_payout: [
+      { wednesday: '2026-09-23', week_start: '2026-09-17', app_payout: 12.5, app_rows: 2, uncovered_days: ['2026-09-23'] },
+      { wednesday: '2026-09-30', week_start: '2026-09-24', app_payout: 0, app_rows: 0,
+        uncovered_days: ['2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27', '2026-09-28', '2026-09-29', '2026-09-30'] },
+    ] }),
+  stage_tiktok_settlement_file: () => 'b-preview',
+  tiktok_batch_balance_counts: () => ({ payouts: 5, others: 34 }),
 };
 const failures = new Set(new URLSearchParams(location.search).getAll('fail'));
 class Query {
