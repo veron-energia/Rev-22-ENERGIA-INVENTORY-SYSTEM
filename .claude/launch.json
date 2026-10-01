@@ -99,6 +99,16 @@
         "vite.events-preview.config.mts"
       ],
       "port": 5192
+    },
+    {
+      "name": "tiktok-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.tiktok-preview.config.mts"
+      ],
+      "port": 5189
     }
   ]
 }

@@ -4,6 +4,7 @@ import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
 import { fetchAllFrom } from '../lib/supabasePaging';
 import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
+import { TikTokXeroExportButton } from '../components/tiktok/TikTokXeroExport';
 import { settledDateSgt, reportingMonthFor, periodLabel, settlementPeriod, toIsoDate } from '../lib/tiktok/settlementPeriod.mjs';
 import { classifyTransaction, CATEGORY } from '../lib/tiktok/classification.mjs';
 import { useAuth } from '../context/AuthContext';
@@ -909,7 +910,11 @@ const TikTokImportPage: React.FC = () => {
           {/* Settlements */}
           {pageTab === 'settlements' && (
             <div className="card" style={{ padding: 16 }}>
-              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Settlement Figures</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                <h3 style={{ fontSize: 14.5, margin: 0 }}>Settlement Figures</h3>
+                {/* TikTok's Wednesday payouts of the month on screen, every store together (374). */}
+                {canManage && <TikTokXeroExportButton year={reportMonth.year} month={reportMonth.month} />}
+              </div>
               <SettlementSummary
                 storeId={effectiveStore || null}
                 year={reportMonth.year}
