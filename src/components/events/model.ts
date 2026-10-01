@@ -56,17 +56,25 @@ export interface StoreOption { id: string; name: string; }
 // Website orders (372_website_orders_become_invoices.sql): tickets bought on
 // the event's website, recorded at payment and made into invoices.
 export type WebOrderMode = 'off' | 'record_only' | 'live';
+// 376: who took the payment.
+export type WebOrderProvider = 'stripe' | 'hitpay';
+export const webOrderProviderName = (p: WebOrderProvider) => (p === 'hitpay' ? 'HitPay' : 'Stripe');
+/** Where a payment that took no money was made. */
+export const webOrderTestPlace = (p: WebOrderProvider) => (p === 'hitpay' ? 'HitPay\'s sandbox' : 'Stripe\'s test mode');
 export type WebOrderStatus = 'invoiced' | 'recorded' | 'needs_review' | 'refused';
 export interface WebOrderChannel {
   key: string; mode: WebOrderMode; allow_test: boolean;
   store_name: string | null; acting_name: string | null; payment_method_name: string | null;
+  /** 376: the method a HitPay order's invoice is paid with. */
+  hitpay_payment_method_name: string | null;
 }
 export interface WebOrderPerson { name: string; email: string | null; whatsapp: string | null; }
 export interface WebOrderCandidate {
   customer_id: string; full_name: string; phone: string | null; email: string | null; last_invoice_at: string | null;
 }
 export interface WebOrder {
-  id: string; stripe_session_id: string; livemode: boolean; status: WebOrderStatus;
+  /** Stripe's checkout session id, or HitPay's payment request id (provider). */
+  id: string; provider: WebOrderProvider; stripe_session_id: string; livemode: boolean; status: WebOrderStatus;
   ticket: string; ticket_label: string; quantity: number; unit_amount: number; amount_total: number; early_bird: boolean;
   buyer_name: string; buyer_email: string | null; buyer_phone: string | null;
   checkout_opened_at: string | null; paid_at: string | null;
@@ -161,7 +169,8 @@ const webOrderStatus = (v: unknown): WebOrderStatus =>
 
 export function normalizeWebOrder(r: any): WebOrder {
   return {
-    id: String(r?.id ?? ''), stripe_session_id: String(r?.stripe_session_id ?? ''), livemode: r?.livemode === true,
+    id: String(r?.id ?? ''), provider: r?.provider === 'hitpay' ? 'hitpay' : 'stripe',
+    stripe_session_id: String(r?.stripe_session_id ?? ''), livemode: r?.livemode === true,
     status: webOrderStatus(r?.status), ticket: String(r?.ticket ?? ''),
     ticket_label: str(r?.ticket_label) ?? String(r?.ticket ?? ''),
     quantity: num(r?.quantity), unit_amount: num(r?.unit_amount), amount_total: num(r?.amount_total),
@@ -188,6 +197,7 @@ export function normalizeWebOrderList(v: any): WebOrderList {
     channel: c && typeof c === 'object' ? {
       key: String(c.key ?? ''), mode: webOrderMode(c.mode), allow_test: !!c.allow_test,
       store_name: str(c.store_name), acting_name: str(c.acting_name), payment_method_name: str(c.payment_method_name),
+      hitpay_payment_method_name: str(c.hitpay_payment_method_name),
     } : null,
     can_switch: v?.can_switch === true,
     orders: arr(v?.orders).map(normalizeWebOrder),
@@ -369,9 +379,10 @@ export function webOrderStatusText(o: Pick<WebOrder, 'status' | 'invoice_no' | '
 /** An order still waiting for its invoice. */
 export const webOrderIsOpen = (o: Pick<WebOrder, 'status'>) => o.status === 'recorded' || o.status === 'needs_review';
 /**
- * A Stripe test payment is invoiced only while its channel accepts test
- * orders (372 refuses it otherwise), so no money that was never taken ends up
- * on an invoice. Without a channel, nothing accepts it.
+ * A test payment (Stripe's test mode, or HitPay's sandbox) is invoiced only
+ * while its channel accepts test orders (372 and 376 refuse it otherwise), so
+ * no money that was never taken ends up on an invoice. Without a channel,
+ * nothing accepts it.
  */
 export const webOrderTestRefused = (o: Pick<WebOrder, 'livemode'>, channel: Pick<WebOrderChannel, 'allow_test'> | null) =>
   !o.livemode && channel?.allow_test !== true;

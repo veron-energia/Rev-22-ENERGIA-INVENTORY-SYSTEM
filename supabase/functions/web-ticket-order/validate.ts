@@ -11,9 +11,18 @@
 export const TICKETS = ['both', 'day1', 'day2'] as const;
 export type Ticket = (typeof TICKETS)[number];
 
+// 376: who took the payment. Absent means Stripe, as before HitPay; a HitPay
+// order carries HitPay's ids in the stripe_* fields (the database keeps them in
+// the same columns), and is passed on with its provider.
+export const PROVIDERS = ['stripe', 'hitpay'] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
 export interface PaidOrder {
   channel: string;
+  provider?: Provider;
+  /** Stripe's Checkout Session id, or HitPay's payment request id. */
   stripe_session_id: string;
+  /** Stripe's PaymentIntent id, or HitPay's payment id. */
   stripe_payment_intent: string | null;
   livemode: boolean;
   ticket: Ticket;
@@ -28,6 +37,7 @@ export interface PaidOrder {
 
 export interface NamesOrder {
   channel: string;
+  provider?: Provider;
   stripe_session_id: string;
   livemode: boolean;
   buyer: { first_name: string; last_name: string; email: string | null; whatsapp: string | null };
@@ -42,11 +52,11 @@ export type Checked<T> = { ok: true; value: T } | { ok: false; field: string };
 
 const REQUEST_FIELDS = ['type', 'order'] as const;
 const PAID_FIELDS = [
-  'channel', 'stripe_session_id', 'stripe_payment_intent', 'livemode', 'ticket', 'quantity',
+  'channel', 'provider', 'stripe_session_id', 'stripe_payment_intent', 'livemode', 'ticket', 'quantity',
   'unit_amount_cents', 'amount_total_cents', 'early_bird', 'buyer', 'checkout_opened_at', 'paid_at',
 ] as const;
 const PAID_BUYER_FIELDS = ['name', 'email', 'phone'] as const;
-const NAMES_FIELDS = ['channel', 'stripe_session_id', 'livemode', 'buyer', 'attendees'] as const;
+const NAMES_FIELDS = ['channel', 'provider', 'stripe_session_id', 'livemode', 'buyer', 'attendees'] as const;
 const NAMES_BUYER_FIELDS = ['first_name', 'last_name', 'email', 'whatsapp'] as const;
 const ATTENDEE_FIELDS = ['name', 'email', 'whatsapp'] as const;
 
@@ -54,6 +64,8 @@ export const MAX_ATTENDEES = 10;
 
 const SESSION_RE = /^cs_(test|live)_[A-Za-z0-9]{8,200}$/;
 const PAYMENT_INTENT_RE = /^pi_[A-Za-z0-9_]{8,200}$/;
+// HitPay's payment request and payment ids: lower-case uuids, as HitPay sends them.
+const HITPAY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // A zone is required: a bare local time would be read in the database's own
 // time zone, which is exactly the early-bird ambiguity the dates exist to avoid.
 // Postgres takes offsets up to ±15:59; a larger one would fail in the database,
@@ -121,18 +133,36 @@ function isoTime(value: unknown, path: string): string {
   return value as string;
 }
 
-/** The session id, and a livemode that agrees with it. */
-function session(body: Record<string, unknown>): { stripe_session_id: string; livemode: boolean } {
+/** The provider when one is given. */
+function provider(body: Record<string, unknown>): Provider | undefined {
+  if (body.provider === undefined) return undefined;
+  if (typeof body.provider !== 'string' || !(PROVIDERS as readonly string[]).includes(body.provider)) {
+    throw new Refused('order.provider');
+  }
+  return body.provider as Provider;
+}
+
+/**
+ * The provider, the checkout id, and a livemode that agrees with it. A Stripe
+ * session id says test or live; a HitPay id says neither, so a HitPay order's
+ * livemode is taken as signed.
+ */
+function session(body: Record<string, unknown>): { provider?: Provider; stripe_session_id: string; livemode: boolean } {
+  const p = provider(body);
+  if (p === 'hitpay') {
+    const id = pattern(body.stripe_session_id, 'order.stripe_session_id', HITPAY_ID_RE);
+    return { provider: p, stripe_session_id: id, livemode: flag(body.livemode, 'order.livemode') };
+  }
   const id = pattern(body.stripe_session_id, 'order.stripe_session_id', SESSION_RE);
   const livemode = flag(body.livemode, 'order.livemode');
   if (livemode !== id.startsWith('cs_live_')) throw new Refused('order.livemode');
-  return { stripe_session_id: id, livemode };
+  return { ...(p ? { provider: p } : {}), stripe_session_id: id, livemode };
 }
 
 function paidOrder(value: unknown): PaidOrder {
   const o = object(value, 'order', PAID_FIELDS);
   const channel = text(o.channel, 'order.channel', 1, 64);
-  const { stripe_session_id, livemode } = session(o);
+  const { provider: by, stripe_session_id, livemode } = session(o);
   // Blank means none, as for the contacts: a session with nothing to pay has no intent.
   const intent = optionalText(o.stripe_payment_intent, 'order.stripe_payment_intent', 203);
   const buyer = object(o.buyer, 'order.buyer', PAID_BUYER_FIELDS);
@@ -140,8 +170,11 @@ function paidOrder(value: unknown): PaidOrder {
 
   return {
     channel,
+    ...(by ? { provider: by } : {}),
     stripe_session_id,
-    stripe_payment_intent: intent === null ? null : pattern(intent, 'order.stripe_payment_intent', PAYMENT_INTENT_RE),
+    stripe_payment_intent: intent === null
+      ? null
+      : pattern(intent, 'order.stripe_payment_intent', by === 'hitpay' ? HITPAY_ID_RE : PAYMENT_INTENT_RE),
     livemode,
     ticket: o.ticket as Ticket,
     quantity: integer(o.quantity, 'order.quantity', 1, 10),
@@ -163,7 +196,7 @@ function paidOrder(value: unknown): PaidOrder {
 function namesOrder(value: unknown): NamesOrder {
   const o = object(value, 'order', NAMES_FIELDS);
   const channel = text(o.channel, 'order.channel', 1, 64);
-  const { stripe_session_id, livemode } = session(o);
+  const { provider: by, stripe_session_id, livemode } = session(o);
   const buyer = object(o.buyer, 'order.buyer', NAMES_BUYER_FIELDS);
 
   if (!Array.isArray(o.attendees) || o.attendees.length < 1 || o.attendees.length > MAX_ATTENDEES) {
@@ -181,6 +214,7 @@ function namesOrder(value: unknown): NamesOrder {
 
   return {
     channel,
+    ...(by ? { provider: by } : {}),
     stripe_session_id,
     livemode,
     buyer: {

@@ -609,7 +609,7 @@ test('website orders show the channel and every order status, and flag test orde
 
   const note = text();
   for (const bit of ["The number of an invoice created here does not reach the website's workbook by itself",
-    "type it into the workbook's Invoice No column, on every row whose Order ID is the order's Stripe checkout (cs_…; one row per person)",
+    "type it into the workbook's Invoice No column, on every row whose Order ID is the order's checkout (Stripe's cs_…, or HitPay's payment request id; one row per person)",
     "or use this tab's Excel export, which lists both"]) assert.ok(note.includes(bit), bit);
   assert.deepEqual(globalThis.__renderErrors, []);
 
@@ -695,6 +695,32 @@ test('a Stripe test order is not offered an invoice while the channel does not a
   assert.deepEqual(globalThis.__renderErrors, []);
 });
 
+test('a HitPay order says so: its badge, its sandbox, the channel\'s HitPay method and the export (376)', async () => {
+  const fx = makeFixture();
+  fx.web.channel.hitpay_payment_method_name = 'HitPay (online)';
+  fx.web.orders.push({ ...fx.web.orders.at(-1), id: 'wo-h', provider: 'hitpay', livemode: false,
+    stripe_session_id: '9e9be41b-2866-4307-8621-e35c633c431f', status: 'recorded', invoice_id: null, invoice_no: null,
+    review_reason: null, buyer_name: 'Guest Hit', paid_at: '2026-09-16T03:00:00Z' });
+  await openWebOrders({ setup: b => { b.handlers.web_orders_list = () => fx.web; } });
+  const head = document.querySelector('.events-web-head').textContent;
+  assert.ok(head.includes('Payment method: Stripe (online) · HitPay orders: HitPay (online)'), head);
+
+  const row = orderRow('wo-h');
+  assert.equal(row.querySelector('.badge[title="Paid through HitPay"]')?.textContent, 'HitPay', 'a HitPay order is badged');
+  assert.ok(row.querySelector('.badge[title*="HitPay\'s sandbox"]'), 'and its test badge names the sandbox');
+  assert.ok(!row.querySelector('.badge[title*="test mode"]'), 'not Stripe\'s test mode');
+  assert.ok(!orderRow('wo-3').querySelector('.badge[title="Paid through HitPay"]'), 'a Stripe order has no HitPay badge');
+
+  globalThis.__exports = [];
+  await click(button('Export Excel'));
+  await click(button('Export 6 row(s)', footer()));
+  const body = globalThis.__exports.at(-1).sheet.ws.body;
+  assert.equal(body.find(r => r.Buyer === 'Guest Hit')['Paid through'], 'HitPay');
+  assert.equal(body.find(r => r.Buyer === 'Guest Hit')['Order ID (checkout)'], '9e9be41b-2866-4307-8621-e35c633c431f');
+  assert.equal(body.find(r => r.Buyer === 'Guest Twenty')['Paid through'], 'Stripe');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
 test('the mode switch is the Owner\'s, and Live and Off are confirmed first', async () => {
   await openWebOrders({ role: 'owner' });
   const sw = modeSwitch();
@@ -708,7 +734,7 @@ test('the mode switch is the Owner\'s, and Live and Off are confirmed first', as
   assert.ok(modal().textContent.includes('An order recorded before now is invoiced if its names come in later and it was paid in the last 7 days'),
     'recorded orders are invoiced once Live when their names come in, if recent (373)');
   assert.ok(modal().textContent.includes('one paid more than 7 days ago shows why first'), modal().textContent);
-  assert.ok(modal().querySelector('.alert-warning').textContent.includes('a Stripe test payment will also become an invoice'),
+  assert.ok(modal().querySelector('.alert-warning').textContent.includes('a Stripe test payment or a HitPay sandbox payment will also become an invoice'),
     'with test orders accepted, it says they become invoices too');
   assert.equal(callsOf('web_order_channel_set_mode').length, 0, 'nothing is switched while it asks');
   await click(button('Cancel', footer()));
@@ -794,14 +820,14 @@ test('the website orders export has one row per order, with its people, amounts 
   assert.equal(exported.sheet.name, 'Website orders');
   assert.deepEqual(exported.sheet.ws.header, [
     'Paid at (SGT)', 'Buyer', 'Phone', 'Email', 'Pass', 'People', 'Names', 'Unit S$', 'Total S$', 'Early bird', 'Status',
-    'Invoice no', 'Order ID (Stripe checkout)', 'Reason', 'Test order', 'Checkout opened (SGT)', 'Names received (SGT)',
-  ], 'the invoice number sits beside the Stripe checkout, which is the Order ID in the website\'s workbook');
+    'Invoice no', 'Order ID (checkout)', 'Paid through', 'Reason', 'Test order', 'Checkout opened (SGT)', 'Names received (SGT)',
+  ], 'the invoice number sits beside the checkout, which is the Order ID in the website\'s workbook');
   const body = exported.sheet.ws.body;
   assert.equal(body.length, 5);
   assert.deepEqual(body.find(r => r.Buyer === 'Guest Twenty'), {
     'Paid at (SGT)': '2026-09-18 20:44', Buyer: 'Guest Twenty', Phone: '+65 9123 0030', Email: 'guest30@tests.invalid', Pass: 'Day 1 only',
     People: 2, Names: 'Guest Twenty, Guest Twenty-Five', 'Unit S$': 30.5, 'Total S$': 61, 'Early bird': 'Y', Status: 'Invoiced',
-    'Invoice no': 'INV-TEST-0101', 'Order ID (Stripe checkout)': 'cs_live_testwo10000', Reason: '', 'Test order': 'N',
+    'Invoice no': 'INV-TEST-0101', 'Order ID (checkout)': 'cs_live_testwo10000', 'Paid through': 'Stripe', Reason: '', 'Test order': 'N',
     'Checkout opened (SGT)': '', 'Names received (SGT)': '2026-09-18 20:50',
   });
   const recorded = body.find(r => r.Buyer === 'Guest Twenty-One');

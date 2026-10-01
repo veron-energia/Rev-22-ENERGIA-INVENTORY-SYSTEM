@@ -6,8 +6,8 @@ import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import {
   EventRow, WEB_ORDER_MODE_BADGE, WEB_ORDER_MODE_LABELS, WEB_ORDER_STATUS_BADGE, WEB_ORDER_STATUS_LABELS,
   WebOrder, WebOrderList, WebOrderMode, WebOrderOutcome, fmtDateTime, fmtSgDate, fmtTime, money,
-  normalizeWebOrderList, normalizeWebOrderOutcome, sgStamp, slug, webOrderCanInvoice, webOrderIsOpen, webOrderStatusText,
-  webOrderTestRefused,
+  normalizeWebOrderList, normalizeWebOrderOutcome, sgStamp, slug, webOrderCanInvoice, webOrderIsOpen, webOrderProviderName,
+  webOrderStatusText, webOrderTestPlace, webOrderTestRefused,
 } from './model';
 
 /*
@@ -16,8 +16,8 @@ import {
  * channel's person at its store and paid by its payment method. An order
  * that could not be matched to one customer waits as Needs review, and every
  * order waits as Recorded while the channel only records: Create invoice
- * finishes either, except for a Stripe test payment while the channel does
- * not accept test orders. Owners, Admins and Managers see this tab and only
+ * finishes either, except for a test payment (Stripe's test mode or HitPay's
+ * sandbox) while the channel does not accept test orders. Owners, Admins and Managers see this tab and only
  * the Owner switches the channel; the server enforces all three. An invoice
  * created here is not sent back to the website, so its workbook is filled in
  * by hand or from this tab's export.
@@ -39,9 +39,11 @@ export const WEB_ORDER_COLUMNS: ExcelColumn<WebOrder>[] = [
   { header: 'Early bird', value: o => (o.early_bird ? 'Y' : 'N') },
   { header: 'Status', value: o => WEB_ORDER_STATUS_LABELS[o.status] },
   // Side by side, as the website's workbook needs them: its Order ID is the
-  // Stripe checkout, and an invoice created on this tab never reaches it.
+  // checkout (Stripe's, or HitPay's payment request), and an invoice created on
+  // this tab never reaches it.
   { header: 'Invoice no', value: o => o.invoice_no ?? '' },
-  { header: 'Order ID (Stripe checkout)', value: o => o.stripe_session_id },
+  { header: 'Order ID (checkout)', value: o => o.stripe_session_id },
+  { header: 'Paid through', value: o => webOrderProviderName(o.provider) },
   { header: 'Reason', value: o => o.review_reason ?? '' },
   { header: 'Test order', value: o => (o.livemode ? 'N' : 'Y') },
   { header: 'Checkout opened (SGT)', value: o => sgStamp(o.checkout_opened_at) },
@@ -130,7 +132,7 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
           </div>
           <div className="events-line"><Store size={14} /><span>Store: {channel.store_name ?? '—'}</span></div>
           <div className="events-line"><UserRound size={14} /><span>Raised by: {channel.acting_name ?? '—'}</span></div>
-          <div className="events-line"><CreditCard size={14} /><span>Payment method: {channel.payment_method_name ?? '—'}</span></div>
+          <div className="events-line"><CreditCard size={14} /><span>Payment method: {channel.payment_method_name ?? '—'}{channel.hitpay_payment_method_name ? <> · HitPay orders: {channel.hitpay_payment_method_name}</> : null}</span></div>
           <div className="events-sub">Channel {channel.key}</div>
         </div>
       ) : list && (
@@ -189,8 +191,11 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                     </td>
                     <td className="events-web-wide">
                       <strong>{o.buyer_name || '—'}</strong>
+                      {o.provider === 'hitpay' && (
+                        <> <span className="badge badge-muted" title="Paid through HitPay">HitPay</span></>
+                      )}
                       {!o.livemode && (
-                        <> <span className="badge badge-accent" title="Paid in Stripe's test mode: no money was taken">Test</span></>
+                        <> <span className="badge badge-accent" title={`Paid in ${webOrderTestPlace(o.provider)}: no money was taken`}>Test</span></>
                       )}
                       {o.buyer_phone && <div className="events-sub">{o.buyer_phone}</div>}
                       {o.buyer_email && <div className="events-sub">{o.buyer_email}</div>}
@@ -232,7 +237,7 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                         </div>
                       ) : webOrderIsOpen(o) && webOrderTestRefused(o, channel) && (
                         <span className="events-sub events-web-no-invoice"
-                          title="Paid in Stripe's test mode while this channel does not accept test orders: no money was taken, so no invoice is made">
+                          title={`Paid in ${webOrderTestPlace(o.provider)} while this channel does not accept test orders: no money was taken, so no invoice is made`}>
                           <span className="events-nowrap">Test payment —</span>{' '}<span className="events-nowrap">not invoiced</span>
                         </span>
                       )}
@@ -245,13 +250,13 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
         </div>
       </div>
       <div className="events-sub" style={{ marginTop: 8 }}>
-        A Stripe refund is not brought in: refund its invoice by hand. Door sales paid in cash or PayNow are
+        A Stripe or HitPay refund is not brought in: refund its invoice by hand. Door sales paid in cash or PayNow are
         invoiced on the Invoices page, as any sale is.
       </div>
       <div className="events-sub" style={{ marginTop: 4 }}>
         The number of an invoice created here does not reach the website's workbook by itself: type it into the
-        workbook's Invoice No column, on every row whose Order ID is the order's Stripe checkout (cs_…; one row per
-        person), or use this tab's Excel export, which lists both.
+        workbook's Invoice No column, on every row whose Order ID is the order's checkout (Stripe's cs_…, or
+        HitPay's payment request id; one row per person), or use this tab's Excel export, which lists both.
       </div>
 
       {confirming === 'live' && channel && (
@@ -264,7 +269,8 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
             <div>
               From the next paid order on, each website order becomes an invoice straight away: raised
               by {channel.acting_name ?? 'the channel\'s person'} at {channel.store_name ?? 'the channel\'s store'},
-              paid by {channel.payment_method_name ?? 'the channel\'s payment method'}.
+              paid by {channel.payment_method_name ?? 'the channel\'s payment method'}
+              {channel.hitpay_payment_method_name ? <>, or {channel.hitpay_payment_method_name} for HitPay orders</> : null}.
             </div>
             <div className="events-sub">
               An order recorded before now is invoiced if its names come in later and it was paid in the last 7 days;
@@ -272,7 +278,7 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
             </div>
             {channel.allow_test && (
               <div className="alert alert-warning" style={{ marginBottom: 0 }}>
-                <AlertTriangle size={15} /><div>Test orders are accepted: a Stripe test payment will also become an invoice.</div>
+                <AlertTriangle size={15} /><div>Test orders are accepted: a Stripe test payment or a HitPay sandbox payment will also become an invoice.</div>
               </div>
             )}
           </div>
@@ -362,7 +368,7 @@ const ResolveModal: React.FC<{
             {order.checkout_opened_at && <> · checkout opened {fmtDateTime(order.checkout_opened_at)} (the invoice is dated that day)</>}
           </span>
           <span>{[order.buyer_name, order.buyer_phone, order.buyer_email].filter(Boolean).join(' · ')}</span>
-          {!order.livemode && <span>A Stripe test order: no money was taken.</span>}
+          {!order.livemode && <span>A {webOrderProviderName(order.provider)} {order.provider === 'hitpay' ? 'sandbox' : 'test'} order: no money was taken.</span>}
         </div>
 
         {outcome ? (

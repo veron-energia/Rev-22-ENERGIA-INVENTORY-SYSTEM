@@ -1,4 +1,4 @@
--- Website orders become invoices (372, with 373's hardening).
+-- Website orders become invoices (372, with 373's hardening and 376's HitPay orders).
 --
 --   O1 A record-only channel keeps the order and makes no invoice; asked again,
 --      it says the same.
@@ -30,6 +30,13 @@
 --   O10 What the review of 372 found: phones stored in the old local form,
 --      test payments recorded while allowed, names sent again after staff
 --      corrected the customer, and the audit of naming a customer.
+--   O12 HitPay (376): a HitPay order is kept as one, invoiced once and paid
+--      with the channel's HitPay method ("HitPay (online)" unless the channel
+--      names another), with HitPay's payment id as reference; its notes and
+--      reasons name HitPay; a sandbox payment is refused like a Stripe test
+--      payment; malformed ids and unknown providers are refused and not kept;
+--      a Manager resolves a HitPay time reason; names go on its invoice; the
+--      list says each order's provider.
 --   O11 What the pre-apply review of 372 found (373):
 --      - a customer made in advance under a guessable request id is not used;
 --        a buyer who named themselves first gets those name parts;
@@ -832,6 +839,123 @@ select public.web_order_channel_set_mode(pg_temp.tx('channel'), 'record_only');
 select pg_temp.check((select mode from public.web_order_channels where key = pg_temp.tx('channel')) = 'record_only'
     and (public.web_orders_list(pg_temp.fx('ev'))->>'can_switch')::boolean,
   'O9 an owner switches the channel');
+
+-- ═════ O12 HitPay (376) ═════
+select pg_temp.as_user('owner');
+update public.web_order_channels set mode = 'live', allow_test = false where key = pg_temp.tx('channel');
+-- One paid HitPay order as the edge function hands it in: HitPay's payment request id where Stripe's session goes.
+create function pg_temp.hitpay(req text, ticket text, qty int, unit_cents int, buyer text, phone text,
+  opened timestamptz, paid timestamptz, live boolean default true, early boolean default false) returns jsonb language sql as
+$$ select pg_temp.paid(req, ticket, qty, unit_cents, buyer, phone, opened, paid, early)
+       || jsonb_build_object('provider', 'hitpay', 'stripe_payment_intent', md5('pay' || req)::uuid::text, 'livemode', live) $$;
+select pg_temp.as_service();
+do $$ declare r jsonb; begin
+  insert into tx values ('hp_a', gen_random_uuid()::text), ('ph_hp', pg_temp.phone());
+  r := public.web_order_paid(pg_temp.hitpay(pg_temp.tx('hp_a'), 'both', 1, 9400, 'Hit Buyer', pg_temp.tx('ph_hp'),
+         pg_temp.sg(0, '11:00'), pg_temp.sg(0, '11:04')));
+  insert into tx values ('hp_a_status', r->>'status'), ('hp_a_no', r->>'invoice_no');
+  r := public.web_order_paid(pg_temp.hitpay(pg_temp.tx('hp_a'), 'both', 1, 9400, 'Hit Buyer', pg_temp.tx('ph_hp'),
+         pg_temp.sg(0, '11:00'), pg_temp.sg(0, '11:04')));
+  insert into tx values ('hp_a_again', r->>'invoice_no');
+end $$;
+select pg_temp.check(pg_temp.tx('hp_a_status') = 'invoiced' and pg_temp.tx('hp_a_again') = pg_temp.tx('hp_a_no')
+    and (select provider from pg_temp.order_of(pg_temp.tx('hp_a'))) = 'hitpay'
+    and (select count(*) from public.invoices where notes like '%' || pg_temp.tx('hp_a') || '%') = 1
+    and (select count(*) from public.invoice_payments p join public.invoices i on i.id = p.invoice_id
+          where i.invoice_no = pg_temp.tx('hp_a_no')) = 1,
+  'O12 a HitPay order on a live channel is invoiced once, and kept as a HitPay order');
+select pg_temp.check((select (p.payment_method_id, p.amount, p.payment_reference)
+                            = ((select id from public.payment_methods where name = 'HitPay (online)'), 94.00::numeric,
+                               md5('pay' || pg_temp.tx('hp_a'))::uuid::text)
+                        from public.invoice_payments p join public.invoices i on i.id = p.invoice_id
+                       where i.invoice_no = pg_temp.tx('hp_a_no'))
+    and (select notes from public.invoices where invoice_no = pg_temp.tx('hp_a_no')) = 'Website order · HitPay ' || pg_temp.tx('hp_a'),
+  'O12 its invoice is paid with HitPay (online), for what HitPay charged, with HitPay''s payment id as reference, and its notes name HitPay');
+
+do $$ declare r jsonb; begin
+  insert into tx values ('hp_t', gen_random_uuid()::text);
+  r := public.web_order_paid(pg_temp.hitpay(pg_temp.tx('hp_t'), 'day1', 1, 6100, 'Sandbox Buyer', pg_temp.phone(),
+         pg_temp.sg(0, '11:10'), pg_temp.sg(0, '11:12'), false));
+  insert into tx values ('hp_t_status', r->>'status'), ('hp_t_reason', r->>'review_reason');
+end $$;
+select pg_temp.check(pg_temp.tx('hp_t_status') = 'refused' and pg_temp.tx('hp_t_reason') = 'A HitPay test payment'
+    and (select status from pg_temp.order_of(pg_temp.tx('hp_t'))) = 'refused'
+    and not exists (select 1 from public.invoices where notes like '%' || pg_temp.tx('hp_t') || '%'),
+  'O12 a HitPay sandbox payment is refused while the channel does not accept test orders');
+
+do $$ declare r jsonb; begin
+  r := public.web_order_paid(pg_temp.hitpay('cs_live_O376' || pg_temp.tx('sfx') || 'X', 'day1', 1, 6100, 'Bad One',
+         pg_temp.phone(), pg_temp.sg(0, '11:20'), pg_temp.sg(0, '11:21')));
+  insert into tx values ('hp_bad1', r->>'review_reason');
+  r := public.web_order_paid(pg_temp.hitpay(upper(gen_random_uuid()::text), 'day1', 1, 6100, 'Bad Two',
+         pg_temp.phone(), pg_temp.sg(0, '11:20'), pg_temp.sg(0, '11:21')));
+  insert into tx values ('hp_bad2', r->>'review_reason');
+  r := public.web_order_paid(pg_temp.paid(gen_random_uuid()::text, 'day1', 1, 6100, 'Bad Three', pg_temp.phone(),
+         pg_temp.sg(0, '11:20'), pg_temp.sg(0, '11:21')) || jsonb_build_object('provider', 'paypal'));
+  insert into tx values ('hp_bad3', r->>'review_reason');
+  r := public.web_order_paid(pg_temp.paid(gen_random_uuid()::text, 'day1', 1, 6100, 'Bad Four', pg_temp.phone(),
+         pg_temp.sg(0, '11:20'), pg_temp.sg(0, '11:21')));
+  insert into tx values ('hp_bad4', r->>'review_reason');
+end $$;
+select pg_temp.check(pg_temp.tx('hp_bad1') = 'Not a HitPay payment request id' and pg_temp.tx('hp_bad2') = 'Not a HitPay payment request id'
+    and pg_temp.tx('hp_bad3') = 'Unknown payment provider' and pg_temp.tx('hp_bad4') = 'Not a Stripe checkout id'
+    and not exists (select 1 from public.web_orders where stripe_session_id like 'cs_live_O376%'
+                       or buyer_name in ('Bad One', 'Bad Two', 'Bad Three', 'Bad Four')),
+  'O12 a malformed HitPay id, an unknown provider, or a HitPay id sent as a Stripe order is refused and not kept');
+
+do $$ declare r jsonb; begin
+  insert into tx values ('hp_late', gen_random_uuid()::text);
+  -- Opened yesterday morning (still the early bird), paid three hours later.
+  r := public.web_order_paid(pg_temp.hitpay(pg_temp.tx('hp_late'), 'day2', 1, 3050, 'Late Buyer', pg_temp.phone(),
+         pg_temp.sg(-1, '06:00'), pg_temp.sg(-1, '09:00'), true, true));
+  insert into tx values ('hp_late_status', r->>'status'), ('hp_late_reason', r->>'review_reason');
+end $$;
+select pg_temp.as_user('manager');
+do $$ declare r jsonb; begin
+  r := public.web_order_resolve((select id from pg_temp.order_of(pg_temp.tx('hp_late'))));
+  insert into tx values ('hp_late_resolved', r->>'status');
+end $$;
+select pg_temp.check(pg_temp.tx('hp_late_status') = 'needs_review'
+    and pg_temp.tx('hp_late_reason') = 'It was paid more than 2 hours after the checkout opened. Check the payment in HitPay before creating its invoice'
+    and pg_temp.tx('hp_late_resolved') = 'invoiced',
+  'O12 a HitPay time reason names HitPay, and a Manager who has seen it creates the invoice');
+
+select pg_temp.as_user('owner');
+do $$ declare pm uuid; begin
+  insert into public.payment_methods (name, is_active) values ('O376 HitPay alt ' || pg_temp.tx('sfx'), true) returning id into pm;
+  insert into fx values ('hp_alt', pm);
+  update public.web_order_channels set hitpay_payment_method_id = pm where key = pg_temp.tx('channel');
+end $$;
+select pg_temp.as_service();
+do $$ declare r jsonb; begin
+  insert into tx values ('hp_b', gen_random_uuid()::text);
+  r := public.web_order_paid(pg_temp.hitpay(pg_temp.tx('hp_b'), 'day1', 1, 6100, 'Alt Buyer', pg_temp.phone(),
+         pg_temp.sg(0, '11:30'), pg_temp.sg(0, '11:31')));
+  insert into tx values ('hp_b_no', r->>'invoice_no');
+end $$;
+select pg_temp.check((select p.payment_method_id from public.invoice_payments p join public.invoices i on i.id = p.invoice_id
+                       where i.invoice_no = pg_temp.tx('hp_b_no')) = pg_temp.fx('hp_alt'),
+  'O12 a channel''s own HitPay method is used when it names one');
+
+do $$ declare r jsonb; begin
+  r := public.web_order_names(jsonb_build_object('channel', pg_temp.tx('channel'), 'stripe_session_id', pg_temp.tx('hp_a'),
+         'livemode', true, 'buyer', jsonb_build_object('first_name', 'Hit', 'last_name', 'Buyer', 'email', null, 'whatsapp', null),
+         'attendees', jsonb_build_array(jsonb_build_object('name', 'Hit Attendee'))));
+  insert into tx values ('hp_names', r->>'status');
+end $$;
+select pg_temp.check(pg_temp.tx('hp_names') = 'invoiced'
+    and exists (select 1 from public.event_guests g join public.invoices i on i.id = g.invoice_id
+                 where i.invoice_no = pg_temp.tx('hp_a_no') and g.name = 'Hit Attendee' and g.status = 'registered'),
+  'O12 the buyer''s names go on a HitPay order''s invoice');
+
+select pg_temp.as_user('manager');
+select pg_temp.check(
+    (select o->>'provider' from jsonb_array_elements(public.web_orders_list(pg_temp.fx('ev'))->'orders') o
+      where o->>'stripe_session_id' = pg_temp.tx('hp_a')) = 'hitpay'
+    and (select o->>'provider' from jsonb_array_elements(public.web_orders_list(pg_temp.fx('ev'))->'orders') o
+      where o->>'stripe_session_id' = pg_temp.sess('B')) = 'stripe'
+    and public.web_orders_list(pg_temp.fx('ev'))->'channel'->>'hitpay_payment_method_name' = 'O376 HitPay alt ' || pg_temp.tx('sfx'),
+  'O12 the list says each order''s provider and the channel''s HitPay method');
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;

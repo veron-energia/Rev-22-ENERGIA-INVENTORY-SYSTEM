@@ -2,7 +2,7 @@
 
 import { assert, assertEquals } from 'jsr:@std/assert@1';
 import { validateOrderRequest } from './validate.ts';
-import { namesOrder, paidOrder } from './fixtures.ts';
+import { hitpayNamesOrder, hitpayPaidOrder, namesOrder, paidOrder } from './fixtures.ts';
 
 // deno-lint-ignore no-explicit-any
 type Loose = Record<string, any>;
@@ -187,4 +187,52 @@ Deno.test('a refusal names the field and never echoes what was in it', () => {
   const result = paid(o => { o.buyer.email = `guest.one@tests.invalid${'x'.repeat(260)}`; });
   assertEquals(refusedAt(result), 'order.buyer.email');
   assert(!JSON.stringify(result).includes('guest.one'));
+});
+
+// ── 376: HitPay ──────────────────────────────────────────────────────────────
+const hitpay = (edit: (o: Loose) => void = () => {}) => {
+  const order: Loose = hitpayPaidOrder();
+  edit(order);
+  return validateOrderRequest({ type: 'paid', order });
+};
+
+Deno.test('a HitPay order passes through with its provider, paid and names alike', () => {
+  const p = hitpay();
+  assert(p.ok);
+  assertEquals(p.value, { type: 'paid', order: hitpayPaidOrder() });
+  const n = validateOrderRequest({ type: 'names', order: hitpayNamesOrder() });
+  assert(n.ok);
+  assertEquals(n.value, { type: 'names', order: hitpayNamesOrder() });
+});
+
+Deno.test('a Stripe order may name its provider, and is otherwise unchanged', () => {
+  const r = paid(o => { o.provider = 'stripe'; });
+  assert(r.ok);
+  assertEquals(r.value, { type: 'paid', order: { ...paidOrder(), provider: 'stripe' } });
+  assertEquals(refusedAt(paid(o => { o.provider = 'stripe'; o.stripe_session_id = hitpayPaidOrder().stripe_session_id; })),
+    'order.stripe_session_id', 'a HitPay id sent as Stripe');
+});
+
+Deno.test('only stripe and hitpay are providers', () => {
+  for (const value of ['paypal', 'HitPay', '', null, 1, true]) {
+    assertEquals(refusedAt(paid(o => { o.provider = value; })), 'order.provider', String(value));
+    assertEquals(refusedAt(names(o => { o.provider = value; })), 'order.provider', String(value));
+  }
+});
+
+Deno.test('a HitPay id is a lower-case uuid, and its payment id too', () => {
+  for (const id of ['', 'cs_test_a1B2c3D4e5F6g7H8', '9E9BE41B-2866-4307-8621-E35C633C431F', '9e9be41b28664307862', '9e9be41b-2866-4307-8621-e35c633c431f0']) {
+    assertEquals(refusedAt(hitpay(o => { o.stripe_session_id = id; })), 'order.stripe_session_id', id);
+  }
+  assertEquals(refusedAt(hitpay(o => { o.stripe_payment_intent = 'pi_3TestIntent0001'; })), 'order.stripe_payment_intent');
+  assert(hitpay(o => { o.stripe_payment_intent = null; }).ok, 'no payment id yet');
+});
+
+Deno.test('a HitPay order\'s livemode is taken as sent: sandbox or production', () => {
+  for (const livemode of [true, false]) {
+    const r = hitpay(o => { o.livemode = livemode; });
+    assert(r.ok);
+    assertEquals(r.value.order.livemode, livemode);
+  }
+  assertEquals(refusedAt(hitpay(o => { o.livemode = 'yes'; })), 'order.livemode');
 });

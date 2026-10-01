@@ -30,3 +30,22 @@ export const namesOrder = (): NamesOrder => ({
     { name: 'Guest Two', email: null, whatsapp: '+65 9123 0002' },
   ],
 });
+
+// 376: a HitPay order, with HitPay's payment request and payment ids where Stripe's go.
+export const HITPAY_REQUEST_ID = '9e9be41b-2866-4307-8621-e35c633c431f';
+export const HITPAY_PAYMENT_ID = '9e9be41c-2869-4b8c-8701-6c44af86b7d0';
+
+export const hitpayPaidOrder = (): PaidOrder => ({
+  ...paidOrder(),
+  provider: 'hitpay',
+  stripe_session_id: HITPAY_REQUEST_ID,
+  stripe_payment_intent: HITPAY_PAYMENT_ID,
+  livemode: true,
+});
+
+export const hitpayNamesOrder = (): NamesOrder => ({
+  ...namesOrder(),
+  provider: 'hitpay',
+  stripe_session_id: HITPAY_REQUEST_ID,
+  livemode: true,
+});
