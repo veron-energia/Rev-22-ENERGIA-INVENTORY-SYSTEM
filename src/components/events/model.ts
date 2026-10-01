@@ -1,4 +1,5 @@
 import { INVOICE_STATUS_LABELS, InvoiceStatus } from '../../types';
+import { calendarDate } from '../../lib/calendarDates';
 
 /*
  * Events: the shapes the server returns (370_events.sql) and the few rules the
@@ -51,6 +52,31 @@ export interface EventInvoice {
 export interface OverCapacity { day: string; capacity: number; registered: number; }
 export interface StaffOption { id: string; full_name: string; role: string; }
 export interface StoreOption { id: string; name: string; }
+
+// Website orders (372_website_orders_become_invoices.sql): tickets bought on
+// the event's website, recorded at payment and made into invoices.
+export type WebOrderMode = 'off' | 'record_only' | 'live';
+export type WebOrderStatus = 'invoiced' | 'recorded' | 'needs_review' | 'refused';
+export interface WebOrderChannel {
+  key: string; mode: WebOrderMode; allow_test: boolean;
+  store_name: string | null; acting_name: string | null; payment_method_name: string | null;
+}
+export interface WebOrderPerson { name: string; email: string | null; whatsapp: string | null; }
+export interface WebOrderCandidate {
+  customer_id: string; full_name: string; phone: string | null; email: string | null; last_invoice_at: string | null;
+}
+export interface WebOrder {
+  id: string; stripe_session_id: string; livemode: boolean; status: WebOrderStatus;
+  ticket: string; ticket_label: string; quantity: number; unit_amount: number; amount_total: number; early_bird: boolean;
+  buyer_name: string; buyer_email: string | null; buyer_phone: string | null;
+  checkout_opened_at: string | null; paid_at: string | null;
+  attendees: WebOrderPerson[] | null; names_at: string | null;
+  invoice_id: string | null; invoice_no: string | null; review_reason: string | null;
+  candidates: WebOrderCandidate[]; created_at: string | null;
+}
+export interface WebOrderList { channel: WebOrderChannel | null; can_switch: boolean; orders: WebOrder[]; }
+/** What web_order_resolve answers. */
+export interface WebOrderOutcome { status: WebOrderStatus; invoice_no: string | null; review_reason: string | null; }
 
 // ── normalisers ────────────────────────────────────────────────────────────
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -126,6 +152,52 @@ export function normalizeOverCapacity(v: unknown): OverCapacity[] {
     .filter(o => o.day);
 }
 
+const WEB_ORDER_MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
+const WEB_ORDER_STATUSES: WebOrderStatus[] = ['invoiced', 'recorded', 'needs_review', 'refused'];
+const webOrderMode = (v: unknown): WebOrderMode => (WEB_ORDER_MODES.includes(v as WebOrderMode) ? v as WebOrderMode : 'off');
+// A status the page does not know is shown as needing a look, never as done.
+const webOrderStatus = (v: unknown): WebOrderStatus =>
+  (WEB_ORDER_STATUSES.includes(v as WebOrderStatus) ? v as WebOrderStatus : 'needs_review');
+
+export function normalizeWebOrder(r: any): WebOrder {
+  return {
+    id: String(r?.id ?? ''), stripe_session_id: String(r?.stripe_session_id ?? ''), livemode: r?.livemode === true,
+    status: webOrderStatus(r?.status), ticket: String(r?.ticket ?? ''),
+    ticket_label: str(r?.ticket_label) ?? String(r?.ticket ?? ''),
+    quantity: num(r?.quantity), unit_amount: num(r?.unit_amount), amount_total: num(r?.amount_total),
+    early_bird: !!r?.early_bird,
+    buyer_name: String(r?.buyer_name ?? ''), buyer_email: str(r?.buyer_email), buyer_phone: str(r?.buyer_phone),
+    checkout_opened_at: str(r?.checkout_opened_at), paid_at: str(r?.paid_at),
+    // Null until the buyer registers the names.
+    attendees: Array.isArray(r?.attendees)
+      ? r.attendees.map((a: any) => ({ name: String(a?.name ?? ''), email: str(a?.email), whatsapp: str(a?.whatsapp) }))
+      : null,
+    names_at: str(r?.names_at),
+    invoice_id: str(r?.invoice_id), invoice_no: str(r?.invoice_no), review_reason: str(r?.review_reason),
+    candidates: arr(r?.candidates).map(c => ({
+      customer_id: String(c?.customer_id ?? ''), full_name: String(c?.full_name ?? ''), phone: str(c?.phone),
+      email: str(c?.email), last_invoice_at: str(c?.last_invoice_at),
+    })).filter(c => c.customer_id),
+    created_at: str(r?.created_at),
+  };
+}
+
+export function normalizeWebOrderList(v: any): WebOrderList {
+  const c = v?.channel;
+  return {
+    channel: c && typeof c === 'object' ? {
+      key: String(c.key ?? ''), mode: webOrderMode(c.mode), allow_test: !!c.allow_test,
+      store_name: str(c.store_name), acting_name: str(c.acting_name), payment_method_name: str(c.payment_method_name),
+    } : null,
+    can_switch: v?.can_switch === true,
+    orders: arr(v?.orders).map(normalizeWebOrder),
+  };
+}
+
+export function normalizeWebOrderOutcome(v: any): WebOrderOutcome {
+  return { status: webOrderStatus(v?.status), invoice_no: str(v?.invoice_no), review_reason: str(v?.review_reason) };
+}
+
 // ── formatting ─────────────────────────────────────────────────────────────
 // Dates are calendar days, never instants: they are split by hand so no time
 // zone can move them a day.
@@ -175,6 +247,20 @@ export function fmtTime(ts: string | null | undefined): string {
   if (!ts) return '';
   const d = new Date(ts);
   return Number.isFinite(d.getTime()) ? timeFormat.format(d) : '';
+}
+/** The Singapore day and clock time of a timestamp, "Mon 5 Oct 2026, 14:30". */
+export function fmtDateTime(ts: string | null | undefined): string {
+  const day = calendarDate(ts, 'Asia/Singapore');
+  return day ? `${fmtDate(day)}, ${fmtTime(ts)}` : '—';
+}
+/** The Singapore day of a date or a timestamp, "Mon 5 Oct 2026". */
+export function fmtSgDate(v: string | null | undefined): string {
+  return fmtDate(calendarDate(v, 'Asia/Singapore') || null);
+}
+/** A timestamp for a spreadsheet, where it sorts: "2026-10-05 14:30". */
+export function sgStamp(ts: string | null | undefined): string {
+  const day = calendarDate(ts, 'Asia/Singapore');
+  return day ? `${day} ${fmtTime(ts)}` : '';
 }
 
 export const money = (n: number | null | undefined) => `S$${Number(n ?? 0).toFixed(2)}`;
@@ -259,6 +345,39 @@ export function overCapacityText(list: OverCapacity[]): string {
 export function guestDay(g: Guest, day: string): GuestDay | undefined {
   return g.days.find(d => d.day === day);
 }
+
+export const WEB_ORDER_MODE_LABELS: Record<WebOrderMode, string> = {
+  off: 'Off', record_only: 'Record only — no invoices yet', live: 'Live — invoices are created',
+};
+export const WEB_ORDER_MODE_BADGE: Record<WebOrderMode, string> = {
+  off: 'badge badge-muted', record_only: 'badge badge-accent', live: 'badge badge-success',
+};
+export const WEB_ORDER_STATUS_LABELS: Record<WebOrderStatus, string> = {
+  invoiced: 'Invoiced', recorded: 'Recorded', needs_review: 'Needs review', refused: 'Refused',
+};
+export const WEB_ORDER_STATUS_BADGE: Record<WebOrderStatus, string> = {
+  invoiced: 'badge badge-success', recorded: 'badge badge-primary',
+  needs_review: 'badge badge-accent', refused: 'badge badge-danger',
+};
+/** "Invoiced · INV-…", "Recorded", "Needs review: <reason>" or "Refused: <reason>". */
+export function webOrderStatusText(o: Pick<WebOrder, 'status' | 'invoice_no' | 'review_reason'>): string {
+  const label = WEB_ORDER_STATUS_LABELS[o.status];
+  if (o.status === 'invoiced') return o.invoice_no ? `${label} · ${o.invoice_no}` : label;
+  if (o.status === 'recorded') return label;
+  return o.review_reason ? `${label}: ${o.review_reason}` : label;
+}
+/** An order still waiting for its invoice. */
+export const webOrderIsOpen = (o: Pick<WebOrder, 'status'>) => o.status === 'recorded' || o.status === 'needs_review';
+/**
+ * A Stripe test payment is invoiced only while its channel accepts test
+ * orders (372 refuses it otherwise), so no money that was never taken ends up
+ * on an invoice. Without a channel, nothing accepts it.
+ */
+export const webOrderTestRefused = (o: Pick<WebOrder, 'livemode'>, channel: Pick<WebOrderChannel, 'allow_test'> | null) =>
+  !o.livemode && channel?.allow_test !== true;
+/** An open order whose invoice staff can create here. */
+export const webOrderCanInvoice = (o: Pick<WebOrder, 'status' | 'livemode'>, channel: Pick<WebOrderChannel, 'allow_test'> | null) =>
+  webOrderIsOpen(o) && !webOrderTestRefused(o, channel);
 
 /** A file-name-safe version of an event's name. */
 export function slug(s: string): string {

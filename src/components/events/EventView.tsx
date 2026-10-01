@@ -1,19 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowLeft, CalendarDays, ClipboardCheck, Clock, Pencil, Receipt, RefreshCw, Store, Ticket, Trash2, Users,
+  ArrowLeft, CalendarDays, ClipboardCheck, Clock, Globe, Pencil, Receipt, RefreshCw, Store, Ticket, Trash2, Users,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
+import { isManagerOrAbove } from '../../types';
 import { ReasonModal } from '../ui';
 import { GuestsTab } from './GuestsTab';
 import { CheckInPanel } from './CheckInPanel';
 import { SalesTab } from './SalesTab';
+import { WebOrdersTab } from './WebOrdersTab';
 import { GuestSaved } from './GuestModal';
 import {
   EventRow, Guest, STATUS_BADGE, StaffOption, dayLoads, eventStatus, fmtDate, fmtDayList, fmtDayMonth,
   fmtHours, fmtWeekday, loadText, loadTone, money, normalizeGuest, overCapacityText,
 } from './model';
 
-type Tab = 'guests' | 'checkin' | 'sales';
+type Tab = 'guests' | 'checkin' | 'sales' | 'web';
 
 export const EventView: React.FC<{
   event: EventRow;
@@ -27,6 +30,10 @@ export const EventView: React.FC<{
   onDeleted: () => void;
   onChanged: () => void;
 }> = ({ event, today, canManage, staff, currentUserId, currentUserName, onBack, onEdit, onDeleted, onChanged }) => {
+  const { profile } = useAuth();
+  // Website orders carry buyers' contacts and make invoices: Owners, Admins
+  // and Managers only, as the server allows.
+  const seesWebOrders = isManagerOrAbove(profile?.role);
   const [tab, setTab] = useState<Tab>('guests');
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -139,6 +146,10 @@ export const EventView: React.FC<{
           onClick={() => setTab('checkin')}><ClipboardCheck size={15} /> Check-in</button>
         <button role="tab" aria-selected={tab === 'sales'} className={`events-tab${tab === 'sales' ? ' active' : ''}`}
           onClick={() => setTab('sales')}><Receipt size={15} /> Sales</button>
+        {seesWebOrders && (
+          <button role="tab" aria-selected={tab === 'web'} className={`events-tab${tab === 'web' ? ' active' : ''}`}
+            onClick={() => setTab('web')}><Globe size={15} /> Website orders</button>
+        )}
       </div>
 
       {tab === 'guests' && (
@@ -153,6 +164,9 @@ export const EventView: React.FC<{
               currentUserName={currentUserName} onGuestChange={onGuestChange} />
       )}
       {tab === 'sales' && <SalesTab event={event} />}
+      {tab === 'web' && seesWebOrders && (
+        <WebOrdersTab event={event} onInvoiced={() => { void loadGuests(); onChanged(); }} />
+      )}
 
       {deleting && (
         <ReasonModal title={`Delete ${event.name}`} label="Why is it being deleted?" confirmLabel="Delete event"

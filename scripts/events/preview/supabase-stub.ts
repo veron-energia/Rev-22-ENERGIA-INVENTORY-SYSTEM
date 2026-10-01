@@ -5,10 +5,12 @@
 // rules the server does where they show on screen (who may set events up, a
 // sold option or a busy day stays, a ticket guest's days come from the
 // invoice, a full day only warns). Saves and check-ins change the memory, so
-// the page can be clicked through. It talks to nothing.
+// the page can be clicked through. Website orders (372) come in every status,
+// and Create invoice and the mode switch change them too. It talks to nothing.
 //
 // Every name, phone and email here is invented. ?role= picks the user (see
-// auth-stub.tsx); ?fail=<rpc name> makes that call fail.
+// auth-stub.tsx); ?fail=<rpc name> makes that call fail; ?allow_test=0 stops
+// the website channel accepting Stripe test orders.
 import { PREVIEW_USERS, previewRole } from './auth-stub';
 
 type Day = { day: string; capacity: number | null };
@@ -68,6 +70,11 @@ const CUSTOMERS = Array.from({ length: 8 }, (_, i) => ({
   id: `c-0${i + 1}`, full_name: `Customer ${['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'][i]}`,
   phone: `+65 9123 00${String(i + 1).padStart(2, '0')}`, email: `customer${i + 1}@tests.invalid`, notes: null, deleted_at: null,
 }));
+// Two customers who share a phone, so a website order from it waits for staff.
+CUSTOMERS.push(
+  { id: 'c-09', full_name: 'Customer Nine', phone: '+65 9123 0020', email: 'customer9@tests.invalid', notes: null, deleted_at: null },
+  { id: 'c-10', full_name: 'Customer Ten', phone: '+65 9123 0020', email: 'customer10@tests.invalid', notes: null, deleted_at: null },
+);
 
 const isOwnerOrAdmin = role === 'owner';
 const isManager = role === 'owner' || role === 'manager';
@@ -155,6 +162,66 @@ const guests: G[] = [
   guest({ event_id: 'ev-tea', name: 'Guest Sixteen', days: [gday(PAST, '09:45', 'MA 2')] }),
   guest({ event_id: 'ev-tea', name: 'Guest Seventeen', notes: 'Brings a friend', days: [gday(PAST)] }),
 ];
+
+// ── website orders (372) ───────────────────────────────────────────────────
+type WebPerson = { name: string; email: string | null; whatsapp: string | null };
+type WebOrder = {
+  id: string; channel: string; stripe_session_id: string; livemode: boolean;
+  status: 'recorded' | 'invoiced' | 'needs_review' | 'refused';
+  ticket: 'both' | 'day1' | 'day2'; quantity: number; unit_amount: number; amount_total: number; early_bird: boolean;
+  buyer_name: string; buyer_email: string | null; buyer_phone: string | null;
+  checkout_opened_at: string; paid_at: string; attendees: WebPerson[] | null; names_at: string | null;
+  invoice_id: string | null; customer_id: string | null; review_reason: string | null; candidate_ids: string[];
+};
+// ?allow_test=0 previews the channel once it no longer accepts Stripe test
+// orders: the test order recorded before then cannot be invoiced.
+const webChannels = [{
+  key: 'preview-open-days-2026', event_id: 'ev-open-days', mode: 'record_only',
+  allow_test: new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('allow_test') !== '0',
+  store_id: 'st-north', acting_profile_id: 'u-owner', payment_method_name: 'Stripe (online)',
+}];
+const PASSES = {
+  both: { label: 'Both days', option_id: 'op-2days', days: [D1, D2] },
+  day1: { label: 'Day 1 only', option_id: 'op-1day', days: [D1] },
+  day2: { label: 'Day 2 only', option_id: 'op-1day', days: [D2] },
+};
+const person = (name: string, n: string): WebPerson => ({ name, email: `guest${n}@tests.invalid`, whatsapp: `+65 9123 00${n}` });
+const webOrder = (o: Partial<WebOrder> & Pick<WebOrder, 'id' | 'ticket' | 'quantity' | 'unit_amount' | 'buyer_name' | 'paid_at'>): WebOrder => ({
+  channel: 'preview-open-days-2026', stripe_session_id: `cs_live_preview${o.id.replace(/\W/g, '')}0000`, livemode: true,
+  status: 'recorded', amount_total: o.unit_amount * o.quantity, early_bird: false, buyer_email: null, buyer_phone: null,
+  checkout_opened_at: o.paid_at, attendees: null, names_at: null, invoice_id: null, customer_id: null, review_reason: null,
+  candidate_ids: [], ...o,
+});
+invoices.push({ id: 'inv-web-1', invoice_no: 'INV-2026-9010', business_date: addDays(TODAY, -12), store_id: 'st-north',
+  customer_id: 'c-03', status: 'paid', total_amount: eb(61) * 2, paid_amount: eb(61) * 2,
+  lines: [{ option_id: 'op-1day', days: [D1], quantity: 2, line_total: eb(61) * 2 }] });
+const webOrders: WebOrder[] = [
+  webOrder({ id: 'wo-1', status: 'invoiced', ticket: 'day1', quantity: 2, unit_amount: eb(61), early_bird: true,
+    buyer_name: 'Guest Twenty', buyer_phone: '+65 9123 0003', buyer_email: 'guest30@tests.invalid',
+    checkout_opened_at: at(addDays(TODAY, -12), '20:41'), paid_at: at(addDays(TODAY, -12), '20:44'),
+    attendees: [person('Guest Twenty', '30'), person('Guest Twenty-Five', '31')], names_at: at(addDays(TODAY, -12), '20:50'),
+    invoice_id: 'inv-web-1', customer_id: 'c-03' }),
+  // Two customers have this phone.
+  webOrder({ id: 'wo-2', status: 'needs_review', ticket: 'both', quantity: 1, unit_amount: eb(94), early_bird: true,
+    buyer_name: 'Guest Twenty-Two', buyer_phone: '+65 9123 0020', buyer_email: 'guest32@tests.invalid',
+    checkout_opened_at: at(addDays(TODAY, -11), '09:58'), paid_at: at(addDays(TODAY, -11), '10:02'),
+    attendees: [person('Guest Twenty-Two', '32')], names_at: at(addDays(TODAY, -11), '10:05'),
+    review_reason: '2 customers have this phone', candidate_ids: ['c-09', 'c-10'] }),
+  webOrder({ id: 'wo-3', status: 'refused', ticket: 'day2', quantity: 1, unit_amount: 10,
+    buyer_name: 'Guest Twenty-Three', buyer_phone: '+65 9123 0033', paid_at: at(addDays(TODAY, -4), '13:15'),
+    review_reason: 'The amount paid does not match the pass price' }),
+  // Recorded while the channel only records; nobody has this phone yet.
+  webOrder({ id: 'wo-4', ticket: 'day2', quantity: 3, unit_amount: 61,
+    buyer_name: 'Guest Twenty-One', buyer_phone: '+65 9123 0035', buyer_email: 'guest35@tests.invalid',
+    paid_at: at(addDays(TODAY, -2), '18:30') }),
+  // A Stripe test order from Customer One's phone.
+  webOrder({ id: 'wo-5', livemode: false, stripe_session_id: 'cs_test_preview00000005', ticket: 'day1', quantity: 1, unit_amount: 61,
+    buyer_name: 'Guest Twenty-Four', buyer_phone: '+65 9123 0001', paid_at: at(addDays(TODAY, -1), '11:05'),
+    attendees: [person('Guest Twenty-Four', '34')], names_at: at(addDays(TODAY, -1), '11:09') }),
+];
+// The invoiced order's people, on the guest list from its invoice.
+guests.push(...webOrders[0].attendees!.map(a => guest({ name: a.name, phone: a.whatsapp, customer_id: a.name === 'Guest Twenty' ? 'c-03' : null,
+  source: 'ticket', invoice_id: 'inv-web-1', ticket_option_id: 'op-1day', registered_by: null, days: [gday(D1)] })));
 
 // ── the rules, as the server applies them ──────────────────────────────────
 class Refused extends Error {}
@@ -366,6 +433,96 @@ const rpcs: Record<string, (a: any) => unknown> = {
           ticket_total: ticketLines.reduce((s, l) => s + l.line_total, 0).toFixed(2),
         };
       });
+  },
+
+  // Owners, Admins and Managers see the orders; only the Owner switches the
+  // channel. Create invoice matches by phone exactly as a live order is.
+  web_orders_list: ({ p_event_id }) => {
+    if (!isManager) refuse('Only an Owner, Admin or Manager can see website orders');
+    const e = findEvent(p_event_id);
+    const ch = webChannels.find(c => c.event_id === e.id);
+    if (!ch) return { channel: null, can_switch: role === 'owner', orders: [] };
+    const lastInvoice = (customerId: string) => invoices.filter(i => i.customer_id === customerId)
+      .map(i => i.business_date).sort().at(-1) ?? null;
+    return {
+      channel: { key: ch.key, mode: ch.mode, allow_test: ch.allow_test, store_name: STORES.find(s => s.id === ch.store_id)?.name ?? null,
+        acting_name: nameOf(ch.acting_profile_id), payment_method_name: ch.payment_method_name },
+      can_switch: role === 'owner',
+      orders: webOrders.filter(o => o.channel === ch.key).sort((a, b) => b.paid_at.localeCompare(a.paid_at)).map(o => ({
+        id: o.id, stripe_session_id: o.stripe_session_id, livemode: o.livemode, status: o.status, ticket: o.ticket,
+        ticket_label: PASSES[o.ticket].label, quantity: o.quantity, unit_amount: o.unit_amount, amount_total: o.amount_total,
+        early_bird: o.early_bird, buyer_name: o.buyer_name, buyer_email: o.buyer_email, buyer_phone: o.buyer_phone,
+        checkout_opened_at: o.checkout_opened_at, paid_at: o.paid_at, attendees: o.attendees, names_at: o.names_at,
+        invoice_id: o.invoice_id, invoice_no: invoices.find(i => i.id === o.invoice_id)?.invoice_no ?? null,
+        review_reason: o.review_reason,
+        candidates: o.status === 'needs_review' ? o.candidate_ids.map(id => CUSTOMERS.find(c => c.id === id)!).filter(Boolean)
+          .map(c => ({ customer_id: c.id, full_name: c.full_name, phone: c.phone, email: c.email, last_invoice_at: lastInvoice(c.id) })) : [],
+        created_at: o.paid_at,
+      })),
+    };
+  },
+
+  web_order_apply_names: ({ p_order_id }) => {
+    if (!isManager) refuse('Only an Owner, Admin or Manager can put a website order\'s names on its invoice');
+    const o = webOrders.find(x => x.id === p_order_id) ?? refuse('Website order not found');
+    if (o.status !== 'invoiced') refuse('Only an invoiced order\'s names can be put on its invoice');
+    o.review_reason = null;
+    return { status: o.status, invoice_no: null, review_reason: null };
+  },
+  web_order_resolve: ({ p_order_id, p_customer_id, p_new_customer }) => {
+    if (!isManager) refuse('Only an Owner, Admin or Manager can invoice website orders');
+    const o = webOrders.find(x => x.id === p_order_id) ?? refuse('Website order not found');
+    if (o.status === 'invoiced') refuse('This order already has an invoice');
+    if (o.status === 'refused') refuse('A refused order cannot be invoiced');
+    const ch = webChannels.find(c => c.key === o.channel)!;
+    // A Stripe test payment is invoiced only while the channel accepts test orders.
+    if (!o.livemode && !ch.allow_test) {
+      Object.assign(o, { status: 'refused', review_reason: 'A Stripe test payment', candidate_ids: [] });
+      return { status: 'refused', invoice_no: null, review_reason: o.review_reason };
+    }
+    const digits = (p: string | null) => String(p ?? '').replace(/\D/g, '');
+    const newCustomer = () => {
+      const c = { id: newId('c'), full_name: o.buyer_name, phone: o.buyer_phone ?? '', email: o.buyer_email ?? '', notes: null, deleted_at: null };
+      CUSTOMERS.push(c);
+      return c.id;
+    };
+    let customerId: string;
+    if (p_customer_id) customerId = CUSTOMERS.find(c => c.id === p_customer_id)?.id ?? refuse('Customer not found');
+    else if (p_new_customer) customerId = newCustomer();
+    else {
+      const same = o.buyer_phone ? CUSTOMERS.filter(c => digits(c.phone) === digits(o.buyer_phone)) : [];
+      if (same.length > 1) {
+        Object.assign(o, { status: 'needs_review', review_reason: `${same.length} customers have this phone`, candidate_ids: same.map(c => c.id) });
+        return { status: 'needs_review', invoice_no: null, review_reason: o.review_reason };
+      }
+      customerId = same[0]?.id ?? newCustomer();
+    }
+    const pass = PASSES[o.ticket];
+    const inv: Inv = {
+      id: newId('inv'), invoice_no: `INV-2026-9${String(++seq).padStart(3, '0')}`,
+      // Dated when the checkout opened, so an early bird paid just after the cut-off keeps it.
+      business_date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit' })
+        .format(new Date(o.checkout_opened_at)),
+      store_id: ch.store_id, customer_id: customerId, status: 'paid', total_amount: o.amount_total, paid_amount: o.amount_total,
+      lines: [{ option_id: pass.option_id, days: pass.days, quantity: o.quantity, line_total: o.amount_total }],
+    };
+    invoices.push(inv);
+    for (let i = 0; i < o.quantity; i++) {
+      const a = o.attendees?.[i];
+      guests.push(guest({ name: a?.name ?? (i === 0 ? o.buyer_name : `${o.buyer_name} +${i}`), phone: a?.whatsapp ?? (i === 0 ? o.buyer_phone : null),
+        customer_id: i === 0 ? customerId : null, source: 'ticket', invoice_id: inv.id, ticket_option_id: pass.option_id,
+        registered_by: null, created_at: new Date().toISOString(), days: pass.days.map(d => gday(d)) }));
+    }
+    Object.assign(o, { status: 'invoiced', invoice_id: inv.id, customer_id: customerId, review_reason: null, candidate_ids: [] });
+    return { status: 'invoiced', invoice_no: inv.invoice_no, review_reason: null };
+  },
+
+  web_order_channel_set_mode: ({ p_key, p_mode }) => {
+    if (role !== 'owner') refuse('Only the Owner can switch website orders');
+    if (!['off', 'record_only', 'live'].includes(p_mode)) refuse('Choose off, record_only or live');
+    const ch = webChannels.find(c => c.key === p_key) ?? refuse('Website channel not found');
+    ch.mode = p_mode;
+    return null;
   },
 };
 
