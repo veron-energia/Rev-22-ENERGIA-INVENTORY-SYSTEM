@@ -24,6 +24,10 @@ interface ClaimRow { claim_id: string; verified_email: string; entered_phone: st
   previously_unlinked?: boolean; unlinked_customer_ids?: string[];
   /** 378: an Owner unlinked a login (any) from the likely customer before. */
   suggested_customer_unlinked?: boolean;
+  /** 379: an Owner or Manager rejected a claim that suggested the likely
+   *  customer (pending and rejected claims). Its presence means 379 is on the
+   *  server. */
+  suggested_customer_rejected?: boolean;
   /** 378: a staff member rejected it, so staff may delete it (rejected claims). */
   rejected_by_staff?: boolean; }
 
@@ -37,6 +41,8 @@ interface LinkCheck {
   previously_unlinked?: boolean; unlinked_at?: string | null; phone_changed_since_claim?: boolean;
   /** An Owner unlinked a login (this one or another) from the chosen customer. */
   customer_previously_unlinked?: boolean; customer_unlinked_at?: string | null;
+  /** 379: an Owner or Manager rejected a claim that suggested the chosen customer (the latest, when). */
+  customer_previously_rejected?: boolean; customer_rejected_at?: string | null;
   customers_sharing_phone?: number; suggested_customer?: boolean; own_claim?: boolean;
   /** An earlier claim of this login, deleted or rejected, suggested another customer (or none). */
   earlier_claim_other_customer?: boolean;
@@ -59,6 +65,9 @@ const STAFF_PHONE_RULE = 'Only an Owner or Manager can link this claim to a cust
 // The database refuses staff with these words when they delete a rejection an
 // Owner or Manager made.
 const STAFF_DELETE_RULE = 'Only an Owner or Manager can remove a rejection they made.';
+// 379: after an Owner or Manager rejects a claim, the database refuses staff
+// any login for the customer it suggested, with these words.
+const CUSTOMER_REJECTED_RULE = 'An Owner or Manager rejected a claim for this customer. Only an Owner or Manager can link a login to them.';
 
 /** The function is not on the server yet (PostgREST PGRST202): 378 has not
  *  been applied. An Owner or Manager then works exactly as before it. */
@@ -124,6 +133,11 @@ const AffiliatesPage: React.FC = () => {
   const [rejectReason, setRejectReason] = useState('');
   // Delete-claim confirmation
   const [deleteFor, setDeleteFor] = useState<ClaimRow | null>(null);
+  // 379: an Owner or Manager confirms a staff member's rejection, which then
+  // protects the likely customer.
+  const [protectFor, setProtectFor] = useState<ClaimRow | null>(null);
+  const [protectReason, setProtectReason] = useState('');
+  const [protectErr, setProtectErr] = useState<string | null>(null);
   // What the server says about linking the chosen customer: both phones, and
   // why it cannot be linked, if it cannot. Re-read whenever the choice changes.
   const [linkCheck, setLinkCheck] = useState<LinkCheck | null>(null);
@@ -246,6 +260,12 @@ const AffiliatesPage: React.FC = () => {
   // server would refuse is refused here first. An Owner or Manager is never
   // held up by the check itself failing: Save then behaves as it always did.
   const staffPhoneDiffers = !canManage && !!linkCheck && !linkCheck.phones_match;
+  // 379 is on the server when a pending row carries its flag. Until then a
+  // rejection holds back only that one login, so the Reject window says
+  // nothing about protecting the customer.
+  const rejectProtects379 = typeof rejectFor?.suggested_customer_rejected === 'boolean';
+  // The same for the Rejected list: its rows carry the flag once 379 is there.
+  const rejectedProtects379 = rejected.some(r => typeof r.suggested_customer_rejected === 'boolean');
   const resolveBlocked = checking || !!linkCheck?.problem || staffPhoneDiffers
     || (!canManage && !!resolveCust && !linkCheck);
 
@@ -265,6 +285,27 @@ const AffiliatesPage: React.FC = () => {
     const ok = await act('reject_affiliate_account_claim',
       { p_claim_id: rejectFor.claim_id, p_reason: rejectReason.trim() }, rejectFor.claim_id, 'Account claim rejected.');
     if (ok) { setRejectFor(null); setRejectReason(''); }
+  };
+
+  const submitProtect = async () => {
+    if (!protectFor || !protectReason.trim()) return;
+    const name = protectFor.candidate_name ?? 'The likely customer';
+    // Called directly rather than through act(): a refusal belongs in this
+    // window, not on the page behind it.
+    setBusy(protectFor.claim_id); setProtectErr(null); setErr(null); setSuccess(null);
+    const { data, error } = await supabase.rpc('reject_affiliate_account_claim',
+      { p_claim_id: protectFor.claim_id, p_reason: protectReason.trim() });
+    setBusy(null);
+    if (error) { setProtectErr(error.message); return; }
+    // { ok:false, already:true }: not a staff member's rejection any more (an
+    // Owner or Manager took it over first). The lists are read again.
+    if (data && typeof data === 'object' && (data as any).ok === false) {
+      setProtectErr((data as any).message ?? 'This claim could not be confirmed.');
+      await reload(); return;
+    }
+    setProtectFor(null); setProtectReason('');
+    setSuccess(`${name} is now protected: only an Owner or Manager can link a login to them.`);
+    await reload();
   };
 
   const submitDelete = async () => {
@@ -358,6 +399,10 @@ const AffiliatesPage: React.FC = () => {
                           <span className="badge badge-danger" data-flag="customer-previously-unlinked" style={{ marginLeft: 6 }}
                             title="An Owner unlinked a login from this customer before. Only an Owner or Manager can link a login to them.">Login unlinked before</span>
                         )}
+                        {c.suggested_customer_rejected && (
+                          <span className="badge badge-danger" data-flag="customer-previously-rejected" style={{ marginLeft: 6 }}
+                            title={CUSTOMER_REJECTED_RULE}>Claim rejected before</span>
+                        )}
                       </td><td>{d(c.created_at)}</td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="btn btn-secondary btn-sm" disabled={running} title="Resolve" onClick={() => { setResolveFor(c); setResolveCust(c.candidate_customer_id ?? ''); setResolveNote(''); }} style={{ marginRight: 6, gap: 4 }}><ShieldCheck size={14} /> Resolve</button>
@@ -381,6 +426,13 @@ const AffiliatesPage: React.FC = () => {
           </h3>
           <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 10 }}>
             A rejected request blocks the person from auto-resubmitting. Delete it if you want them to be able to try again.
+            {/* 379: said only once the server's rows show it is there. */}
+            {rejectedProtects379 && (
+              <span data-note="rejected-protects">
+                {' A rejection by an Owner or Manager also protects the likely customer, even after it is deleted: only an Owner'
+                  + ' or Manager can then link a login to them. A rejection by staff does not.'}
+              </span>
+            )}
           </p>
           <div style={{ overflow: 'auto' }}>
             <table className="table" style={{ width: '100%' }}>
@@ -389,11 +441,42 @@ const AffiliatesPage: React.FC = () => {
                 {rejected.map(c => {
                   // Staff remove only a rejection a staff member made (378).
                   const notTheirs = isStaff && c.rejected_by_staff === false;
+                  const name = c.candidate_name ?? 'the likely customer';
+                  // 379: a staff member's rejection of a claim that suggested
+                  // someone does not protect them; an Owner or Manager can
+                  // confirm it so that it does.
+                  const staffUnprotected = rejectedProtects379 && !!c.candidate_customer_id
+                    && c.rejected_by_staff === true && c.suggested_customer_rejected === false;
                   return (
                   <tr key={c.claim_id}>
                     <td>{c.verified_email}<br /><small>{c.entered_name}</small></td><td>{c.entered_phone}</td>
-                    <td>{c.candidate_name ?? '—'}</td><td>{d(c.rejected_at)}</td>
-                    <td style={{ maxWidth: 220, whiteSpace: 'normal' }}>{c.rejection_reason ?? '—'}</td>
+                    <td>{c.candidate_name ?? '—'}
+                      {rejectedProtects379 && c.candidate_customer_id && c.suggested_customer_rejected && (
+                        <span className="badge badge-success" data-flag="customer-protected" style={{ marginLeft: 6 }}
+                          title={CUSTOMER_REJECTED_RULE}>Protected</span>
+                      )}
+                      {staffUnprotected && (
+                        <div data-note="staff-rejection" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                          {`Rejected by staff — does not protect ${name}`}
+                        </div>
+                      )}
+                      {staffUnprotected && canManage && (
+                        <button type="button" className="btn btn-secondary btn-sm" data-action="protect" style={{ marginTop: 6, gap: 4 }}
+                          disabled={busy === c.claim_id} title={`Confirm this rejection as yours, so that it protects ${name}`}
+                          onClick={() => { setProtectFor(c); setProtectReason(''); setProtectErr(null); }}>
+                          <ShieldCheck size={13} /> {`Protect ${name}`}
+                        </button>
+                      )}
+                    </td>
+                    <td>{d(c.rejected_at)}
+                      {/* 378: who rejected it (staff may delete only a staff member's). */}
+                      {typeof c.rejected_by_staff === 'boolean' && (
+                        <><br /><small data-rejected-by={c.rejected_by_staff ? 'staff' : 'owner-or-manager'}>
+                          {c.rejected_by_staff ? 'by staff' : 'by an Owner or Manager'}
+                        </small></>
+                      )}
+                    </td>
+                    <td style={{ maxWidth: 220, whiteSpace: 'pre-line' }}>{c.rejection_reason ?? '—'}</td>
                     <td style={{ textAlign: 'right' }}>
                       <button className="btn btn-secondary btn-sm" disabled={busy === c.claim_id || notTheirs}
                         title={notTheirs ? STAFF_DELETE_RULE : 'Delete request'} onClick={() => setDeleteFor(c)}><Trash2 size={14} /> Delete</button>
@@ -576,6 +659,15 @@ const AffiliatesPage: React.FC = () => {
               {canManage && ' Staff cannot link any login to them; link this one only once you are sure who the person is.'}
             </div>
           )}
+          {/* 379: an Owner or Manager rejected a claim that suggested the chosen
+              customer: staff cannot link any login to them. */}
+          {linkCheck?.customer_previously_rejected && !checking && (
+            <div className="alert alert-warning" data-flag="customer-previously-rejected" style={{ margin: '10px 0 12px' }}>
+              <b>Claim rejected before.</b>{' '}
+              {`An Owner or Manager rejected a claim for this customer${linkCheck.customer_rejected_at ? ` on ${d(linkCheck.customer_rejected_at)}` : ''}.`}
+              {canManage && ' Staff cannot link any login to them; link this one only once you are sure who the person is.'}
+            </div>
+          )}
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Customer to link</label>
           <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={resolveCust} onChange={setResolveCust} /></div>
           {/* The two phones side by side: what the person typed at sign-up, and
@@ -624,6 +716,29 @@ const AffiliatesPage: React.FC = () => {
             <div><b>Phone:</b> {rejectFor.entered_phone}</div>
             <div><b>Likely Customer:</b> {rejectFor.candidate_name ?? '—'}</div>
           </div>
+          {/* 379: an Owner's or Manager's rejection protects the likely customer,
+              as an Owner's Unlink does; a staff member's does not (staff are
+              told so, unless the customer is protected already). */}
+          {rejectProtects379 && canManage && rejectFor.candidate_customer_id && (
+            <p data-note="reject-protects" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              {`Rejecting also protects ${rejectFor.candidate_name ?? 'the likely customer'}: afterwards staff cannot link any login to them, `
+                + 'and sign-up no longer links one to them automatically; only an Owner or Manager can. '
+                + 'This stays even if the rejected request is deleted later.'}
+            </p>
+          )}
+          {rejectProtects379 && canManage && !rejectFor.candidate_customer_id && (
+            <p data-note="reject-protects" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              No likely customer is suggested, so rejecting this claim does not protect any customer.
+            </p>
+          )}
+          {rejectProtects379 && !canManage && rejectFor.candidate_customer_id
+            && !rejectFor.suggested_customer_rejected && !rejectFor.suggested_customer_unlinked && (
+            <p data-note="reject-staff" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              {`Your rejection does not protect ${rejectFor.candidate_name ?? 'the likely customer'}: staff can still link another login to them, `
+                + 'and sign-up can still link one automatically. If they need protecting, ask an Owner or Manager to reject this claim instead, '
+                + 'or to protect them from Rejected Account Claims once you have rejected it.'}
+            </p>
+          )}
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Reason for rejection (required)</label>
           <textarea className="input" rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)} style={{ marginBottom: 14 }} />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -680,6 +795,36 @@ const AffiliatesPage: React.FC = () => {
             <button className="btn btn-secondary" onClick={() => setUnlinkFor(null)}>Cancel</button>
             <button className="btn btn-primary" disabled={!unlinkInfo?.linked || !unlinkReason.trim() || busy === unlinkFor.customer_id}
               onClick={submitUnlink} style={{ gap: 4 }}><Unlink size={15} /> Unlink login</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* 379: an Owner or Manager confirms a staff member's rejection, which
+          then protects the likely customer. */}
+      {protectFor && (
+        <Modal title={`Protect ${protectFor.candidate_name ?? 'the likely customer'}`} onClose={() => setProtectFor(null)}
+          confirmClose={!!protectReason.trim()}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+            <div><b>Email:</b> {protectFor.verified_email}</div>
+            <div><b>Phone:</b> {protectFor.entered_phone}</div>
+            <div><b>Rejected:</b> {d(protectFor.rejected_at)} by staff{protectFor.rejection_reason ? ` — “${protectFor.rejection_reason}”` : ''}</div>
+          </div>
+          <p data-note="protect-explains" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+            {`A member of staff rejected this claim, and a rejection by staff does not protect ${protectFor.candidate_name ?? 'the likely customer'}. `
+              + `Confirming it as an Owner or Manager does: afterwards staff cannot link any login to ${protectFor.candidate_name ?? 'them'}, `
+              + 'and sign-up no longer links one to them automatically; only an Owner or Manager can. This stays even if the request is deleted later.'}
+          </p>
+          <p data-note="protect-yours" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+            The rejection becomes yours, so staff can no longer delete it. The staff member's reason stays, and yours is added below it unless it says the same.
+          </p>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }} htmlFor="protect-reason">Reason (required)</label>
+          <textarea id="protect-reason" className="input" rows={3} value={protectReason} onChange={e => setProtectReason(e.target.value)} style={{ marginBottom: 14 }} />
+          {protectErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 12 }}>{protectErr}</div>}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setProtectFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={!protectReason.trim() || busy === protectFor.claim_id} onClick={submitProtect} style={{ gap: 4 }}>
+              <ShieldCheck size={15} /> {`Protect ${protectFor.candidate_name ?? 'the likely customer'}`}
+            </button>
           </div>
         </Modal>
       )}
