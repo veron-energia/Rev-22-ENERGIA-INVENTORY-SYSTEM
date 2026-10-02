@@ -11,7 +11,7 @@ begin;
 do $$
 declare own uuid:=gen_random_uuid(); st uuid; keep uuid; dup uuid; other uuid; pm uuid;
  prod uuid; v1 uuid; inv uuid; lot uuid; r jsonb; n bigint; rq uuid:=gen_random_uuid();
- keep_wallet uuid; dup_wallet uuid;
+ keep_wallet uuid; dup_wallet uuid; dup_aff uuid;
 begin
  insert into auth.users(id,email) values(own,'mrg@tests.invalid');
  insert into profiles(id,full_name,email,role) values(own,'Owner','mrg@tests.invalid','owner');
@@ -62,7 +62,10 @@ begin
    raise exception 'The merge ran with two affiliate records';
   exception when others then
    if sqlerrm not like '%needs review first%' then raise; end if; end;
-  delete from customer_affiliates where id=a2;   -- resolve it the way a person would
+  -- resolve it the way a person would, keeping the duplicate's record so the
+  -- merge has to carry it across
+  delete from customer_affiliates where id=a1;
+  dup_aff:=a2;
  end;
 
  -- ---- a commission between the two must stop it ---------------------------
@@ -103,8 +106,10 @@ begin
       where customer_id=keep and status='active')<>400 then
   raise exception 'The combined balance is wrong'; end if;
 
- -- the affiliate record came across
- if (select customer_id from customer_affiliates where id=(select id from customer_affiliates limit 1))<>keep then
+ -- the duplicate's affiliate record came across: the keeper now holds that
+ -- record and the duplicate holds none
+ if exists (select 1 from customer_affiliates where customer_id=dup)
+    or (select id from customer_affiliates where customer_id=keep) is distinct from dup_aff then
   raise exception 'The affiliate record did not move'; end if;
 
  -- the duplicate is retired, not destroyed
@@ -119,6 +124,6 @@ begin
  r:=merge_customer_records(keep,dup,'same person, duplicate record',rq);
  if not (r->>'replayed')::boolean then raise exception 'A retry was not recognised'; end if;
 
- raise notice 'PASS: a duplicate hands over its invoices, credit, vouchers and referrals, balances are carried into one wallet, the record is retired rather than destroyed, retries do not repeat it, and two affiliate records or a commission between the pair stop it for review';
+ raise notice 'PASS: a duplicate hands over its invoices, credit, vouchers, affiliate record and referrals, balances are carried into one wallet, the record is retired rather than destroyed, retries do not repeat it, and two affiliate records or a commission between the pair stop it for review';
 end $$;
 rollback;
