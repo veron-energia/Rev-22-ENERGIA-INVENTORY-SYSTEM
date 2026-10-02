@@ -7,7 +7,8 @@
 //
 // Status codes are the website's retry signal. 503 means "try again": the
 // website's webhook answers Stripe with a 500 and Stripe redelivers, which is
-// safe because both RPCs are keyed on the session id. Any 4xx means "sending
+// safe because every RPC is keyed on the session (or OFF) id, or (380's sync
+// and staff) only asks: a sync just notes when it ran. Any 4xx means "sending
 // this again now will not help", so the website logs it and carries on; that
 // includes a database error of SQLSTATE class 22 (data exception), which the
 // same order would hit on every retry. The one 4xx that is not final is 409
@@ -25,7 +26,16 @@ import { validateOrderRequest } from './validate.ts';
 export const MAX_BODY_BYTES = 16 * 1024;
 
 export const RESULT_STATUSES = ['invoiced', 'recorded', 'needs_review', 'refused'] as const;
-export type ResultStatus = (typeof RESULT_STATUSES)[number];
+// 380: a staff-link registration a Manager dismissed says so when it is sent again.
+export const DOOR_RESULT_STATUSES = [...RESULT_STATUSES, 'dismissed'] as const;
+export type ResultStatus = (typeof DOOR_RESULT_STATUSES)[number];
+
+// 380: the database function behind each message.
+const RPC = {
+  paid: 'web_order_paid', names: 'web_order_names', door: 'web_order_door', sync: 'web_order_sync', staff: 'web_order_staff',
+} as const;
+export const SYNC_STATUSES = ['ok', 'too_soon', 'refused'] as const;
+export const STAFF_STATUSES = ['ok', 'refused'] as const;
 
 export interface OrderResult {
   status: ResultStatus;
@@ -110,13 +120,19 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
     return reply({ ok: false, error: 'invalid_request', field: checked.field }, 400);
   }
 
-  const { type, order } = checked.value;
-  const session = order.stripe_session_id;
-  const fn = type === 'paid' ? 'web_order_paid' : 'web_order_names';
+  const request = checked.value;
+  const type = request.type;
+  const fn = RPC[type];
+  // What the logs say the request was about: the checkout id, the OFF id, or
+  // (sync, staff) the channel. None of them is personal.
+  const about: Record<string, string> = request.type === 'sync' || request.type === 'staff'
+    ? { channel: request.channel }
+    : { session_id: request.type === 'door' ? request.order.order_id : request.order.stripe_session_id };
+  const args = request.type === 'sync' || request.type === 'staff' ? { p_channel: request.channel } : { p_order: request.order };
 
   let data: unknown;
   try {
-    const answer = await deps.makeClient(config).rpc(fn, { p_order: order });
+    const answer = await deps.makeClient(config).rpc(fn, args);
     if (answer.error) {
       // The code only. A Postgres message can quote the row it refused, and
       // that row may hold a phone number or an email.
@@ -124,16 +140,31 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
       if (isDataException(code)) {
         // Class 22: the database refused a value in this order. The same order
         // would be refused again, so a retry would only repeat it for days.
-        logEvent('web_order.invalid_request', { type, session_id: session, field: 'order', code, ms: now() - started });
+        logEvent('web_order.invalid_request', { type, ...about, field: 'order', code, ms: now() - started });
         return reply({ ok: false, error: 'invalid_request', field: 'order' }, 400);
       }
-      logEvent('web_order.retry', { type, session_id: session, code, ms: now() - started });
+      logEvent('web_order.retry', { type, ...about, code, ms: now() - started });
       return retry();
     }
     data = answer.data;
   } catch {
-    logEvent('web_order.retry', { type, session_id: session, code: 'network', ms: now() - started });
+    logEvent('web_order.retry', { type, ...about, code: 'network', ms: now() - started });
     return retry();
+  }
+
+  // 380: the sync and the staff list are passed back as the database built
+  // them, keeping only their own fields. They carry names and contacts, so
+  // only counts are logged.
+  if (type === 'sync' || type === 'staff') {
+    const answer = type === 'sync' ? readSync(data) : readStaff(data);
+    if (!answer) {
+      logEvent('web_order.retry', { type, ...about, code: 'unexpected_result', ms: now() - started });
+      return retry();
+    }
+    const counts: Record<string, number> = 'staff' in answer ? { staff: answer.staff.length }
+      : answer.status === 'ok' ? { orders: answer.orders.length, counter: answer.counter.length } : {};
+    logEvent('web_order.done', { type, ...about, status: answer.status, ...counts, ms: now() - started });
+    return reply({ ok: true, ...answer }, 200);
   }
 
   // The buyer registered before `paid` landed (Stripe is still retrying the
@@ -142,27 +173,57 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
   // database. It is its own 4xx, so the website can tell it apart and send the
   // names again once `paid` has been stored.
   if (type === 'names' && isNotFound(data)) {
-    logEvent('web_order.names_before_paid', { type, session_id: session, status: 'not_found', ms: now() - started });
+    logEvent('web_order.names_before_paid', { type, ...about, status: 'not_found', ms: now() - started });
     return reply({ ok: false, error: 'not_found' }, 409);
   }
 
-  const result = readResult(data);
+  const result = readResult(data, type === 'door' ? DOOR_RESULT_STATUSES : RESULT_STATUSES);
   if (!result) {
-    logEvent('web_order.retry', { type, session_id: session, code: 'unexpected_result', ms: now() - started });
+    logEvent('web_order.retry', { type, ...about, code: 'unexpected_result', ms: now() - started });
     return retry();
   }
 
-  logEvent('web_order.done', { type, session_id: session, status: result.status, ms: now() - started });
+  logEvent('web_order.done', { type, ...about, status: result.status, ms: now() - started });
   return reply({ ok: true, ...result }, 200);
 }
 
 /** The RPC's `{status, invoice_no, review_reason}`, or null when it is anything else. */
-export function readResult(data: unknown): OrderResult | null {
+export function readResult(data: unknown, statuses: readonly string[] = RESULT_STATUSES): OrderResult | null {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
   const d = data as Record<string, unknown>;
-  if (typeof d.status !== 'string' || !(RESULT_STATUSES as readonly string[]).includes(d.status)) return null;
+  if (typeof d.status !== 'string' || !statuses.includes(d.status)) return null;
   const optional = (v: unknown) => (typeof v === 'string' && v ? v : null);
   return { status: d.status as ResultStatus, invoice_no: optional(d.invoice_no), review_reason: optional(d.review_reason) };
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+export type SyncAnswer =
+  | { status: 'too_soon' | 'refused' }
+  | { status: 'ok'; event: Record<string, unknown>; orders: unknown[]; counter: unknown[] };
+export interface StaffAnswer { status: (typeof STAFF_STATUSES)[number]; staff: { id: string; name: string }[] }
+
+/**
+ * 380: web_order_sync's answer: `{status: 'ok', event, orders, counter}`, or
+ * just `{status: 'too_soon' | 'refused'}`. Null when it is anything else.
+ */
+export function readSync(data: unknown): SyncAnswer | null {
+  if (!isObject(data) || typeof data.status !== 'string' || !(SYNC_STATUSES as readonly string[]).includes(data.status)) return null;
+  if (data.status !== 'ok') return { status: data.status as 'too_soon' | 'refused' };
+  if (!isObject(data.event) || !Array.isArray(data.orders) || !Array.isArray(data.counter)) return null;
+  return { status: 'ok', event: data.event, orders: data.orders, counter: data.counter };
+}
+
+/** 380: web_order_staff's answer, each person as id and name only. Null when it is anything else. */
+export function readStaff(data: unknown): StaffAnswer | null {
+  if (!isObject(data) || typeof data.status !== 'string' || !(STAFF_STATUSES as readonly string[]).includes(data.status)) return null;
+  if (!Array.isArray(data.staff)) return null;
+  const staff: { id: string; name: string }[] = [];
+  for (const s of data.staff) {
+    if (!isObject(s) || typeof s.id !== 'string' || typeof s.name !== 'string') return null;
+    staff.push({ id: s.id, name: s.name });
+  }
+  return { status: data.status as StaffAnswer['status'], staff };
 }
 
 /** web_order_names' answer when no paid order has that session id yet. */

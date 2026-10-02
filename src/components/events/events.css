@@ -152,3 +152,8 @@
 }
 .events-choice input { margin-top: 3px !important; }
 .events-choice.checked { border-color: var(--primary); background: var(--primary-light); }
+/* 380: staff-link registrations and the actions an open order has. */
+.events-web-actions { flex-direction: column; align-items: flex-end; }
+.events-web-actions .btn { white-space: nowrap; }
+.events-web-door-pay { overflow-wrap: anywhere; max-width: 220px; }
+.events-web-hand-hint { color: #92400e; max-width: 260px; }

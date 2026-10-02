@@ -6,6 +6,12 @@
 // function (web_order_paid / web_order_names, migration 372), which records the
 // order and, when the channel is live, raises the invoice.
 //
+// 380: the staff link's registrations come as `door` (web_order_door: kept for
+// a Manager to invoice, never invoiced here); `sync` asks for the channel's
+// orders with their invoices and the tickets sold at the counter
+// (web_order_sync, at most once a minute); `staff` asks for the staff the
+// form may offer as Registered by (web_order_staff).
+//
 // Deploy without gateway JWT verification — the caller is a web server, not a
 // signed-in user:
 //   supabase functions deploy web-ticket-order --no-verify-jwt
@@ -17,11 +23,12 @@
 // answered 503 not_configured.
 //
 // Headers: x-energia-timestamp (unix seconds), x-energia-signature (v1=<hex>).
-// Body: { type: 'paid' | 'names', order: {...} }. Any other field is a rejected
-// request, not an ignored one. See validate.ts for the exact shape.
+// Body: { type: 'paid' | 'names' | 'door', order: {...} } or
+// { type: 'sync' | 'staff', channel }. Any other field is a rejected request,
+// not an ignored one. See validate.ts for the exact shape.
 //
-// Nothing from the body is logged: only the type, the Stripe session id, the
-// outcome and how long it took.
+// Nothing from the body is logged: only the type, the Stripe session id (or
+// the OFF id, or the channel), the outcome, counts, and how long it took.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.108.2';
 import { loadOrderConfig, type OrderConfig } from './config.ts';

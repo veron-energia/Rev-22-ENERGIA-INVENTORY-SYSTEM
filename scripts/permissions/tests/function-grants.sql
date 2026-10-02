@@ -57,7 +57,15 @@ declare
                              'web_order_uuid','web_order_phone_customers','web_order_customer','web_order_people',
                              'web_order_make_invoice','web_order_rename_people','web_order_paid','web_order_names',
                              -- 378: who counts as staff for affiliate account claims
-                             'affiliate_claim_staff'];
+                             'affiliate_claim_staff',
+                             -- 380: staff-link orders, the website's sync and staff list, and their rules
+                             'web_order_door','web_order_sync','web_order_staff','web_order_door_method_name',
+                             'web_order_seller','web_order_door_review','web_order_invoice_methods',
+                             'web_order_invoice_people','web_order_sync_people','web_order_link_target',
+                             'web_order_link_summary','web_order_person_email','web_order_number_people',
+                             'web_order_hand_invoices','web_order_can_link',
+                             -- 381: the nudge the database's cron job sends
+                             'web_order_sync_ping'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

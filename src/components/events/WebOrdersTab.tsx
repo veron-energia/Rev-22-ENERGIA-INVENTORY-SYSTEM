@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CreditCard, Globe, RefreshCw, Store, UserRound } from 'lucide-react';
+import { AlertTriangle, CreditCard, Globe, Link2, RefreshCw, RotateCcw, Store, UserRound, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
-import { Modal } from '../ui';
+import { Modal, ReasonModal } from '../ui';
 import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import {
   EventRow, WEB_ORDER_MODE_BADGE, WEB_ORDER_MODE_LABELS, WEB_ORDER_STATUS_BADGE, WEB_ORDER_STATUS_LABELS,
-  WebOrder, WebOrderList, WebOrderMode, WebOrderOutcome, fmtDateTime, fmtSgDate, fmtTime, money,
-  normalizeWebOrderList, normalizeWebOrderOutcome, sgStamp, slug, webOrderCanInvoice, webOrderIsOpen, webOrderProviderName,
-  webOrderStatusText, webOrderTestPlace, webOrderTestRefused,
+  WebOrder, WebOrderLinkPreview, WebOrderList, WebOrderMode, WebOrderOutcome, fmtDate, fmtDateTime, fmtSgDate, fmtTime, money,
+  normalizeWebOrderLinkPreview, normalizeWebOrderList, normalizeWebOrderOutcome, sgStamp, slug,
+  webOrderAmountDiffers, webOrderCanDismiss, webOrderCanInvoice, webOrderCanLink, webOrderCanRestore, webOrderDatePaid, webOrderIsOpen,
+  webOrderPaidThrough, webOrderProviderName, webOrderSource, webOrderStatusText, webOrderTestPlace, webOrderTestRefused,
 } from './model';
 
 /*
@@ -18,13 +19,41 @@ import {
  * order waits as Recorded while the channel only records: Create invoice
  * finishes either, except for a test payment (Stripe's test mode or HitPay's
  * sandbox) while the channel does not accept test orders. Owners, Admins and Managers see this tab and only
- * the Owner switches the channel; the server enforces all three. An invoice
- * created here is not sent back to the website, so its workbook is filled in
- * by hand or from this tab's export.
+ * the Owner switches the channel; the server enforces all three.
+ *
+ * 380: registrations made through the website's staff link (paid in cash, by
+ * PayNow or by bank transfer) come here too and are never invoiced by
+ * themselves, even while Live: a Manager checks that the money arrived and
+ * clicks Create invoice, which pays it by the form's method and credits the
+ * staff member the form names. One already invoiced by hand is linked to that
+ * invoice instead (the list names any invoice made by hand for the event with
+ * the buyer's phone), and so is one whose amount is not the price, which
+ * Create invoice cannot make, or one refused while the channel was off. A test
+ * registration is dismissed (and can be restored).
+ * The website asks the inventory for the invoice numbers and fills its
+ * workbook with them itself.
  */
 
 const MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
 const MODE_BUTTONS: Record<WebOrderMode, string> = { off: 'Off', record_only: 'Record only', live: 'Live' };
+
+// Dismissed registrations are tests set aside, so they stay out of sight unless asked for.
+type StatusFilter = 'current' | 'waiting' | 'invoiced' | 'refused' | 'dismissed' | 'all';
+const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
+  { value: 'current', label: 'All but dismissed' },
+  { value: 'waiting', label: 'Waiting for an invoice' },
+  { value: 'invoiced', label: 'Invoiced' },
+  { value: 'refused', label: 'Refused' },
+  { value: 'dismissed', label: 'Dismissed' },
+  { value: 'all', label: 'All, dismissed too' },
+];
+const statusShown = (o: WebOrder, f: StatusFilter) =>
+  f === 'all' || (f === 'current' ? o.status !== 'dismissed' : f === 'waiting' ? webOrderIsOpen(o) : o.status === f);
+
+/** "INV-… (Store)", or "an invoice at Store" where the number is out of sight. */
+const handInvoicesText = (o: WebOrder) => o.hand_invoices
+  .map(h => (h.invoice_no ? `${h.invoice_no}${h.store ? ` (${h.store})` : ''}` : `an invoice at ${h.store ?? 'another store'}`))
+  .join(', ');
 
 export const WEB_ORDER_COLUMNS: ExcelColumn<WebOrder>[] = [
   { header: 'Paid at (SGT)', value: o => sgStamp(o.paid_at) },
@@ -38,12 +67,17 @@ export const WEB_ORDER_COLUMNS: ExcelColumn<WebOrder>[] = [
   { header: 'Total S$', value: o => o.amount_total },
   { header: 'Early bird', value: o => (o.early_bird ? 'Y' : 'N') },
   { header: 'Status', value: o => WEB_ORDER_STATUS_LABELS[o.status] },
-  // Side by side, as the website's workbook needs them: its Order ID is the
-  // checkout (Stripe's, or HitPay's payment request), and an invoice created on
-  // this tab never reaches it.
+  // Side by side, as in the website's workbook: its Order ID is the checkout
+  // (Stripe's, or HitPay's payment request), or the staff link's OFF-… id.
   { header: 'Invoice no', value: o => o.invoice_no ?? '' },
   { header: 'Order ID (checkout)', value: o => o.stripe_session_id },
-  { header: 'Paid through', value: o => webOrderProviderName(o.provider) },
+  // 380: a staff-link registration is paid by the form's method on its Date
+  // paid; its Paid at is when the form was sent.
+  { header: 'Source', value: o => webOrderSource(o) },
+  { header: 'Paid through', value: o => webOrderPaidThrough(o) },
+  { header: 'Date paid', value: o => webOrderDatePaid(o) ?? '' },
+  { header: 'Payment ref', value: o => o.payment_reference ?? '' },
+  { header: 'Registered by', value: o => o.staff_name ?? '' },
   { header: 'Reason', value: o => o.review_reason ?? '' },
   { header: 'Test order', value: o => (o.livemode ? 'N' : 'Y') },
   { header: 'Checkout opened (SGT)', value: o => sgStamp(o.checkout_opened_at) },
@@ -57,7 +91,11 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
   const [switching, setSwitching] = useState(false);
   const [confirming, setConfirming] = useState<WebOrderMode | null>(null);
   const [resolving, setResolving] = useState<WebOrder | null>(null);
+  const [linking, setLinking] = useState<WebOrder | null>(null);
+  const [dismissing, setDismissing] = useState<WebOrder | null>(null);
   const [applying, setApplying] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<StatusFilter>('current');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,11 +109,14 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
 
   const channel = list?.channel ?? null;
   const orders = useMemo(() => list?.orders ?? [], [list]);
+  const shown = useMemo(() => orders.filter(o => statusShown(o, filter)), [orders, filter]);
   const counts = useMemo(() => ({
     invoiced: orders.filter(o => o.status === 'invoiced').length,
     recorded: orders.filter(o => o.status === 'recorded').length,
     review: orders.filter(o => o.status === 'needs_review').length,
     refused: orders.filter(o => o.status === 'refused').length,
+    dismissed: orders.filter(o => o.status === 'dismissed').length,
+    door: orders.filter(o => o.provider === 'door').length,
     test: orders.filter(o => !o.livemode).length,
   }), [orders]);
 
@@ -105,6 +146,15 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
   const onResolved = (r: WebOrderOutcome) => {
     void load();
     if (r.status === 'invoiced') onInvoiced();
+  };
+
+  // 380: a staff-link registration set aside (a test) with a reason, or brought back.
+  const setDismissed = async (o: WebOrder, dismiss: boolean, reason: string | null) => {
+    setBusyId(o.id); setErr(null);
+    const { error } = await supabase.rpc('web_order_dismiss', { p_order_id: o.id, p_reason: reason, p_dismiss: dismiss });
+    setBusyId(null);
+    if (error) { setErr(error.message); return; }
+    await load();
   };
 
   return (
@@ -144,20 +194,28 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
       <div className="events-toolbar">
         <div className="events-count-line" style={{ marginBottom: 0 }}>
           {list ? [
-            `${orders.length} order${orders.length === 1 ? '' : 's'}`,
+            shown.length === orders.length
+              ? `${orders.length} order${orders.length === 1 ? '' : 's'}`
+              : `Showing ${shown.length} of ${orders.length} orders`,
             counts.invoiced && `${counts.invoiced} invoiced`,
             counts.recorded && `${counts.recorded} recorded`,
             counts.review && `${counts.review} need${counts.review === 1 ? 's' : ''} review`,
             counts.refused && `${counts.refused} refused`,
+            counts.dismissed && `${counts.dismissed} dismissed`,
+            counts.door && `${counts.door} through the staff link`,
             counts.test && `${counts.test} test`,
           ].filter(Boolean).join(' · ') : ''}
         </div>
-        <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
+        <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
+          <select value={filter} onChange={e => setFilter(e.target.value as StatusFilter)} aria-label="Order status">
+            {STATUS_FILTERS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
           <button className="btn btn-secondary" onClick={() => void load()}>
             <RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh
           </button>
+          {/* Every order, whatever the status filter shows: the Status column tells them apart. */}
           <ExcelExportButton rows={orders} columns={WEB_ORDER_COLUMNS} filename={`website-orders-${slug(event.name)}`}
-            sheetName="Website orders" dateOf={o => o.paid_at} dateLabel="Paid" dateTimeZone="Asia/Singapore" disabled={!list} />
+            sheetName="Website orders" dateOf={webOrderDatePaid} dateLabel="Paid" dateTimeZone="Asia/Singapore" disabled={!list} />
         </div>
       </div>
 
@@ -171,7 +229,12 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
             <div className="empty-state">
               <Globe size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
               <p style={{ fontWeight: 600 }}>No website orders yet</p>
-              <p style={{ fontSize: 13 }}>Tickets paid for on the event's website appear here.</p>
+              <p style={{ fontSize: 13 }}>Tickets paid for on the event's website, or registered through its staff link, appear here.</p>
+            </div>
+          ) : shown.length === 0 ? (
+            <div className="empty-state">
+              <p style={{ fontWeight: 600 }}>No order matches</p>
+              <p style={{ fontSize: 13 }}>Change the status filter.</p>
             </div>
           ) : (
             <table className="events-table">
@@ -182,10 +245,19 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                 </tr>
               </thead>
               <tbody>
-                {orders.map(o => (
-                  <tr key={o.id} data-order={o.id}>
+                {shown.map(o => (
+                  <tr key={o.id} data-order={o.id} className={o.status === 'dismissed' ? 'events-row-cancelled' : undefined}>
                     <td>
-                      {o.paid_at
+                      {o.provider === 'door' ? (
+                        // 380: a staff-link registration is paid on the form's date, by its method.
+                        <>
+                          <span className="events-nowrap">{fmtDate(o.paid_on)}</span>
+                          <div className="events-sub events-web-door-pay">
+                            {webOrderPaidThrough(o)}{o.payment_reference ? ` · ref ${o.payment_reference}` : ''}
+                          </div>
+                          {o.paid_at && <div className="events-sub">Form sent {fmtDateTime(o.paid_at)}</div>}
+                        </>
+                      ) : o.paid_at
                         ? <><span className="events-nowrap">{fmtSgDate(o.paid_at)},</span> <span className="events-nowrap">{fmtTime(o.paid_at)}</span></>
                         : <span className="events-muted">—</span>}
                     </td>
@@ -194,11 +266,15 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                       {o.provider === 'hitpay' && (
                         <> <span className="badge badge-muted" title="Paid through HitPay">HitPay</span></>
                       )}
+                      {o.provider === 'door' && (
+                        <> <span className="badge badge-muted" title="Registered through the website's staff link">Staff link</span></>
+                      )}
                       {!o.livemode && (
                         <> <span className="badge badge-accent" title={`Paid in ${webOrderTestPlace(o.provider)}: no money was taken`}>Test</span></>
                       )}
                       {o.buyer_phone && <div className="events-sub">{o.buyer_phone}</div>}
                       {o.buyer_email && <div className="events-sub">{o.buyer_email}</div>}
+                      {o.staff_name && <div className="events-sub events-web-staff">Registered by {o.staff_name}</div>}
                     </td>
                     <td className="events-nowrap">{o.ticket_label || '—'}</td>
                     <td className="events-web-wide">
@@ -229,13 +305,36 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                           </button>
                         </>
                       )}
+                      {/* 380: an invoice made by hand for the event with the buyer's phone may already be this order's. */}
+                      {webOrderCanLink(o) && o.hand_invoices.length > 0 && (
+                        <div className="events-sub events-web-hand-hint">
+                          Possibly already invoiced by hand: {handInvoicesText(o)}. Use Link invoice if so.
+                        </div>
+                      )}
                     </td>
                     <td>
-                      {webOrderCanInvoice(o, channel) ? (
-                        <div className="events-actions">
-                          <button className="btn btn-primary btn-sm" onClick={() => setResolving(o)}>Create invoice</button>
+                      {(webOrderCanInvoice(o, channel) || webOrderCanLink(o) || webOrderCanDismiss(o) || webOrderCanRestore(o)) && (
+                        <div className="events-actions events-web-actions">
+                          {webOrderCanInvoice(o, channel) && (
+                            <button className="btn btn-primary btn-sm" onClick={() => setResolving(o)}>Create invoice</button>
+                          )}
+                          {webOrderCanLink(o) && (
+                            <button className="btn btn-secondary btn-sm" title="It was already invoiced by hand: link it to that invoice"
+                              onClick={() => setLinking(o)}><Link2 size={13} /> Link invoice</button>
+                          )}
+                          {webOrderCanDismiss(o) && (
+                            <button className="btn btn-secondary btn-sm" disabled={busyId === o.id}
+                              title="Set aside a test registration; it can be restored" onClick={() => setDismissing(o)}>
+                              <XCircle size={13} /> Dismiss
+                            </button>
+                          )}
+                          {webOrderCanRestore(o) && (
+                            <button className="btn btn-secondary btn-sm" disabled={busyId === o.id}
+                              onClick={() => void setDismissed(o, false, null)}><RotateCcw size={13} /> Restore</button>
+                          )}
                         </div>
-                      ) : webOrderIsOpen(o) && webOrderTestRefused(o, channel) && (
+                      )}
+                      {webOrderIsOpen(o) && webOrderTestRefused(o, channel) && (
                         <span className="events-sub events-web-no-invoice"
                           title={`Paid in ${webOrderTestPlace(o.provider)} while this channel does not accept test orders: no money was taken, so no invoice is made`}>
                           <span className="events-nowrap">Test payment —</span>{' '}<span className="events-nowrap">not invoiced</span>
@@ -250,13 +349,17 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
         </div>
       </div>
       <div className="events-sub" style={{ marginTop: 8 }}>
-        A Stripe or HitPay refund is not brought in: refund its invoice by hand. Door sales paid in cash or PayNow are
-        invoiced on the Invoices page, as any sale is.
+        A Stripe or HitPay refund is not brought in: refund its invoice by hand.
       </div>
       <div className="events-sub" style={{ marginTop: 4 }}>
-        The number of an invoice created here does not reach the website's workbook by itself: type it into the
-        workbook's Invoice No column, on every row whose Order ID is the order's checkout (Stripe's cs_…, or
-        HitPay's payment request id; one row per person), or use this tab's Excel export, which lists both.
+        Staff-link registrations (paid in cash, by PayNow or by bank transfer) come here too, marked Staff link. They
+        are never invoiced by themselves, even while the channel is Live: check that the money has arrived, then click
+        Create invoice. Already invoiced by hand? Use Link invoice. Amount not the pass price (a discount, say)? Raise
+        the invoice by hand for the amount paid, then use Link invoice. Dismiss a test registration.
+      </div>
+      <div className="events-sub" style={{ marginTop: 4 }}>
+        The website fills in its workbook's Invoice No column itself, for website and staff-link orders alike, and adds
+        the tickets sold on the Invoices page, so nothing needs typing in.
       </div>
 
       {confirming === 'live' && channel && (
@@ -276,6 +379,10 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
               An order recorded before now is invoiced if its names come in later and it was paid in the last 7 days;
               otherwise create its invoice here (one paid more than 7 days ago shows why first).
             </div>
+            <div className="events-sub">
+              Registrations through the staff link are never invoiced by themselves: they wait here for a Manager to
+              check the money and create the invoice.
+            </div>
             {channel.allow_test && (
               <div className="alert alert-warning" style={{ marginBottom: 0 }}>
                 <AlertTriangle size={15} /><div>Test orders are accepted: a Stripe test payment or a HitPay sandbox payment will also become an invoice.</div>
@@ -292,8 +399,13 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
           </>}>
           <div className="form-grid">
             <div>
-              While the channel is off, every order paid on the website is refused. It is listed here but its
-              invoice cannot be created here: it has to be invoiced by hand on the Invoices page.
+              While the channel is off, every order paid on the website, and every registration sent through its
+              staff link, is refused: it is listed here but its invoice cannot be created here, so it has to be
+              invoiced by hand on the Invoices page.
+            </div>
+            <div className="events-sub">
+              A staff-link registration invoiced that way is then linked to its invoice here with Link invoice, so
+              the website's workbook lists it once.
             </div>
             <div className="events-sub">Orders already recorded stay, and their invoices can still be created here.</div>
           </div>
@@ -302,9 +414,52 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
       {resolving && (
         <ResolveModal order={resolving} onClose={() => setResolving(null)} onResolved={onResolved} />
       )}
+      {linking && (
+        <LinkModal order={linking} onClose={() => setLinking(null)} onLinked={onResolved} />
+      )}
+      {dismissing && (
+        <ReasonModal title={`Dismiss ${dismissing.buyer_name || 'this registration'}`} label="Why is it dismissed?"
+          placeholder="e.g. A test registration" confirmLabel="Dismiss"
+          onClose={() => setDismissing(null)}
+          onSubmit={reason => { const o = dismissing; setDismissing(null); void setDismissed(o, true, reason); }} />
+      )}
     </div>
   );
 };
+
+/** The order as both dialogs show it; `dated` says which day a new invoice takes. */
+const OrderSummary: React.FC<{ order: WebOrder; dated?: boolean }> = ({ order, dated = false }) => {
+  const dating = dated ? ' (the invoice is dated that day)' : '';
+  return (
+    <div className="events-preview">
+      <span><strong>{order.ticket_label}</strong> × {order.quantity} · {money(order.amount_total)}{order.early_bird ? ' · early bird' : ''}</span>
+      {order.provider === 'door' ? (
+        <>
+          <span>
+            Staff link {order.stripe_session_id} · paid by {webOrderPaidThrough(order)} on {fmtDate(order.paid_on)}{dating}
+            {order.payment_reference ? <> · ref {order.payment_reference}</> : null}
+          </span>
+          <span>Form sent {fmtDateTime(order.paid_at)}{order.staff_name ? <> · registered by {order.staff_name}</> : null}</span>
+        </>
+      ) : (
+        <span>
+          Paid {fmtDateTime(order.paid_at)}
+          {order.checkout_opened_at && <> · checkout opened {fmtDateTime(order.checkout_opened_at)}{dating}</>}
+        </span>
+      )}
+      <span>{[order.buyer_name, order.buyer_phone, order.buyer_email].filter(Boolean).join(' · ')}</span>
+      {!order.livemode && <span>A {webOrderProviderName(order.provider)} {order.provider === 'hitpay' ? 'sandbox' : 'test'} order: no money was taken.</span>}
+    </div>
+  );
+};
+
+/** How the website's workbook gets an invoice's number. */
+const WorkbookNote: React.FC<{ order: WebOrder }> = ({ order }) => (
+  <div className="events-sub">
+    The website fills this number into its workbook's Invoice No column itself, on the rows with Order
+    ID {order.stripe_session_id}, the next time it checks with the inventory.
+  </div>
+);
 
 /*
  * Creates the invoice for a recorded or parked order: for a customer staff
@@ -361,15 +516,7 @@ const ResolveModal: React.FC<{
       </>}>
       <div className="form-grid">
         {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
-        <div className="events-preview">
-          <span><strong>{order.ticket_label}</strong> × {order.quantity} · {money(order.amount_total)}{order.early_bird ? ' · early bird' : ''}</span>
-          <span>
-            Paid {fmtDateTime(order.paid_at)}
-            {order.checkout_opened_at && <> · checkout opened {fmtDateTime(order.checkout_opened_at)} (the invoice is dated that day)</>}
-          </span>
-          <span>{[order.buyer_name, order.buyer_phone, order.buyer_email].filter(Boolean).join(' · ')}</span>
-          {!order.livemode && <span>A {webOrderProviderName(order.provider)} {order.provider === 'hitpay' ? 'sandbox' : 'test'} order: no money was taken.</span>}
-        </div>
+        <OrderSummary order={order} dated />
 
         {outcome ? (
           outcome.status === 'invoiced' ? (
@@ -377,10 +524,7 @@ const ResolveModal: React.FC<{
               <span>✓</span>
               <div>
                 Invoice {outcome.invoice_no ?? ''} is created.
-                <div className="events-sub">
-                  The website's workbook does not get this number: type it into its Invoice No column, on every row
-                  with Order ID {order.stripe_session_id}.
-                </div>
+                <WorkbookNote order={order} />
               </div>
             </div>
           ) : (
@@ -396,6 +540,40 @@ const ResolveModal: React.FC<{
                 <AlertTriangle size={15} /><div>{order.review_reason}</div>
               </div>
             )}
+            {order.hand_invoices.length > 0 && (
+              // 380: a second invoice for tickets already invoiced by hand.
+              <div className="alert alert-warning events-web-hand-note" style={{ marginBottom: 0 }}>
+                <AlertTriangle size={15} />
+                <div>
+                  The buyer's phone is on {handInvoicesText(order)}, made by hand for this event. If that is this
+                  order, cancel this and use Link invoice instead, so it is not invoiced twice.
+                </div>
+              </div>
+            )}
+            {webOrderAmountDiffers(order) && (
+              // 380: Create invoice never makes an invoice for other than what was paid.
+              <div className="alert alert-info events-web-amount-note" style={{ marginBottom: 0 }}>
+                <span>ⓘ</span>
+                <div>
+                  An invoice made here is always for the price of the pass, so it will not be made for
+                  the {money(order.amount_total)} paid. If that amount is right (a discount, say), raise the invoice by
+                  hand on the Invoices page for {money(order.amount_total)}, paid by {webOrderPaidThrough(order)}, then
+                  link this registration to it with Link invoice. If the form's amount is wrong, dismiss this
+                  registration and register it again.
+                </div>
+              </div>
+            )}
+            {order.provider === 'door' && (
+              // 380: a staff-link registration's invoice is made paid, so the money is checked first.
+              <div className="alert alert-info events-web-door-note" style={{ marginBottom: 0 }}>
+                <span>ⓘ</span>
+                <div>
+                  Create it only once the money has arrived: the invoice is made paid
+                  by {webOrderPaidThrough(order)}, with reference {order.payment_reference ?? order.stripe_session_id}.
+                  {order.staff_name ? <> {order.staff_name} is its service staff and its guests' Registered by.</> : null}
+                </div>
+              </div>
+            )}
             <div>
               <div className="events-section-title">Who is the invoice for?</div>
               <div className="events-rows" role="radiogroup" aria-label="Bill to">
@@ -407,6 +585,117 @@ const ResolveModal: React.FC<{
                   'By the buyer\'s phone, as a live order is: one customer with it is used, none makes a new one, two or more come back here.')}
               </div>
             </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+};
+
+/*
+ * 380: links an open order to the invoice already made for it by hand, so it
+ * is not invoiced twice. The invoice is looked up first and shown with what
+ * does not match the order; linking changes nothing on the invoice or its
+ * guests.
+ */
+const LinkModal: React.FC<{
+  order: WebOrder;
+  onClose: () => void;
+  onLinked: (r: WebOrderOutcome) => void;
+}> = ({ order, onClose, onLinked }) => {
+  const [invoiceNo, setInvoiceNo] = useState('');
+  const [preview, setPreview] = useState<WebOrderLinkPreview | null>(null);
+  const [busy, setBusy] = useState<'check' | 'link' | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<WebOrderOutcome | null>(null);
+
+  const check = async () => {
+    const no = invoiceNo.trim();
+    if (!no) return;
+    setBusy('check'); setErr(null); setPreview(null);
+    const { data, error } = await supabase.rpc('web_order_link_preview', { p_order_id: order.id, p_invoice_no: no });
+    setBusy(null);
+    if (error) { setErr(error.message); return; }
+    const p = normalizeWebOrderLinkPreview(data);
+    setPreview({ ...p, invoice_no: p.invoice_no || no });
+  };
+
+  const link = async () => {
+    if (!preview) return;
+    setBusy('link'); setErr(null);
+    const { data, error } = await supabase.rpc('web_order_link_invoice', { p_order_id: order.id, p_invoice_no: preview.invoice_no });
+    setBusy(null);
+    if (error) { setErr(error.message); return; }
+    const r = normalizeWebOrderOutcome(data);
+    setOutcome(r);
+    onLinked(r);
+  };
+
+  return (
+    <Modal title={`Link ${order.buyer_name || 'this order'} to an existing invoice`} maxWidth={560} onClose={onClose}
+      footer={outcome ? (
+        <button className="btn btn-primary" onClick={onClose}>Close</button>
+      ) : <>
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={() => void link()} disabled={!preview || busy !== null}>
+          {busy === 'link' ? 'Linking…' : 'Link invoice'}
+        </button>
+      </>}>
+      <div className="form-grid">
+        {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+        <OrderSummary order={order} />
+
+        {outcome ? (
+          outcome.status === 'invoiced' ? (
+            <div className="alert alert-info" role="status" style={{ marginBottom: 0 }}>
+              <span>✓</span>
+              <div>
+                The order is linked to invoice {outcome.invoice_no ?? preview?.invoice_no ?? ''}.
+                <WorkbookNote order={order} />
+              </div>
+            </div>
+          ) : (
+            <div className="alert alert-warning" role="status" style={{ marginBottom: 0 }}>
+              <AlertTriangle size={15} />
+              <div>The order was not linked. {webOrderStatusText(outcome)}</div>
+            </div>
+          )
+        ) : (
+          <>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label htmlFor="web-order-link-no">Invoice no *</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input id="web-order-link-no" value={invoiceNo} placeholder="e.g. INV-2026-0001" autoFocus
+                  disabled={busy !== null}
+                  onChange={e => { setInvoiceNo(e.target.value); setPreview(null); setErr(null); }}
+                  onKeyDown={e => { if (e.key === 'Enter') void check(); }} />
+                <button className="btn btn-secondary" onClick={() => void check()} disabled={!invoiceNo.trim() || busy !== null}>
+                  {busy === 'check' ? 'Looking…' : 'Look up'}
+                </button>
+              </div>
+              <div className="events-sub" style={{ marginTop: 4 }}>
+                The invoice already made by hand for this order. It is not changed: the order is marked invoiced with it.
+              </div>
+            </div>
+            {preview && (
+              <>
+                <div className="events-preview events-web-link-preview" aria-label="Invoice to link">
+                  <span>
+                    <strong>{preview.invoice_no}</strong>
+                    {preview.store ? ` · ${preview.store}` : ''}{preview.date ? ` · ${fmtDate(preview.date)}` : ''}
+                  </span>
+                  <span>{preview.customer_name ?? 'No customer'}</span>
+                  <span>Total {money(preview.total)} · paid {money(preview.paid)}{preview.methods ? ` by ${preview.methods}` : ''}</span>
+                  <span>{preview.people} {preview.people === 1 ? 'person' : 'people'} on its tickets for this event</span>
+                </div>
+                {preview.warnings.length > 0 && (
+                  <div className="alert alert-warning events-web-link-warnings" role="status" style={{ marginBottom: 0 }}>
+                    <AlertTriangle size={15} />
+                    <div>{preview.warnings.map((w, i) => <div key={i}>{w}</div>)}</div>
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
       </div>

@@ -35,22 +35,58 @@ export interface PaidOrder {
   paid_at: string;
 }
 
+export interface NamesBuyer { first_name: string; last_name: string; email: string | null; whatsapp: string | null }
+export interface Attendee { name: string; email: string | null; whatsapp: string | null }
+
 export interface NamesOrder {
   channel: string;
   provider?: Provider;
   stripe_session_id: string;
   livemode: boolean;
-  buyer: { first_name: string; last_name: string; email: string | null; whatsapp: string | null };
-  attendees: { name: string; email: string | null; whatsapp: string | null }[];
+  buyer: NamesBuyer;
+  attendees: Attendee[];
+}
+
+// 380: a registration made through the website's staff link, paid at the
+// door or by PayNow or bank transfer. It carries its own id, the amount and
+// date the form says were paid, how, and who registered it, with everyone's
+// names (one per person paid for).
+export const DOOR_METHODS = ['cash', 'paynow', 'bank'] as const;
+export type DoorMethod = (typeof DOOR_METHODS)[number];
+
+export interface DoorOrder {
+  channel: string;
+  provider: 'door';
+  /** OFF-YYYYMMDD-XXXXXX, as the website makes it. */
+  order_id: string;
+  ticket: Ticket;
+  quantity: number;
+  amount_total_cents: number;
+  /** The day the money was paid (YYYY-MM-DD). */
+  paid_on: string;
+  method: DoorMethod;
+  reference: string | null;
+  /** The staff member who registered it (a lower-case profile uuid), if any. */
+  staff_id: string | null;
+  registered_at: string;
+  buyer: NamesBuyer;
+  attendees: Attendee[];
 }
 
 export type OrderRequest =
   | { type: 'paid'; order: PaidOrder }
-  | { type: 'names'; order: NamesOrder };
+  | { type: 'names'; order: NamesOrder }
+  | { type: 'door'; order: DoorOrder }
+  // 380: what the website asks for: its orders and the counter's tickets, and
+  // the staff its form may offer.
+  | { type: 'sync'; channel: string }
+  | { type: 'staff'; channel: string };
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; field: string };
 
-const REQUEST_FIELDS = ['type', 'order'] as const;
+const ORDER_REQUEST_FIELDS = ['type', 'order'] as const;
+const CHANNEL_REQUEST_FIELDS = ['type', 'channel'] as const;
+const ANY_REQUEST_FIELDS = ['type', 'order', 'channel'] as const;
 const PAID_FIELDS = [
   'channel', 'provider', 'stripe_session_id', 'stripe_payment_intent', 'livemode', 'ticket', 'quantity',
   'unit_amount_cents', 'amount_total_cents', 'early_bird', 'buyer', 'checkout_opened_at', 'paid_at',
@@ -59,6 +95,10 @@ const PAID_BUYER_FIELDS = ['name', 'email', 'phone'] as const;
 const NAMES_FIELDS = ['channel', 'provider', 'stripe_session_id', 'livemode', 'buyer', 'attendees'] as const;
 const NAMES_BUYER_FIELDS = ['first_name', 'last_name', 'email', 'whatsapp'] as const;
 const ATTENDEE_FIELDS = ['name', 'email', 'whatsapp'] as const;
+const DOOR_FIELDS = [
+  'channel', 'provider', 'order_id', 'ticket', 'quantity', 'amount_total_cents', 'paid_on', 'method', 'reference',
+  'staff_id', 'registered_at', 'buyer', 'attendees',
+] as const;
 
 export const MAX_ATTENDEES = 10;
 
@@ -66,6 +106,11 @@ const SESSION_RE = /^cs_(test|live)_[A-Za-z0-9]{8,200}$/;
 const PAYMENT_INTENT_RE = /^pi_[A-Za-z0-9_]{8,200}$/;
 // HitPay's payment request and payment ids: lower-case uuids, as HitPay sends them.
 const HITPAY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// 380: a staff member's profile id, the same lower-case form.
+const PROFILE_ID_RE = HITPAY_ID_RE;
+// 380: the website's staff-link ids: the day, then six upper-case hex digits.
+const OFF_ID_RE = /^OFF-\d{8}-[0-9A-F]{6}$/;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 // A zone is required: a bare local time would be read in the database's own
 // time zone, which is exactly the early-bird ambiguity the dates exist to avoid.
 // Postgres takes offsets up to ±15:59; a larger one would fail in the database,
@@ -126,11 +171,23 @@ function pattern(value: unknown, path: string, re: RegExp): string {
 function isoTime(value: unknown, path: string): string {
   const match = typeof value === 'string' ? ISO_RE.exec(value) : null;
   if (!match || Number.isNaN(Date.parse(value as string))) throw new Refused(path);
-  // Date.parse rolls 30 Feb over into March; the database would refuse it.
+  realDay(match, path);
+  return value as string;
+}
+
+/** 380: a calendar day, YYYY-MM-DD, that exists. */
+function calendarDay(value: unknown, path: string): string {
+  const match = typeof value === 'string' ? DATE_RE.exec(value) : null;
+  if (!match) throw new Refused(path);
+  realDay(match, path);
+  return value as string;
+}
+
+// Date.parse rolls 30 Feb over into March; the database would refuse it.
+function realDay(match: RegExpExecArray, path: string): void {
   const [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])];
   const day = new Date(Date.UTC(y, m - 1, d));
   if (day.getUTCFullYear() !== y || day.getUTCMonth() !== m - 1 || day.getUTCDate() !== d) throw new Refused(path);
-  return value as string;
 }
 
 /** The provider when one is given. */
@@ -198,11 +255,32 @@ function namesOrder(value: unknown): NamesOrder {
   const channel = text(o.channel, 'order.channel', 1, 64);
   const { provider: by, stripe_session_id, livemode } = session(o);
   const buyer = object(o.buyer, 'order.buyer', NAMES_BUYER_FIELDS);
+  const attendees = attendeeList(o.attendees);
 
-  if (!Array.isArray(o.attendees) || o.attendees.length < 1 || o.attendees.length > MAX_ATTENDEES) {
+  return {
+    channel,
+    ...(by ? { provider: by } : {}),
+    stripe_session_id,
+    livemode,
+    buyer: namesBuyer(buyer),
+    attendees,
+  };
+}
+
+function namesBuyer(buyer: Record<string, unknown>): NamesBuyer {
+  return {
+    first_name: text(buyer.first_name, 'order.buyer.first_name', 1, 100),
+    last_name: text(buyer.last_name ?? '', 'order.buyer.last_name', 0, 100),
+    email: optionalText(buyer.email, 'order.buyer.email', 254),
+    whatsapp: optionalText(buyer.whatsapp, 'order.buyer.whatsapp', 40),
+  };
+}
+
+function attendeeList(value: unknown): Attendee[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ATTENDEES) {
     throw new Refused('order.attendees');
   }
-  const attendees = o.attendees.map((raw, i) => {
+  return value.map((raw, i) => {
     const path = at('order.attendees', i);
     const a = object(raw, path, ATTENDEE_FIELDS);
     return {
@@ -211,27 +289,49 @@ function namesOrder(value: unknown): NamesOrder {
       whatsapp: optionalText(a.whatsapp, at(path, 'whatsapp'), 40),
     };
   });
+}
+
+// 380: a staff-link registration. Its buyer and names have the shape of a
+// names order's; there must be one name per person paid for.
+function doorOrder(value: unknown): DoorOrder {
+  const o = object(value, 'order', DOOR_FIELDS);
+  const channel = text(o.channel, 'order.channel', 1, 64);
+  if (o.provider !== 'door') throw new Refused('order.provider');
+  const order_id = pattern(o.order_id, 'order.order_id', OFF_ID_RE);
+  if (typeof o.ticket !== 'string' || !(TICKETS as readonly string[]).includes(o.ticket)) throw new Refused('order.ticket');
+  const quantity = integer(o.quantity, 'order.quantity', 1, 10);
+  const amount_total_cents = integer(o.amount_total_cents, 'order.amount_total_cents', 0, 10_000_000);
+  const paid_on = calendarDay(o.paid_on, 'order.paid_on');
+  if (typeof o.method !== 'string' || !(DOOR_METHODS as readonly string[]).includes(o.method)) throw new Refused('order.method');
+  const reference = optionalText(o.reference, 'order.reference', 100);
+  const staff_id = o.staff_id === undefined || o.staff_id === null ? null : pattern(o.staff_id, 'order.staff_id', PROFILE_ID_RE);
+  const registered_at = isoTime(o.registered_at, 'order.registered_at');
+  const buyer = namesBuyer(object(o.buyer, 'order.buyer', NAMES_BUYER_FIELDS));
+  const attendees = attendeeList(o.attendees);
+  if (attendees.length !== quantity) throw new Refused('order.attendees');
 
   return {
-    channel,
-    ...(by ? { provider: by } : {}),
-    stripe_session_id,
-    livemode,
-    buyer: {
-      first_name: text(buyer.first_name, 'order.buyer.first_name', 1, 100),
-      last_name: text(buyer.last_name ?? '', 'order.buyer.last_name', 0, 100),
-      email: optionalText(buyer.email, 'order.buyer.email', 254),
-      whatsapp: optionalText(buyer.whatsapp, 'order.buyer.whatsapp', 40),
-    },
-    attendees,
+    channel, provider: 'door', order_id, ticket: o.ticket as Ticket, quantity, amount_total_cents, paid_on,
+    method: o.method as DoorMethod, reference, staff_id, registered_at, buyer, attendees,
   };
 }
 
 export function validateOrderRequest(body: unknown): Checked<OrderRequest> {
   try {
-    const b = object(body, '', REQUEST_FIELDS);
-    if (b.type === 'paid') return { ok: true, value: { type: 'paid', order: paidOrder(b.order) } };
-    if (b.type === 'names') return { ok: true, value: { type: 'names', order: namesOrder(b.order) } };
+    // Each type has its own envelope: an order, or (380) just the channel.
+    const type = body !== null && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>).type : undefined;
+    if (type === 'paid' || type === 'names' || type === 'door') {
+      const b = object(body, '', ORDER_REQUEST_FIELDS);
+      if (type === 'paid') return { ok: true, value: { type, order: paidOrder(b.order) } };
+      if (type === 'names') return { ok: true, value: { type, order: namesOrder(b.order) } };
+      return { ok: true, value: { type, order: doorOrder(b.order) } };
+    }
+    if (type === 'sync' || type === 'staff') {
+      const b = object(body, '', CHANNEL_REQUEST_FIELDS);
+      return { ok: true, value: { type, channel: text(b.channel, 'channel', 1, 64) } };
+    }
+    object(body, '', ANY_REQUEST_FIELDS);
     return { ok: false, field: 'type' };
   } catch (error) {
     if (error instanceof Refused) return { ok: false, field: error.field || 'body' };

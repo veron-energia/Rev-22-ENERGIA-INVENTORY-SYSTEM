@@ -5,7 +5,7 @@ import { assert, assertEquals, assertFalse, assertThrows } from 'jsr:@std/assert
 import { handleOrder, MAX_BODY_BYTES, type RpcClient } from './handler.ts';
 import { loadOrderConfig, MissingConfigError, type OrderConfig } from './config.ts';
 import { signBody } from './signature.ts';
-import { namesOrder, paidOrder, SECRET, SESSION_ID } from './fixtures.ts';
+import { doorOrder, namesOrder, OFF_ID, paidOrder, SECRET, SESSION_ID } from './fixtures.ts';
 
 const NOW_MS = 1_790_000_000_000;
 const NOW_S = NOW_MS / 1000;
@@ -265,6 +265,111 @@ Deno.test('logs carry the type, session, status and timing, and nothing about th
   for (const personal of ['Guest', 'guest.one', 'tests.invalid', '9123', SECRET]) {
     assertFalse(logs.includes(personal), `log mentions ${personal}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 380: staff-link registrations, the sync and the staff list
+// ---------------------------------------------------------------------------
+
+Deno.test('a staff-link registration goes to web_order_door, and dismissed is an answer it may give', async () => {
+  for (const status of ['recorded', 'needs_review', 'invoiced', 'dismissed', 'refused']) {
+    const { calls, client } = fakeClient(() => ({ data: { status, invoice_no: null, review_reason: null }, error: null }));
+    const response = await run(await signed({ type: 'door', order: doorOrder() }), client);
+    assertEquals(response.status, 200, status);
+    assertEquals(await response.json(), { ok: true, status, invoice_no: null, review_reason: null });
+    assertEquals(calls, [{ fn: 'web_order_door', args: { p_order: doorOrder() } }]);
+  }
+  // Only a staff-link registration can be dismissed: from web_order_paid it is unexpected.
+  const odd = fakeClient(() => ({ data: { status: 'dismissed', invoice_no: null, review_reason: null }, error: null }));
+  assertEquals((await run(await signed({ type: 'paid', order: paidOrder() }), odd.client)).status, 503);
+});
+
+Deno.test('a staff-link registration is signed and whitelisted like an order', async () => {
+  const { calls, client } = fakeClient();
+  assertEquals((await run(await signed({ type: 'door', order: doorOrder() }, { secret: 'another-secret' }), client)).status, 401);
+  const extra = await run(await signed({ type: 'door', order: { ...doorOrder(), discount: 100 } }), client);
+  assertEquals(extra.status, 400);
+  assertEquals(await extra.json(), { ok: false, error: 'invalid_request', field: 'order.discount' });
+  assertEquals(calls.length, 0);
+});
+
+const SYNC_OK = {
+  status: 'ok',
+  event: { name: 'Test Event', days: ['2026-10-19', '2026-10-20'] },
+  orders: [{ order_id: OFF_ID, provider: 'door', status: 'invoiced', invoice_no: 'INV-2026-0001', buyer_name: 'Guest One',
+             buyer_phone: '+65 9123 0001', people: [{ position: 1, name: 'Guest One', phone: '+65 9123 0001' }] }],
+  counter: [{ invoice_no: 'INV-2026-0002', customer_name: 'Guest Two', phone: '+65 9123 0002', people: [] }],
+};
+
+Deno.test('a sync goes to web_order_sync with the channel, and its answer comes back', async () => {
+  const { calls, client } = fakeClient(() => ({ data: { ...SYNC_OK, extra: 'dropped' }, error: null }));
+  let response: Response | undefined;
+  const logs = await logsOf(async () => {
+    response = await run(await signed({ type: 'sync', channel: 'alaric-birthday-2026' }), client);
+  });
+  assertEquals(response!.status, 200);
+  assertEquals(await response!.json(), { ok: true, ...SYNC_OK });
+  assertEquals(calls, [{ fn: 'web_order_sync', args: { p_channel: 'alaric-birthday-2026' } }]);
+  // Counts, never the people.
+  assert(logs.includes('"type":"sync"') && logs.includes('"channel":"alaric-birthday-2026"'));
+  assert(logs.includes('"orders":1') && logs.includes('"counter":1') && logs.includes('"status":"ok"'));
+  for (const personal of ['Guest', '9123', 'INV-2026']) assertFalse(logs.includes(personal), `log mentions ${personal}`);
+});
+
+Deno.test('too soon and refused syncs carry nothing else; anything malformed is a retry', async () => {
+  for (const status of ['too_soon', 'refused']) {
+    const { client } = fakeClient(() => ({ data: { status, orders: [] }, error: null }));
+    const response = await run(await signed({ type: 'sync', channel: 'alaric-birthday-2026' }), client);
+    assertEquals(response.status, 200);
+    assertEquals(await response.json(), { ok: true, status });
+  }
+  for (const data of [{ status: 'ok', event: SYNC_OK.event, orders: [] }, { status: 'ok', event: [], orders: [], counter: [] },
+                      { status: 'later' }, null, []]) {
+    const { client } = fakeClient(() => ({ data, error: null }));
+    const response = await run(await signed({ type: 'sync', channel: 'alaric-birthday-2026' }), client);
+    assertEquals(response.status, 503, JSON.stringify(data));
+  }
+});
+
+Deno.test('the staff list goes to web_order_staff, and comes back as ids and names only', async () => {
+  const { calls, client } = fakeClient(() => ({
+    data: { status: 'ok', staff: [{ id: 'a', name: 'Staff A', email: 'staff.a@tests.invalid' }, { id: 'b', name: 'Staff B' }] },
+    error: null,
+  }));
+  let response: Response | undefined;
+  const logs = await logsOf(async () => {
+    response = await run(await signed({ type: 'staff', channel: 'alaric-birthday-2026' }), client);
+  });
+  assertEquals(response!.status, 200);
+  assertEquals(await response!.json(), { ok: true, status: 'ok', staff: [{ id: 'a', name: 'Staff A' }, { id: 'b', name: 'Staff B' }] });
+  assertEquals(calls, [{ fn: 'web_order_staff', args: { p_channel: 'alaric-birthday-2026' } }]);
+  assert(logs.includes('"staff":2'));
+  assertFalse(logs.includes('Staff A'));
+  for (const data of [{ status: 'ok' }, { status: 'ok', staff: [{ id: 'a' }] }, { status: 'maybe', staff: [] }]) {
+    const bad = fakeClient(() => ({ data, error: null }));
+    assertEquals((await run(await signed({ type: 'staff', channel: 'alaric-birthday-2026' }), bad.client)).status, 503,
+      JSON.stringify(data));
+  }
+});
+
+Deno.test('sync and staff are signed requests too', async () => {
+  for (const type of ['sync', 'staff']) {
+    const { calls, client } = fakeClient();
+    const response = await run(await signed({ type, channel: 'alaric-birthday-2026' }, { secret: 'another-secret' }), client);
+    assertEquals(response.status, 401, type);
+    assertEquals(calls.length, 0);
+  }
+});
+
+Deno.test('a staff-link registration\'s logs carry its OFF id and status, nothing about the people', async () => {
+  const logs = await logsOf(async () => {
+    await run(await signed({ type: 'door', order: doorOrder() }));
+    const leaky = fakeClient(() => ({ data: null, error: { message: 'Key (phone)=(+65 9123 0001)', code: '23505' } }));
+    await run(await signed({ type: 'door', order: doorOrder() }), leaky.client);
+  });
+  assert(logs.includes(OFF_ID));
+  assert(logs.includes('"type":"door"'));
+  for (const personal of ['Guest', 'guest.one', '9123', 'PayNow 0001']) assertFalse(logs.includes(personal), `log mentions ${personal}`);
 });
 
 // ---------------------------------------------------------------------------

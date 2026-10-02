@@ -38,6 +38,9 @@ export interface Guest {
   invoice_id: string | null; invoice_no: string | null; invoice_status: string | null;
   invoice_total: number | null; invoice_paid: number | null; invoice_store_id: string | null;
   created_at: string | null; days: GuestDay[];
+  /** 380: the customer's email, else the website order's; the website order
+   *  whose invoice this is; the invoice's payment methods, comma-joined. */
+  email: string | null; order_id: string | null; payment_methods: string | null;
 }
 
 export type SaleSource = 'event_day' | 'ticket' | 'staff';
@@ -56,12 +59,19 @@ export interface StoreOption { id: string; name: string; }
 // Website orders (372_website_orders_become_invoices.sql): tickets bought on
 // the event's website, recorded at payment and made into invoices.
 export type WebOrderMode = 'off' | 'record_only' | 'live';
-// 376: who took the payment.
-export type WebOrderProvider = 'stripe' | 'hitpay';
-export const webOrderProviderName = (p: WebOrderProvider) => (p === 'hitpay' ? 'HitPay' : 'Stripe');
+// 376: who took the payment. 380: 'door' is the website's staff link, paid in
+// cash, by PayNow or by bank transfer, and invoiced only by a Manager.
+export type WebOrderProvider = 'stripe' | 'hitpay' | 'door';
+export const webOrderProviderName = (p: WebOrderProvider) => (p === 'hitpay' ? 'HitPay' : p === 'door' ? 'Staff link' : 'Stripe');
+/** 380: how a staff-link registration was paid, as its form says. */
+export type WebOrderDoorMethod = 'cash' | 'paynow' | 'bank';
+export const WEB_ORDER_DOOR_METHOD_LABELS: Record<WebOrderDoorMethod, string> = {
+  cash: 'Cash', paynow: 'PayNow', bank: 'Bank Transfer',
+};
 /** Where a payment that took no money was made. */
 export const webOrderTestPlace = (p: WebOrderProvider) => (p === 'hitpay' ? 'HitPay\'s sandbox' : 'Stripe\'s test mode');
-export type WebOrderStatus = 'invoiced' | 'recorded' | 'needs_review' | 'refused';
+// 380: 'dismissed' is a staff-link registration a Manager set aside, such as a test.
+export type WebOrderStatus = 'invoiced' | 'recorded' | 'needs_review' | 'refused' | 'dismissed';
 export interface WebOrderChannel {
   key: string; mode: WebOrderMode; allow_test: boolean;
   store_name: string | null; acting_name: string | null; payment_method_name: string | null;
@@ -81,10 +91,23 @@ export interface WebOrder {
   attendees: WebOrderPerson[] | null; names_at: string | null;
   invoice_id: string | null; invoice_no: string | null; review_reason: string | null;
   candidates: WebOrderCandidate[]; created_at: string | null;
+  /** 380, staff-link orders only: the form's method, reference and date paid,
+   *  and the staff member it credits. */
+  door_method: WebOrderDoorMethod | null; payment_reference: string | null; paid_on: string | null;
+  staff_profile_id: string | null; staff_name: string | null;
+  /** 380: for an order that can still be linked, invoices made by hand for the
+   *  event with the buyer's phone (the number only at a store the person works in). */
+  hand_invoices: WebOrderHandInvoice[];
 }
+export interface WebOrderHandInvoice { invoice_no: string | null; store: string | null; }
 export interface WebOrderList { channel: WebOrderChannel | null; can_switch: boolean; orders: WebOrder[]; }
-/** What web_order_resolve answers. */
+/** What web_order_resolve and web_order_link_invoice answer. */
 export interface WebOrderOutcome { status: WebOrderStatus; invoice_no: string | null; review_reason: string | null; }
+/** 380: what web_order_link_preview shows of the invoice an order would be linked to. */
+export interface WebOrderLinkPreview {
+  invoice_no: string; store: string | null; date: string | null; customer_name: string | null;
+  total: number; paid: number; methods: string | null; people: number; warnings: string[];
+}
 
 // ── normalisers ────────────────────────────────────────────────────────────
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -96,6 +119,9 @@ const str = (v: unknown): string | null => (v === null || v === undefined || v =
 const dateOnly = (v: unknown): string | null => (v ? String(v).slice(0, 10) : null);
 const hhmm = (v: unknown): string | null => (v ? String(v).slice(0, 5) : null);
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+/** A comma-joined list, whether it arrives joined or as an array. */
+const joined = (v: unknown): string | null =>
+  (Array.isArray(v) ? str(v.filter(x => x !== null && x !== undefined && x !== '').join(', ')) : str(v));
 
 export function normalizeEvent(r: any): EventRow {
   const days: EventDay[] = arr(r?.days).map(d => ({
@@ -141,6 +167,7 @@ export function normalizeGuest(r: any): Guest {
     invoice_total: numOrNull(r?.invoice_total), invoice_paid: numOrNull(r?.invoice_paid),
     invoice_store_id: str(r?.invoice_store_id), created_at: str(r?.created_at),
     days: arr(r?.days).map(normalizeGuestDay).filter(d => d.day).sort((a, b) => a.day.localeCompare(b.day)),
+    email: str(r?.email), order_id: str(r?.order_id), payment_methods: joined(r?.payment_methods),
   };
 }
 
@@ -161,7 +188,8 @@ export function normalizeOverCapacity(v: unknown): OverCapacity[] {
 }
 
 const WEB_ORDER_MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
-const WEB_ORDER_STATUSES: WebOrderStatus[] = ['invoiced', 'recorded', 'needs_review', 'refused'];
+const WEB_ORDER_STATUSES: WebOrderStatus[] = ['invoiced', 'recorded', 'needs_review', 'refused', 'dismissed'];
+const WEB_ORDER_DOOR_METHODS: WebOrderDoorMethod[] = ['cash', 'paynow', 'bank'];
 const webOrderMode = (v: unknown): WebOrderMode => (WEB_ORDER_MODES.includes(v as WebOrderMode) ? v as WebOrderMode : 'off');
 // A status the page does not know is shown as needing a look, never as done.
 const webOrderStatus = (v: unknown): WebOrderStatus =>
@@ -169,7 +197,7 @@ const webOrderStatus = (v: unknown): WebOrderStatus =>
 
 export function normalizeWebOrder(r: any): WebOrder {
   return {
-    id: String(r?.id ?? ''), provider: r?.provider === 'hitpay' ? 'hitpay' : 'stripe',
+    id: String(r?.id ?? ''), provider: r?.provider === 'hitpay' || r?.provider === 'door' ? r.provider : 'stripe',
     stripe_session_id: String(r?.stripe_session_id ?? ''), livemode: r?.livemode === true,
     status: webOrderStatus(r?.status), ticket: String(r?.ticket ?? ''),
     ticket_label: str(r?.ticket_label) ?? String(r?.ticket ?? ''),
@@ -188,6 +216,11 @@ export function normalizeWebOrder(r: any): WebOrder {
       email: str(c?.email), last_invoice_at: str(c?.last_invoice_at),
     })).filter(c => c.customer_id),
     created_at: str(r?.created_at),
+    door_method: WEB_ORDER_DOOR_METHODS.includes(r?.door_method) ? r.door_method : null,
+    payment_reference: str(r?.payment_reference), paid_on: dateOnly(r?.paid_on),
+    staff_profile_id: str(r?.staff_profile_id), staff_name: str(r?.staff_name),
+    hand_invoices: arr(r?.hand_invoices).map(h => ({ invoice_no: str(h?.invoice_no), store: str(h?.store) }))
+      .filter(h => h.invoice_no || h.store),
   };
 }
 
@@ -206,6 +239,14 @@ export function normalizeWebOrderList(v: any): WebOrderList {
 
 export function normalizeWebOrderOutcome(v: any): WebOrderOutcome {
   return { status: webOrderStatus(v?.status), invoice_no: str(v?.invoice_no), review_reason: str(v?.review_reason) };
+}
+
+export function normalizeWebOrderLinkPreview(v: any): WebOrderLinkPreview {
+  return {
+    invoice_no: String(v?.invoice_no ?? ''), store: str(v?.store), date: dateOnly(v?.date),
+    customer_name: str(v?.customer_name), total: num(v?.total), paid: num(v?.paid), methods: joined(v?.methods),
+    people: num(v?.people), warnings: arr(v?.warnings).map(w => String(w ?? '')).filter(Boolean),
+  };
 }
 
 // ── formatting ─────────────────────────────────────────────────────────────
@@ -363,13 +404,13 @@ export const WEB_ORDER_MODE_BADGE: Record<WebOrderMode, string> = {
   off: 'badge badge-muted', record_only: 'badge badge-accent', live: 'badge badge-success',
 };
 export const WEB_ORDER_STATUS_LABELS: Record<WebOrderStatus, string> = {
-  invoiced: 'Invoiced', recorded: 'Recorded', needs_review: 'Needs review', refused: 'Refused',
+  invoiced: 'Invoiced', recorded: 'Recorded', needs_review: 'Needs review', refused: 'Refused', dismissed: 'Dismissed',
 };
 export const WEB_ORDER_STATUS_BADGE: Record<WebOrderStatus, string> = {
   invoiced: 'badge badge-success', recorded: 'badge badge-primary',
-  needs_review: 'badge badge-accent', refused: 'badge badge-danger',
+  needs_review: 'badge badge-accent', refused: 'badge badge-danger', dismissed: 'badge badge-muted',
 };
-/** "Invoiced · INV-…", "Recorded", "Needs review: <reason>" or "Refused: <reason>". */
+/** "Invoiced · INV-…", "Recorded", or "Needs review", "Refused" or "Dismissed" with its reason. */
 export function webOrderStatusText(o: Pick<WebOrder, 'status' | 'invoice_no' | 'review_reason'>): string {
   const label = WEB_ORDER_STATUS_LABELS[o.status];
   if (o.status === 'invoiced') return o.invoice_no ? `${label} · ${o.invoice_no}` : label;
@@ -389,6 +430,41 @@ export const webOrderTestRefused = (o: Pick<WebOrder, 'livemode'>, channel: Pick
 /** An open order whose invoice staff can create here. */
 export const webOrderCanInvoice = (o: Pick<WebOrder, 'status' | 'livemode'>, channel: Pick<WebOrderChannel, 'allow_test'> | null) =>
   webOrderIsOpen(o) && !webOrderTestRefused(o, channel);
+/** 380: why a staff-link registration sent while the channel was off is refused. */
+export const WEB_ORDER_OFF_REFUSAL = 'The website channel is off';
+/** 380: a staff-link registration refused while the channel was off: staff invoice it by hand, then link it. */
+export const webOrderOffRefused = (o: Pick<WebOrder, 'status' | 'provider' | 'review_reason'>) =>
+  o.provider === 'door' && o.status === 'refused' && o.review_reason === WEB_ORDER_OFF_REFUSAL;
+/**
+ * 380: an open order that was already invoiced by hand is linked to that
+ * invoice instead of getting a second one, and so is a staff-link
+ * registration refused while the channel was off. A test payment took no
+ * money, so no real invoice is its.
+ */
+export const webOrderCanLink = (o: Pick<WebOrder, 'status' | 'livemode' | 'provider' | 'review_reason'>) =>
+  (webOrderIsOpen(o) || webOrderOffRefused(o)) && o.livemode;
+/**
+ * 380: a staff-link registration whose amount is not the price of its pass.
+ * Create invoice never makes an invoice for other than what was paid, so such
+ * a one is invoiced by hand and linked.
+ */
+export const webOrderAmountDiffers = (o: Pick<WebOrder, 'provider' | 'review_reason'>) =>
+  o.provider === 'door' && /\bS\$[\d,.]+ was paid\b/.test(o.review_reason ?? '');
+/** 380: only a staff-link registration is set aside (a test, say) or brought back. */
+export const webOrderCanDismiss = (o: Pick<WebOrder, 'status' | 'provider'>) => o.provider === 'door' && webOrderIsOpen(o);
+export const webOrderCanRestore = (o: Pick<WebOrder, 'status' | 'provider'>) => o.provider === 'door' && o.status === 'dismissed';
+
+/** Where the order came from: the website's checkout or its staff link. */
+export const webOrderSource = (o: Pick<WebOrder, 'provider'>) => (o.provider === 'door' ? 'Staff link' : 'Website');
+/** Stripe or HitPay for a website order; Cash, PayNow or Bank Transfer for a staff-link one. */
+export function webOrderPaidThrough(o: Pick<WebOrder, 'provider' | 'door_method'>): string {
+  if (o.provider === 'door' && o.door_method) return WEB_ORDER_DOOR_METHOD_LABELS[o.door_method];
+  return webOrderProviderName(o.provider);
+}
+/** The day the money was paid: the staff link's Date paid, else the Singapore day of the payment. */
+export function webOrderDatePaid(o: Pick<WebOrder, 'provider' | 'paid_on' | 'paid_at'>): string | null {
+  return o.provider === 'door' ? o.paid_on : (calendarDate(o.paid_at, 'Asia/Singapore') || null);
+}
 
 /** A file-name-safe version of an event's name. */
 export function slug(s: string): string {

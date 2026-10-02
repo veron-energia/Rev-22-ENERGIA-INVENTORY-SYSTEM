@@ -12,17 +12,24 @@ import {
 type TypeFilter = 'all' | 'ticket' | 'free';
 type StatusFilter = 'registered' | 'cancelled' | 'all';
 
-/** The guest list export: the guest, then coming / attended / code for each day. */
+/**
+ * The guest list export: the guest, then coming / attended / code for each
+ * day. 380: with the email, the website order (its checkout or staff-link id)
+ * and how the invoice was paid, so it lists every registration however it came.
+ */
 export function guestExportColumns(event: EventRow): ExcelColumn<Guest>[] {
   return [
     { header: 'Name', value: g => g.name },
     { header: 'Phone', value: g => g.phone ?? '' },
+    { header: 'Email', value: g => g.email ?? '' },
     { header: 'Customer', value: g => g.customer_name ?? '' },
     { header: 'Type', value: g => (g.source === 'ticket' ? 'Ticket' : 'Free') },
     { header: 'Ticket option', value: g => g.ticket_option_name ?? '' },
     { header: 'Invoice no', value: g => g.invoice_no ?? '' },
+    { header: 'Order ID', value: g => g.order_id ?? '' },
     { header: 'Invoice status', value: g => invoiceStatusLabel(g.invoice_status) },
     { header: 'Paid', value: g => (g.source === 'ticket' && g.invoice_paid != null ? g.invoice_paid : null) },
+    { header: 'Payment method', value: g => g.payment_methods ?? '' },
     { header: 'Registered by', value: g => g.registered_by_name ?? '' },
     { header: 'Notes', value: g => g.notes ?? '' },
     { header: 'Status', value: g => (g.status === 'registered' ? 'Registered' : 'Cancelled') },

@@ -1,6 +1,6 @@
 // Fake orders for the tests. Fixture data only: this repository is public.
 
-import type { NamesOrder, PaidOrder } from './validate.ts';
+import type { DoorOrder, NamesOrder, PaidOrder } from './validate.ts';
 
 export const SECRET = 'test-signing-secret';
 export const SESSION_ID = 'cs_test_a1B2c3D4e5F6g7H8';
@@ -48,4 +48,28 @@ export const hitpayNamesOrder = (): NamesOrder => ({
   provider: 'hitpay',
   stripe_session_id: HITPAY_REQUEST_ID,
   livemode: true,
+});
+
+// 380: a staff-link registration (made-up id; the real ones stay out of this
+// public repository).
+export const OFF_ID = 'OFF-20261005-4F2A9C';
+export const STAFF_ID = '0b6e1a52-9d3c-4f7a-8e21-5c4d3b2a1f00';
+
+export const doorOrder = (): DoorOrder => ({
+  channel: 'alaric-birthday-2026',
+  provider: 'door',
+  order_id: OFF_ID,
+  ticket: 'both',
+  quantity: 2,
+  amount_total_cents: 9400,
+  paid_on: '2026-10-05',
+  method: 'paynow',
+  reference: 'PayNow 0001',
+  staff_id: STAFF_ID,
+  registered_at: '2026-10-05T02:10:00.000Z',
+  buyer: { first_name: 'Guest', last_name: 'One', email: 'guest.one@tests.invalid', whatsapp: '+65 9123 0001' },
+  attendees: [
+    { name: 'Guest One', email: 'guest.one@tests.invalid', whatsapp: '+65 9123 0001' },
+    { name: 'Guest Two', email: null, whatsapp: '+65 9123 0002' },
+  ],
 });

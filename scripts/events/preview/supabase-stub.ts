@@ -167,7 +167,10 @@ const guests: G[] = [
 type WebPerson = { name: string; email: string | null; whatsapp: string | null };
 type WebOrder = {
   id: string; channel: string; stripe_session_id: string; livemode: boolean;
-  status: 'recorded' | 'invoiced' | 'needs_review' | 'refused';
+  status: 'recorded' | 'invoiced' | 'needs_review' | 'refused' | 'dismissed';
+  // 380: 'door' is the website's staff link (cash, PayNow or bank transfer).
+  provider: 'stripe' | 'hitpay' | 'door'; door_method: 'cash' | 'paynow' | 'bank' | null;
+  payment_reference: string | null; paid_on: string | null; staff_profile_id: string | null;
   ticket: 'both' | 'day1' | 'day2'; quantity: number; unit_amount: number; amount_total: number; early_bird: boolean;
   buyer_name: string; buyer_email: string | null; buyer_phone: string | null;
   checkout_opened_at: string; paid_at: string; attendees: WebPerson[] | null; names_at: string | null;
@@ -180,18 +183,34 @@ const webChannels = [{
   allow_test: new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('allow_test') !== '0',
   store_id: 'st-north', acting_profile_id: 'u-owner', payment_method_name: 'Stripe (online)',
 }];
+// The pass price on a date paid: half until the early-bird day, as the server prices it.
+const EARLY_UNTIL = addDays(TODAY, -10);
+const priced = (full: number) => (day: string) => (day <= EARLY_UNTIL ? eb(full) : full);
 const PASSES = {
-  both: { label: 'Both days', option_id: 'op-2days', days: [D1, D2] },
-  day1: { label: 'Day 1 only', option_id: 'op-1day', days: [D1] },
-  day2: { label: 'Day 2 only', option_id: 'op-1day', days: [D2] },
+  both: { label: 'Both days', option_id: 'op-2days', days: [D1, D2], price: priced(94) },
+  day1: { label: 'Day 1 only', option_id: 'op-1day', days: [D1], price: priced(61) },
+  day2: { label: 'Day 2 only', option_id: 'op-1day', days: [D2], price: priced(61) },
 };
 const person = (name: string, n: string): WebPerson => ({ name, email: `guest${n}@tests.invalid`, whatsapp: `+65 9123 00${n}` });
 const webOrder = (o: Partial<WebOrder> & Pick<WebOrder, 'id' | 'ticket' | 'quantity' | 'unit_amount' | 'buyer_name' | 'paid_at'>): WebOrder => ({
   channel: 'preview-open-days-2026', stripe_session_id: `cs_live_preview${o.id.replace(/\W/g, '')}0000`, livemode: true,
   status: 'recorded', amount_total: o.unit_amount * o.quantity, early_bird: false, buyer_email: null, buyer_phone: null,
   checkout_opened_at: o.paid_at, attendees: null, names_at: null, invoice_id: null, customer_id: null, review_reason: null,
-  candidate_ids: [], ...o,
+  candidate_ids: [], provider: 'stripe', door_method: null, payment_reference: null, paid_on: null, staff_profile_id: null, ...o,
 });
+// 380: "02 Oct 2026", as the server words its reasons.
+function dayLabel(day: string) {
+  const [y, m, d] = day.split('-').map(Number);
+  return `${String(d).padStart(2, '0')} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${y}`;
+}
+// 380: a staff-link registration, as the website's staff form sends it.
+const doorOrder = (o: Partial<WebOrder> & Pick<WebOrder, 'id' | 'ticket' | 'quantity' | 'unit_amount' | 'buyer_name' | 'paid_at'>) =>
+  webOrder({ provider: 'door', stripe_session_id: `OFF-20261002-${o.id.replace(/\D/g, '').padStart(6, '0')}`,
+    door_method: 'paynow', paid_on: o.paid_at.slice(0, 10), ...o });
+// Made by hand at the counter for a staff-link buyer, before staff-link orders came in.
+invoices.push({ id: 'inv-hand-1', invoice_no: 'INV-2026-9020', business_date: addDays(TODAY, -1), store_id: 'st-north',
+  customer_id: 'c-01', status: 'paid', total_amount: 61, paid_amount: 61,
+  lines: [{ option_id: 'op-1day', days: [D1], quantity: 1, line_total: 61 }] });
 invoices.push({ id: 'inv-web-1', invoice_no: 'INV-2026-9010', business_date: addDays(TODAY, -12), store_id: 'st-north',
   customer_id: 'c-03', status: 'paid', total_amount: eb(61) * 2, paid_amount: eb(61) * 2,
   lines: [{ option_id: 'op-1day', days: [D1], quantity: 2, line_total: eb(61) * 2 }] });
@@ -218,6 +237,25 @@ const webOrders: WebOrder[] = [
   webOrder({ id: 'wo-5', livemode: false, stripe_session_id: 'cs_test_preview00000005', ticket: 'day1', quantity: 1, unit_amount: 61,
     buyer_name: 'Guest Twenty-Four', buyer_phone: '+65 9123 0001', paid_at: at(addDays(TODAY, -1), '11:05'),
     attendees: [person('Guest Twenty-Four', '34')], names_at: at(addDays(TODAY, -1), '11:09') }),
+  // 380: staff-link registrations. Recorded, waiting for a Manager to check the money.
+  doorOrder({ id: 'wo-6', ticket: 'both', quantity: 2, unit_amount: 94, buyer_name: 'Guest Twenty-Six',
+    buyer_phone: '+65 9123 0036', buyer_email: 'guest36@tests.invalid', paid_at: at(TODAY, '10:12'),
+    payment_reference: 'PN 0042', staff_profile_id: 'u-staff',
+    attendees: [person('Guest Twenty-Six', '36'), person('Guest Twenty-Seven', '37')], names_at: at(TODAY, '10:12') }),
+  // The amount on the form is not the price on the date paid.
+  doorOrder({ id: 'wo-7', status: 'needs_review', ticket: 'day1', quantity: 1, unit_amount: 50, door_method: 'cash',
+    buyer_name: 'Guest Twenty-Eight', buyer_phone: '+65 9123 0038', paid_at: at(TODAY, '11:30'),
+    attendees: [person('Guest Twenty-Eight', '38')], names_at: at(TODAY, '11:30'),
+    review_reason: `S$50.00 was paid, but 1 × "1 Day" paid on ${dayLabel(TODAY)} costs S$61.00` }),
+  // Its buyer was already invoiced by hand (INV-2026-9020): link it rather than invoice it again.
+  doorOrder({ id: 'wo-8', ticket: 'day1', quantity: 1, unit_amount: 61, door_method: 'bank',
+    buyer_name: 'Customer One', buyer_phone: '+65 9123 0001', paid_at: at(addDays(TODAY, -1), '16:05'),
+    payment_reference: 'DBS 7781', attendees: [person('Customer One', '01')], names_at: at(addDays(TODAY, -1), '16:05') }),
+  // A test registration a Manager set aside.
+  doorOrder({ id: 'wo-9', status: 'dismissed', ticket: 'day2', quantity: 1, unit_amount: 61, door_method: 'cash',
+    buyer_name: 'Test Buyer', buyer_phone: '+65 9123 0039', paid_at: at(addDays(TODAY, -2), '09:00'),
+    attendees: [person('Test Buyer', '39')], names_at: at(addDays(TODAY, -2), '09:00'),
+    review_reason: 'A test registration' }),
 ];
 // The invoiced order's people, on the guest list from its invoice.
 guests.push(...webOrders[0].attendees!.map(a => guest({ name: a.name, phone: a.whatsapp, customer_id: a.name === 'Guest Twenty' ? 'c-03' : null,
@@ -226,6 +264,32 @@ guests.push(...webOrders[0].attendees!.map(a => guest({ name: a.name, phone: a.w
 // ── the rules, as the server applies them ──────────────────────────────────
 class Refused extends Error {}
 const refuse = (msg: string): never => { throw new Refused(msg); };
+// 380 helpers: hand invoices with the buyer's phone, the link rules, emails and methods.
+const phoneDigits = (p: string | null | undefined) => String(p ?? '').replace(/\D/g, '');
+const linked = (invId: string) => webOrders.some(o => o.invoice_id === invId);
+function handInvoices(o: WebOrder) {
+  const ids = CUSTOMERS.filter(c => o.buyer_phone && phoneDigits(c.phone) === phoneDigits(o.buyer_phone)).map(c => c.id);
+  return invoices.filter(i => ids.includes(i.customer_id) && !linked(i.id) && i.lines.some(l => l.option_id.startsWith('op-')))
+    .map(i => ({ invoice_no: i.invoice_no, store: STORES.find(s => s.id === i.store_id)?.name ?? null }));
+}
+function linkTarget(orderId: string, invoiceNo: string) {
+  const o = webOrders.find(x => x.id === orderId) ?? refuse('Website order not found');
+  if (o.status !== 'recorded' && o.status !== 'needs_review') refuse('Only an order waiting for an invoice can be linked');
+  if (!o.livemode) refuse('A test payment is not linked to an invoice');
+  const inv = invoices.find(i => i.invoice_no.toLowerCase() === String(invoiceNo ?? '').trim().toLowerCase())
+    ?? refuse(`No invoice ${String(invoiceNo ?? '').trim()}`);
+  if (linked(inv.id)) refuse(`${inv.invoice_no} is already another website order's invoice`);
+  if (!guests.some(g => g.invoice_id === inv.id && g.source === 'ticket') && !inv.lines.some(l => l.option_id.startsWith('op-')))
+    refuse(`${inv.invoice_no} has no ticket for this event`);
+  return { o, inv };
+}
+const webPersonEmail = (g: { invoice_id: string | null; name: string }) =>
+  webOrders.find(o => o.invoice_id && o.invoice_id === g.invoice_id)?.attendees?.find(a => a.name === g.name)?.email ?? null;
+const paymentMethodsOf = (invId: string) => {
+  const o = webOrders.find(x => x.invoice_id === invId);
+  if (!o) return invId === 'inv-hand-1' ? 'Bank Transfer' : 'Cash';
+  return o.provider === 'door' ? ({ cash: 'Cash', paynow: 'PayNow', bank: 'Bank Transfer' } as const)[o.door_method!] : 'Stripe (online)';
+};
 const fmt = (day: string) => {
   const [y, m, d] = day.split('-').map(Number);
   return `${String(d).padStart(2, '0')} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${y}`;
@@ -349,6 +413,10 @@ const rpcs: Record<string, (a: any) => unknown> = {
           invoice_id: g.invoice_id, invoice_no: inv?.invoice_no ?? null, invoice_status: inv?.status ?? null,
           invoice_total: inv ? inv.total_amount.toFixed(2) : null, invoice_paid: inv ? inv.paid_amount.toFixed(2) : null,
           invoice_store_id: inv?.store_id ?? null, created_at: g.created_at,
+          // 380: the customer's email (else the website order's), the order, the invoice's payment methods.
+          email: CUSTOMERS.find(c => c.id === g.customer_id)?.email || webPersonEmail(g) || null,
+          order_id: webOrders.find(o => o.invoice_id && o.invoice_id === g.invoice_id)?.stripe_session_id ?? null,
+          payment_methods: inv ? paymentMethodsOf(inv.id) : null,
           days: g.days.map(d => ({ day: d.day, attended_at: d.attended_at, check_in_code: d.check_in_code,
             checked_in_by_name: nameOf(d.checked_in_by) })),
         };
@@ -458,8 +526,44 @@ const rpcs: Record<string, (a: any) => unknown> = {
         candidates: o.status === 'needs_review' ? o.candidate_ids.map(id => CUSTOMERS.find(c => c.id === id)!).filter(Boolean)
           .map(c => ({ customer_id: c.id, full_name: c.full_name, phone: c.phone, email: c.email, last_invoice_at: lastInvoice(c.id) })) : [],
         created_at: o.paid_at,
+        provider: o.provider, door_method: o.door_method, payment_reference: o.payment_reference, paid_on: o.paid_on,
+        staff_profile_id: o.staff_profile_id, staff_name: nameOf(o.staff_profile_id),
+        hand_invoices: o.status === 'recorded' || o.status === 'needs_review' ? handInvoices(o) : [],
       })),
     };
+  },
+
+  // 380: link a staff-link order to an invoice made by hand, after a preview.
+  web_order_link_preview: ({ p_order_id, p_invoice_no }) => {
+    if (!isManager) refuse('Only an Owner, Admin or Manager can link a website order');
+    const { o, inv } = linkTarget(p_order_id, p_invoice_no);
+    const people = guests.filter(g => g.invoice_id === inv.id && g.source === 'ticket').length;
+    const warnings: string[] = [];
+    if (inv.total_amount !== o.amount_total) warnings.push(`The invoice is S$${inv.total_amount.toFixed(2)} but the order says S$${o.amount_total.toFixed(2)}`);
+    if (people !== o.quantity) warnings.push(`The invoice has ${people} ticket people but the order has ${o.quantity}`);
+    return { invoice_no: inv.invoice_no, store: STORES.find(s => s.id === inv.store_id)?.name ?? null, date: inv.business_date,
+      customer_name: CUSTOMERS.find(c => c.id === inv.customer_id)?.full_name ?? null, total: inv.total_amount, paid: inv.paid_amount,
+      methods: 'Bank Transfer', people, warnings };
+  },
+  web_order_link_invoice: ({ p_order_id, p_invoice_no }) => {
+    if (!isManager) refuse('Only an Owner, Admin or Manager can link a website order');
+    const { o, inv } = linkTarget(p_order_id, p_invoice_no);
+    Object.assign(o, { status: 'invoiced', invoice_id: inv.id, customer_id: inv.customer_id, review_reason: null, candidate_ids: [] });
+    return { status: 'invoiced', invoice_no: inv.invoice_no, review_reason: null };
+  },
+  web_order_dismiss: ({ p_order_id, p_reason, p_dismiss }) => {
+    if (!isManager) refuse('Only an Owner, Admin or Manager can dismiss a staff-link registration');
+    const o = webOrders.find(x => x.id === p_order_id) ?? refuse('Website order not found');
+    if (o.provider !== 'door') refuse('Only a staff-link registration can be dismissed');
+    if (p_dismiss === false) {
+      if (o.status !== 'dismissed') refuse('This registration is not dismissed');
+      Object.assign(o, { status: 'recorded', review_reason: null });
+    } else {
+      if (o.status !== 'recorded' && o.status !== 'needs_review') refuse('Only a registration waiting for an invoice can be dismissed');
+      if (String(p_reason ?? '').trim().length < 3) refuse('Say why it is dismissed');
+      Object.assign(o, { status: 'dismissed', review_reason: String(p_reason).trim() });
+    }
+    return { status: o.status, invoice_no: null, review_reason: o.review_reason };
   },
 
   web_order_apply_names: ({ p_order_id }) => {
@@ -474,7 +578,12 @@ const rpcs: Record<string, (a: any) => unknown> = {
     const o = webOrders.find(x => x.id === p_order_id) ?? refuse('Website order not found');
     if (o.status === 'invoiced') refuse('This order already has an invoice');
     if (o.status === 'refused') refuse('A refused order cannot be invoiced');
+    if (o.status === 'dismissed') refuse('A dismissed registration is not invoiced; restore it first');
     const ch = webChannels.find(c => c.key === o.channel)!;
+    if (o.provider === 'door' && o.amount_total !== PASSES[o.ticket].price(o.paid_on!) * o.quantity) {
+      Object.assign(o, { status: 'needs_review' });
+      refuse(`The invoice would be S$${(PASSES[o.ticket].price(o.paid_on!) * o.quantity).toFixed(2)} but S$${o.amount_total.toFixed(2)} was paid, so nothing was invoiced`);
+    }
     // A Stripe test payment is invoiced only while the channel accepts test orders.
     if (!o.livemode && !ch.allow_test) {
       Object.assign(o, { status: 'refused', review_reason: 'A Stripe test payment', candidate_ids: [] });
@@ -501,7 +610,7 @@ const rpcs: Record<string, (a: any) => unknown> = {
     const inv: Inv = {
       id: newId('inv'), invoice_no: `INV-2026-9${String(++seq).padStart(3, '0')}`,
       // Dated when the checkout opened, so an early bird paid just after the cut-off keeps it.
-      business_date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit' })
+      business_date: o.paid_on ?? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit' })
         .format(new Date(o.checkout_opened_at)),
       store_id: ch.store_id, customer_id: customerId, status: 'paid', total_amount: o.amount_total, paid_amount: o.amount_total,
       lines: [{ option_id: pass.option_id, days: pass.days, quantity: o.quantity, line_total: o.amount_total }],
@@ -511,7 +620,7 @@ const rpcs: Record<string, (a: any) => unknown> = {
       const a = o.attendees?.[i];
       guests.push(guest({ name: a?.name ?? (i === 0 ? o.buyer_name : `${o.buyer_name} +${i}`), phone: a?.whatsapp ?? (i === 0 ? o.buyer_phone : null),
         customer_id: i === 0 ? customerId : null, source: 'ticket', invoice_id: inv.id, ticket_option_id: pass.option_id,
-        registered_by: null, created_at: new Date().toISOString(), days: pass.days.map(d => gday(d)) }));
+        registered_by: o.staff_profile_id, created_at: new Date().toISOString(), days: pass.days.map(d => gday(d)) }));
     }
     Object.assign(o, { status: 'invoiced', invoice_id: inv.id, customer_id: customerId, review_reason: null, candidate_ids: [] });
     return { status: 'invoiced', invoice_no: inv.invoice_no, review_reason: null };

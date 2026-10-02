@@ -15,9 +15,17 @@
 // sales totals leave out cancelled invoices; and the Website orders tab is
 // for Owners, Admins and Managers, shows every order status, creates an
 // invoice for the customer chosen (never for a Stripe test payment the
-// channel does not accept), says the website's workbook does not get those
-// invoice numbers, asks before the Owner switches it Live and exports its
-// orders with the invoice number beside the Stripe checkout.
+// channel does not accept), says the website fills its workbook's invoice
+// numbers itself, asks before the Owner switches it Live and exports its
+// orders with the invoice number beside the Stripe checkout. Since 380 it also
+// lists staff-link registrations (Cash, PayNow or Bank Transfer, with their
+// date paid, reference and the staff member credited), which a Manager
+// invoices, links to an invoice already made by hand, or dismisses and
+// restores; both exports carry the new columns, and the orders export lists
+// every order whatever the status filter. An order says when an invoice made
+// by hand has the buyer's phone, one paid other than the price is sent to be
+// invoiced by hand and linked, and one refused while the channel was off can
+// be linked.
 //
 // Run: node --test scripts/events/tests/events-page.test.mjs
 process.env.TZ = 'America/Los_Angeles'; // west of UTC, where a date-only value parsed as a Date shows a day early
@@ -129,16 +137,19 @@ function makeFixture() {
     guest_id: id, name, phone: null, customer_id: null, customer_name: null, source: 'free', status: 'registered', cancelled_reason: null,
     notes: null, registered_by: 'u-staff', registered_by_name: 'Staff One', ticket_option_id: null, ticket_option_name: null,
     invoice_id: null, invoice_no: null, invoice_status: null, invoice_total: null, invoice_paid: null, invoice_store_id: null,
-    created_at: '2026-09-20T02:00:00Z', days: [], ...extra,
+    created_at: '2026-09-20T02:00:00Z', days: [], email: null, order_id: null, payment_methods: null, ...extra,
   });
   const ticket = (no, status, total, paid, option) => ({ source: 'ticket', invoice_id: `inv-${no}`, invoice_no: `INV-TEST-000${no}`,
     invoice_status: status, invoice_total: total, invoice_paid: paid, invoice_store_id: 'st-1',
     ticket_option_id: option === '2 Days' ? 'op-2' : 'op-1', ticket_option_name: option });
   const guests = [
     g('g-1', 'Guest One', { phone: '+65 9123 0001', ...ticket(1, 'paid', '94.00', '94.00', '2 Days'),
+      email: 'guest1@tests.invalid', order_id: 'cs_live_testwo10000', payment_methods: 'Stripe (online)',
       days: [day(D1, '2026-09-20T02:04:00Z', 'CD 12', 'Staff One'), day(D2)] }),
     g('g-2', 'Guest Two', { phone: '+65 9123 0002', ...ticket(1, 'paid', '94.00', '94.00', '2 Days'), days: [day(D1), day(D2)] }),
-    g('g-3', 'Guest Three', { phone: '+65 9123 0003', ...ticket(2, 'partially_paid', 61, 30, '1 Day'), days: [day(D1)] }),
+    // 380: the invoice's payment methods may also arrive as a list.
+    g('g-3', 'Guest Three', { phone: '+65 9123 0003', ...ticket(2, 'partially_paid', 61, 30, '1 Day'), days: [day(D1)],
+      order_id: 'OFF-20260928-0000D1', payment_methods: ['Cash', 'PayNow'] }),
     g('g-4', 'Guest Four', { phone: '+65 9123 0004', customer_id: 'c-1', customer_name: 'Customer One', notes: 'VEG', days: [day(D2)] }),
     g('g-5', 'Guest Five', { notes: 'Free Sock', days: [day(D2)] }),
     g('g-6', 'Guest Six', { phone: '+65 9123 0006', status: 'cancelled', cancelled_reason: 'Cannot come', days: [day(D1)] }),
@@ -199,7 +210,29 @@ function makeFixture() {
         names_at: '2026-09-18T12:50:00Z', invoice_id: 'inv-101', invoice_no: 'INV-TEST-0101' }),
     ],
   };
-  return { event, past, guests, invoices, profiles, stores, customers, web };
+  // 380: registrations sent through the website's staff link, one in every
+  // state a Manager meets. The OFF ids are invented.
+  const door = (id, extra) => order(id, { provider: 'door', door_method: 'cash', payment_reference: null,
+    staff_profile_id: null, staff_name: null, ...extra, checkout_opened_at: extra.paid_at, names_at: extra.paid_at });
+  const doorOrders = [
+    door('wo-d1', { stripe_session_id: 'OFF-20260928-0000D1', door_method: 'paynow', payment_reference: 'PN-TEST-01',
+      paid_on: '2026-09-28', paid_at: '2026-09-28T06:05:00Z', staff_profile_id: 'u-staff', staff_name: 'Staff One',
+      ticket: 'both', ticket_label: 'Both days', quantity: 2, unit_amount: 47, amount_total: 94, early_bird: true,
+      buyer_name: 'Guest Door One', buyer_phone: '+65 9123 4567', buyer_email: 'door1@tests.invalid',
+      attendees: [{ name: 'Guest Door One', email: 'door1@tests.invalid', whatsapp: '+65 9123 4567' },
+        { name: 'Guest Door Guest', email: null, whatsapp: null }] }),
+    door('wo-d2', { stripe_session_id: 'OFF-20260927-0000D2', status: 'needs_review', paid_on: '2026-09-27',
+      paid_at: '2026-09-27T09:00:00Z', unit_amount: 50, amount_total: 50, buyer_name: 'Guest Door Two', buyer_phone: '+65 9123 4568',
+      attendees: [{ name: 'Guest Door Two', email: null, whatsapp: '+65 9123 4568' }],
+      review_reason: 'S$50.00 was paid but the pass costs S$61.00 on that day' }),
+    door('wo-d3', { stripe_session_id: 'OFF-20260926-0000D3', status: 'dismissed', door_method: 'bank', payment_reference: 'BT-TEST-03',
+      paid_on: '2026-09-26', paid_at: '2026-09-26T03:00:00Z', buyer_name: 'Test Buyer', buyer_phone: '+65 9123 4569',
+      attendees: [{ name: 'Test Buyer', email: null, whatsapp: null }], review_reason: 'Test registration' }),
+    door('wo-d4', { stripe_session_id: 'OFF-20260925-0000D4', status: 'invoiced', door_method: 'bank', paid_on: '2026-09-25',
+      paid_at: '2026-09-25T03:00:00Z', staff_profile_id: 'u-staff', staff_name: 'Staff One', buyer_name: 'Guest Door Four',
+      attendees: [{ name: 'Guest Door Four', email: null, whatsapp: null }], invoice_id: 'inv-201', invoice_no: 'INV-TEST-0201' }),
+  ];
+  return { event, past, guests, invoices, profiles, stores, customers, web, doorOrders };
 }
 
 // ── fake backend ───────────────────────────────────────────────────────────
@@ -218,6 +251,10 @@ function createBackend(fx, { canManage = true, canSwitch = false } = {}) {
     event_delete: () => null,
     web_orders_list: () => ({ ...fx.web, can_switch: canSwitch }),
     web_order_resolve: () => ({ status: 'invoiced', invoice_no: 'INV-TEST-0102', review_reason: null }),
+    web_order_link_preview: a => ({ invoice_no: a.p_invoice_no, store: 'North Store', date: '2026-09-28',
+      customer_name: 'Customer Door', total: '94.00', paid: '94.00', methods: 'PayNow', people: 2, warnings: [] }),
+    web_order_link_invoice: a => ({ status: 'invoiced', invoice_no: a.p_invoice_no }),
+    web_order_dismiss: a => ({ status: a.p_dismiss ? 'dismissed' : 'recorded' }),
     web_order_channel_set_mode: a => { fx.web.channel.mode = a.p_mode; return null; },
   };
   const tables = { profiles: fx.profiles, stores: fx.stores, customers: fx.customers };
@@ -463,7 +500,8 @@ test('the guest export has the guest, then coming / attended / code for every da
   const exported = globalThis.__exports.at(-1);
   assert.ok(exported, 'the guest list exports');
   assert.deepEqual(exported.sheet.ws.header, [
-    'Name', 'Phone', 'Customer', 'Type', 'Ticket option', 'Invoice no', 'Invoice status', 'Paid', 'Registered by', 'Notes', 'Status',
+    'Name', 'Phone', 'Email', 'Customer', 'Type', 'Ticket option', 'Invoice no', 'Order ID', 'Invoice status', 'Paid',
+    'Payment method', 'Registered by', 'Notes', 'Status',
     `${dMon(D1)} coming`, `${dMon(D1)} attended`, `${dMon(D1)} code`,
     `${dMon(D2)} coming`, `${dMon(D2)} attended`, `${dMon(D2)} code`,
   ]);
@@ -476,12 +514,18 @@ test('the guest export has the guest, then coming / attended / code for every da
   assert.equal(one[`${dMon(D1)} coming`], 'Y');
   assert.equal(one[`${dMon(D1)} attended`], '10:04');
   assert.equal(one[`${dMon(D1)} code`], 'CD 12');
+  // 380: who to write to, the website order behind the ticket and how it was paid.
+  assert.deepEqual([one.Email, one['Order ID'], one['Payment method']], ['guest1@tests.invalid', 'cs_live_testwo10000', 'Stripe (online)']);
+  const three = body.find(r => r.Name === 'Guest Three');
+  assert.deepEqual([three.Email, three['Order ID'], three['Payment method']], ['', 'OFF-20260928-0000D1', 'Cash, PayNow'],
+    'a list of payment methods is joined');
   const four = body.find(r => r.Name === 'Guest Four');
   assert.equal(four.Type, 'Free');
   assert.equal(four.Paid, '', 'a free guest has no payment');
   assert.equal(four[`${dMon(D1)} coming`], 'N');
   assert.equal(four[`${dMon(D2)} coming`], 'Y');
   assert.equal(four.Notes, 'VEG');
+  assert.deepEqual([four.Email, four['Order ID'], four['Payment method']], ['', '', ''], 'a free guest has none of them');
 });
 
 test('sales list the event\'s invoices, with totals that leave out cancelled ones', async () => {
@@ -608,9 +652,16 @@ test('website orders show the channel and every order status, and flag test orde
   assert.ok(!text().includes('Test payment — not invoiced'));
 
   const note = text();
-  for (const bit of ["The number of an invoice created here does not reach the website's workbook by itself",
-    "type it into the workbook's Invoice No column, on every row whose Order ID is the order's checkout (Stripe's cs_…, or HitPay's payment request id; one row per person)",
-    "or use this tab's Excel export, which lists both"]) assert.ok(note.includes(bit), bit);
+  for (const bit of ['A Stripe or HitPay refund is not brought in: refund its invoice by hand.',
+    'Staff-link registrations (paid in cash, by PayNow or by bank transfer) come here too, marked Staff link.',
+    'They are never invoiced by themselves, even while the channel is Live: check that the money has arrived, then click Create invoice.',
+    'Already invoiced by hand? Use Link invoice.',
+    'Amount not the pass price (a discount, say)? Raise the invoice by hand for the amount paid, then use Link invoice.',
+    'Dismiss a test registration.',
+    "The website fills in its workbook's Invoice No column itself, for website and staff-link orders alike, and adds the tickets sold on the Invoices page"])
+    assert.ok(note.includes(bit), bit);
+  for (const gone of ['Door sales paid in cash or PayNow are invoiced on the Invoices page', 'does not reach the website\'s workbook',
+    'type it into the workbook']) assert.ok(!note.includes(gone), `the old wording is gone: ${gone}`);
   assert.deepEqual(globalThis.__renderErrors, []);
 
   await mount({ setup: b => { b.handlers.web_orders_list = () => ({ channel: null, can_switch: false, orders: [] }); } });
@@ -637,8 +688,8 @@ test('Create invoice sends the customer chosen, a new customer, or leaves the ma
   await click(button('Create invoice', footer()));
   assert.deepEqual(callsOf('web_order_resolve').map(c => c.args), [{ p_order_id: 'wo-2', p_customer_id: 'c-2', p_new_customer: false }]);
   assert.ok(modal().textContent.includes('Invoice INV-TEST-0102 is created.'), 'the result is shown');
-  assert.ok(modal().textContent.includes("The website's workbook does not get this number: type it into its Invoice No column, "
-    + 'on every row with Order ID cs_live_testwo20000.'), modal().textContent);
+  assert.ok(modal().textContent.includes("The website fills this number into its workbook's Invoice No column itself, "
+    + 'on the rows with Order ID cs_live_testwo20000, the next time it checks with the inventory.'), modal().textContent);
   assert.equal(callsOf('web_orders_list').length, 2, 'the orders are reloaded');
   assert.equal(callsOf('event_guest_list').length, 2, 'and the guest list, which the invoice adds to');
   await click(button('Close', footer()));
@@ -736,6 +787,8 @@ test('the mode switch is the Owner\'s, and Live and Off are confirmed first', as
   assert.ok(modal().textContent.includes('one paid more than 7 days ago shows why first'), modal().textContent);
   assert.ok(modal().querySelector('.alert-warning').textContent.includes('a Stripe test payment or a HitPay sandbox payment will also become an invoice'),
     'with test orders accepted, it says they become invoices too');
+  assert.ok(modal().textContent.includes('Registrations through the staff link are never invoiced by themselves'),
+    'staff-link registrations still wait for a Manager (380)');
   assert.equal(callsOf('web_order_channel_set_mode').length, 0, 'nothing is switched while it asks');
   await click(button('Cancel', footer()));
   assert.equal(modal(), null);
@@ -748,8 +801,11 @@ test('the mode switch is the Owner\'s, and Live and Off are confirmed first', as
 
   await click(button('Off', modeSwitch()));
   assert.ok(modal()?.textContent.includes('Switch website orders off?'), 'Off asks first');
-  assert.ok(modal().textContent.includes('every order paid on the website is refused'), modal().textContent);
+  assert.ok(modal().textContent.includes('every order paid on the website, and every registration sent through its staff link, is refused'),
+    modal().textContent);
   assert.ok(modal().textContent.includes('invoiced by hand on the Invoices page'));
+  assert.ok(modal().textContent.includes('A staff-link registration invoiced that way is then linked to its invoice here with Link invoice'),
+    'and a staff-link one is linked to that invoice afterwards (380)');
   await click(button('Cancel', footer()));
   assert.equal(callsOf('web_order_channel_set_mode').length, 1, 'Cancel leaves it Live');
   await click(button('Off', modeSwitch()));
@@ -820,14 +876,16 @@ test('the website orders export has one row per order, with its people, amounts 
   assert.equal(exported.sheet.name, 'Website orders');
   assert.deepEqual(exported.sheet.ws.header, [
     'Paid at (SGT)', 'Buyer', 'Phone', 'Email', 'Pass', 'People', 'Names', 'Unit S$', 'Total S$', 'Early bird', 'Status',
-    'Invoice no', 'Order ID (checkout)', 'Paid through', 'Reason', 'Test order', 'Checkout opened (SGT)', 'Names received (SGT)',
+    'Invoice no', 'Order ID (checkout)', 'Source', 'Paid through', 'Date paid', 'Payment ref', 'Registered by',
+    'Reason', 'Test order', 'Checkout opened (SGT)', 'Names received (SGT)',
   ], 'the invoice number sits beside the checkout, which is the Order ID in the website\'s workbook');
   const body = exported.sheet.ws.body;
   assert.equal(body.length, 5);
   assert.deepEqual(body.find(r => r.Buyer === 'Guest Twenty'), {
     'Paid at (SGT)': '2026-09-18 20:44', Buyer: 'Guest Twenty', Phone: '+65 9123 0030', Email: 'guest30@tests.invalid', Pass: 'Day 1 only',
     People: 2, Names: 'Guest Twenty, Guest Twenty-Five', 'Unit S$': 30.5, 'Total S$': 61, 'Early bird': 'Y', Status: 'Invoiced',
-    'Invoice no': 'INV-TEST-0101', 'Order ID (checkout)': 'cs_live_testwo10000', 'Paid through': 'Stripe', Reason: '', 'Test order': 'N',
+    'Invoice no': 'INV-TEST-0101', 'Order ID (checkout)': 'cs_live_testwo10000', Source: 'Website', 'Paid through': 'Stripe',
+    'Date paid': '2026-09-18', 'Payment ref': '', 'Registered by': '', Reason: '', 'Test order': 'N',
     'Checkout opened (SGT)': '', 'Names received (SGT)': '2026-09-18 20:50',
   });
   const recorded = body.find(r => r.Buyer === 'Guest Twenty-One');
@@ -835,4 +893,299 @@ test('the website orders export has one row per order, with its people, amounts 
   assert.equal(body.find(r => r.Buyer === 'Guest Twenty-Two').Reason, '2 customers have this phone');
   const test5 = body.find(r => r.Buyer === 'Guest Twenty-Four');
   assert.deepEqual([test5['Paid at (SGT)'], test5['Test order'], test5['Checkout opened (SGT)']], ['2026-10-05 01:30', 'Y', '2026-10-05 01:28']);
+  assert.equal(test5['Date paid'], '2026-10-05', 'a website order\'s Date paid is the Singapore day it was paid');
+});
+
+// ── staff-link registrations (380) ─────────────────────────────────────────
+async function openWithDoorOrders(opts = {}) {
+  const fx = makeFixture();
+  fx.web.orders.push(...fx.doorOrders);
+  await openWebOrders({ ...opts, setup: b => { b.handlers.web_orders_list = () => fx.web; opts.setup?.(b); } });
+  return fx;
+}
+const statusFilter = () => document.querySelector('select[aria-label="Order status"]');
+
+test('a staff-link registration shows its method, date paid, reference and who registered it, and waits for a Manager', async () => {
+  await openWithDoorOrders();
+  assert.ok(text().includes('Showing 8 of 9 orders · 2 invoiced · 3 recorded · 2 need review · 1 refused · 1 dismissed · '
+    + '4 through the staff link · 1 test'), text());
+  assert.equal(orderRow('wo-d3'), null, 'a dismissed registration is out of sight by default');
+
+  const one = orderRow('wo-d1');
+  const c = cells(one);
+  assert.equal(c[0], `${full('2026-09-28')}PayNow · ref PN-TEST-01Form sent ${full('2026-09-28')}, 14:05`,
+    'the date paid as a calendar day, the method and reference, and when the form was sent on the Singapore clock');
+  assert.equal(one.querySelector('.badge[title="Registered through the website\'s staff link"]')?.textContent, 'Staff link');
+  assert.ok(!one.querySelector('.badge[title="Paid through HitPay"]') && !one.querySelector('.badge[title*="test mode"]'));
+  assert.ok(c[1].includes('+65 9123 4567') && c[1].includes('door1@tests.invalid'), c[1]);
+  assert.equal(one.querySelector('.events-web-staff')?.textContent, 'Registered by Staff One');
+  assert.equal(c[3], 'Guest Door OneGuest Door Guest', 'named on arrival');
+  assert.equal(c[6], 'Recorded', 'never invoiced by itself');
+  assert.deepEqual(buttons(one).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice', 'Dismiss']);
+
+  const two = orderRow('wo-d2');
+  assert.ok(cells(two)[0].startsWith(`${full('2026-09-27')}Cash`), 'cash, without a reference');
+  assert.ok(!cells(two)[0].includes('ref'));
+  assert.equal(two.querySelector('.events-web-staff'), null, 'no staff member was chosen');
+  assert.equal(cells(two)[6], 'Needs review: S$50.00 was paid but the pass costs S$61.00 on that day');
+  assert.deepEqual(buttons(two).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice', 'Dismiss']);
+
+  const four = orderRow('wo-d4');
+  assert.ok(cells(four)[0].includes('Bank Transfer'));
+  assert.equal(cells(four)[6], 'Invoiced · INV-TEST-0201');
+  assert.deepEqual(buttons(four), [], 'an invoiced registration is done');
+
+  // A website order can be linked too, but only a staff-link one is dismissed; a test payment is neither.
+  assert.deepEqual(buttons(orderRow('wo-3')).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice']);
+  assert.deepEqual(buttons(orderRow('wo-5')).map(b => b.textContent.trim()), ['Create invoice'], 'no real invoice is a test payment\'s');
+  assert.deepEqual(buttons(orderRow('wo-4')), [], 'a refused order has no action');
+
+  await setValue(statusFilter(), 'dismissed');
+  assert.deepEqual([...document.querySelectorAll('.events-table tbody tr')].map(r => r.dataset.order), ['wo-d3']);
+  const three = orderRow('wo-d3');
+  assert.ok(three.classList.contains('events-row-cancelled'), 'it is shown set aside');
+  assert.equal(cells(three)[6], 'Dismissed: Test registration');
+  assert.ok(cells(three)[0].includes('Bank Transfer · ref BT-TEST-03'));
+  assert.deepEqual(buttons(three).map(b => b.textContent.trim()), ['Restore']);
+  assert.ok(text().includes('Showing 1 of 9 orders'), text());
+
+  await click(button('Restore', three));
+  assert.deepEqual(callsOf('web_order_dismiss').map(c => c.args), [{ p_order_id: 'wo-d3', p_reason: null, p_dismiss: false }]);
+  assert.equal(callsOf('web_orders_list').length, 2, 'the orders are reloaded');
+
+  await setValue(statusFilter(), 'waiting');
+  assert.deepEqual([...document.querySelectorAll('.events-table tbody tr')].map(r => r.dataset.order), ['wo-5', 'wo-3', 'wo-2', 'wo-d1', 'wo-d2']);
+  await setValue(statusFilter(), 'all');
+  assert.equal(document.querySelectorAll('.events-table tbody tr').length, 9);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('Create invoice for a staff-link registration shows how it was paid and who it credits, and asks for the money first', async () => {
+  await openWithDoorOrders();
+  await click(button('Create invoice', orderRow('wo-d1')));
+  const m = modal();
+  const preview = m.querySelector('.events-preview').textContent;
+  assert.ok(preview.includes('Both days × 2 · S$94.00 · early bird'), preview);
+  assert.ok(preview.includes(`Staff link OFF-20260928-0000D1 · paid by PayNow on ${full('2026-09-28')} (the invoice is dated that day) · ref PN-TEST-01`), preview);
+  assert.ok(preview.includes(`Form sent ${full('2026-09-28')}, 14:05 · registered by Staff One`), preview);
+  assert.ok(!preview.includes('checkout opened'), 'a staff-link registration has no checkout');
+  const note = m.querySelector('.events-web-door-note').textContent;
+  assert.ok(note.includes('Create it only once the money has arrived: the invoice is made paid by PayNow, with reference PN-TEST-01.'), note);
+  assert.ok(note.includes("Staff One is its service staff and its guests' Registered by."), note);
+  assert.equal(m.querySelector('input[value="auto"]').checked, true);
+  await click(button('Create invoice', footer()));
+  assert.deepEqual(callsOf('web_order_resolve').map(c => c.args), [{ p_order_id: 'wo-d1', p_customer_id: null, p_new_customer: false }]);
+  assert.ok(modal().textContent.includes('Invoice INV-TEST-0102 is created.'));
+  assert.ok(modal().textContent.includes('on the rows with Order ID OFF-20260928-0000D1'), modal().textContent);
+  assert.equal(callsOf('event_guest_list').length, 2, 'the guest list is reloaded');
+  await click(button('Close', footer()));
+
+  // Without a reference or a staff member: the OFF id is the reference and nobody is credited.
+  await click(button('Create invoice', orderRow('wo-d2')));
+  assert.ok(modal().textContent.includes('S$50.00 was paid but the pass costs S$61.00 on that day'), 'why it waits');
+  const bare = modal().querySelector('.events-web-door-note').textContent;
+  assert.ok(bare.includes('the invoice is made paid by Cash, with reference OFF-20260927-0000D2.'), bare);
+  assert.ok(!bare.includes('service staff'), bare);
+  await click(button('Cancel', footer()));
+
+  // A website order shows no staff-link note.
+  await click(button('Create invoice', orderRow('wo-3')));
+  assert.equal(modal().querySelector('.events-web-door-note'), null);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('Dismiss asks why and sends the reason; the server\'s refusal is shown', async () => {
+  await openWithDoorOrders();
+  await click(button('Dismiss', orderRow('wo-d2')));
+  let m = modal();
+  assert.ok(m.textContent.includes('Dismiss Guest Door Two'), m.textContent);
+  await click(button('Dismiss', footer()));
+  assert.ok(modal().textContent.includes('This field is required.'), 'a reason is required');
+  assert.equal(callsOf('web_order_dismiss').length, 0, 'nothing is sent without one');
+  await setValue(fieldIn(modal(), 'Why is it dismissed? *'), '  Test registration ');
+  await click(button('Dismiss', footer()));
+  assert.deepEqual(callsOf('web_order_dismiss').map(c => c.args), [{ p_order_id: 'wo-d2', p_reason: 'Test registration', p_dismiss: true }]);
+  assert.equal(modal(), null);
+  assert.equal(callsOf('web_orders_list').length, 2, 'the orders are reloaded');
+
+  backend.failures.set('web_order_dismiss', 'Give a reason of at least 3 characters');
+  await click(button('Dismiss', orderRow('wo-d1')));
+  m = modal();
+  await setValue(fieldIn(m, 'Why is it dismissed? *'), 'x');
+  await click(button('Dismiss', footer()));
+  assert.ok(document.querySelector('.alert-danger')?.textContent.includes('Give a reason of at least 3 characters'), text());
+  assert.equal(callsOf('web_orders_list').length, 2, 'nothing changed, so nothing is reloaded');
+});
+
+test('Link invoice looks the invoice up, shows what does not match, and links only what was shown', async () => {
+  await openWithDoorOrders({ setup: b => {
+    b.handlers.web_order_link_preview = a => ({ invoice_no: a.p_invoice_no.toUpperCase(), store: 'South Store', date: '2026-09-28',
+      customer_name: 'Customer Door', total: '122.00', paid: 122, methods: ['PayNow', 'Cash'], people: '3',
+      warnings: ['The invoice total (S$122.00) is not the order\'s amount (S$94.00)', 'The invoice has 3 people for this event; the order has 2',
+        'The invoice is at South Store, not the channel\'s store'] });
+  } });
+  await click(button('Link invoice', orderRow('wo-d1')));
+  let m = modal();
+  assert.ok(m.textContent.includes('Link Guest Door One to an existing invoice'), m.textContent);
+  assert.ok(m.textContent.includes('Staff link OFF-20260928-0000D1 · paid by PayNow'), 'the order is shown');
+  assert.ok(!m.textContent.includes('the invoice is dated that day'), 'no new invoice is dated');
+  assert.equal(button('Link invoice', footer()).disabled, true, 'nothing to link before the invoice is looked up');
+  assert.equal(button('Look up', m).disabled, true, 'and nothing to look up without a number');
+
+  await setValue(fieldIn(m, 'Invoice no *'), ' inv-test-0301 ');
+  await click(button('Look up', modal()));
+  assert.deepEqual(callsOf('web_order_link_preview').map(c => c.args), [{ p_order_id: 'wo-d1', p_invoice_no: 'inv-test-0301' }]);
+  m = modal();
+  const shown = m.querySelector('[aria-label="Invoice to link"]').textContent;
+  for (const bit of [`INV-TEST-0301 · South Store · ${full('2026-09-28')}`, 'Customer Door', 'Total S$122.00 · paid S$122.00 by PayNow, Cash',
+    '3 people on its tickets for this event']) assert.ok(shown.includes(bit), `${bit}: ${shown}`);
+  const warnings = [...m.querySelectorAll('.events-web-link-warnings div div')].map(d => d.textContent);
+  assert.deepEqual(warnings, ['The invoice total (S$122.00) is not the order\'s amount (S$94.00)',
+    'The invoice has 3 people for this event; the order has 2', 'The invoice is at South Store, not the channel\'s store']);
+  assert.equal(button('Link invoice', footer()).disabled, false);
+
+  // Changing the number takes the looked-up invoice away again.
+  await setValue(fieldIn(m, 'Invoice no *'), 'INV-TEST-0302');
+  assert.equal(modal().querySelector('[aria-label="Invoice to link"]'), null);
+  assert.equal(button('Link invoice', footer()).disabled, true);
+  await setValue(fieldIn(modal(), 'Invoice no *'), 'INV-TEST-0301');
+  await click(button('Look up', modal()));
+  await click(button('Link invoice', footer()));
+  assert.deepEqual(callsOf('web_order_link_invoice').map(c => c.args), [{ p_order_id: 'wo-d1', p_invoice_no: 'INV-TEST-0301' }],
+    'the invoice looked up is the one linked');
+  assert.ok(modal().textContent.includes('The order is linked to invoice INV-TEST-0301.'), modal().textContent);
+  assert.ok(modal().textContent.includes('on the rows with Order ID OFF-20260928-0000D1'));
+  assert.equal(callsOf('web_orders_list').length, 2, 'the orders are reloaded');
+  assert.equal(callsOf('event_guest_list').length, 2, 'and the guest list, whose order ids change');
+  assert.equal(callsOf('web_order_resolve').length, 0, 'no invoice is created');
+  await click(button('Close', footer()));
+  assert.equal(modal(), null);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('Link invoice shows the server\'s refusal and links nothing', async () => {
+  await openWithDoorOrders({ setup: b => {
+    b.failures.set('web_order_link_preview', 'INV-TEST-0399 has no ticket for this event');
+  } });
+  await click(button('Link invoice', orderRow('wo-d2')));
+  await setValue(fieldIn(modal(), 'Invoice no *'), 'INV-TEST-0399');
+  await click(button('Look up', modal()));
+  assert.ok(modal().querySelector('.alert-danger').textContent.includes('INV-TEST-0399 has no ticket for this event'));
+  assert.equal(button('Link invoice', footer()).disabled, true, 'nothing to link');
+
+  // The preview passes but the link is refused (another order has the invoice): the form stays.
+  backend.failures.delete('web_order_link_preview');
+  backend.failures.set('web_order_link_invoice', 'INV-TEST-0301 is already the invoice of another website order');
+  await setValue(fieldIn(modal(), 'Invoice no *'), 'INV-TEST-0301');
+  await click(button('Look up', modal()));
+  assert.equal(modal().querySelector('.events-web-link-warnings'), null, 'no warnings, none shown');
+  await click(button('Link invoice', footer()));
+  assert.ok(modal().querySelector('.alert-danger').textContent.includes('already the invoice of another website order'));
+  assert.ok(button('Link invoice', footer()), 'the form stays to try again');
+  assert.equal(callsOf('web_orders_list').length, 1, 'nothing changed, so nothing is reloaded');
+});
+
+test('the website orders export lists staff-link registrations with their source, method, date paid, reference and staff', async () => {
+  await openWithDoorOrders();
+  globalThis.__exports = [];
+  await click(button('Export Excel'));
+  await click(button('Export 9 row(s)', footer()));
+  let body = globalThis.__exports.at(-1).sheet.ws.body;
+  const dismissed = body.find(r => r.Buyer === 'Test Buyer');
+  assert.deepEqual([dismissed.Status, dismissed.Reason, dismissed['Paid through']], ['Dismissed', 'Test registration', 'Bank Transfer'],
+    'every registration, the dismissed one too, though it is out of sight');
+  const one = body.find(r => r.Buyer === 'Guest Door One');
+  assert.deepEqual(
+    [one.Source, one['Paid through'], one['Date paid'], one['Payment ref'], one['Registered by'], one['Order ID (checkout)'], one['Paid at (SGT)'],
+      one.Names, one['Test order'], one.Status],
+    ['Staff link', 'PayNow', '2026-09-28', 'PN-TEST-01', 'Staff One', 'OFF-20260928-0000D1', '2026-09-28 14:05',
+      'Guest Door One, Guest Door Guest', 'N', 'Recorded']);
+  const two = body.find(r => r.Buyer === 'Guest Door Two');
+  assert.deepEqual([two['Paid through'], two['Payment ref'], two['Registered by']], ['Cash', '', '']);
+  const four = body.find(r => r.Buyer === 'Guest Door Four');
+  assert.deepEqual([four['Paid through'], four['Invoice no']], ['Bank Transfer', 'INV-TEST-0201']);
+  assert.equal(body.find(r => r.Buyer === 'Guest Twenty-Three').Source, 'Website');
+
+  // The status filter only changes what is on screen: the export still lists every order.
+  await setValue(statusFilter(), 'waiting');
+  globalThis.__exports = [];
+  await click(button('Export Excel'));
+  await click(button('Export 9 row(s)', footer()));
+  body = globalThis.__exports.at(-1).sheet.ws.body;
+  assert.deepEqual(body.map(r => r.Status).sort(),
+    ['Dismissed', 'Invoiced', 'Invoiced', 'Needs review', 'Needs review', 'Recorded', 'Recorded', 'Recorded', 'Refused']);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('an order whose buyer\'s phone is on an invoice made by hand says so, in its row and before Create invoice', async () => {
+  await openWithDoorOrders({ setup: b => {
+    const list = b.handlers.web_orders_list;
+    b.handlers.web_orders_list = a => {
+      const web = list(a);
+      return { ...web, orders: web.orders.map(o => (o.id === 'wo-d1'
+        ? { ...o, hand_invoices: [{ invoice_no: 'INV-TEST-0401', store: 'North Store' }, { invoice_no: null, store: 'South Store' }] }
+        : o.id === 'wo-d4' ? { ...o, hand_invoices: [{ invoice_no: 'INV-TEST-0402', store: 'North Store' }] } : o)) };
+    };
+  } });
+  const hint = orderRow('wo-d1').querySelector('.events-web-hand-hint');
+  assert.equal(hint?.textContent, 'Possibly already invoiced by hand: INV-TEST-0401 (North Store), an invoice at South Store. '
+    + 'Use Link invoice if so.');
+  assert.equal(cells(orderRow('wo-d1'))[6].startsWith('Recorded'), true, 'it still only waits, as recorded');
+  assert.equal(orderRow('wo-d4').querySelector('.events-web-hand-hint'), null, 'an invoiced order has nothing to link');
+  assert.equal(orderRow('wo-d2').querySelector('.events-web-hand-hint'), null, 'none found, nothing said');
+
+  await click(button('Create invoice', orderRow('wo-d1')));
+  const note = modal().querySelector('.events-web-hand-note')?.textContent ?? '';
+  assert.ok(note.includes('The buyer\'s phone is on INV-TEST-0401 (North Store), an invoice at South Store, made by hand for this event.'), note);
+  assert.ok(note.includes('use Link invoice instead, so it is not invoiced twice'), note);
+  await click(button('Cancel', footer()));
+  await click(button('Create invoice', orderRow('wo-3')));
+  assert.equal(modal().querySelector('.events-web-hand-note'), null);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('Create invoice for a staff-link registration paid other than the price says to invoice it by hand and link it', async () => {
+  await openWithDoorOrders();
+  await click(button('Create invoice', orderRow('wo-d2')));
+  const note = modal().querySelector('.events-web-amount-note')?.textContent ?? '';
+  assert.ok(note.includes('An invoice made here is always for the price of the pass, so it will not be made for the S$50.00 paid.'), note);
+  assert.ok(note.includes('raise the invoice by hand on the Invoices page for S$50.00, paid by Cash, then link this registration to it '
+    + 'with Link invoice'), note);
+  assert.ok(note.includes('If the form\'s amount is wrong, dismiss this registration and register it again.'), note);
+  await click(button('Cancel', footer()));
+  // Its amount is the price: nothing to say.
+  await click(button('Create invoice', orderRow('wo-d1')));
+  assert.equal(modal().querySelector('.events-web-amount-note'), null);
+  await click(button('Cancel', footer()));
+  // A website order is always charged the price.
+  backend.handlers.web_orders_list = () => {
+    const fx = makeFixture();
+    fx.web.orders = fx.web.orders.map(o => (o.id === 'wo-3' ? { ...o, status: 'needs_review',
+      review_reason: 'The invoice would be S$61.00 but Stripe charged S$50.00, so nothing was invoiced' } : o));
+    return fx.web;
+  };
+  await click(button('Refresh'));
+  await click(button('Create invoice', orderRow('wo-3')));
+  assert.equal(modal().querySelector('.events-web-amount-note'), null);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('a staff-link registration refused while the channel was off can be linked to the invoice made by hand for it', async () => {
+  await openWithDoorOrders({ setup: b => {
+    const list = b.handlers.web_orders_list;
+    b.handlers.web_orders_list = a => {
+      const web = list(a);
+      return { ...web, orders: web.orders.map(o => (o.id === 'wo-d2'
+        ? { ...o, status: 'refused', review_reason: 'The website channel is off' } : o)) };
+    };
+  } });
+  assert.deepEqual(buttons(orderRow('wo-d2')).map(b => b.textContent.trim()), ['Link invoice'],
+    'refused while off: no Create invoice and no Dismiss, but it can be linked');
+  assert.deepEqual(buttons(orderRow('wo-4')), [], 'a refused website order still has no action');
+  await click(button('Link invoice', orderRow('wo-d2')));
+  await setValue(fieldIn(modal(), 'Invoice no *'), 'INV-TEST-0301');
+  await click(button('Look up', modal()));
+  await click(button('Link invoice', footer()));
+  assert.deepEqual(callsOf('web_order_link_invoice').map(c => c.args), [{ p_order_id: 'wo-d2', p_invoice_no: 'INV-TEST-0301' }]);
+  assert.deepEqual(globalThis.__renderErrors, []);
 });

@@ -2,7 +2,7 @@
 
 import { assert, assertEquals } from 'jsr:@std/assert@1';
 import { validateOrderRequest } from './validate.ts';
-import { hitpayNamesOrder, hitpayPaidOrder, namesOrder, paidOrder } from './fixtures.ts';
+import { doorOrder, hitpayNamesOrder, hitpayPaidOrder, namesOrder, paidOrder } from './fixtures.ts';
 
 // deno-lint-ignore no-explicit-any
 type Loose = Record<string, any>;
@@ -231,8 +231,130 @@ Deno.test('a HitPay id is a lower-case uuid, and its payment id too', () => {
 Deno.test('a HitPay order\'s livemode is taken as sent: sandbox or production', () => {
   for (const livemode of [true, false]) {
     const r = hitpay(o => { o.livemode = livemode; });
-    assert(r.ok);
+    assert(r.ok && r.value.type === 'paid');
     assertEquals(r.value.order.livemode, livemode);
   }
   assertEquals(refusedAt(hitpay(o => { o.livemode = 'yes'; })), 'order.livemode');
+});
+
+// ── 380: staff-link registrations, the sync and the staff list ──────────────
+const door = (edit: (o: Loose) => void = () => {}) => {
+  const order: Loose = doorOrder();
+  edit(order);
+  return validateOrderRequest({ type: 'door', order });
+};
+
+Deno.test('a well-formed staff-link registration passes through unchanged', () => {
+  const result = door();
+  assert(result.ok);
+  assertEquals(result.value, { type: 'door', order: doorOrder() });
+});
+
+Deno.test('a staff-link registration takes no field it does not know, at any level', () => {
+  assertEquals(refusedAt(door(o => { o.invoice_id = 'x'; })), 'order.invoice_id');
+  assertEquals(refusedAt(door(o => { o.stripe_session_id = 'cs_test_a1B2c3D4e5F6g7H8'; })), 'order.stripe_session_id');
+  assertEquals(refusedAt(door(o => { o.buyer.phone = '+65 9123 0003'; })), 'order.buyer.phone');
+  assertEquals(refusedAt(door(o => { o.attendees[1].note = 'x'; })), 'order.attendees.1.note');
+  assertEquals(refusedAt(validateOrderRequest({ type: 'door', order: doorOrder(), channel: 'x' })), 'channel');
+});
+
+Deno.test('a staff-link registration says it is one, with an OFF id', () => {
+  for (const provider of [undefined, 'stripe', 'hitpay', 'DOOR', null]) {
+    assertEquals(refusedAt(door(o => { if (provider === undefined) delete o.provider; else o.provider = provider; })),
+      'order.provider', String(provider));
+  }
+  for (const id of ['', 'OFF-20261005-4f2a9c', 'OFF-2026105-4F2A9C', 'OFF-20261005-4F2A9', 'OFF-20261005-4F2A9CD', 'off-20261005-4F2A9C',
+                    ' OFF-20261005-4F2A9C', 'cs_live_a1B2c3D4e5F6', '9e9be41b-2866-4307-8621-e35c633c431f', 20261005]) {
+    assertEquals(refusedAt(door(o => { o.order_id = id; })), 'order.order_id', String(id));
+  }
+});
+
+Deno.test('pass, people and amount stay inside their ranges', () => {
+  assertEquals(refusedAt(door(o => { o.ticket = 'day3'; })), 'order.ticket');
+  for (const q of [0, 11, 1.5, '2']) assertEquals(refusedAt(door(o => { o.quantity = q; })), 'order.quantity', String(q));
+  assert(door(o => { o.amount_total_cents = 0; }).ok, 'a free registration is still one');
+  assert(door(o => { o.amount_total_cents = 10_000_000; }).ok);
+  for (const a of [-1, 10_000_001, 94.5, '9400', null]) {
+    assertEquals(refusedAt(door(o => { o.amount_total_cents = a; })), 'order.amount_total_cents', String(a));
+  }
+});
+
+Deno.test('the date paid is a real calendar day, and the registration an instant with a zone', () => {
+  for (const d of ['2026-10-05', '2024-02-29']) assert(door(o => { o.paid_on = d; }).ok, d);
+  for (const d of ['2026-02-30', '2025-02-29', '2026-10-5', '2026-10-05T00:00:00Z', '05/10/2026', '', null, 20261005]) {
+    assertEquals(refusedAt(door(o => { o.paid_on = d; })), 'order.paid_on', String(d));
+  }
+  assert(door(o => { o.registered_at = '2026-10-05T10:10:00+08:00'; }).ok);
+  for (const t of ['2026-10-05T10:10:00', '2026-10-05', 'now']) {
+    assertEquals(refusedAt(door(o => { o.registered_at = t; })), 'order.registered_at', t);
+  }
+});
+
+Deno.test('the method is cash, paynow or bank', () => {
+  for (const m of ['cash', 'paynow', 'bank']) assert(door(o => { o.method = m; }).ok, m);
+  for (const m of ['card', 'PayNow', 'bank transfer', '', null]) {
+    assertEquals(refusedAt(door(o => { o.method = m; })), 'order.method', String(m));
+  }
+});
+
+Deno.test('the reference is optional, trimmed and at most 100 characters', () => {
+  for (const none of [null, undefined, '', '   ']) {
+    const r = door(o => { if (none === undefined) delete o.reference; else o.reference = none; });
+    assert(r.ok && r.value.type === 'door', String(none));
+    assertEquals(r.value.order.reference, null, String(none));
+  }
+  const trimmed = door(o => { o.reference = '  PayNow 0001 '; });
+  assert(trimmed.ok && trimmed.value.type === 'door');
+  assertEquals(trimmed.value.order.reference, 'PayNow 0001');
+  assert(door(o => { o.reference = 'r'.repeat(100); }).ok);
+  assertEquals(refusedAt(door(o => { o.reference = 'r'.repeat(101); })), 'order.reference');
+  assertEquals(refusedAt(door(o => { o.reference = 1234; })), 'order.reference');
+});
+
+Deno.test('Registered by is a lower-case profile id, or nobody', () => {
+  for (const none of [null, undefined]) {
+    const r = door(o => { if (none === undefined) delete o.staff_id; else o.staff_id = none; });
+    assert(r.ok && r.value.type === 'door', String(none));
+    assertEquals(r.value.order.staff_id, null);
+  }
+  for (const id of ['', '0B6E1A52-9D3C-4F7A-8E21-5C4D3B2A1F00', 'staff-1', '0b6e1a52-9d3c-4f7a-8e21-5c4d3b2a1f0', 42]) {
+    assertEquals(refusedAt(door(o => { o.staff_id = id; })), 'order.staff_id', String(id));
+  }
+});
+
+Deno.test('a staff-link registration names one person per person paid for', () => {
+  assertEquals(refusedAt(door(o => { o.attendees = [o.attendees[0]]; })), 'order.attendees');
+  assertEquals(refusedAt(door(o => { o.quantity = 3; })), 'order.attendees');
+  assertEquals(refusedAt(door(o => { o.attendees = []; })), 'order.attendees');
+  assertEquals(refusedAt(door(o => { o.attendees[1].name = ' '; })), 'order.attendees.1.name');
+  assertEquals(refusedAt(door(o => { o.buyer.first_name = ''; })), 'order.buyer.first_name');
+  const noLast = door(o => { delete o.buyer.last_name; o.buyer.email = ''; });
+  assert(noLast.ok && noLast.value.type === 'door');
+  assertEquals(noLast.value.order.buyer, { first_name: 'Guest', last_name: '', email: null, whatsapp: '+65 9123 0001' });
+});
+
+Deno.test('text the database cannot store is refused in a staff-link registration too', () => {
+  for (const path of ['order.channel', 'order.reference', 'order.buyer.first_name', 'order.buyer.whatsapp', 'order.attendees.0.name']) {
+    const keys = path.split('.').slice(1);
+    const last = keys.pop()!;
+    const r = door(o => { keys.reduce((node, k) => node[k], o)[last] = 'Guest\u0000One'; });
+    assertEquals(r, { ok: false, field: path }, path);
+  }
+});
+
+Deno.test('sync and staff carry the channel and nothing else', () => {
+  for (const type of ['sync', 'staff'] as const) {
+    const r = validateOrderRequest({ type, channel: ' alaric-birthday-2026 ' });
+    assert(r.ok);
+    assertEquals(r.value, { type, channel: 'alaric-birthday-2026' });
+    assertEquals(refusedAt(validateOrderRequest({ type, channel: 'alaric-birthday-2026', order: paidOrder() })), 'order', type);
+    assertEquals(refusedAt(validateOrderRequest({ type, channel: 'alaric-birthday-2026', since: 0 })), 'since', type);
+    assertEquals(refusedAt(validateOrderRequest({ type })), 'channel', type);
+    assertEquals(refusedAt(validateOrderRequest({ type, channel: '' })), 'channel', type);
+    assertEquals(refusedAt(validateOrderRequest({ type, channel: 'c'.repeat(65) })), 'channel', type);
+    assertEquals(refusedAt(validateOrderRequest({ type, channel: 7 })), 'channel', type);
+  }
+  // The other way round: an order message takes no channel beside its order.
+  assertEquals(refusedAt(validateOrderRequest({ type: 'paid', order: paidOrder(), channel: 'x' })), 'channel');
+  assertEquals(refusedAt(validateOrderRequest({ type: 'Sync', channel: 'x' })), 'type');
 });
