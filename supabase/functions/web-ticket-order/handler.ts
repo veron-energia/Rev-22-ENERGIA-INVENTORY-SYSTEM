@@ -162,7 +162,7 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
       return retry();
     }
     const counts: Record<string, number> = 'staff' in answer ? { staff: answer.staff.length }
-      : answer.status === 'ok' ? { orders: answer.orders.length, counter: answer.counter.length } : {};
+      : answer.status === 'ok' ? { orders: answer.orders.length, counter: answer.counter.length, free: answer.free.length } : {};
     logEvent('web_order.done', { type, ...about, status: answer.status, ...counts, ms: now() - started });
     return reply({ ok: true, ...answer }, 200);
   }
@@ -200,18 +200,22 @@ const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 export type SyncAnswer =
   | { status: 'too_soon' | 'refused' }
-  | { status: 'ok'; event: Record<string, unknown>; orders: unknown[]; counter: unknown[] };
+  | { status: 'ok'; event: Record<string, unknown>; orders: unknown[]; counter: unknown[]; free: unknown[] };
 export interface StaffAnswer { status: (typeof STAFF_STATUSES)[number]; staff: { id: string; name: string }[] }
 
 /**
- * 380: web_order_sync's answer: `{status: 'ok', event, orders, counter}`, or
- * just `{status: 'too_soon' | 'refused'}`. Null when it is anything else.
+ * 380: web_order_sync's answer: `{status: 'ok', event, orders, counter, free}`,
+ * or just `{status: 'too_soon' | 'refused'}`. Null when it is anything else.
+ * 382 added `free` (the event's free guests); a database without 382 sends
+ * none, which is passed on as `[]`.
  */
 export function readSync(data: unknown): SyncAnswer | null {
   if (!isObject(data) || typeof data.status !== 'string' || !(SYNC_STATUSES as readonly string[]).includes(data.status)) return null;
   if (data.status !== 'ok') return { status: data.status as 'too_soon' | 'refused' };
   if (!isObject(data.event) || !Array.isArray(data.orders) || !Array.isArray(data.counter)) return null;
-  return { status: 'ok', event: data.event, orders: data.orders, counter: data.counter };
+  const free = data.free === undefined ? [] : data.free;
+  if (!Array.isArray(free)) return null;
+  return { status: 'ok', event: data.event, orders: data.orders, counter: data.counter, free };
 }
 
 /** 380: web_order_staff's answer, each person as id and name only. Null when it is anything else. */

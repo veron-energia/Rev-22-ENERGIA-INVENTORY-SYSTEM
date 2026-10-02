@@ -299,6 +299,9 @@ const SYNC_OK = {
   orders: [{ order_id: OFF_ID, provider: 'door', status: 'invoiced', invoice_no: 'INV-2026-0001', buyer_name: 'Guest One',
              buyer_phone: '+65 9123 0001', people: [{ position: 1, name: 'Guest One', phone: '+65 9123 0001' }] }],
   counter: [{ invoice_no: 'INV-2026-0002', customer_name: 'Guest Two', phone: '+65 9123 0002', people: [] }],
+  // 382: the event's free guests.
+  free: [{ order_id: 'FREE-1A2B3C4D', name: 'Guest Three', phone: '+65 9123 0003', email: 'guest.three@tests.invalid',
+           days: ['2026-10-19'], status: 'registered', registered_by: 'Staff A', notes: 'VEG', date: '2026-10-02' }],
 };
 
 Deno.test('a sync goes to web_order_sync with the channel, and its answer comes back', async () => {
@@ -312,13 +315,35 @@ Deno.test('a sync goes to web_order_sync with the channel, and its answer comes 
   assertEquals(calls, [{ fn: 'web_order_sync', args: { p_channel: 'alaric-birthday-2026' } }]);
   // Counts, never the people.
   assert(logs.includes('"type":"sync"') && logs.includes('"channel":"alaric-birthday-2026"'));
-  assert(logs.includes('"orders":1') && logs.includes('"counter":1') && logs.includes('"status":"ok"'));
-  for (const personal of ['Guest', '9123', 'INV-2026']) assertFalse(logs.includes(personal), `log mentions ${personal}`);
+  assert(logs.includes('"orders":1') && logs.includes('"counter":1') && logs.includes('"free":1') && logs.includes('"status":"ok"'));
+  for (const personal of ['Guest', '9123', 'INV-2026', 'FREE-', 'guest.three', 'Staff A', 'VEG']) {
+    assertFalse(logs.includes(personal), `log mentions ${personal}`);
+  }
+});
+
+Deno.test('382: a database without the free guests sends none, and the website gets an empty list', async () => {
+  const { free: _free, ...before382 } = SYNC_OK;
+  const { client } = fakeClient(() => ({ data: before382, error: null }));
+  let response: Response | undefined;
+  const logs = await logsOf(async () => {
+    response = await run(await signed({ type: 'sync', channel: 'alaric-birthday-2026' }), client);
+  });
+  assertEquals(response!.status, 200);
+  assertEquals(await response!.json(), { ok: true, ...before382, free: [] });
+  assert(logs.includes('"free":0'));
+});
+
+Deno.test('382: free guests that are not a list are a retry', async () => {
+  for (const free of [null, {}, 'FREE-1A2B3C4D', 1, true]) {
+    const { client } = fakeClient(() => ({ data: { ...SYNC_OK, free }, error: null }));
+    const response = await run(await signed({ type: 'sync', channel: 'alaric-birthday-2026' }), client);
+    assertEquals(response.status, 503, JSON.stringify(free));
+  }
 });
 
 Deno.test('too soon and refused syncs carry nothing else; anything malformed is a retry', async () => {
   for (const status of ['too_soon', 'refused']) {
-    const { client } = fakeClient(() => ({ data: { status, orders: [] }, error: null }));
+    const { client } = fakeClient(() => ({ data: { status, orders: [], free: SYNC_OK.free }, error: null }));
     const response = await run(await signed({ type: 'sync', channel: 'alaric-birthday-2026' }), client);
     assertEquals(response.status, 200);
     assertEquals(await response.json(), { ok: true, status });

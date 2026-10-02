@@ -8,9 +8,9 @@
 //
 // 380: the staff link's registrations come as `door` (web_order_door: kept for
 // a Manager to invoice, never invoiced here); `sync` asks for the channel's
-// orders with their invoices and the tickets sold at the counter
-// (web_order_sync, at most once a minute); `staff` asks for the staff the
-// form may offer as Registered by (web_order_staff).
+// orders with their invoices, the tickets sold at the counter and (382) the
+// event's free guests (web_order_sync, at most once a minute); `staff` asks
+// for the staff the form may offer as Registered by (web_order_staff).
 //
 // Deploy without gateway JWT verification — the caller is a web server, not a
 // signed-in user:

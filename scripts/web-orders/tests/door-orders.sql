@@ -39,8 +39,9 @@
 --       list's invoice fields only at stores the person works in; an order's
 --       email only for a guest with the name the order gave.
 --   D12 web_order_sync: the event, the orders (not refused, not test) with
---       their invoices and people, the counter sales (no website order's), and
---       at most once a minute, holding its channel without FOR UPDATE.
+--       their invoices and people, the counter sales (no website order's), the
+--       free guests (382; free-guests.sql checks them in full), and at most
+--       once a minute, holding its channel without FOR UPDATE.
 --   D13 web_order_staff: active staff who can be credited, by name, id and
 --       name only.
 --   D14 Online orders are untouched: a Stripe order still invoices at payment;
@@ -52,6 +53,9 @@
 --       theirs (cancelled), people added come after, an order's people keep
 --       the form's from Create invoice on, and a deleted counter sale the sync
 --       listed before is still listed, as deleted.
+--
+-- D0 runs 380 again, which puts back its own web_order_sync; 382 goes on
+-- again after it, so D12 and D16 check the sync the website gets now.
 --
 -- Every check runs, then the file fails if any did. Disposable database only;
 -- everything is rolled back. Fixtures carry a random suffix; phones are made
@@ -233,6 +237,8 @@ select pg_temp.check(:'d0_price' = '380: public.event_ticket_price(uuid,date) is
     and :'d0_date' = '380: public.event_ticket_price_date(date) is not the version this was tested against'
     and pg_temp.fn_md5s() = pg_temp.tx('md5_before'),
   'D0 380 stops when the price of a pass (event_ticket_price, event_ticket_price_date) is not production''s');
+-- 382: the free guests in the sync, over 380's web_order_sync.
+\ir ../../../supabase/382_free_guests_in_the_sync.sql
 
 -- ═════ D1 Recorded ═════
 select pg_temp.as_service();
@@ -839,11 +845,18 @@ $$ select x from jsonb_array_elements(pg_temp.tx('sync')::jsonb->'orders') x whe
 create function pg_temp.counter(no text) returns jsonb language sql as
 $$ select x from jsonb_array_elements(pg_temp.tx('sync')::jsonb->'counter') x where x->>'invoice_no' = no $$;
 select pg_temp.check(pg_temp.tx('test_status') = 'recorded'
-    and (select array_agg(k order by k) from jsonb_object_keys(pg_temp.tx('sync')::jsonb) k) = array['counter','event','orders','status']
+    and (select array_agg(k order by k) from jsonb_object_keys(pg_temp.tx('sync')::jsonb) k) = array['counter','event','free','orders','status']
     and pg_temp.tx('sync')::jsonb->>'status' = 'ok'
     and pg_temp.tx('sync')::jsonb->'event' = jsonb_build_object('name', 'D380 Birthday ' || pg_temp.tx('sfx'),
                                                                 'days', jsonb_build_array(pg_temp.d(7)::text, pg_temp.d(8)::text)),
   'D12 a sync answers ok with the event (name and days)');
+select pg_temp.check((select array_agg(x->>'name') from jsonb_array_elements(pg_temp.tx('sync')::jsonb->'free') x) = array['Free Guest']
+    and (select (x->>'phone', x->>'email', x->>'status', x->'days')
+                = ((select c.phone from public.customers c join public.event_guests g on g.customer_id = c.id
+                     where g.event_id = pg_temp.fx('ev') and g.source = 'free'),
+                   'free@tests.invalid', 'registered', jsonb_build_array(pg_temp.d(7)::text))
+           from jsonb_array_elements(pg_temp.tx('sync')::jsonb->'free') x),
+  'D12 (382) the event''s free guest comes too, with their customer''s phone and email; the ticket people do not');
 select pg_temp.check((select x - 'people' from pg_temp.synced(pg_temp.off('A')) x)
                        = jsonb_build_object('order_id', pg_temp.off('A'), 'provider', 'door', 'status', 'invoiced',
                            'invoice_no', pg_temp.tx('a_no'), 'invoice_status', 'paid', 'date', pg_temp.d(0)::text,
