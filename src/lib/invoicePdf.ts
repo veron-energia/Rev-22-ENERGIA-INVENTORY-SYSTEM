@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf';
+import { wrapCreditDetail } from './invoices/creditBalanceLine.mjs';
 
 /**
  * Builds the CUSTOMER COPY as a real A5 PDF.
@@ -38,6 +39,9 @@ export interface PdfDoc {
   totals: [string, string][];  // label, formatted value
   grandTotal?: [string, string];
   payments?: [string, string][];
+  /** The customer's credit balance as printed, read fresh for this copy —
+   *  see src/lib/invoices/creditBalanceLine.mjs. Absent when it does not apply. */
+  creditBalance?: { label: string; amount: string; detail?: string | null } | null;
   payDetails?: string[];
   staffName?: string | null;
   termsText?: string;
@@ -49,7 +53,102 @@ const A5_H = 210;
 const M = 10;                    // page margin
 const RIGHT = A5_W - M;
 
+/**
+ * How far down the copy may run and still count as on the page: the drawing
+ * ends 3 mm under the last footer line, so this keeps that line's baseline
+ * 8 mm above the edge.
+ */
+const FOOT_LIMIT = A5_H - M / 2;
+
+/** One drawing of a copy: what was drawn, how far down the page it ran, and
+ *  whether the credit balance went beside the totals, where it costs no height. */
+export interface CopyDrawing<T> { out: T; endY: number; creditBeside?: boolean }
+
+/** How the credit balance came out on a copy: in full, the total alone, or left off for space. */
+export type CreditBalanceShown = 'full' | 'total' | 'none';
+const creditShown = new WeakMap<object, CreditBalanceShown>();
+
+/**
+ * How the credit balance came out the last time this copy was drawn (PDF or
+ * image), so the page can say when it was left off for want of room. Null when
+ * the copy had no line to draw, or has not been drawn.
+ */
+export function creditBalanceShown(d: PdfDoc): CreditBalanceShown | null {
+  return creditShown.get(d) ?? null;
+}
+
+/**
+ * The credit balance line gives way; nothing else on the copy does.
+ *
+ * Each drawing puts it in the empty left column beside the right-aligned
+ * totals when it fits there: that costs no height at all, so the copy is drawn
+ * once. Only when it does not fit there does it go under the payments, in the
+ * blank space above the signatures — and there it never costs an item row and
+ * never pushes the footer (store contact, company registration) lower than
+ * `limit`: where the footer ends without the line, or the on-page limit if that
+ * is lower down.
+ *
+ * Drawn with the full line first. If that ends past the limit, the breakdown
+ * of kinds is left off and only the total is drawn (beside the totals if it
+ * fits there now); if even that does not fit, the copy goes without the line.
+ * At most three drawings; each one thrown away is handed to `discard` (the
+ * image releases its canvas). How it came out is kept: creditBalanceShown.
+ *
+ * Shared by the PDF and the image, which each say how they draw a copy.
+ */
+export function fitAroundCreditBalance<T>(
+  d: PdfDoc, draw: (d: PdfDoc) => CopyDrawing<T>, footLimit: number,
+  discard: (out: T) => void = () => {},
+): T {
+  const full = draw(d);
+  if (!d.creditBalance) return full.out;
+  const shown = (s: CreditBalanceShown, out: T) => { creditShown.set(d, s); return out; };
+  const whole: CreditBalanceShown = d.creditBalance.detail ? 'full' : 'total';
+  if (full.creditBeside || full.endY <= footLimit + 0.01) return shown(whole, full.out);
+  const bare = draw({ ...d, creditBalance: null });
+  const limit = Math.max(bare.endY, footLimit);
+  if (full.endY <= limit + 0.01) { discard(bare.out); return shown(whole, full.out); }
+  discard(full.out);
+  if (d.creditBalance.detail) {
+    const totalOnly = draw({ ...d, creditBalance: { ...d.creditBalance, detail: null } });
+    if (totalOnly.endY <= limit + 0.01) { discard(bare.out); return shown('total', totalOnly.out); }
+    discard(totalOnly.out);
+  }
+  return shown('none', bare.out);
+}
+
+/**
+ * The credit balance's place beside the totals: the left column from the
+ * margin to just short of the totals block (its widest label, or the rule over
+ * the grand total). `top` is the first totals row's baseline and `bottom` the
+ * last baseline the totals draw; the line goes there only if all of it fits
+ * between the two, so it moves nothing else on the copy.
+ *
+ * `labelW`/`amountW` are the label's and total's widths in the bold face, and
+ * `detailLines` the breakdown wrapped to `width`, measured in the small face.
+ * Returns the baselines to draw at, or null when it does not fit.
+ */
+export function creditBesideTotals(p: {
+  top: number; bottom: number; width: number; labelW: number; amountW: number;
+  detailLines: { width: number }[]; lineH: number; detailH: number; gap: number;
+}): { labelY: number; amountY: number; amountOnLabelLine: boolean; detailY: number[] } | null {
+  if (p.width <= 0 || p.labelW > p.width || p.amountW > p.width) return null;
+  if (p.detailLines.some(l => l.width > p.width + 0.01)) return null;
+  const amountOnLabelLine = p.labelW + p.gap + p.amountW <= p.width;
+  const labelY = p.top;
+  const amountY = amountOnLabelLine ? labelY : labelY + p.lineH;
+  const detailY = p.detailLines.map((_, i) => amountY + p.lineH + i * p.detailH);
+  const last = detailY.length ? detailY[detailY.length - 1] : amountY;
+  if (last > p.bottom + 0.01) return null;
+  return { labelY, amountY, amountOnLabelLine, detailY };
+}
+
 export function buildDocumentPdf(d: PdfDoc): jsPDF {
+  return fitAroundCreditBalance(d, drawDocumentPdf, FOOT_LIMIT);
+}
+
+/** One drawing of the copy, and how far down the page it ran. */
+function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
   const doc = new jsPDF({ unit: 'mm', format: [A5_W, A5_H], orientation: 'portrait' });
   let y = M;
 
@@ -139,9 +238,13 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
   // ---- Totals -------------------------------------------------------
   y += 2;
   doc.setFontSize(10);
+  const totalsTop = y;
+  let totalsBottom = -Infinity;
+  const totalsLabelW = Math.max(0, ...d.totals.map(([label]) => doc.getTextWidth(label)));
   for (const [label, value] of d.totals) {
     grey(); doc.text(label, cUnit, y, { align: 'right' });
     black(); doc.text(value, cTot, y, { align: 'right' });
+    totalsBottom = y;
     y += 4.8;
   }
   if (d.grandTotal) {
@@ -151,7 +254,30 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
     doc.text(d.grandTotal[0], cUnit, y + 1.4, { align: 'right' });
     doc.text(d.grandTotal[1], cTot, y + 1.4, { align: 'right' });
     doc.setFont('helvetica', 'normal');
+    totalsBottom = y + 1.4;
     y += 6;
+  }
+
+  // ---- Credit balance beside the totals, where it costs no height -----
+  let creditBeside = false;
+  if (d.creditBalance) {
+    const width = Math.min(cUnit - 22, cUnit - totalsLabelW) - 4 - M;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+    const labelW = doc.getTextWidth(d.creditBalance.label), amountW = doc.getTextWidth(d.creditBalance.amount);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+    const detail = d.creditBalance.detail ? wrapCreditDetail(d.creditBalance.detail, width, t => doc.getTextWidth(t)) : [];
+    const at = creditBesideTotals({ top: totalsTop, bottom: totalsBottom, width, labelW, amountW,
+      detailLines: detail.map(t => ({ width: doc.getTextWidth(t) })), lineH: 4.2, detailH: 3.4, gap: 3 });
+    if (at) {
+      creditBeside = true;
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); black();
+      doc.text(d.creditBalance.label, M, at.labelY);
+      if (at.amountOnLabelLine) doc.text(d.creditBalance.amount, M + width, at.amountY, { align: 'right' });
+      else doc.text(d.creditBalance.amount, M, at.amountY);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); grey();
+      detail.forEach((ln, i) => doc.text(ln, M, at.detailY[i]));
+    }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); black();
   }
 
   // ---- Payments -----------------------------------------------------
@@ -162,6 +288,22 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); black();
     for (const [k, v] of d.payments) {
       doc.text(k, M, y); doc.text(v, cTot, y, { align: 'right' }); y += 4.6;
+    }
+  }
+
+  // ---- Credit balance under the payments, when not beside the totals ----
+  if (d.creditBalance && !creditBeside) {
+    y += 1.5;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); black();
+    doc.text(d.creditBalance.label, M, y);
+    doc.text(d.creditBalance.amount, cTot, y, { align: 'right' });
+    doc.setFont('helvetica', 'normal');
+    y += 4.2;
+    if (d.creditBalance.detail) {
+      doc.setFontSize(8.5); grey();
+      // Wrapped between kinds only, never between a kind's name and its amount.
+      for (const ln of wrapCreditDetail(d.creditBalance.detail, RIGHT - M, t => doc.getTextWidth(t))) { doc.text(ln, M, y); y += 3.4; }
+      doc.setFontSize(10); black();
     }
   }
 
@@ -219,7 +361,7 @@ export function buildDocumentPdf(d: PdfDoc): jsPDF {
     }
   }
 
-  return doc;
+  return { out: doc, endY: y, creditBeside };
 }
 
 /** The finished PDF as a Blob, ready to upload or download. */

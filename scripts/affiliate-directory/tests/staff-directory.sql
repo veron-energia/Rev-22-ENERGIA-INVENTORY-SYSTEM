@@ -1,4 +1,6 @@
--- Staff may look up an affiliate's referral link, and nothing more (332).
+-- Staff may look up an affiliate's referral link, and change nothing about an
+-- affiliate (332). Account claims are handled by staff since 378; see
+-- scripts/affiliate-claims/tests/staff-claims.sql.
 --
 -- Disposable database only; everything is rolled back.
 begin;
@@ -42,16 +44,14 @@ begin
  -- ---- staff: everything else is refused at the database --------------------
  begin perform affiliate_admin_directory(); raise exception 'FAIL: staff read the admin directory';
  exception when others then if sqlerrm like 'FAIL:%' then raise; end if; if sqlerrm not ilike '%owner%manager%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if; end;
- begin perform affiliate_pending_claims(); raise exception 'FAIL: staff read pending claims';
- exception when others then if sqlerrm like 'FAIL:%' then raise; end if; end;
+ -- Account claims are not refused since 378: staff list, resolve (to the
+ -- customer with the phone entered), reject and delete them. That is
+ -- scripts/affiliate-claims/tests/staff-claims.sql. They are not in this
+ -- directory, which stays names, codes and status.
  begin perform suspend_affiliate(susp,'staff try'); raise exception 'FAIL: staff suspended an affiliate';
  exception when others then if sqlerrm like 'FAIL:%' then raise; end if; if sqlerrm not ilike '%owner%manager%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if; end;
  begin perform reactivate_affiliate(susp); raise exception 'FAIL: staff reactivated an affiliate';
  exception when others then if sqlerrm like 'FAIL:%' then raise; end if; if sqlerrm not ilike '%owner%manager%' then raise exception 'FAIL: wrong refusal: %', sqlerrm; end if; end;
- begin perform resolve_affiliate_account_claim(gen_random_uuid(),susp,'staff try'); raise exception 'FAIL: staff resolved a claim';
- exception when others then if sqlerrm like 'FAIL:%' then raise; end if; end;
- begin perform reject_affiliate_account_claim(gen_random_uuid(),'staff try'); raise exception 'FAIL: staff rejected a claim';
- exception when others then if sqlerrm like 'FAIL:%' then raise; end if; end;
  begin perform reassign_customer_referrer(susp,null,'staff try'); raise exception 'FAIL: staff changed a referrer';
  exception when others then if sqlerrm like 'FAIL:%' then raise; end if; end;
  -- Looking never changes anything: the code is what it was.
@@ -72,6 +72,6 @@ begin
  perform set_config('request.jwt.claim.sub',own::text,true);
  if (affiliate_staff_directory(null,10,0)->>'total')::int<1100 then raise exception 'FAIL: owner cannot use the staff directory'; end if;
 
- raise notice 'PASS: staff search and page a company-wide directory of names, codes, status and link usability past the row limit; suspended affiliates show as such with an unusable link; nothing about money, claims or notes is returned; staff are refused every mutation and the admin views at the database; anonymous callers are refused; managers and owners keep their capabilities; no code was rotated';
+ raise notice 'PASS: staff search and page a company-wide directory of names, codes, status and link usability past the row limit; suspended affiliates show as such with an unusable link; nothing about money, claims or notes is returned; staff are refused every affiliate change and the admin directory at the database (account claims are theirs since 378); anonymous callers are refused; managers and owners keep their capabilities; no code was rotated';
 end $$;
 rollback;

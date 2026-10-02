@@ -1,4 +1,5 @@
-import { PdfDoc, PdfLine } from './invoicePdf';
+import { PdfDoc, PdfLine, CopyDrawing, fitAroundCreditBalance, creditBesideTotals } from './invoicePdf';
+import { wrapCreditDetail } from './invoices/creditBalanceLine.mjs';
 
 /**
  * Renders the customer copy as a PNG.
@@ -23,10 +24,26 @@ const GREY = '#6e6e6e';
 const BLACK = '#111111';
 
 export function documentImageBlob(d: PdfDoc): Promise<Blob> {
+  let c: HTMLCanvasElement;
+  try {
+    // The credit balance line gives way on the image as it does on the PDF —
+    // see fitAroundCreditBalance. A canvas thrown away is released at once:
+    // phones cap the canvas memory a page may hold.
+    c = fitAroundCreditBalance(d, drawDocumentImage, H - (M / 2), old => { old.width = 0; old.height = 0; });
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  return new Promise((resolve, reject) => {
+    c.toBlob(b => b ? resolve(b) : reject(new Error('Could not create the invoice image.')), 'image/png');
+  });
+}
+
+/** One drawing of the copy, and how far down the image it ran. */
+function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const x = c.getContext('2d');
-  if (!x) return Promise.reject(new Error('This browser cannot render the invoice image.'));
+  if (!x) throw new Error('This browser cannot render the invoice image.');
 
   const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
   const font = (size: number, weight: 'normal' | 'bold' | 'italic' | 'bold italic' = 'normal') =>
@@ -125,9 +142,13 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
 
   // ---- Totals -------------------------------------------------------
   y += 2 * MM; font(3.64);
+  const totalsTop = y;
+  let totalsBottom = -Infinity;
+  const totalsLabelW = Math.max(0, ...d.totals.map(([label]) => x.measureText(label).width));
   for (const [label, value] of d.totals) {
     x.fillStyle = GREY; right(label, cUnit, y);
     x.fillStyle = BLACK; right(value, cTot, y);
+    totalsBottom = y;
     y += 4.8 * MM;
   }
   if (d.grandTotal) {
@@ -136,7 +157,30 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
     font(4.81, 'bold'); x.fillStyle = BLACK;
     right(d.grandTotal[0], cUnit, y + 1.4 * MM);
     right(d.grandTotal[1], cTot, y + 1.4 * MM);
+    totalsBottom = y + 1.4 * MM;
     y += 6 * MM;
+  }
+
+  // ---- Credit balance beside the totals, where it costs no height -----
+  let creditBeside = false;
+  if (d.creditBalance) {
+    const width = Math.min(cUnit - 22 * MM, cUnit - totalsLabelW) - 4 * MM - M;
+    font(3.64, 'bold');
+    const labelW = x.measureText(d.creditBalance.label).width, amountW = x.measureText(d.creditBalance.amount).width;
+    font(2.9);
+    const detail = d.creditBalance.detail ? wrapCreditDetail(d.creditBalance.detail, width, t => x.measureText(t).width) : [];
+    const at = creditBesideTotals({ top: totalsTop, bottom: totalsBottom, width, labelW, amountW,
+      detailLines: detail.map(t => ({ width: x.measureText(t).width })), lineH: 4.2 * MM, detailH: 3.4 * MM, gap: 3 * MM });
+    if (at) {
+      creditBeside = true;
+      font(3.64, 'bold'); x.fillStyle = BLACK;
+      x.fillText(d.creditBalance.label, M, at.labelY);
+      if (at.amountOnLabelLine) right(d.creditBalance.amount, M + width, at.amountY);
+      else x.fillText(d.creditBalance.amount, M, at.amountY);
+      font(2.9); x.fillStyle = GREY;
+      detail.forEach((ln, i) => x.fillText(ln, M, at.detailY[i]));
+    }
+    font(3.64); x.fillStyle = BLACK;
   }
 
   // ---- Payments -----------------------------------------------------
@@ -146,6 +190,21 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
     x.fillText('PAYMENT METHODS', M, y); y += 4 * MM;
     font(3.64); x.fillStyle = BLACK;
     for (const [k, v] of d.payments) { x.fillText(k, M, y); right(v, cTot, y); y += 4.6 * MM; }
+  }
+
+  // ---- Credit balance under the payments, when not beside the totals ----
+  if (d.creditBalance && !creditBeside) {
+    y += 1.5 * MM;
+    font(3.64, 'bold'); x.fillStyle = BLACK;
+    x.fillText(d.creditBalance.label, M, y);
+    right(d.creditBalance.amount, cTot, y);
+    y += 4.2 * MM;
+    if (d.creditBalance.detail) {
+      font(2.9); x.fillStyle = GREY;
+      // Wrapped between kinds only, never between a kind's name and its amount.
+      for (const ln of wrapCreditDetail(d.creditBalance.detail, RIGHT - M, t => x.measureText(t).width)) { x.fillText(ln, M, y); y += 3.4 * MM; }
+    }
+    font(3.64); x.fillStyle = BLACK;
   }
 
   // ---- Signatures ---------------------------------------------------
@@ -200,7 +259,5 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
     x.textAlign = 'left';
   }
 
-  return new Promise((resolve, reject) => {
-    c.toBlob(b => b ? resolve(b) : reject(new Error('Could not create the invoice image.')), 'image/png');
-  });
+  return { out: c, endY: y, creditBeside };
 }

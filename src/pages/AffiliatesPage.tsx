@@ -2,10 +2,10 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { isOwnerOrManager } from '../types';
+import { isOwner, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
-import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2 } from 'lucide-react';
+import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink } from 'lucide-react';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -19,7 +19,56 @@ interface DirRow {
  *  their link. Nothing about money, purchases, claims or accounts. */
 interface StaffRow { customer_id: string; full_name: string; referral_code: string | null; status: string; link_usable: boolean; }
 
-interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; entered_name?: string | null; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; rejected_at?: string | null; rejection_reason?: string | null; }
+interface ClaimRow { claim_id: string; verified_email: string; entered_phone: string; entered_name?: string | null; candidate_customer_id: string | null; candidate_name: string | null; created_at: string; rejected_at?: string | null; rejection_reason?: string | null;
+  /** 378: an Owner unlinked this login from a customer before (pending claims). */
+  previously_unlinked?: boolean; unlinked_customer_ids?: string[];
+  /** 378: an Owner unlinked a login (any) from the likely customer before. */
+  suggested_customer_unlinked?: boolean;
+  /** 378: a staff member rejected it, so staff may delete it (rejected claims). */
+  rejected_by_staff?: boolean; }
+
+/** affiliate_claim_link_check (378): whether this claim's login may be linked
+ *  to the chosen customer by the person asking. resolve_affiliate_account_claim
+ *  runs the same check, so 'problem' is exactly what Save would be refused with. */
+interface LinkCheck {
+  claim_id: string; entered_phone: string | null;
+  customer_id: string; customer_name: string; customer_phone: string | null;
+  phones_match: boolean; customer_deleted: boolean; customer_has_login: boolean; login_is_staff: boolean;
+  previously_unlinked?: boolean; unlinked_at?: string | null; phone_changed_since_claim?: boolean;
+  /** An Owner unlinked a login (this one or another) from the chosen customer. */
+  customer_previously_unlinked?: boolean; customer_unlinked_at?: string | null;
+  customers_sharing_phone?: number; suggested_customer?: boolean; own_claim?: boolean;
+  /** An earlier claim of this login, deleted or rejected, suggested another customer (or none). */
+  earlier_claim_other_customer?: boolean;
+  any_customer: boolean; problem: string | null;
+}
+
+/** affiliate_portal_login (378, Owner only): the login linked to a customer,
+ *  and the claims that linked it. */
+interface PortalLogin {
+  linked: boolean; login_email?: string | null; status?: string;
+  /** last_sign_in_at is Supabase Auth's own record of the last sign-in. */
+  linked_at?: string | null; last_sign_in_at?: string | null;
+  claims?: { claim_id: string; entered_name: string | null; entered_phone: string | null; resolved_at: string | null;
+             resolution_note: string | null; resolved_by_name: string | null }[];
+}
+
+// What staff are told when the chosen customer's phone is not the one the
+// person entered at sign-up. The database refuses with the same words.
+const STAFF_PHONE_RULE = 'Only an Owner or Manager can link this claim to a customer whose phone differs from the one entered.';
+// The database refuses staff with these words when they delete a rejection an
+// Owner or Manager made.
+const STAFF_DELETE_RULE = 'Only an Owner or Manager can remove a rejection they made.';
+
+/** The function is not on the server yet (PostgREST PGRST202): 378 has not
+ *  been applied. An Owner or Manager then works exactly as before it. */
+const missingFunction = (e: { code?: string; message?: string } | null | undefined) =>
+  !!e && (e.code === 'PGRST202' || /Could not find the function/i.test(e.message ?? ''));
+/** Before 378 the claim lists refuse staff with these words (or are missing):
+ *  staff then see the page as it was before, without the claims and without
+ *  an error. */
+const claimsNotForStaffYet = (e: { code?: string; message?: string } | null | undefined) =>
+  !!e && (missingFunction(e) || (e.message ?? '').trim() === 'Owner or Manager only');
 
 const PORTAL: Record<string, { cls: string; label: string }> = {
   claimed: { cls: 'badge-success', label: 'Claimed' },
@@ -30,6 +79,16 @@ const PORTAL: Record<string, { cls: string; label: string }> = {
 const AffiliatesPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
+  // Staff settle account claims too (378): they list, reject and delete them,
+  // and Resolve only to the customer whose phone the person entered. Admin
+  // and Inventory Manager keep the read-only directory alone, as before.
+  const isStaff = profile?.role === 'staff';
+  // The server does not offer staff the claims yet (378 not applied).
+  const [claimsUnavailable, setClaimsUnavailable] = useState(false);
+  const staffClaims = isStaff && !claimsUnavailable;
+  const canHandleClaims = canManage || staffClaims;
+  // Unlinking a portal login is the Owner's alone, not a Manager's.
+  const canUnlink = isOwner(profile?.role);
 
   const [rows, setRows] = useState<DirRow[]>([]);
   const [claims, setClaims] = useState<ClaimRow[]>([]);
@@ -65,6 +124,21 @@ const AffiliatesPage: React.FC = () => {
   const [rejectReason, setRejectReason] = useState('');
   // Delete-claim confirmation
   const [deleteFor, setDeleteFor] = useState<ClaimRow | null>(null);
+  // What the server says about linking the chosen customer: both phones, and
+  // why it cannot be linked, if it cannot. Re-read whenever the choice changes.
+  const [linkCheck, setLinkCheck] = useState<LinkCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkErr, setCheckErr] = useState<string | null>(null);
+  const checkTicket = React.useRef(0);
+  // Unlink-login modal (Owner)
+  const [unlinkFor, setUnlinkFor] = useState<DirRow | null>(null);
+  const [unlinkInfo, setUnlinkInfo] = useState<PortalLogin | null>(null);
+  const [unlinkErr, setUnlinkErr] = useState<string | null>(null);
+  const [unlinkReason, setUnlinkReason] = useState('');
+  const [unlinkUnavailable, setUnlinkUnavailable] = useState(false);
+  // Staff's claims load on their own, so the directory's own loading (which
+  // clears the page error) cannot hide a failure here.
+  const [claimsErr, setClaimsErr] = useState<string | null>(null);
 
   const loadStaffDirectory = useCallback(async (query: string, page: number) => {
     const ticket = ++staffTicket.current;
@@ -76,6 +150,22 @@ const AffiliatesPage: React.FC = () => {
     if (error) { setErr(error.message); return; }
     setStaffRows(((data as any)?.rows ?? []) as StaffRow[]);
     setStaffTotal(Number((data as any)?.total ?? 0));
+  }, []);
+
+  // Staff only: an Owner or Manager reads the claims in load(), as before.
+  const loadClaims = useCallback(async () => {
+    const [cl, rj] = await Promise.all([
+      supabase.rpc('affiliate_pending_claims'),
+      supabase.rpc('affiliate_rejected_claims'),
+    ]);
+    if (claimsNotForStaffYet(cl.error) || claimsNotForStaffYet(rj.error)) {
+      setClaims([]); setRejected([]); setClaimsErr(null); setClaimsUnavailable(true);
+      return;
+    }
+    setClaimsUnavailable(false);
+    setClaims((cl.data as ClaimRow[]) ?? []);
+    setRejected((rj.data as ClaimRow[]) ?? []);
+    setClaimsErr(cl.error?.message ?? rj.error?.message ?? null);
   }, []);
 
   const load = useCallback(async () => {
@@ -93,6 +183,13 @@ const AffiliatesPage: React.FC = () => {
     setLoading(false);
   }, [canManage, loadStaffDirectory, staffQ, staffPage]);
   useEffect(() => { load(); }, [load]);
+  // Staff's claims: once, then after each change and on Refresh; not on every
+  // search or page of the directory.
+  useEffect(() => { if (isStaff) void loadClaims(); }, [isStaff, loadClaims]);
+  // Everything this login sees. For an Owner or Manager that is load().
+  const reload = useCallback(async () => {
+    await Promise.all([load(), isStaff ? loadClaims() : Promise.resolve()]);
+  }, [load, isStaff, loadClaims]);
   // A request per keystroke would be one per letter of a name.
   useEffect(() => {
     if (canManage) return;
@@ -107,10 +204,12 @@ const AffiliatesPage: React.FC = () => {
     if (error) { setErr(error.message); return false; }
     // RPCs may return { ok:false, message } for safe no-ops (e.g. already resolved).
     if (data && typeof data === 'object' && (data as any).ok === false && (data as any).message) {
+      // Staff: shown after the reload, whose directory read clears the page error.
+      if (isStaff) { await reload(); setErr((data as any).message); return false; }
       setErr((data as any).message); await load(); return false;
     }
     if (okMsg) setSuccess(okMsg);
-    await load(); return true;
+    await reload(); return true;
   };
 
   const suspend = (r: DirRow) => {
@@ -128,8 +227,31 @@ const AffiliatesPage: React.FC = () => {
     if (ok) { setFixFor(null); setFixRef(''); setFixReason(''); }
   };
 
+  useEffect(() => {
+    const ticket = ++checkTicket.current;
+    setLinkCheck(null); setCheckErr(null);
+    if (!resolveFor || !resolveCust) { setChecking(false); return; }
+    setChecking(true);
+    void supabase.rpc('affiliate_claim_link_check', { p_claim_id: resolveFor.claim_id, p_customer_id: resolveCust })
+      .then(({ data, error }) => {
+        if (ticket !== checkTicket.current) return;   // a later choice won
+        setChecking(false);
+        // Before 378 is applied an Owner or Manager sees the window as it was.
+        if (error) { if (!(canManage && missingFunction(error))) setCheckErr(error.message); return; }
+        setLinkCheck(data as LinkCheck);
+      });
+  }, [resolveFor, resolveCust, canManage]);
+
+  // Staff may link only the customer with the phone entered; anything the
+  // server would refuse is refused here first. An Owner or Manager is never
+  // held up by the check itself failing: Save then behaves as it always did.
+  const staffPhoneDiffers = !canManage && !!linkCheck && !linkCheck.phones_match;
+  const resolveBlocked = checking || !!linkCheck?.problem || staffPhoneDiffers
+    || (!canManage && !!resolveCust && !linkCheck);
+
   const submitResolve = async () => {
     if (!resolveFor) return;
+    if (resolveBlocked) return;
     if (!resolveCust) { setErr('Choose the customer to link.'); return; }
     if (!resolveNote.trim()) { setErr('A verification note is required.'); return; }
     const ok = await act('resolve_affiliate_account_claim',
@@ -152,6 +274,30 @@ const AffiliatesPage: React.FC = () => {
     if (ok) setDeleteFor(null);
   };
 
+  const openUnlink = async (r: DirRow) => {
+    setUnlinkFor(r); setUnlinkInfo(null); setUnlinkErr(null); setUnlinkReason(''); setUnlinkUnavailable(false);
+    const { data, error } = await supabase.rpc('affiliate_portal_login', { p_customer_id: r.customer_id });
+    if (error) { if (missingFunction(error)) setUnlinkUnavailable(true); else setUnlinkErr(error.message); return; }
+    setUnlinkInfo(data as PortalLogin);
+  };
+
+  const submitUnlink = async () => {
+    if (!unlinkFor || !unlinkInfo?.linked) return;
+    if (!unlinkReason.trim()) { setUnlinkErr('A reason is required to unlink a login.'); return; }
+    const email = unlinkInfo.login_email ?? 'The login';
+    const name = unlinkFor.name;
+    // Called directly rather than through act(): a refusal belongs in this
+    // window, not on the page behind it.
+    setBusy(unlinkFor.customer_id); setUnlinkErr(null); setErr(null); setSuccess(null);
+    const { error } = await supabase.rpc('unlink_affiliate_account',
+      { p_customer_id: unlinkFor.customer_id, p_reason: unlinkReason.trim() });
+    setBusy(null);
+    if (error) { setUnlinkErr(error.message); return; }
+    setUnlinkFor(null); setUnlinkInfo(null); setUnlinkReason('');
+    setSuccess(`Login unlinked. ${email} no longer opens ${name}'s affiliate portal; their affiliate record, code and commissions are unchanged.`);
+    await reload();
+  };
+
   const activationUrl = `${publicAppUrl()}/affiliate/join`;
   // Reuses the portal's own link format; a code is never minted here.
   const referralUrl = (code: string) => `${publicAppUrl()}/r/${code}`;
@@ -170,11 +316,13 @@ const AffiliatesPage: React.FC = () => {
           <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginTop: 2 }}>
             {canManage
               ? 'Customers register as affiliates through the Affiliate Signup QR/link. Owner/Manager can suspend or reactivate affiliate accounts.'
-              : 'Find an affiliate and hand over their referral link or QR code, or share the Affiliate Signup QR with someone who wants to join. Changes to affiliate accounts are made by an Owner or Manager.'}
+              : staffClaims
+                ? 'Find an affiliate and hand over their referral link or QR code, or share the Affiliate Signup QR with someone who wants to join. You can settle account claims: link a login to the customer whose phone it entered, or reject or delete the request. Other changes to affiliate accounts are made by an Owner or Manager.'
+                : 'Find an affiliate and hand over their referral link or QR code, or share the Affiliate Signup QR with someone who wants to join. Changes to affiliate accounts are made by an Owner or Manager.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-secondary" onClick={load} style={{ gap: 6 }}><RefreshCw size={15} /> Refresh</button>
+          <button className="btn btn-secondary" onClick={reload} style={{ gap: 6 }}><RefreshCw size={15} /> Refresh</button>
           {/* The signup link is public; any staff member may hand it to someone
               who wants to join. It creates nothing by itself. */}
           <button className="btn btn-primary" onClick={() => setQrOpen(true)} style={{ gap: 6 }}><QrCode size={15} /> Affiliate Signup QR</button>
@@ -182,10 +330,11 @@ const AffiliatesPage: React.FC = () => {
       </div>
 
       {err && <div className="card" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>{err}</div>}
+      {claimsErr && <div className="card" data-error="claims" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>Account claims could not be loaded: {claimsErr}</div>}
       {success && <div className="card" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--success)', color: 'var(--success)', fontSize: 13.5, display: 'flex', gap: 8, alignItems: 'center' }}><CheckCircle2 size={16} /> {success}</div>}
 
       {/* Pending identity claims */}
-      {canManage && claims.length > 0 && (
+      {canHandleClaims && claims.length > 0 && (
         <div className="card" style={{ padding: 16, marginBottom: 16, borderColor: 'var(--warning)' }}>
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
             <ShieldCheck size={16} /> Pending Account Claims ({claims.length})
@@ -198,8 +347,18 @@ const AffiliatesPage: React.FC = () => {
                   const running = busy === c.claim_id;
                   return (
                     <tr key={c.claim_id}>
-                      <td>{c.verified_email}<br /><small>{c.entered_name}</small></td><td>{c.entered_phone}</td>
-                      <td>{c.candidate_name ?? '—'}</td><td>{d(c.created_at)}</td>
+                      <td>{c.verified_email}<br /><small>{c.entered_name}</small>
+                        {c.previously_unlinked && (
+                          <span className="badge badge-danger" data-flag="previously-unlinked" style={{ marginLeft: 6 }}
+                            title="An Owner unlinked this login from a customer before. Staff cannot link it back to that customer.">Previously unlinked</span>
+                        )}
+                      </td><td>{c.entered_phone}</td>
+                      <td>{c.candidate_name ?? '—'}
+                        {c.suggested_customer_unlinked && (
+                          <span className="badge badge-danger" data-flag="customer-previously-unlinked" style={{ marginLeft: 6 }}
+                            title="An Owner unlinked a login from this customer before. Only an Owner or Manager can link a login to them.">Login unlinked before</span>
+                        )}
+                      </td><td>{d(c.created_at)}</td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button className="btn btn-secondary btn-sm" disabled={running} title="Resolve" onClick={() => { setResolveFor(c); setResolveCust(c.candidate_customer_id ?? ''); setResolveNote(''); }} style={{ marginRight: 6, gap: 4 }}><ShieldCheck size={14} /> Resolve</button>
                         <button className="btn btn-secondary btn-sm" disabled={running} title="Reject" onClick={() => { setRejectFor(c); setRejectReason(''); }} style={{ marginRight: 6, gap: 4 }}><XCircle size={14} /> Reject</button>
@@ -215,7 +374,7 @@ const AffiliatesPage: React.FC = () => {
       )}
 
       {/* Rejected identity claims (block automatic resubmission until deleted) */}
-      {canManage && rejected.length > 0 && (
+      {canHandleClaims && rejected.length > 0 && (
         <div className="card" style={{ padding: 16, marginBottom: 16 }}>
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
             <XCircle size={16} /> Rejected Account Claims ({rejected.length})
@@ -227,16 +386,21 @@ const AffiliatesPage: React.FC = () => {
             <table className="table" style={{ width: '100%' }}>
               <thead><tr><th>Email</th><th>Phone</th><th>Likely Customer</th><th>Rejected</th><th>Reason</th><th></th></tr></thead>
               <tbody>
-                {rejected.map(c => (
+                {rejected.map(c => {
+                  // Staff remove only a rejection a staff member made (378).
+                  const notTheirs = isStaff && c.rejected_by_staff === false;
+                  return (
                   <tr key={c.claim_id}>
                     <td>{c.verified_email}<br /><small>{c.entered_name}</small></td><td>{c.entered_phone}</td>
                     <td>{c.candidate_name ?? '—'}</td><td>{d(c.rejected_at)}</td>
                     <td style={{ maxWidth: 220, whiteSpace: 'normal' }}>{c.rejection_reason ?? '—'}</td>
                     <td style={{ textAlign: 'right' }}>
-                      <button className="btn btn-secondary btn-sm" disabled={busy === c.claim_id} title="Delete request" onClick={() => setDeleteFor(c)}><Trash2 size={14} /> Delete</button>
+                      <button className="btn btn-secondary btn-sm" disabled={busy === c.claim_id || notTheirs}
+                        title={notTheirs ? STAFF_DELETE_RULE : 'Delete request'} onClick={() => setDeleteFor(c)}><Trash2 size={14} /> Delete</button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -299,7 +463,16 @@ const AffiliatesPage: React.FC = () => {
                 <tr key={r.customer_id}>
                   <td style={{ fontWeight: 500 }}>{r.name}</td>
                   <td><span className={'badge ' + (suspended ? 'badge-danger' : 'badge-success')}>{suspended ? 'Suspended' : 'Active'}</span></td>
-                  <td><span className={'badge ' + portal.cls}>{portal.label}</span></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <span className={'badge ' + portal.cls}>{portal.label}</span>
+                    {canUnlink && r.portal_account !== 'not_claimed' && (
+                      <button type="button" className="btn btn-secondary btn-sm" style={{ marginLeft: 6, gap: 4 }}
+                        title="Unlink the portal login from this customer" aria-label={`Unlink login of ${r.name}`}
+                        disabled={busy === r.customer_id} onClick={() => void openUnlink(r)}>
+                        <Unlink size={13} /> Unlink login
+                      </button>
+                    )}
+                  </td>
                   <td style={{ fontFamily: 'monospace', fontSize: 12.5 }}>{r.referral_code ?? '—'}</td>
                   <td style={{ textAlign: 'right' }}>{r.direct_referrals}</td>
                   <td style={{ textAlign: 'right' }}>{r.tier2}</td>
@@ -377,14 +550,68 @@ const AffiliatesPage: React.FC = () => {
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
             After verifying identity, link this login ({resolveFor.verified_email}) to the correct existing customer. This does not change the customer's referrer or history.
           </p>
-          <p>Name entered: <strong>{resolveFor.entered_name ?? 'Not recorded'}</strong><br />Phone entered: <strong>{resolveFor.entered_phone}</strong></p>
+          {!canManage && (
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
+              Staff can link only the customer whose phone is the one the person entered.
+            </p>
+          )}
+          <p>Name entered: <strong>{resolveFor.entered_name ?? 'Not recorded'}</strong></p>
+          {/* An Owner unlinked this login before: from the chosen customer
+              (the server's check says so), or from another one. */}
+          {(linkCheck?.previously_unlinked || resolveFor.previously_unlinked) && (
+            <div className="alert alert-warning" data-flag="previously-unlinked" style={{ margin: '10px 0 12px' }}>
+              <b>Previously unlinked.</b>{' '}
+              {linkCheck?.previously_unlinked
+                ? `An Owner unlinked this login from this customer${linkCheck.unlinked_at ? ` on ${d(linkCheck.unlinked_at)}` : ''}.`
+                : 'An Owner unlinked this login from a customer before.'}
+              {canManage && ' Staff cannot link it back to that customer; link it only once you are sure who the person is.'}
+            </div>
+          )}
+          {/* An Owner unlinked another login from the chosen customer: staff
+              cannot link any login to them. */}
+          {linkCheck?.customer_previously_unlinked && !linkCheck.previously_unlinked && !checking && (
+            <div className="alert alert-warning" data-flag="customer-previously-unlinked" style={{ margin: '10px 0 12px' }}>
+              <b>Login unlinked before.</b>{' '}
+              {`An Owner unlinked a login from this customer${linkCheck.customer_unlinked_at ? ` on ${d(linkCheck.customer_unlinked_at)}` : ''}.`}
+              {canManage && ' Staff cannot link any login to them; link this one only once you are sure who the person is.'}
+            </div>
+          )}
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Customer to link</label>
           <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={resolveCust} onChange={setResolveCust} /></div>
+          {/* The two phones side by side: what the person typed at sign-up, and
+              what is on the chosen customer's record. */}
+          <div className="affiliate-phone-compare" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
+            <div className="card" style={{ padding: 10 }} data-phone="entered">
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Phone entered at sign-up</div>
+              <div style={{ fontWeight: 600 }}>{resolveFor.entered_phone || 'None entered'}</div>
+            </div>
+            <div className="card" style={{ padding: 10 }} data-phone="customer">
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Customer's phone</div>
+              <div style={{ fontWeight: 600 }}>
+                {!resolveCust ? 'Choose a customer' : checking ? 'Checking…' : linkCheck ? (linkCheck.customer_phone || 'No phone on record') : '—'}
+              </div>
+            </div>
+          </div>
+          {linkCheck && !checking && linkCheck.phones_match && (
+            <div className="alert alert-info" style={{ marginBottom: 12 }}>The phones match.</div>
+          )}
+          {linkCheck && !checking && !linkCheck.phones_match && canManage && (
+            <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+              The phones differ. As an Owner or Manager you can still link this customer once you have verified who the person is.
+            </div>
+          )}
+          {staffPhoneDiffers && !checking && (
+            <div className="alert alert-danger" role="alert" style={{ marginBottom: 12 }}>{STAFF_PHONE_RULE}</div>
+          )}
+          {linkCheck?.problem && linkCheck.problem !== STAFF_PHONE_RULE && !checking && (
+            <div className="alert alert-danger" role="alert" style={{ marginBottom: 12 }}>{linkCheck.problem}</div>
+          )}
+          {checkErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 12 }}>{checkErr}</div>}
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Verification note (required)</label>
           <textarea className="input" rows={3} value={resolveNote} onChange={e => setResolveNote(e.target.value)} style={{ marginBottom: 14 }} />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-secondary" onClick={() => setResolveFor(null)}>Cancel</button>
-            <button className="btn btn-primary" disabled={busy === resolveFor.claim_id} onClick={submitResolve}>Link Account</button>
+            <button className="btn btn-primary" disabled={busy === resolveFor.claim_id || resolveBlocked} onClick={submitResolve}>Link Account</button>
           </div>
         </Modal>
       )}
@@ -402,6 +629,57 @@ const AffiliatesPage: React.FC = () => {
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-secondary" onClick={() => setRejectFor(null)}>Cancel</button>
             <button className="btn btn-primary" disabled={busy === rejectFor.claim_id} onClick={submitReject} style={{ gap: 4 }}><XCircle size={15} /> Reject Claim</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Unlink a portal login (Owner) */}
+      {unlinkFor && (
+        <Modal title={`Unlink portal login — ${unlinkFor.name}`} onClose={() => setUnlinkFor(null)} confirmClose={!!unlinkReason.trim()}>
+          {!unlinkInfo && !unlinkErr && !unlinkUnavailable && <p style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>Loading…</p>}
+          {unlinkUnavailable && <p style={{ fontSize: 13.5 }}>Unlinking a login is not available yet. Nothing has been changed.</p>}
+          {unlinkInfo && !unlinkInfo.linked && <p style={{ fontSize: 13.5 }}>This customer has no portal login linked.</p>}
+          {unlinkInfo?.linked && (
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              <div><b>Login:</b> {unlinkInfo.login_email ?? '—'}</div>
+              <div><b>Linked:</b> {d(unlinkInfo.linked_at)}{unlinkInfo.last_sign_in_at ? ` · last signed in ${d(unlinkInfo.last_sign_in_at)}` : ''}</div>
+              {(unlinkInfo.claims ?? []).length > 0
+                ? (unlinkInfo.claims ?? []).map(c => (
+                    <div key={c.claim_id}>
+                      <b>How:</b> account claim resolved by {c.resolved_by_name ?? 'someone'} on {d(c.resolved_at)}
+                      {c.entered_phone ? ` (phone entered ${c.entered_phone})` : ''}{c.resolution_note ? ` — “${c.resolution_note}”` : ''}
+                    </div>))
+                : <div><b>How:</b> at sign-up, without a claim (the verified email, phone and name matched this customer).</div>}
+            </div>
+          )}
+          {unlinkInfo?.linked && (
+            <>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+                Unlinking removes only the link between this login and {unlinkFor.name}, so the customer can be linked again.
+                Their affiliate record, referral code and link, referred customers, commissions and payouts stay as they are,
+                and the claim history is kept. The person can still sign in, but no longer sees this customer's portal: they are
+                asked to finish setting up again, which usually parks a new account claim and never links them back
+                to {unlinkFor.name} by itself, even if their email, phone and name all match this customer's record.
+              </p>
+              <p data-note="after-unlink" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+                Afterwards staff cannot link any login to {unlinkFor.name}, this one or a new one, and sign-up no longer links
+                one to them automatically; only an Owner or Manager can link a login to them.
+                A new claim from this login shows as “Previously unlinked”, and a claim that suggests {unlinkFor.name} shows
+                “Login unlinked before”. If the person must not get back in, Reject that claim.
+              </p>
+              <p data-note="other-customers" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
+                This covers {unlinkFor.name} only. For other customers, staff who change a customer's email, name or phone can
+                still change which customer a sign-up is linked to automatically, as before.
+              </p>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }} htmlFor="unlink-reason">Reason (required)</label>
+              <textarea id="unlink-reason" className="input" rows={3} value={unlinkReason} onChange={e => setUnlinkReason(e.target.value)} style={{ marginBottom: 14 }} />
+            </>
+          )}
+          {unlinkErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 12 }}>{unlinkErr}</div>}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setUnlinkFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={!unlinkInfo?.linked || !unlinkReason.trim() || busy === unlinkFor.customer_id}
+              onClick={submitUnlink} style={{ gap: 4 }}><Unlink size={15} /> Unlink login</button>
           </div>
         </Modal>
       )}

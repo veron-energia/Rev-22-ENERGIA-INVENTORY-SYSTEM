@@ -55,7 +55,9 @@ declare
                              'event_ticket_guests_follow_line','trg_event_guests_follow_refund','event_ticket_price_date',
                              -- 372: website orders are handed in by the edge function only
                              'web_order_uuid','web_order_phone_customers','web_order_customer','web_order_people',
-                             'web_order_make_invoice','web_order_rename_people','web_order_paid','web_order_names'];
+                             'web_order_make_invoice','web_order_rename_people','web_order_paid','web_order_names',
+                             -- 378: who counts as staff for affiliate account claims
+                             'affiliate_claim_staff'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

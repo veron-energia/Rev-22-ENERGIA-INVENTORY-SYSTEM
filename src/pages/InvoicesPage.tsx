@@ -2,7 +2,7 @@ import { useSearchParams } from 'react-router-dom';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
-import { PdfDoc } from '../lib/invoicePdf';
+import { PdfDoc, creditBalanceShown } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { PaymentSummaryExport } from '../components/PaymentSummaryExport';
 import { XeroExportButton } from '../components/XeroExport';
@@ -39,6 +39,7 @@ import { fetchInvoicePage, fetchAllMatchingInvoices } from '../lib/invoices/list
 import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefresh, announcedMatchesShown } from '../lib/invoices/listRefresh';
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
+import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -207,6 +208,31 @@ const InvoicesPage: React.FC = () => {
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
   const [originalDrafts, setOriginalDrafts] = useState<LineDraft[]>([]);
   const unchangedDraft = (l: LineDraft) => !!l.invoice_item_id && JSON.stringify(l) === JSON.stringify(originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id));
+  // 377: a saved line's price belongs to the item it was sold as. Choosing
+  // another catalogue item (or a rental's other rate or length) drops the
+  // saved price, so the new item's catalogue price is shown and sent: the
+  // server counts a saved price sent with another item as a price override,
+  // which only an Owner or Manager may make (they can still type one).
+  // Choosing the saved item again brings the saved price back. `resets` are
+  // the other fields a selector clears when the item really changes (a
+  // therapy line's quantity and benefit choice, a ticket's days): choosing the
+  // item the line already has changes nothing, and choosing the saved item
+  // again brings them back as saved too.
+  const withCatalogueItem = (l: LineDraft, patch: Partial<LineDraft>, resets: Partial<LineDraft> = {}): LineDraft => {
+    const item = (d: LineDraft) => JSON.stringify([d.product_id, d.voucher_id, d.promotion_id, d.credit_package_id,
+      d.premium_bundle_id, d.special_product_id, d.kind === 'rental' ? [d.rental_rate_type ?? 'day', d.rental_periods ?? 1] : null,
+      d.therapy_package_id ?? '', d.therapy_service_id ?? '', d.event_ticket_option_id ?? '']);
+    const next = { ...l, ...patch };
+    if (item(next) === item(l)) return next;
+    const changed = { ...next, ...resets };
+    if (!l.invoice_item_id) return changed;
+    const saved = originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id);
+    if (saved && item(changed) === item(saved)) {
+      const asSaved = Object.fromEntries(Object.keys(resets).map(k => [k, saved[k as keyof LineDraft]])) as Partial<LineDraft>;
+      return { ...changed, ...asSaved, unit_price: saved.unit_price, saved_topup: saved.saved_topup };
+    }
+    return { ...changed, unit_price: undefined, saved_topup: undefined };
+  };
   const unchangedBenefitDefinition = (l: LineDraft) => {
     const original = originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id);
     return !!original && JSON.stringify({ ...l, unit_price: undefined }) === JSON.stringify({ ...original, unit_price: undefined });
@@ -340,8 +366,10 @@ const InvoicesPage: React.FC = () => {
   const [focBusy, setFocBusy] = useState(false);
   // Phase 13 — edit mode + exchange detail + revision history
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
-  // Correcting a SETTLED invoice is a different, Owner/Manager-only operation:
-  // it unwinds stock and commission, writes a revision, and needs a reason.
+  // Correcting a SETTLED invoice is a different, audited operation: it unwinds
+  // stock and commission, writes a revision, and needs a reason. Owners and
+  // Managers correct any; staff a paid or part-paid one of their own store,
+  // without its money parts (377, staffMayCorrect below).
   const [editingPaid, setEditingPaid] = useState(false);
   const [editReason, setEditReason] = useState('');
   // Correcting the affiliate and the payment methods on a settled invoice.
@@ -367,6 +395,36 @@ const InvoicesPage: React.FC = () => {
   const [paymentsBeforeEdit, setPaymentsBeforeEdit] = useState<InvoicePayment[]>([]);
   const [detailExchange, setDetailExchange] = useState<any>(null);
   const [detailRevisions, setDetailRevisions] = useState<InvoiceRevision[]>([]);
+  // Which invoice the loaded rows above belong to. Print, PDF, Image, WhatsApp
+  // and Email stay off until it is the open invoice, so a copy is never made
+  // from the items or payments of the invoice opened before.
+  const [detailLoadedFor, setDetailLoadedFor] = useState<string | null>(null);
+  const detailDataForRef = useRef<string | null>(null);
+  // The read of an invoice's row that comes before a reload of it reaches
+  // openDetail (a change from another tab, Record Payment on this one). The
+  // screen is out of date from the moment that read is sent, so the copies and
+  // Correct / Edit Invoice wait for it as they do for the load itself. Each
+  // read holds and lets go on its own, so a read that fails leaves the invoice
+  // as it was, and one reload finishing never frees another still out.
+  const [detailReadsOut, setDetailReadsOut] = useState<{ invoiceId: string }[]>([]);
+  const holdCopiesDuring = async <T,>(invoiceId: string, read: PromiseLike<T>): Promise<T> => {
+    const hold = { invoiceId };
+    setDetailReadsOut(holds => [...holds, hold]);
+    try { return await read; }
+    finally { setDetailReadsOut(holds => holds.filter(h => h !== hold)); }
+  };
+  // Said on screen when a copy went out without the credit balance because it
+  // could not be read. The copy itself is never held up for it.
+  const [creditNote, setCreditNote] = useState<string | null>(null);
+  // Every wallet payment method, switched off or deleted included: a payment
+  // taken from the wallet still counts as one after its method is retired.
+  const [walletMethodIds, setWalletMethodIds] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    supabase.from('payment_methods').select('id').eq('is_wallet_credit', true)
+      .then(({ data }) => { if (live && data) setWalletMethodIds((data as { id: string }[]).map(r => r.id)); });
+    return () => { live = false; };
+  }, []);
   const [affiliateOptions, setAffiliateOptions] = useState<{ affiliate_id: string; full_name: string; phone: string }[]>([]);
   const [affiliateBusy, setAffiliateBusy] = useState(false);
   const [affiliateErr, setAffiliateErr] = useState<string | null>(null);
@@ -1097,8 +1155,10 @@ const InvoicesPage: React.FC = () => {
         setReasonFocusTick(t => t + 1);
       }
       // This particular refusal has a way forward, so offer it rather than
-      // leaving a message the operator can do nothing with.
-      if (editingInvoiceId && /Historical component snapshots need review/i.test(error.message)) {
+      // leaving a message the operator can do nothing with. The review is an
+      // Owner's or Manager's; a staff member's refusal already says to ask one.
+      if (editingInvoiceId && isOwnerOrManager(profile?.role)
+          && /Historical component snapshots need review/i.test(error.message)) {
         setStockReviewFor(editingInvoiceId);
       }
       return;
@@ -1149,6 +1209,26 @@ const InvoicesPage: React.FC = () => {
   const hasRefundablePayment = netReceived > 0;
   const cancellable = Boolean(detail) && !['cancelled', 'refunded'].includes(String(detail?.status));
   const canManageInvoice = isOwnerOrManager(profile?.role);
+  // 377: staff correct a paid or part-paid invoice of a store they work at.
+  // Prices, payment amounts and dates, removing or splitting a payment, the
+  // store and who raised it stay with an Owner or Manager. The server decides
+  // (staff_may_correct_invoice, which also says no while a refund or
+  // cancellation request is waiting); the page asks it about the open invoice
+  // so the button is offered exactly where a save would be accepted.
+  const [staffMayCorrect, setStaffMayCorrect] = useState(false);
+  useEffect(() => {
+    const id = detail?.id;
+    setStaffMayCorrect(false);
+    if (!isStaff || !id || !['paid', 'partially_paid'].includes(String(detail?.status))
+        || (detail as any)?.is_topup || (detail as any)?.is_exchange) return;
+    let live = true;
+    void supabase.rpc('staff_may_correct_invoice', { p_invoice_id: id })
+      .then(({ data }) => { if (live) setStaffMayCorrect(data === true); });
+    return () => { live = false; };
+  }, [isStaff, detail?.id, detail?.status]);
+  const canCorrectInvoice = canManageInvoice || staffMayCorrect;
+  // In the correction form: a staff member's correction, with the money parts read-only.
+  const staffCorrection = editingPaid && isStaff;
   const refundCancelButton = detail && canManageInvoice ? (
     <button className="btn invoice-refund-cancel" onClick={() => setGuidedOpen(true)}
       title="Cancel this invoice, or record a refund">
@@ -1362,6 +1442,7 @@ const InvoicesPage: React.FC = () => {
   useEffect(() => {
     if (detail) return;
     detailIdRef.current = null; detailLoadSeq.current++;
+    detailDataForRef.current = null; setDetailLoadedFor(null); setDetailReadsOut([]);
     setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
   }, [detail]);
   /**
@@ -1380,8 +1461,9 @@ const InvoicesPage: React.FC = () => {
     // Only the invoice that is open is reloaded: never one the user has since
     // closed or navigated away from.
     if (detailIdRef.current !== invoiceId) return;
-    const { data, error } = await supabase.from('invoices')
-      .select('*').eq('id', invoiceId).is('deleted_at', null).maybeSingle();
+    // The copies wait from here, not only once openDetail has the new row.
+    const { data, error } = await holdCopiesDuring(invoiceId, supabase.from('invoices')
+      .select('*').eq('id', invoiceId).is('deleted_at', null).maybeSingle());
     if (error) throw error;
     if (!data) throw new Error('The invoice could not be read back.');
     if (detailIdRef.current !== invoiceId) return;
@@ -1392,6 +1474,14 @@ const InvoicesPage: React.FC = () => {
   const openDetail = async (inv: Invoice) => {
     const seq = ++detailLoadSeq.current;
     detailIdRef.current = inv.id;
+    // The copy buttons and Correct / Edit Invoice wait for this load to finish
+    // (detailLoadedFor), from its very first read — on a reload of the open
+    // invoice too (Record Payment, an FOC change, a change from another tab):
+    // the screen is out of date from here, and a copy made before the new row,
+    // its payments, items and Bill To are all back would show the invoice as it
+    // was, or mix the two. A reload keeps its own rows on screen meanwhile;
+    // another invoice's rows go once its row is in (below).
+    setDetailLoadedFor(null);
     const superseded = () => seq !== detailLoadSeq.current;
     // The list row is the page's narrow shape (324): enough to show, not
     // enough to correct from — it carries no notes, manual discount, voucher
@@ -1402,30 +1492,43 @@ const InvoicesPage: React.FC = () => {
     if (fullRow) inv = fullRow as Invoice;
     setPaymentRequestId(crypto.randomUUID());
     setDetail(inv); setDetailFinancial(null);
+    // Still not ready (set above, before the first read): `detail` is the new
+    // row from here; another invoice's rows go at once.
+    if (detailDataForRef.current !== inv.id) {
+      detailDataForRef.current = null;
+      setDetailItems([]); setDetailPayments([]); setDetailPromoItems([]); setDetailSelections([]);
+      setDetailServiceStaff([]); setDetailExchange(null); setDetailRevisions([]);
+    }
     setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
     setDetailTherapy(null);
     setDetailNames(null);
-    supabase.rpc('invoice_display_names', { p_invoice_id: inv.id })
+    const namesLoaded = supabase.rpc('invoice_display_names', { p_invoice_id: inv.id })
       .then(({ data }) => { if (!superseded()) setDetailNames(data ?? null); });
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
-    setSendErr(null); setSendNote(null);
+    setSendErr(null); setSendNote(null); setCreditNote(null);
     setRevisions([]);
     supabase.rpc('invoice_revision_history', { p_invoice_id: inv.id })
-      .then(({ data }) => setRevisions((data as any[]) ?? []));
+      .then(({ data }) => { if (!superseded()) setRevisions((data as any[]) ?? []); });
     setBillToSource('-');
-    supabase.rpc('invoice_bill_to_source', { p_invoice_id: inv.id })
-      .then(({ data }) => setBillToSource((data as string) || '-'));
+    // Printed in Bill To, so a slow answer for the invoice before is ignored.
+    const billToLoaded = supabase.rpc('invoice_bill_to_source', { p_invoice_id: inv.id })
+      .then(({ data }) => { if (!superseded()) setBillToSource((data as string) || '-'); });
     void loadInvoiceLegacy(inv.id, inv);
     void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
       supabase.from('warehouses').select('id,name').is('deleted_at', null).order('name')
         .then(({ data }) => setWarehouses((data as any[]) ?? []));
     }
+    // The wallet Record Payment offers. A wallet loaded for a different customer
+    // is dropped at once, and a slow answer for the invoice opened before this
+    // one is ignored, so one customer's credit is never offered on another's
+    // invoice. (Printing and sending read the balance afresh: creditBalanceNow.)
+    setPayWallet((prev: any) => (prev?.customer_id && prev.customer_id === inv.customer_id ? prev : null));
     if (inv.customer_id) {
       supabase.rpc('customer_credit_balances', { p_customer_id: inv.customer_id })
-        .then(({ data }) => setPayWallet(data ?? null));
-    } else { setPayWallet(null); }
+        .then(({ data }) => { if (!superseded()) setPayWallet(data ?? null); });
+    }
     setDetailEvent(null); setEventTagErr(null);
     const [items, pays, svc, ther, financial, evt] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
@@ -1450,16 +1553,20 @@ const InvoicesPage: React.FC = () => {
       promoIds.length ? supabase.from('promotion_items').select('*').in('promotion_id', promoIds) : Promise.resolve({ data: [] } as any),
       itemIds.length ? supabase.from('invoice_promotion_selections').select('*').in('invoice_item_id', itemIds) : Promise.resolve({ data: [] } as any),
     ]);
+    // A newer open owns the screen from here: nothing below is this invoice's to set.
+    if (superseded()) return;
     setDetailPromoItems((pi.data as any[]) ?? []);
     setDetailSelections((sel.data as any[]) ?? []);
     // Phase 13 — exchange context + revision history.
     if ((inv as any).is_exchange) {
       const { data: exd } = await supabase.rpc('exchange_invoice_details', { p_invoice_id: inv.id });
+      if (superseded()) return;
       setDetailExchange(exd ?? null);
     } else setDetailExchange(null);
     const { data: revs } = await supabase.from('invoice_revisions')
       .select('id, invoice_id, revision_no, edited_by, edit_reason, edited_at')
       .eq('invoice_id', inv.id).order('revision_no', { ascending: false });
+    if (superseded()) return;
     setDetailRevisions((revs as InvoiceRevision[]) ?? []);
     setDetailFinancial(financial.data);
     const remaining = Number(financial.data?.outstanding ?? 0);
@@ -1474,6 +1581,10 @@ const InvoicesPage: React.FC = () => {
       instalment_months: (inv as any).instalment_months ?? '',
     });
     setPayErr(null); setPayOutcome(null); setPayDate(singaporeToday());
+    // Everything the printed and sent copies read is in: they may be made now.
+    await Promise.all([namesLoaded, billToLoaded]).catch(() => { /* the copy falls back to the page's own names */ });
+    if (superseded()) return;
+    detailDataForRef.current = inv.id; setDetailLoadedFor(inv.id);
   };
 
   const payTotal = useMemo(() => payLines.reduce((s, p) => s + (p.amount || 0), 0), [payLines]);
@@ -1643,7 +1754,9 @@ const InvoicesPage: React.FC = () => {
     // Recorded. From here a failure is a DISPLAY failure, never a reason to pay
     // again, so it is reported as exactly that.
     noteLocalChangeRef.current([invoiceId]);
-    const { data: invRow, error: refreshError } = await supabase.from('invoices').select('*').eq('id', invoiceId).single();
+    // The payment is in but not yet on screen: no copy until it is.
+    const { data: invRow, error: refreshError } = await holdCopiesDuring(invoiceId,
+      supabase.from('invoices').select('*').eq('id', invoiceId).single());
     if (refreshError || !invRow) {
       setPayOutcome('The payment was recorded. This invoice could not be reloaded just now — reopen it from the list to see its updated status. Do not record the payment again.');
       void refreshList({ afterSave: 'The payment was recorded', changed: [invoiceId] });
@@ -2078,14 +2191,49 @@ const InvoicesPage: React.FC = () => {
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [sendBusy, setSendBusy] = useState<'whatsapp' | 'email' | null>(null);
 
+  // The customer's credit balance for a print or send, read from the server at
+  // the moment the button is pressed (owner, 2 Oct 2026). payWallet is not used:
+  // it is loaded when an invoice opens and can still hold the previous
+  // invoice's customer. Resolves to null — print without the line — when it
+  // does not apply or cannot be read; it never holds a print up for long.
+  // When it could not be read (a timeout or an error, not a role that may not
+  // see credit), the copy goes ahead without it (`unreadable`), and once the
+  // copy has gone out the page says so: copyWentWithoutCredit.
+  const creditBalanceNow = (inv: Invoice, pays: InvoicePayment[]): Promise<{ line: CreditBalanceLine | null; unreadable: boolean }> =>
+    readCreditBalanceForInvoice({
+      invoice: inv, payments: pays as any[],
+      // Retired wallet methods too (walletMethodIds), as well as the active ones.
+      walletMethodIds: [...walletMethodIds, ...methods.filter(m => (m as any).is_wallet_credit).map(m => m.id)],
+      fetchBalances: customerId => supabase.rpc('customer_credit_balances', { p_customer_id: customerId }),
+    });
+  // Called once a copy has actually gone out — written into the print window,
+  // sent, or saved — never before, so it never reports a copy that was not
+  // made. Says so when it went without the credit balance: it could not be
+  // read, or (PDF and image) there was no room for it on the page. Only on the
+  // invoice the copy was made from: if another one is open by now, it is not
+  // that invoice's news.
+  const copyWentWithoutCredit = (invoiceId: string, done: 'Printed' | 'Saved' | 'Sent', why: 'unreadable' | 'no-room' | null) => {
+    if (!why || detailIdRef.current !== invoiceId) return;
+    setCreditNote(`${done} without the credit balance — ${why === 'unreadable' ? 'it could not be read' : 'no room on the page'}.`);
+  };
+  /** Why a PDF or image copy went without the line, once it has been drawn. */
+  const pdfCreditMissing = (built: { pdf: PdfDoc; unreadable: boolean }): 'unreadable' | 'no-room' | null =>
+    built.unreadable ? 'unreadable' : creditBalanceShown(built.pdf) === 'none' ? 'no-room' : null;
+  // The open invoice's own rows are loaded: its copies may be made, and it may
+  // be corrected (Correct / Edit Invoice build their form from those rows).
+  const docReady = !!detail && detailLoadedFor === detail.id && !detailReadsOut.some(h => h.invoiceId === detail.id);
+  const docWaitTitle = docReady ? undefined : 'Loading this invoice…';
+
   // The customer copy as a real A5 PDF — same content as the printed customer
-  // half. Built in src/lib/invoicePdf.ts.
-  const buildPdfDoc = (): PdfDoc | null => {
+  // half. Built in src/lib/invoicePdf.ts. Async because the credit balance on it
+  // is read fresh each time; `unreadable` says it could not be.
+  const buildPdfDoc = async (): Promise<{ pdf: PdfDoc; invoiceId: string; unreadable: boolean } | null> => {
     if (!detail) return null;
+    const { line: creditBalance, unreadable } = await creditBalanceNow(detail, detailPayments);
     const store: any = stores.find(s2 => s2.id === detail.store_id) ?? {};
     const cust = customerOf(detail.customer_id);
     const bal = Number(detailFinancial?.outstanding ?? 0);
-    return {
+    const pdf: PdfDoc = {
       kindLabel: 'Tax Invoice',
       docNo: detail.invoice_no,
       date: displayInvoiceDate(detail),
@@ -2123,6 +2271,7 @@ const InvoicesPage: React.FC = () => {
         `${printedMethod(pm.payment_method_id) || 'Payment'} · ${new Date(pm.effective_at || pm.created_at).toLocaleDateString('en-SG')}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
         `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
       ] as [string, string]),
+      creditBalance,
       payDetails: [
         instalmentText(detail as any, methods),
         store.paynow_uen ? `CIMB UEN: ${store.paynow_uen}` : '',
@@ -2137,6 +2286,7 @@ const InvoicesPage: React.FC = () => {
         store.co_reg_no ? `Co. Reg No.: ${store.co_reg_no}` : '',
       ].filter(Boolean),
     };
+    return { pdf, invoiceId: detail.id, unreadable };
   };
 
   // Sends the invoice itself. On a phone the native share sheet opens with the
@@ -2150,38 +2300,94 @@ const InvoicesPage: React.FC = () => {
   // WhatsApp gets a link to the PDF; email gets the PDF attached, sent by the
   // send-invoice-email Edge Function. See src/lib/sendDoc.ts.
   const sendPdf = async (channel: 'whatsapp' | 'email') => {
-    const pdf = buildPdfDoc();
-    if (!detail || !pdf) return;
-    const cust = customerOf(detail.customer_id);
-    setSendBusy(channel); setSendErr(null); setSendNote(null);
-    const args = {
-      pdf, kindLabel: 'Invoice', docNo: detail.invoice_no, docId: detail.id,
-      docKind: 'invoice' as const, storeId: detail.store_id,
-      customerId: detail.customer_id, customerName: cust?.full_name,
-      phone: cust?.phone, email: cust?.email,
-    };
-    const r = channel === 'whatsapp'
-      ? await sendViaWhatsAppLink(args)
-      : await sendViaEmailAttachment(args);
-    setSendBusy(null);
-    if (!r.ok) { setSendErr(r.reason ?? 'Could not send.'); return; }
-    if (channel === 'whatsapp') {
-      setSendNote('WhatsApp has opened with a link to the invoice PDF.');
+    if (!detail) return;
+    // Busy from the start: building the copy now waits on the credit balance.
+    // Whatever happens, the button comes back.
+    setSendBusy(channel); setSendErr(null); setSendNote(null); setCreditNote(null);
+    try {
+      const built = await buildPdfDoc();
+      if (!built) return;
+      const { pdf } = built;
+      const cust = customerOf(detail.customer_id);
+      const args = {
+        pdf, kindLabel: 'Invoice', docNo: detail.invoice_no, docId: detail.id,
+        docKind: 'invoice' as const, storeId: detail.store_id,
+        customerId: detail.customer_id, customerName: cust?.full_name,
+        phone: cust?.phone, email: cust?.email,
+      };
+      const r = channel === 'whatsapp'
+        ? await sendViaWhatsAppLink(args)
+        : await sendViaEmailAttachment(args);
+      if (!r.ok) { setSendErr(r.reason ?? 'Could not send.'); return; }
+      // It went: now say if it went without the credit balance.
+      copyWentWithoutCredit(built.invoiceId, 'Sent', pdfCreditMissing(built));
+      if (channel === 'whatsapp') {
+        setSendNote('WhatsApp has opened with a link to the invoice PDF.');
+        return;
+      }
+      // Say which of the three routes was used, rather than implying the PDF was
+      // attached when only a link went out.
+      const outcome = (r as any).outcome as 'attached' | 'shared' | 'link' | undefined;
+      setSendNote(
+        outcome === 'attached' ? `The invoice PDF has been emailed to ${cust?.email}.`
+        : outcome === 'shared' ? ((r as any).reason ?? 'Choose your email app — the PDF is attached.')
+        : ((r as any).reason ?? 'Your mail client has opened with a link to the PDF.'));
+    } catch (e: any) {
+      console.error('The invoice could not be sent', e);
+      setSendErr(`Could not send${e?.message ? ` (${e.message})` : ''}.`);
+    } finally {
+      setSendBusy(null);
+    }
+  };
+  // Saves the customer copy; once it is saved, says if it went without the
+  // credit balance. A save that fails says so instead.
+  const saveCopy = async (format: DocFormat) => {
+    setCreditNote(null); setSendErr(null);
+    const built = await buildPdfDoc();
+    if (!built) return;
+    try {
+      await saveDocumentFile(built.pdf, format, built.pdf.docNo);
+    } catch (e: any) {
+      console.error('The invoice copy could not be saved', e);
+      if (detailIdRef.current === built.invoiceId) setSendErr(`Could not save${e?.message ? ` (${e.message})` : ''}.`);
       return;
     }
-    // Say which of the three routes was used, rather than implying the PDF was
-    // attached when only a link went out.
-    const outcome = (r as any).outcome as 'attached' | 'shared' | 'link' | undefined;
-    setSendNote(
-      outcome === 'attached' ? `The invoice PDF has been emailed to ${cust?.email}.`
-      : outcome === 'shared' ? ((r as any).reason ?? 'Choose your email app — the PDF is attached.')
-      : ((r as any).reason ?? 'Your mail client has opened with a link to the PDF.'));
+    copyWentWithoutCredit(built.invoiceId, 'Saved', pdfCreditMissing(built));
   };
-  const savePdf = () => { const d = buildPdfDoc(); if (d && detail) void saveDocumentFile(d, 'pdf', detail.invoice_no); };
-  const saveImg = () => { const d = buildPdfDoc(); if (d && detail) void saveDocumentFile(d, 'image', detail.invoice_no); };
+  const savePdf = () => saveCopy('pdf');
+  const saveImg = () => saveCopy('image');
 
-  const printInvoice = () => {
+  // Print opens its window at once, while the click still counts as the user's:
+  // a pop-up opened after waiting on the network is blocked. The credit balance
+  // is read next and the invoice written into the window once it is in. If
+  // anything fails after the window opened, the window says so rather than
+  // staying on "Preparing the invoice…".
+  const startPrint = async () => {
     if (!detail) return;
+    const w = window.open('', '_blank');
+    if (!w) { alert('Please allow pop-ups to print.'); return; }
+    try { if (w.document.body) w.document.body.textContent = 'Preparing the invoice…'; } catch { /* left blank instead */ }
+    try {
+      await printInvoice(w);
+    } catch (e) {
+      console.error('The invoice could not be prepared for printing', e);
+      try {
+        if (!w.closed) {
+          w.document.open();
+          w.document.write('<!doctype html><title>Invoice</title><p style="font:14px Arial,sans-serif;padding:16px">'
+            + 'The invoice could not be prepared for printing. Close this window and try again.</p>');
+          w.document.close();
+        }
+      } catch { /* the window is out of reach; the console has the error */ }
+    }
+  };
+
+  /** Writes the invoice into the print window startPrint opened. */
+  const printInvoice = async (w: Window) => {
+    if (!detail) return;
+    setCreditNote(null);
+    const credit = await creditBalanceNow(detail, detailPayments);
+    const creditBlock = creditBalanceHtml(credit.line);
     const store = stores.find(s => s.id === detail.store_id);
     const cust = customerOf(detail.customer_id);
     // "First Last (Referrer, Source)" — a missing referrer or source prints
@@ -2236,7 +2442,11 @@ const InvoicesPage: React.FC = () => {
           `<div>${esc(p.full_name)}${p.work_phone ? ` — ${esc(p.work_phone)}` : ''}</div>`).join('')}</div>`
       : '';
 
-    const totalPaid = detailPayments.reduce((s, p) => s + Number(p.amount), 0);
+    // What the rows above it add up to. Every payment is stored as a positive
+    // amount and a correction reversal prints as a minus, so it must count as
+    // one here too — adding them all up overstated Total Paid on every
+    // corrected invoice.
+    const totalPaid = paymentsTotal(detailPayments as any[]);
     const ex = detailExchange?.found ? detailExchange : null;
     const exchangeBlock = ex ? `
       <h2>Exchange Details</h2>
@@ -2355,6 +2565,7 @@ const InvoicesPage: React.FC = () => {
           <tr class="grand"><td>${ex ? 'Net Top-Up' : 'Total'}</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
         </table>
         ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
+        ${creditBlock}
         ${therapyBlock}
         ${authorisedBlock}
         <div class="signrow">
@@ -2380,11 +2591,14 @@ const InvoicesPage: React.FC = () => {
         <div class="cut"><span>✂  CUT HERE</span></div>
         ${copyHtml('OFFICE COPY')}
       </div>
-      <script>window.onload=function(){window.print();}</script>
+      <script>${CREDIT_BALANCE_FIT_SCRIPT}
+      window.onload=function(){try{fitCreditBalance();}catch(e){}window.print();}</script>
     </body></html>`;
-    const w = window.open('', '_blank');
-    if (!w) { alert('Please allow pop-ups to print.'); return; }
+    // Closed while the balance was being read: there is nothing to print into.
+    if (w.closed) return;
     w.document.write(html); w.document.close();
+    // Written: now say if it went without the credit balance.
+    copyWentWithoutCredit(detail.id, 'Printed', credit.unreadable ? 'unreadable' : null);
     // Audit: record that this invoice was printed.
     supabase.rpc('write_audit', {
       p_table: 'invoices', p_record: detail.id, p_action: 'invoice_printed',
@@ -2722,6 +2936,13 @@ const InvoicesPage: React.FC = () => {
                 <div>
                   <strong>Audited invoice correction.</strong> Unchanged lines keep their saved prices and FOC reasons.
                   The balance uses payments less refunds. Correcting a cancelled or refunded invoice preserves its status.
+                  {staffCorrection && (
+                    <div data-testid="staff-correction-note" style={{ marginTop: 6 }}>
+                      You can change the lines and quantities, the customer, the referrer, the service staff, a
+                      payment’s method, the date and the notes. Prices, payment amounts and dates, removing or
+                      splitting a payment, and the store stay with an Owner or Manager.
+                    </div>
+                  )}
                   <div style={{ marginTop: 8 }}>
                     <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Reason for the correction *</div>
                     <input value={editReason} onChange={e => setEditReason(e.target.value)}
@@ -2814,15 +3035,21 @@ const InvoicesPage: React.FC = () => {
                         {e.parts.map((part, idx) => (
                           <div key={idx} style={{ display: 'grid', gridTemplateColumns: '104px 148px minmax(140px, 1fr) auto',
                                                   gap: 8, alignItems: 'center', marginBottom: 4, opacity: e.remove ? 0.55 : 1 }}>
+                            {/* 377: staff change only the method; the amount and the
+                                date stay as recorded. */}
                             <input type="number" min="0.01" step="0.01" aria-label="Payment amount" value={part.amount}
-                              disabled={e.remove} onChange={ev => setPart(idx, { amount: ev.target.value })} />
+                              disabled={e.remove || staffCorrection}
+                              title={staffCorrection ? 'Only an Owner or Manager can change a payment’s amount' : undefined}
+                              onChange={ev => setPart(idx, { amount: ev.target.value })} />
                             <input type="date" aria-label="Date received" value={part.date}
-                              disabled={e.remove} onChange={ev => setPart(idx, { date: ev.target.value })} />
+                              disabled={e.remove || staffCorrection}
+                              title={staffCorrection ? 'Only an Owner or Manager can change the date a payment was received' : undefined}
+                              onChange={ev => setPart(idx, { date: ev.target.value })} />
                             {e.remove
                               ? <span style={{ fontSize: 12.5 }}>{printedMethod(part.payment_method_id) || '—'}</span>
                               : <InvoiceSearchSelect value={part.payment_method_id} onChange={id => setPart(idx, { payment_method_id: id })}
                                   options={methodOptionsFor(part.payment_method_id)} />}
-                            {idx === 0 ? (
+                            {staffCorrection ? <span /> : idx === 0 ? (
                               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEdit({ remove: !e.remove })}
                                 title={e.remove ? 'Keep this payment' : 'This receipt was recorded by mistake'}>
                                 {e.remove ? 'Keep' : 'Remove'}
@@ -2833,7 +3060,7 @@ const InvoicesPage: React.FC = () => {
                             )}
                           </div>
                         ))}
-                        {!e.remove && (
+                        {!e.remove && !staffCorrection && (
                           <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 2 }}>
                             {/* Part of this money came through another method: add a
                                 part. Each part becomes a replacement of this receipt. */}
@@ -2878,10 +3105,17 @@ const InvoicesPage: React.FC = () => {
                       </div>
                     );
                   })()}
+                  {staffCorrection ? (
+                    <div data-testid="staff-payment-note" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                      You can change the method a payment was made with. Its amount and date, removing it as
+                      recorded by mistake, and splitting it across methods are for an Owner or Manager.
+                    </div>
+                  ) : (
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                     The original receipt stays in history: a change to the amount or date records a reversal and a
                     replacement with the correction’s reason, and no refund. Benefits already issued at payment stay issued.
                   </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2945,10 +3179,15 @@ const InvoicesPage: React.FC = () => {
                     {storeOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 )}
-                {isStaff && myStores.length > 1 && (
+                {isStaff && myStores.length > 1 && !staffCorrection && (
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
                     You are assigned to {myStores.length} stores, so none is chosen for you.
                     The invoice, its prices and its stock all belong to the one you select here.
+                  </div>
+                )}
+                {staffCorrection && (
+                  <div data-testid="staff-store-note" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    Only an Owner or Manager can move an invoice to another store.
                   </div>
                 )}
               </div>
@@ -3097,7 +3336,7 @@ const InvoicesPage: React.FC = () => {
                         {(line.kind === 'special_product' || line.kind === 'rental') ? (
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <SearchSelect value={line.special_product_id ?? ''}
-                              onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, special_product_id: v } : l))}
+                              onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { special_product_id: v }) : l))}
                               placeholder="Search special product…"
                               options={specialProducts
                                 .filter((sp: any) => line.kind === 'special_product'
@@ -3118,7 +3357,7 @@ const InvoicesPage: React.FC = () => {
                                 <div style={{ flex: '0 0 100px' }}>
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Rate</div>
                                   <select value={line.rental_rate_type ?? 'day'}
-                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, rental_rate_type: e.target.value as any } : l))}>
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { rental_rate_type: e.target.value as any }) : l))}>
                                     {(() => {
                                       const sp = specialProducts.find((x: any) => x.id === line.special_product_id);
                                       const avail = (['day','week','month','year'] as const)
@@ -3133,7 +3372,7 @@ const InvoicesPage: React.FC = () => {
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Periods</div>
                                   <input type="number" min={1} value={line.rental_periods ?? 1}
                                     onChange={e => setCLines(ls => ls.map((l, j) => j === i
-                                      ? { ...l, rental_periods: Math.min(Math.max(1, Math.floor(+e.target.value || 1)), 3650) } : l))} />
+                                      ? withCatalogueItem(l, { rental_periods: Math.min(Math.max(1, Math.floor(+e.target.value || 1)), 3650) }) : l))} />
                                 </div>
                                 <div style={{ flex: '0 0 140px' }}>
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>From</div>
@@ -3156,8 +3395,9 @@ const InvoicesPage: React.FC = () => {
                               const o = ticketOption(v);
                               // A ticket covering every day of its event takes them all.
                               const all = o ? o.days.map(d => d.day) : [];
-                              return { ...l, event_ticket_option_id: v, unit_price: undefined,
-                                event_days: o && o.days_count === all.length ? all : [] };
+                              // The same option again keeps the saved price and days.
+                              return withCatalogueItem(l, { event_ticket_option_id: v }, { unit_price: undefined,
+                                event_days: o && o.days_count === all.length ? all : [] });
                             }))}
                             options={[...ticketOptions, ...keptTicketOptions.filter(k => !ticketOptions.some(o => o.option_id === k.option_id))].map(o => ({
                               value: o.option_id,
@@ -3167,14 +3407,14 @@ const InvoicesPage: React.FC = () => {
                         ) : line.kind === 'product' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
                             value={line.product_id}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, product_id: v } : l))}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { product_id: v }) : l))}
                             options={storeProducts.map(p => { const a = productAvail(p.id); return {
                               value: p.id, label: `${p.name} — ${a.label}${a.needsOverride ? ' *' : ''}`,
                               sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}`, searchPrices: [priceFor(activeStore, p.id)] }; })} />
                         ) : line.kind === 'voucher' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search voucher name or code…"
                             value={line.voucher_id}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, voucher_id: v } : l))}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { voucher_id: v }) : l))}
                             options={sellableVouchers.map(v => ({
                               value: v.id,
                               label: `${v.name}${voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}`,
@@ -3183,9 +3423,11 @@ const InvoicesPage: React.FC = () => {
                           <div style={{ flex: 1, minWidth: 0 }}>
                           <SearchSelect placeholder="Search therapy package or session…"
                             value={line.therapy_service_id ? `session:${line.therapy_service_id}` : line.therapy_package_id ?? ''}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l,
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, {
                               therapy_service_id: v.startsWith('session:') ? v.slice(8) : '',
-                              therapy_package_id: v.startsWith('session:') ? '' : v, therapy_benefit_intent: '', unit_price: undefined, quantity: 1 } : l))}
+                              therapy_package_id: v.startsWith('session:') ? '' : v },
+                              // The same package or session again keeps the saved price and quantity.
+                              { therapy_benefit_intent: '', unit_price: undefined, quantity: 1 }) : l))}
                             options={[
                               ...therapyPackages.map(p => { const pr = therapyPrice(p.id); return {
                                 value: p.id, label: `${p.name} (${p.duration_months}mo)${pr != null ? ` — ${money(pr)}` : ' — no price for this store'}`, search: `${p.name} ${(p as any).code ?? ''}`, searchPrices: [pr] }; }),
@@ -3228,7 +3470,7 @@ const InvoicesPage: React.FC = () => {
                         ) : line.kind === 'credit_package' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search Credit Package…"
                             value={line.credit_package_id ?? ''}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, credit_package_id: v, quantity: 1 } : l))}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { credit_package_id: v, quantity: 1 }) : l))}
                             options={creditPkgs.map((p: any) => ({
                               value: p.id,
                               label: `💳 ${p.name} — ${money(Number(p.customer_price))}`,
@@ -3236,7 +3478,7 @@ const InvoicesPage: React.FC = () => {
                         ) : line.kind === 'premium_bundle' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search Premium Bundle…"
                             value={line.premium_bundle_id ?? ''}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, premium_bundle_id: v, quantity: 1, bundle_voucher_selection: {} } : l))}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { premium_bundle_id: v, quantity: 1, bundle_voucher_selection: {} }) : l))}
                             options={creditBundles.map((b: any) => ({
                               value: b.id,
                               label: `💳 ${b.name} — ${money(Number(b.customer_payment_amount))}${b.grants_reward && (b.free_voucher_qty ?? 0) > 0 ? ` · ${b.free_voucher_qty} vouchers` : ''}`,
@@ -3244,7 +3486,7 @@ const InvoicesPage: React.FC = () => {
                         ) : (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search promotion name or code…"
                             value={line.promotion_id}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? { ...l, promotion_id: v } : l))}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { promotion_id: v }) : l))}
                             options={promotions.map(p => ({
                               value: p.id,
                               label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}`,
@@ -3642,102 +3884,103 @@ const InvoicesPage: React.FC = () => {
         <Modal title={`Invoice ${detail.invoice_no}`} wide onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
-                  {isOwnerOrManager(profile?.role) && (
-                    <button className="btn btn-secondary" onClick={openEdit}
-                      title="Correct this invoice with a reason and revision history">
+                  {/* Staff get Correct Invoice here too (377), beside Request Refund. */}
+                  {canCorrectInvoice && (
+                    <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
+                      title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>
                   )}
                   {refundCancelButton}
                   {!isOwnerOrManager(profile?.role) && <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button>}</>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={openEdit}>Correct Invoice</button>}{refundCancelButton}</>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{refundCancelButton}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button>
                   <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
-                  <button className="btn btn-secondary" onClick={openEdit}><FileText size={14} /> Edit Invoice</button>
+                  <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}><FileText size={14} /> Edit Invoice</button>
                   {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
                     : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy || Boolean(payBlockedReason)}
                         title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
               : detail.status === 'completed_foc'
-              ? <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
-              : <><button className="btn btn-secondary" onClick={printInvoice}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} title="Download the customer copy as a PDF"><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} title="Download the customer copy as an image"><Download size={14} /> Image</button>
+              : <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
+                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
+                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!whatsappNumber(customerOf(detail.customer_id)?.phone)}
+                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
                   title={whatsappNumber(customerOf(detail.customer_id)?.phone)
                     ? 'Open WhatsApp with this invoice ready to send'
                     : 'This customer has no usable mobile number'}>
                   <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
                 <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!emailAddress(customerOf(detail.customer_id)?.email)}
+                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
-                  {canManageInvoice && needsAuditedCorrection &&
-                    <button className="btn btn-secondary" onClick={openEdit}
-                      title="Correct this invoice with a reason and revision history">
+                  {canCorrectInvoice && needsAuditedCorrection &&
+                    <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
+                      title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>}
                   {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
@@ -3890,6 +4133,7 @@ const InvoicesPage: React.FC = () => {
             )}
             {sendErr && <div className="alert alert-danger"><span>⚠</span><div>{sendErr}</div></div>}
             {sendNote && <div className="alert alert-info"><span>ℹ</span><div>{sendNote}</div></div>}
+            {creditNote && <div className="alert alert-info" role="status" data-testid="credit-balance-unread"><span>ℹ</span><div>{creditNote}</div></div>}
 
             {isOwnerOrManager(profile?.role) && ['draft','unpaid','partially_paid'].includes(detail.status) && (
               <div>
