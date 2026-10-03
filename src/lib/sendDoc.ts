@@ -203,12 +203,18 @@ export interface SendArgs {
 
 const logSend = (a: SendArgs, channel: string, to: string, path: string | null,
                  status: 'sent' | 'failed', err?: string) => {
-  // Best effort: a failed audit write must not look like a failed send.
+  // Best effort: a failed audit write must not look like a failed send, so it
+  // is neither awaited nor allowed to throw. The client only sends a request
+  // once then() is called on it — "void supabase.rpc(...)" alone never did,
+  // and the send log stayed empty (389).
   void supabase.rpc('record_document_send', {
     p_doc_kind: a.docKind, p_doc_no: a.docNo, p_channel: channel,
     p_doc_id: a.docId ?? null, p_customer_id: a.customerId ?? null,
     p_sent_to: to, p_pdf_path: path, p_status: status, p_error: err ?? null,
-  });
+  }).then(
+    ({ error }) => { if (error) console.warn('The send was not logged:', error.message); },
+    (e) => console.warn('The send was not logged:', e),
+  );
 };
 
 /** WhatsApp: upload the PDF, then open the chat with a link to it. */
