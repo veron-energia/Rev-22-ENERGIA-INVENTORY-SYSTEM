@@ -145,9 +145,16 @@ begin
   if to_regprocedure('public.create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid)') is not null then
     raise exception 'FAIL: the legacy create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid) is back; 386 dropped it'; end if;
 
+  -- 7. The seven-argument record_document_send stays gone (388), for the same
+  --    reason. Granted to staff, it was an older copy of the send log's
+  --    writer; only the defaults of the current one's later arguments kept
+  --    calls from reaching it.
+  if to_regprocedure('public.record_document_send(text,text,text,uuid,uuid,text,text)') is not null then
+    raise exception 'FAIL: the legacy record_document_send(text,text,text,uuid,uuid,text,text) is back; 388 dropped it'; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice is gone', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send are gone', n;
 end $$;
