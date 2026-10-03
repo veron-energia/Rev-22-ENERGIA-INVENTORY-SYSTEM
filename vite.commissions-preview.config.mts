@@ -1,5 +1,5 @@
-// Renders StaffCommissionsPage (and ReportsPage at #reports) against a stub, so the part-payment review (357)
-// and the Sales by Service Staff tab (358) can be checked at real widths without a database or a login.
+// Renders ReportsPage against a stub, so the Sales by Service Staff tab (358) can be checked at real
+// widths without a database or a login.
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';

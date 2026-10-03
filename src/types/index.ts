@@ -736,26 +736,6 @@ export const RENTAL_STATUS_LABELS: Record<RentalStatus, string> = { draft: 'Draf
 
 // ── Phase 6C: staff service + commission ─────────────────────────────────────
 export interface InvoiceServiceStaff { id: string; invoice_id: string; staff_id: string; created_at: string; }
-export interface StaffCommission {
-  id: string; invoice_id: string; staff_id: string; store_id: string | null;
-  invoice_total: number; share_ratio: number; rate: number; commission_amount: number;
-  status: 'earned' | 'reversed' | 'paid'; invoice_paid_date: string | null;
-  payout_id: string | null; reversed_at: string | null; reversal_reason: string | null; created_at: string;
-  /** 'instalment': earned on a part payment while the invoice was still being paid (357). */
-  earning_basis?: 'settlement' | 'instalment';
-}
-/** One row of commission_instalment_backfill: what registering earlier part payments would add.
- *  'sales' rows are not money owed: they are earlier receipts moved into this month in the
- *  Sales by Service Staff report (358). */
-export interface InstalmentBackfillRow {
-  ledger: 'staff' | 'affiliate' | 'sales'; beneficiary_id: string; beneficiary_name: string | null;
-  invoice_id: string; invoice_no: string; earned_amount: number; blocked_amount: number; credit_date: string;
-}
-export interface StaffCommissionPayout {
-  id: string; payout_month: string; staff_id: string; total_amount: number;
-  payment_method_id: string | null; reference: string | null; notes: string | null;
-  status: string; paid_by: string | null; paid_at: string; created_at: string;
-}
 export const SERVICE_STAFF_ROLES: UserRole[] = ['owner', 'manager', 'staff'];
 
 // ── Spec Phase 1: dropdowns + audit extension ───────────────────────────────
