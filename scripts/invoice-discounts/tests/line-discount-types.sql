@@ -974,10 +974,13 @@ select pg_temp.check(not exists (
 
 -- ═════ L21 Running 384 again ═════
 -- Only while 384's versions are installed: a later migration that patches the
--- same functions makes a second run refuse, by design.
+-- same functions makes a second run refuse, by design. So does one that
+-- patches a function 384 relies on unchanged: confirm_foc_invoice (387).
 \set ON_ERROR_STOP off
 select (select count(*) from pg_proc where oid = 'public.invoice_line_matches(uuid,jsonb)'::regprocedure
-          and md5(prosrc) = '3b24939e07962d6ac3de82813bc3a83a') = 1 as rerun \gset
+          and md5(prosrc) = '3b24939e07962d6ac3de82813bc3a83a') = 1
+   and (select count(*) from pg_proc where oid = 'public.confirm_foc_invoice(uuid,text)'::regprocedure
+          and md5(prosrc) = '50104e9fca42a618270c0d37ff05084f') = 1 as rerun \gset
 \set ON_ERROR_STOP on
 \if :rerun
 create temp table before384 as
