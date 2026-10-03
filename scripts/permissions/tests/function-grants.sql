@@ -137,9 +137,17 @@ begin
   if bad is not null then
     raise exception 'FAIL: the API cannot choose between functions with the same parameter names: %', bad; end if;
 
+  -- 6. The seven-argument create_invoice stays gone (386). Granted to staff,
+  --    it wrote a discount with no reason and none of 385's line rules; only
+  --    the default of the current create_invoice's eighth argument kept calls
+  --    from reaching it. Revoking it is not enough: while it exists, a patch
+  --    that picks "the" create_invoice by name can patch it instead (302).
+  if to_regprocedure('public.create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid)') is not null then
+    raise exception 'FAIL: the legacy create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid) is back; 386 dropped it'; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice is gone', n;
 end $$;
