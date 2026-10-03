@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 import { fetchAllFrom } from '../lib/supabasePaging';
 import { useAuth } from '../context/AuthContext';
 import { ROLE_LABELS, isManagerOrAbove } from '../types';
+import { singaporeToday } from '../lib/invoices/business';
+import { focSnapshot, focWindowStart, type FocSnapshot } from '../lib/dashboard/focSnapshot.mjs';
 import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, TrendingUp, Clock, Ban, Sparkles, Users } from 'lucide-react';
 
 interface Counts {
@@ -101,7 +103,7 @@ const DashboardPage: React.FC = () => {
   const [negStock, setNegStock] = useState<{ store_name: string; kind: string; item_name: string; current_qty: number }[]>([]);
   // Phase 18 — operations alerts + FOC snapshot.
   const [alerts, setAlerts] = useState<any>(null);
-  const [focLines, setFocLines] = useState<any[]>([]);
+  const [foc, setFoc] = useState<FocSnapshot | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -124,8 +126,15 @@ const DashboardPage: React.FC = () => {
       const { data: neg } = await supabase.rpc('tiktok_negative_stock_alerts');
       const { data: al } = await supabase.rpc('dashboard_alerts_summary');
       setAlerts(al ?? null);
-      const { data: fl } = await supabase.rpc('report_foc_lines', { p_from: null, p_to: null, p_store_id: null });
-      setFocLines((fl as any[]) ?? []);
+      // The FOC card: the last 30 days of the FOC report (the stores this login
+      // may see, settled invoices, by invoice date), its total and breakdown
+      // read from the same rows. The report returns store_id and foc_value.
+      const focToday = singaporeToday();
+      const [{ data: fl }, { data: focStores }] = await Promise.all([
+        supabase.rpc('report_foc_lines', { p_from: focWindowStart(focToday), p_to: focToday, p_store_id: null }),
+        supabase.from('stores').select('id,name'),
+      ]);
+      setFoc(focSnapshot((fl as any[]) ?? [], new Map(((focStores as any[]) ?? []).map(s => [s.id, s.name]))));
       setNegStock(((neg as any[]) ?? []).filter(n => Number(n.current_qty) < 0));
       setTopSources((((srcs as any[]) ?? []).filter(r => Number(r.customers_count) > 0 || Number(r.surveys_count) > 0)
         .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
@@ -471,11 +480,11 @@ const DashboardPage: React.FC = () => {
                 ))}
                 <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>FOC value (30 days)</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>S${Number(alerts.foc?.value_30d ?? 0).toFixed(2)}</div>
-                  {focLines.length > 0 && (
+                  <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>S${(foc?.total ?? 0).toFixed(2)}</div>
+                  {foc && foc.lineCount > 0 && (
                     <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 4 }}>
-                      {Object.entries(focLines.reduce((m: Record<string, number>, l: any) => { m[l.store_name] = (m[l.store_name] ?? 0) + Number(l.foc_amount ?? 0); return m; }, {})).slice(0, 2).map(([st, v]) => <div key={st}>{st}: S${Number(v).toFixed(2)}</div>)}
-                      {Object.entries(focLines.reduce((m: Record<string, number>, l: any) => { const k = l.reason_label ?? l.foc_reason ?? 'Other'; m[k] = (m[k] ?? 0) + 1; return m; }, {})).slice(0, 2).map(([rs, c]) => <div key={rs}>{rs}: {c}×</div>)}
+                      {foc.stores.map(s => <div key={s.name}>{s.name}: S${s.value.toFixed(2)}</div>)}
+                      {foc.reasons.map(r => <div key={r.label}>{r.label}: {r.count}×</div>)}
                     </div>
                   )}
                 </div>
