@@ -957,6 +957,15 @@ test('a staff-link registration shows its method, date paid, reference and who r
   assert.deepEqual([...document.querySelectorAll('.events-table tbody tr')].map(r => r.dataset.order), ['wo-5', 'wo-3', 'wo-2', 'wo-d1', 'wo-d2']);
   await setValue(statusFilter(), 'all');
   assert.equal(document.querySelectorAll('.events-table tbody tr').length, 9);
+  // The actions are the last cell of every row, the one pinned to the table's right edge (events.css).
+  const table = document.querySelector('.events-web-table');
+  assert.ok(table, 'the website orders table carries the class the pinned column hangs on');
+  assert.ok(table.querySelector('thead th:last-child').classList.contains('events-web-actions-cell'));
+  for (const row of table.querySelectorAll('tbody tr')) {
+    const last = row.querySelector('td:last-child');
+    assert.ok(last.classList.contains('events-web-actions-cell'), row.dataset.order);
+    assert.ok(buttons(row).every(b => last.contains(b)), `${row.dataset.order}: every action is in the pinned cell`);
+  }
   assert.deepEqual(globalThis.__renderErrors, []);
 });
 

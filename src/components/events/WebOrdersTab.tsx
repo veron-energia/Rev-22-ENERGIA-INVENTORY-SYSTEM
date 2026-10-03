@@ -237,11 +237,12 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
               <p style={{ fontSize: 13 }}>Change the status filter.</p>
             </div>
           ) : (
-            <table className="events-table">
+            <table className="events-table events-web-table">
               <thead>
                 <tr>
                   <th>Paid at (SGT)</th><th>Buyer</th><th>Pass</th><th>People</th>
-                  <th className="events-num">Total S$</th><th>Early bird</th><th>Status</th><th></th>
+                  <th className="events-num">Total S$</th><th>Early bird</th><th>Status</th>
+                  <th className="events-web-actions-cell"></th>
                 </tr>
               </thead>
               <tbody>
@@ -312,7 +313,7 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                         </div>
                       )}
                     </td>
-                    <td>
+                    <td className="events-web-actions-cell">
                       {(webOrderCanInvoice(o, channel) || webOrderCanLink(o) || webOrderCanDismiss(o) || webOrderCanRestore(o)) && (
                         <div className="events-actions events-web-actions">
                           {webOrderCanInvoice(o, channel) && (

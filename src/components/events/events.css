@@ -157,3 +157,21 @@
 .events-web-actions .btn { white-space: nowrap; }
 .events-web-door-pay { overflow-wrap: anywhere; max-width: 220px; }
 .events-web-hand-hint { color: #92400e; max-width: 260px; }
+/* An order's actions stay in sight while a narrower screen scrolls the table
+   sideways (with the sidebar, the table is wider than the page). Phones keep
+   the plain scroll: a pinned column would cover most of the row. */
+@media (min-width: 641px) {
+  /* Tighter than other tables, so the whole row fits on a laptop with the sidebar open. */
+  .events-web-table th, .events-web-table td { padding-left: 12px; padding-right: 12px; }
+  .events-web-table .events-web-wide { min-width: 150px; }
+  .events-web-table .events-web-status { min-width: 180px; }
+  .events-web-table .events-web-actions-cell {
+    position: sticky; right: 0; z-index: 1;
+    background: var(--surface); box-shadow: inset 1px 0 0 var(--border);
+  }
+  .events-web-table thead .events-web-actions-cell { background: var(--surface-2); }
+  .events-web-table tbody tr:hover .events-web-actions-cell { background: var(--surface-2); }
+  /* A dismissed row fades its buttons, not the pinned cell, or the row would show through it. */
+  .events-web-table .events-row-cancelled td.events-web-actions-cell { opacity: 1; }
+  .events-web-table .events-row-cancelled td.events-web-actions-cell > * { opacity: 0.6; }
+}
