@@ -9,8 +9,7 @@
 --
 -- Payments can only happen now, so "paid in an earlier month" is set up the
 -- way the other commission suites do it: once settled, the invoice's paid_at
--- and the rows written that day are moved back to the chosen day, each on the
--- calendar its earn function uses.
+-- and the rows written that day are moved back to the chosen day.
 --
 -- Run after migration 383. Fixtures only. Disposable database; everything is
 -- rolled back.
@@ -22,22 +21,15 @@ create temp table fx(k text primary key, v uuid);
 create function pg_temp.fx(key text) returns uuid language sql as $$ select v from fx where k=key $$;
 
 -- As if the invoice had been settled at p_at rather than now: paid_at, and the
--- rows written today, move to that day. Package, bundle and part-payment rows
--- carry the Singapore date (what sg_today() gave then); invoice lines and
--- staff carry the UTC date of paid_at (earn_invoice_commission and
--- earn_staff_commission).
+-- rows written today, move to the Singapore day of p_at, which is what every
+-- earn function writes (383, 384).
 create function pg_temp.settled_at(inv uuid, p_at timestamptz) returns void language plpgsql as $$
-declare d_sg date := (p_at at time zone 'Asia/Singapore')::date;
-        d_utc date := (p_at at time zone 'UTC')::date;
+declare d date := (p_at at time zone 'Asia/Singapore')::date;
         today date := least(sg_today(), (now() at time zone 'UTC')::date);
 begin
   update invoices set paid_at = p_at where id = inv;
-  update commissions
-     set invoice_paid_date = case when invoice_item_id is null or earning_basis = 'instalment' then d_sg else d_utc end
-   where invoice_id = inv and invoice_paid_date >= today;
-  update staff_commissions
-     set invoice_paid_date = case when earning_basis = 'instalment' then d_sg else d_utc end
-   where invoice_id = inv and invoice_paid_date >= today;
+  update commissions set invoice_paid_date = d where invoice_id = inv and invoice_paid_date >= today;
+  update staff_commissions set invoice_paid_date = d where invoice_id = inv and invoice_paid_date >= today;
 end $$;
 
 -- As if a part payment had been registered on day d (no settlement yet).

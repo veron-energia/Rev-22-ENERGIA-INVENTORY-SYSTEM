@@ -156,6 +156,14 @@ comment on column public.app_settings.instalment_commission_from is
 do $mig$
 declare d text; n int; v_md5 text;
 begin
+  -- Re-run: the preview this section derived (marked below) is left alone,
+  -- like every other patch here. Amended 3 Oct 2026 with 384, which moved
+  -- earn_invoice_commission on (its date is now the Singapore day) after this
+  -- was applied, so re-deriving would refuse at the guard below. The preview
+  -- returns no dates, so the text it was derived from still answers the same.
+  if position('357: derived from earn_invoice_commission' in
+       coalesce(pg_get_functiondef(to_regprocedure('public.invoice_affiliate_commission_preview(uuid)')), '')) > 0 then
+    raise notice '357: invoice_affiliate_commission_preview already derived; left alone.'; return; end if;
   v_md5 := md5(pg_get_functiondef('public.earn_invoice_commission(uuid)'::regprocedure));
   if v_md5 <> '2e4942e9ff859b0469fdcd99faf325fd' then
     raise exception '357: earn_invoice_commission is not the version this was tested against (md5 %). Re-derive the preview against it before applying.', v_md5; end if;
