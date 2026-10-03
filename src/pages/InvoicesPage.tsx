@@ -13,7 +13,11 @@ import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product,
-  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule } from '../types';
+  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule,
+  VOUCHER_CATEGORY_LABELS, BIRTHDAY_RULE_LABELS } from '../types';
+import { DISCOUNT_CHOICE_LABELS, discountChoicesFor, voucherCategory, isVoucherChoice, lineMoney, invoiceTotals,
+  lineDiscountPayload, lineDiscountProblem, restoreLineDiscount, switchDiscount, withQuantity, printedLineDiscount, birthdayProblem, formatPercent,
+  toCents, fromCents, type DiscountChoice, type LineMoney } from '../lib/invoices/lineDiscounts';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
 import { QuickCustomerModal } from '../components/customers/QuickCustomerModal';
 import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
@@ -30,7 +34,7 @@ import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockE
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
-import { singaporeToday, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
+import { singaporeToday, invoiceDate, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import '../components/invoices/invoice-controls.css';
@@ -82,7 +86,15 @@ interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup
   // every credit/reward snapshot come from the backend; these only carry the
   // chosen package/bundle and, for a bundle, the reward-voucher mix.
   credit_package_id?: string; premium_bundle_id?: string; bundle_voucher_selection?: Record<string, number>;
-  quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string; }
+  quantity: number; line_voucher_id: string; selections: Record<string, Record<string, number>>; foc_quantity?: number; foc_reason_id?: string; foc_reason?: string;
+  // One discount per line (384): FOC (the foc_* fields above), a voucher of
+  // one category (line_voucher_id), a manual S$ amount or a percentage, each
+  // of the last two with an internal reason. See src/lib/invoices/lineDiscounts.ts.
+  discount?: DiscountChoice; discount_amount?: string; discount_percent?: string; discount_reason?: string;
+  discount_untyped?: boolean;
+  // What a saved line holds. While the form leaves the line unchanged the
+  // server keeps these, so the preview shows them rather than recomputing.
+  saved_money?: { line_total: number; line_discount: number; foc_amount: number }; }
 
 // A person on an event ticket. guest_id keeps a saved person (and their
 // check-ins) when the invoice is corrected.
@@ -102,10 +114,15 @@ const InvoicesPage: React.FC = () => {
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  // Vouchers an open invoice already uses, read by id whatever their state
+  // now: a voucher since retired or expired still names, and categorises,
+  // the line it was given on. `vouchers` holds only the active ones.
+  const [savedVouchers, setSavedVouchers] = useState<Record<string, Voucher>>({});
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [choiceGroups, setChoiceGroups] = useState<PromotionChoiceGroup[]>([]);
   const [promoItems, setPromoItems] = useState<any[]>([]);
-  // Whole customer records — name, phone, email, referrer — for the few
+  // Whole customer records — name, phone, email, referrer, date of birth (the
+  // birthday discount is checked against it) — for the few
   // customers a screen actually needs one for: the invoice being viewed, the
   // one chosen in the form, their referrer. Fetched by id, so this is correct
   // and cheap at any table size.
@@ -139,7 +156,7 @@ const InvoicesPage: React.FC = () => {
     for (let i = 0; i < wanted.length; i += 200) {
       const slice = wanted.slice(i, i + 200);
       const { data, error } = await supabase.from('customers')
-        .select('id, full_name, phone, email, referred_by')
+        .select('id, full_name, phone, email, referred_by, date_of_birth')
         .in('id', slice);
       // A failed request must not mark those ids as settled, or the names
       // would stay missing until the page is reloaded.
@@ -207,7 +224,13 @@ const InvoicesPage: React.FC = () => {
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
   const [originalDrafts, setOriginalDrafts] = useState<LineDraft[]>([]);
-  const unchangedDraft = (l: LineDraft) => !!l.invoice_item_id && JSON.stringify(l) === JSON.stringify(originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id));
+  // A saved line the form has not changed. Compared field by field with empty
+  // values left out, so switching a line's discount away and back again (which
+  // sets and clears fields) still counts as unchanged.
+  const draftKey = (l?: LineDraft) => l ? JSON.stringify(Object.entries(l)
+    .filter(([k, v]) => v !== undefined && v !== null && v !== '' && v !== false && !(k === 'foc_quantity' && v === 0))
+    .sort(([a], [b]) => a.localeCompare(b))) : '';
+  const unchangedDraft = (l: LineDraft) => !!l.invoice_item_id && draftKey(l) === draftKey(originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id));
   // 377: a saved line's price belongs to the item it was sold as. Choosing
   // another catalogue item (or a rental's other rate or length) drops the
   // saved price, so the new item's catalogue price is shown and sent: the
@@ -719,23 +742,6 @@ const InvoicesPage: React.FC = () => {
     : l.kind === 'event_ticket' ? (ticketOptions.find(o => o.option_id === l.event_ticket_option_id)?.unit_price ?? null)
     : (activeStore && l.product_id ? priceFor(activeStore, l.product_id, lineMember(l)) : null);
 
-  // Phase 12 — the charged quantity is what the customer actually pays for.
-  const paidQty = (l: LineDraft) => Math.max(0, l.quantity - (l.foc_quantity ?? 0));
-  const focValuePreview = useMemo(() =>
-    cLines.reduce((sum, l) => {
-      const price = lineUnit(l);
-      return sum + (price ? price * (l.foc_quantity ?? 0) : 0);
-    }, 0),
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles, ticketOptions]);
-  const createSubtotal = useMemo(() =>
-    cLines.reduce((sum, l) => {
-      const price = lineUnit(l);
-      return sum + (price ? price * paidQty(l) : 0);
-    }, 0),
-    // B: every input that can change a line's applied price must be here,
-    // or totals go stale when the pricing mode flips.
-    [cLines, activeStore, prices, vouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, creditPkgs, creditBundles, ticketOptions]);
-
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
   // They can still be SOLD as line items (the buyer redeems later, once valid).
@@ -745,6 +751,13 @@ const InvoicesPage: React.FC = () => {
     return (!v.valid_from || v.valid_from <= today) && (!v.valid_until || v.valid_until >= today);
   };
   const discountVouchers = useMemo(() => vouchers.filter(v => v.voucher_kind !== 'normal' && isDateValid(v)), [vouchers]);
+  // A voucher by id: an active one, or one an open invoice already uses.
+  const voucherById = (id?: string | null): Voucher | undefined =>
+    id ? (vouchers.find(v => v.id === id) ?? savedVouchers[id]) : undefined;
+  // The categories a line can offer: those with a voucher on offer today.
+  const offeredCategories = useMemo(() =>
+    new Set(discountVouchers.map(v => voucherCategory(v)).filter(Boolean) as ('voucher' | 'birthday' | 'staff')[]),
+    [discountVouchers]);
 
   const groupsFor = (promoId: string) => choiceGroups.filter(g => g.promotion_id === promoId);
   // The promotion's fixed contents. These are always part of the bundle and are
@@ -786,99 +799,102 @@ const InvoicesPage: React.FC = () => {
     return highest ? Math.max(...opts) : Math.min(...opts);
   };
 
-  // 3rd-party product lines cannot be discounted by VOUCHERS. Since migration 99
-  // a manual discount does apply to them, so this sum is the voucher base only.
+  // 3rd-party product lines cannot be discounted by VOUCHERS (line or
+  // invoice). Since migration 99 a manual discount does apply to them, and
+  // since 384 so do a line's manual and percentage discounts.
   const isThirdParty = (productId: string) => products.find(p => p.id === productId)?.product_type === 'third_party';
-  const thirdPartySum = useMemo(() =>
-    cLines.reduce((s, l) => {
-      if (l.kind !== 'product' || !l.product_id || !isThirdParty(l.product_id)) return s;
-      const u = lineUnit(l);
-      return s + (u ? u * paidQty(l) : 0);
-    }, 0), [cLines, activeStore, prices, products]);
 
-  // Total top-up across all promotion lines (mirrors promotion_selections_topup).
-  const topupPreview = useMemo(() => {
-    if (!activeStore) return 0;
+  // A promotion line's top-up (mirrors promotion_selections_topup).
+  const lineTopup = (l: LineDraft): number => {
+    if (!activeStore || l.kind !== 'promotion' || !l.promotion_id) return 0;
+    if (unchangedDraft(l)) return l.saved_topup || 0;
     let sum = 0;
-    for (const l of cLines) {
-      if (l.kind !== 'promotion' || !l.promotion_id) continue;
-      if (unchangedDraft(l)) { sum += l.saved_topup || 0; continue; }
-      const lm = effMember;
-      for (const g of groupsFor(l.promotion_id)) {
-        if (g.item_kind !== 'product') continue;
-        const baseline = groupBaseline(g.id, lm);
-        if (baseline == null) continue;
-        // Listed options never pay a top-up — only picks outside the options do.
-        const listed = new Set(optionsFor(g.id).map(o => o.product_id).filter(Boolean));
-        for (const [pid, q] of Object.entries(l.selections[g.id] ?? {})) {
-          if (!q || listed.has(pid)) continue;
-          const pr = priceFor(activeStore, pid, lm);
-          if (pr != null && pr > baseline) sum += (pr - baseline) * q;
-        }
+    const lm = effMember;
+    for (const g of groupsFor(l.promotion_id)) {
+      if (g.item_kind !== 'product') continue;
+      const baseline = groupBaseline(g.id, lm);
+      if (baseline == null) continue;
+      // Listed options never pay a top-up — only picks outside the options do.
+      const listed = new Set(optionsFor(g.id).map(o => o.product_id).filter(Boolean));
+      for (const [pid, q] of Object.entries(l.selections[g.id] ?? {})) {
+        if (!q || listed.has(pid)) continue;
+        const pr = priceFor(activeStore, pid, lm);
+        if (pr != null && pr > baseline) sum += (pr - baseline) * q;
       }
     }
     return sum;
-  }, [cLines, activeStore, prices, choiceGroups, choiceOptions]);
-
-  // Mirror of SQL voucher_discount_amount for previews.
-  const voucherDiscAmount = (v: Voucher | undefined, base: number): number => {
-    if (!v) return 0;
-    let disc = 0;
-    if (v.voucher_kind === 'fixed_discount') {
-      disc = v.discount_amount ?? 0;
-      if (base <= disc) return 0;   // fixed vouchers need the base STRICTLY above
-    }
-    else if (v.voucher_kind === 'percentage_discount') {
-      disc = Math.round(base * (v.discount_percent ?? 0)) / 100;
-      if (v.max_discount_cap != null && disc > v.max_discount_cap) disc = v.max_discount_cap;
-    }
-    if (disc > base) disc = base;
-    return disc < 0 ? 0 : disc;
   };
 
-  // Per-line voucher discounts (product lines only).
-  const lineVoucherDiscountPreview = useMemo(() =>
-    cLines.reduce((sum, l) => {
-      if (l.kind !== 'product' || !l.line_voucher_id) return sum;
-      const unit = lineUnit(l);
-      if (!unit) return sum;
-      // Discounts apply to the PAID value only.
-      return sum + voucherDiscAmount(vouchers.find(v => v.id === l.line_voucher_id), unit * paidQty(l));
-    }, 0), [cLines, vouchers, activeStore, prices, voucherStorePrices, promoStorePrices]);
+  /* Each line's money as the server will work it out (lineMoney): gross =
+   * unit × quantity (+ a promotion's top-up), FOC off that, then the line's
+   * one discount on what is charged. A saved line the form has not changed is
+   * kept by the server exactly as stored, so its stored figures are shown.
+   * The line's own value, its FOC, its discount and the invoice totals all
+   * come from here, so the form never shows one figure and saves another. */
+  const linePreview: LineMoney[] = useMemo(() => cLines.map(l => lineMoney({
+    unit: lineUnit(l), quantity: l.quantity, topup: lineTopup(l),
+    choice: l.discount ?? '', foc_quantity: l.foc_quantity,
+    voucher: voucherById(l.line_voucher_id), amount: l.discount_amount, percent: l.discount_percent,
+    thirdParty: l.kind === 'product' && !!l.product_id && isThirdParty(l.product_id),
+    saved: unchangedDraft(l) ? l.saved_money ?? null : null,
+  })),
+    // B: every input that can change a line's applied price must be here,
+    // or totals go stale when the pricing mode flips.
+    [cLines, originalDrafts, activeStore, prices, products, vouchers, savedVouchers, promotions, voucherStorePrices, promoStorePrices, therapyPrices, therapyPackages, choiceGroups, choiceOptions, specialProducts, therapyServices, therapyServiceStores, creditPkgs, creditBundles, ticketOptions]);
+  const topupPreview = useMemo(() => cLines.reduce((s, l) => s + lineTopup(l), 0),
+    [cLines, originalDrafts, activeStore, prices, choiceGroups, choiceOptions]);
+  // A discount voucher as the selects list it.
+  const discountVoucherLabel = (v: Voucher) =>
+    `${v.name} — ${v.voucher_kind === 'fixed_discount' ? money(v.discount_amount ?? 0) + ' off' : `${v.discount_percent}% off${v.max_discount_cap ? ` (cap ${money(v.max_discount_cap)})` : ''}`}`
+    + (voucherCategory(v) === 'birthday' && v.birthday_rule ? ` · ${BIRTHDAY_RULE_LABELS[v.birthday_rule].toLowerCase()}` : '');
+  // The discounts a line may carry (owner, 3 Oct 2026): see discountChoicesFor.
+  const discountChoicesOf = (l: LineDraft): DiscountChoice[] => discountChoicesFor(l.kind,
+    { thirdParty: l.kind === 'product' && !!l.product_id && isThirdParty(l.product_id), inventoryManager: profile?.role === 'inventory_manager' });
+  // What the line's Discount select lists: those, less a voucher category
+  // with nothing on offer today, unless the line already has it.
+  const discountOptionsOf = (l: LineDraft): DiscountChoice[] => discountChoicesOf(l)
+    .filter(c => !isVoucherChoice(c) || offeredCategories.has(c) || l.discount === c);
+  // The line as it was saved, when it is a saved line.
+  const savedDraftOf = (l: LineDraft) => l.invoice_item_id ? originalDrafts.find(o => o.invoice_item_id === l.invoice_item_id) : undefined;
+  // Switching a line's discount (switchDiscount): one discount per line, so
+  // everything the previous choice set is cleared. Choosing the saved one
+  // again brings back what was saved; an old FOC-and-voucher line keeps what
+  // it had of the one chosen. FOC chosen afresh starts with every unit free.
+  const chooseDiscount = (l: LineDraft, choice: DiscountChoice): LineDraft =>
+    switchDiscount(l, choice, savedDraftOf(l), id => voucherCategory(voucherById(id)) ?? 'voucher');
+  // A line whose item changed keeps its discount only where the new item
+  // may take it (a voucher never reaches a third-party product).
+  const keepAllowedDiscount = (l: LineDraft): LineDraft => {
+    const c = l.discount ?? '';
+    return c === '' || c === 'legacy' || c === 'exchange' || discountChoicesOf(l).includes(c) ? l : chooseDiscount(l, '');
+  };
 
-  // Whole-invoice voucher: base = subtotal − manual − line-voucher discounts (matches SQL).
-  const voucherDiscountPreview = useMemo(() => {
-    if (!cDiscountVoucher) return 0;
-    // A discount voucher still cannot reach third-party value; the manual
-    // discount is taken off first.
-    const base = Math.max(0, createSubtotal + topupPreview - thirdPartySum - (cDiscount || 0) - lineVoucherDiscountPreview);
-    return voucherDiscAmount(vouchers.find(x => x.id === cDiscountVoucher), base);
-  }, [cDiscountVoucher, vouchers, createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview]);
+  // The invoice as create_invoice totals it (invoiceTotals): the lines' own
+  // discounts, the manual discount on the whole subtotal, the Discount
+  // Voucher on what is left of our own products, all capped at the subtotal.
+  // Edits are totalled the same way (384 brought refresh_invoice_discount_total
+  // into line with creation).
+  const totalsPreview = useMemo(() => invoiceTotals({ lines: linePreview, manual: cDiscount || 0,
+    invoiceVoucher: cDiscountVoucher ? voucherById(cDiscountVoucher) ?? null : null }),
+    [linePreview, cDiscount, cDiscountVoucher, vouchers, savedVouchers]);
+  const createSubtotal = fromCents(totalsPreview.subtotal);
+  const focValuePreview = fromCents(totalsPreview.focTotal);
+  const lineDiscountPreview = fromCents(totalsPreview.lineDiscounts);
+  const voucherDiscountPreview = fromCents(totalsPreview.voucherDiscount);
+  const previewTotal = fromCents(totalsPreview.total);
 
   const hasPromoLine = useMemo(() => cLines.some(l => l.kind === 'promotion' && l.promotion_id), [cLines]);
 
   // Whole-invoice voucher eligibility: fixed vouchers need the discountable
   // base (excl. 3rd-party lines) to be STRICTLY above their amount.
-  const wholeVoucherBase = useMemo(() =>
-    Math.max(0, createSubtotal + topupPreview - thirdPartySum - (cDiscount || 0) - lineVoucherDiscountPreview),
-    [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview]);
+  const wholeVoucherBase = fromCents(totalsPreview.voucherBase);
   const eligibleWholeVouchers = useMemo(() =>
-    discountVouchers.filter(v => v.voucher_kind !== 'fixed_discount' || (v.discount_amount ?? 0) < wholeVoucherBase),
-    [discountVouchers, wholeVoucherBase]);
+    discountVouchers.filter(v => v.voucher_kind !== 'fixed_discount' || toCents(v.discount_amount) < totalsPreview.voucherBase),
+    [discountVouchers, totalsPreview.voucherBase]);
   useEffect(() => {
     if (!editingInvoiceId && cDiscountVoucher && !eligibleWholeVouchers.some(v => v.id === cDiscountVoucher)) setCDiscountVoucher('');
   }, [cDiscountVoucher, eligibleWholeVouchers]);
   useEffect(() => { if (!editingInvoiceId && hasPromoLine && cDiscountVoucher) setCDiscountVoucher(''); }, [hasPromoLine, cDiscountVoucher]);
-
-  const previewTotal = useMemo(() => {
-    // Mirrors migration 99: a MANUAL discount applies to the whole invoice,
-    // third-party included; a VOUCHER discount keeps the narrower base.
-    const gross = createSubtotal + topupPreview - lineVoucherDiscountPreview;
-    const manual = Math.min(cDiscount || 0, Math.max(0, gross));
-    const voucherBase = Math.max(0, createSubtotal + topupPreview - thirdPartySum - lineVoucherDiscountPreview - manual);
-    const invLevel = manual + Math.min(voucherDiscountPreview, voucherBase);
-    return Math.max(0, gross - invLevel);
-  }, [createSubtotal, topupPreview, thirdPartySum, cDiscount, lineVoucherDiscountPreview, voucherDiscountPreview]);
 
 
   // All vouchers can be sold as a line item (a discount voucher sold now is
@@ -993,14 +1009,24 @@ const InvoicesPage: React.FC = () => {
         return;
       }
     }
+    // One discount per line (384). Each line is checked here first so the
+    // refusal names the line; the server checks the same and has the final
+    // say (the birthday rules among them).
+    for (const l of activeLines) {
+      const i = cLines.indexOf(l);
+      const problem = lineDiscountProblem(l, { valueCents: linePreview[i]?.charged ?? 0, changed: !unchangedDraft(l),
+        allowed: discountChoicesOf(l), quantity: l.quantity, saved: savedDraftOf(l) });
+      if (problem) { setCErr(`Line ${i + 1}: ${problem}`); return; }
+    }
     const ovr = (l: LineDraft) => ({ invoice_item_id: l.invoice_item_id || null, ...(l.unit_price !== undefined ? { unit_price: l.unit_price } : {}) });
-    // Phase 12 — FOC travels with the line. `quantity` stays the full quantity;
-    // the server derives the charged value from (quantity - foc_quantity).
-    const foc = (l: LineDraft) => (l.foc_quantity ?? 0) > 0
-      ? { foc_quantity: l.foc_quantity, foc_reason_id: l.foc_reason_id || null, foc_reason: l.foc_reason || null }
-      : {};
+    // The line's one discount travels with it (lineDiscountPayload): FOC as
+    // foc_quantity and its reason, with `quantity` still the full quantity
+    // (the server derives the charged value from quantity - foc_quantity); a
+    // voucher as its type and line_voucher_id; a manual or percentage
+    // discount as its amount or percent and its internal reason.
+    const disc = (l: LineDraft) => lineDiscountPayload(l);
     const validLines = activeLines.map(l => l.kind === 'voucher'
-      ? { kind: 'voucher', voucher_id: l.voucher_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
+      ? { kind: 'voucher', voucher_id: l.voucher_id, quantity: l.quantity, ...ovr(l), ...disc(l) }
       : l.kind === 'promotion'
       ? {
           kind: 'promotion', promotion_id: l.promotion_id, quantity: l.quantity,
@@ -1031,17 +1057,17 @@ const InvoicesPage: React.FC = () => {
                 }
               }),
           }); }),
-          ...ovr(l), ...foc(l),
+          ...ovr(l), ...disc(l),
         }
       : l.kind === 'therapy'
       ? { kind: 'therapy', therapy_package_id: l.therapy_service_id ? null : l.therapy_package_id, therapy_service_id: l.therapy_service_id || null, quantity: l.therapy_service_id ? l.quantity : 1,
           // Absent means "choose later" — the server treats a missing intent
           // as no choice rather than as a default.
-          therapy_benefit_intent: l.therapy_benefit_intent || null, ...ovr(l), ...foc(l) }
+          therapy_benefit_intent: l.therapy_benefit_intent || null, ...ovr(l), ...disc(l) }
       : l.kind === 'credit_package'
-      ? { kind: 'credit_package', credit_package_id: l.credit_package_id, quantity: 1, ...ovr(l), ...foc(l) }
+      ? { kind: 'credit_package', credit_package_id: l.credit_package_id, quantity: 1, ...ovr(l), ...disc(l) }
       : l.kind === 'premium_bundle'
-      ? { kind: 'premium_bundle', premium_bundle_id: l.premium_bundle_id, quantity: 1, ...ovr(l), ...foc(l),
+      ? { kind: 'premium_bundle', premium_bundle_id: l.premium_bundle_id, quantity: 1, ...ovr(l), ...disc(l),
           // Saved selections remain evidence even if the current bundle's
           // voucher quantity changed or the catalogue entry was retired.
           voucher_selection: Object.entries(l.bundle_voucher_selection ?? {})
@@ -1053,19 +1079,17 @@ const InvoicesPage: React.FC = () => {
           quantity: (l.attendees ?? []).length, event_days: [...(l.event_days ?? [])].sort(),
           attendees: (l.attendees ?? []).map(a => ({ ...(a.guest_id ? { guest_id: a.guest_id } : {}),
             name: a.name.trim(), phone: a.phone?.trim() || null, customer_id: a.customer_id || null })),
-          ...ovr(l), ...foc(l) }
+          ...ovr(l), ...disc(l) }
       : l.kind === 'special_product'
-      ? { kind: 'special_product', special_product_id: l.special_product_id, quantity: l.quantity, ...ovr(l), ...foc(l) }
+      ? { kind: 'special_product', special_product_id: l.special_product_id, quantity: l.quantity, ...ovr(l), ...disc(l) }
       : l.kind === 'rental'
       ? { kind: 'rental', special_product_id: l.special_product_id, quantity: l.quantity,
           rental_rate_type: l.rental_rate_type ?? 'day',
           rental_periods: Math.max(1, l.rental_periods ?? 1),
           rental_start_date: l.rental_start_date || null,
           rental_return_date: l.rental_return_date || null,
-          ...ovr(l), ...foc(l) }
-      : { kind: 'product', product_id: l.product_id, quantity: l.quantity, line_voucher_id: (l.line_voucher_id && !isThirdParty(l.product_id)) ? l.line_voucher_id : null, ...ovr(l), ...foc(l) });
-    const focMissing = activeLines.find(l => (l.foc_quantity ?? 0) > 0 && !l.foc_reason_id && !(l.foc_reason ?? '').trim());
-    if (focMissing) { setCErr('A FOC reason is required on every FOC line.'); return; }
+          ...ovr(l), ...disc(l) }
+      : { kind: 'product', product_id: l.product_id, quantity: l.quantity, ...ovr(l), ...disc(l) });
     const allItems: any[] = validLines.filter(Boolean);
     // create_invoice requires at least one product/voucher/promotion line
     // to open the invoice. Therapy is added right after. For a therapy-ONLY sale,
@@ -1254,14 +1278,18 @@ const InvoicesPage: React.FC = () => {
     const lines: LineDraft[] = [];
     for (const it of detailItems) {
       const ovr = { invoice_item_id: it.id, unit_price: Number(it.unit_price), saved_topup: Number((it as any).topup_amount ?? 0) };
-      const foc = Number(it.foc_quantity ?? 0) > 0
-        ? { foc_quantity: Number(it.foc_quantity), foc_reason_id: (it as any).foc_reason_id ?? '', foc_reason: it.foc_reason ?? '' }
-        : {};
+      // The line's discount exactly as saved, on every kind of line (a voucher
+      // saved before 384 shows under its voucher's category), and the money
+      // the server keeps for it while the line is left unchanged.
+      const disc = {
+        ...restoreLineDiscount(it, id => voucherCategory(voucherById(id)) ?? 'voucher'),
+        saved_money: { line_total: Number(it.line_total ?? 0), line_discount: Number(it.line_discount ?? 0), foc_amount: Number(it.foc_amount ?? 0) },
+      };
       if (it.line_kind === 'therapy') {
-        lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', therapy_service_id: (it as any).therapy_service_id ?? '', therapy_service_name: (it as any).therapy_service_name_snapshot ?? '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+        lines.push({ kind: 'therapy', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: (it as any).therapy_package_id ?? '', therapy_service_id: (it as any).therapy_service_id ?? '', therapy_service_name: (it as any).therapy_service_name_snapshot ?? '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       } else if (it.line_kind === 'credit_package') {
-        // ...foc: a package given away with Make FOC must go back unchanged, or the save re-charges it.
-        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+        // ...disc: a package given away with Make FOC must go back unchanged, or the save re-charges it.
+        lines.push({ kind: 'credit_package', product_id: '', voucher_id: '', promotion_id: '', credit_package_id: (it as any).credit_package_id ?? '', quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       } else if (it.line_kind === 'premium_bundle') {
         // Rebuild the reward-voucher basket from the stored selection so editing
         // shows what was chosen and re-validates against the same rule.
@@ -1269,11 +1297,11 @@ const InvoicesPage: React.FC = () => {
         const raw = (it as any).bundle_voucher_selection;
         const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : []);
         for (const s of (arr as any[])) { if (s && s.voucher_id) basket[s.voucher_id] = (basket[s.voucher_id] ?? 0) + Number(s.quantity ?? 0); }
-        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+        lines.push({ kind: 'premium_bundle', product_id: '', voucher_id: '', promotion_id: '', premium_bundle_id: (it as any).premium_bundle_id ?? '', bundle_voucher_selection: basket, quantity: 1, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       } else if (it.line_kind === 'voucher') {
-        lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+        lines.push({ kind: 'voucher', product_id: '', voucher_id: (it as any).voucher_id ?? '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       } else if (it.line_kind === 'promotion') {
-        lines.push({ kind: 'promotion', product_id: '', voucher_id: '', promotion_id: (it as any).promotion_id ?? '', quantity: it.quantity, line_voucher_id: '', selections: selByItem[it.id] ?? {}, ...ovr, ...foc });
+        lines.push({ kind: 'promotion', product_id: '', voucher_id: '', promotion_id: (it as any).promotion_id ?? '', quantity: it.quantity, line_voucher_id: '', selections: selByItem[it.id] ?? {}, ...ovr, ...disc });
       } else if (it.line_kind === 'event_ticket') {
         // The people come from the guest list, by guest id, so a correction
         // keeps each person's record and check-ins.
@@ -1287,7 +1315,7 @@ const InvoicesPage: React.FC = () => {
             ...((saved?.guests ?? []) as any[]).map(g => ({ guest_id: g.guest_id, name: g.name ?? '', phone: g.phone ?? '', customer_id: g.customer_id ?? undefined })),
             ...Array.from({ length: Math.max(0, it.quantity - ((saved?.guests ?? []) as any[]).length) }, () => ({ name: '' })),
           ],
-          quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+          quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       } else if (it.line_kind === 'special_product' || it.line_kind === 'rental') {
         // Without this branch a special or rental line fell through to
         // 'product' with an empty product_id, and reopening the invoice
@@ -1300,9 +1328,9 @@ const InvoicesPage: React.FC = () => {
             ? String((it as any).rental_start_date).slice(0, 10) : '',
           rental_return_date: (it as any).rental_return_date
             ? String((it as any).rental_return_date).slice(0, 10) : '',
-          quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...foc });
+          quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       } else {
-        lines.push({ kind: 'product', product_id: it.product_id ?? '', voucher_id: '', promotion_id: '', quantity: it.quantity, line_voucher_id: (it as any).line_voucher_id ?? '', selections: {}, ...ovr, ...foc });
+        lines.push({ kind: 'product', product_id: it.product_id ?? '', voucher_id: '', promotion_id: '', quantity: it.quantity, line_voucher_id: '', selections: {}, ...ovr, ...disc });
       }
     }
     setOriginalDrafts(lines);
@@ -1549,12 +1577,20 @@ const InvoicesPage: React.FC = () => {
     // Promotion contents: fixed items of the promotions on this invoice + this invoice's chosen selections.
     const promoIds = its.filter(i => i.line_kind === 'promotion' && (i as any).promotion_id).map(i => (i as any).promotion_id);
     const itemIds = its.map(i => i.id);
-    const [pi, sel] = await Promise.all([
+    // The vouchers this invoice was given (on its lines or the whole
+    // invoice), whatever their state now, so a retired one still names its
+    // line and a correction restores it under its category.
+    const voucherIds = Array.from(new Set([...its.map(i => i.line_voucher_id), (inv as any).discount_voucher_id]
+      .filter(Boolean) as string[]));
+    const [pi, sel, usedVouchers] = await Promise.all([
       promoIds.length ? supabase.from('promotion_items').select('*').in('promotion_id', promoIds) : Promise.resolve({ data: [] } as any),
       itemIds.length ? supabase.from('invoice_promotion_selections').select('*').in('invoice_item_id', itemIds) : Promise.resolve({ data: [] } as any),
+      voucherIds.length ? supabase.from('vouchers').select('*').in('id', voucherIds) : Promise.resolve({ data: [] } as any),
     ]);
     // A newer open owns the screen from here: nothing below is this invoice's to set.
     if (superseded()) return;
+    const used = ((usedVouchers?.data as Voucher[] | null) ?? []);
+    if (used.length) setSavedVouchers(prev => ({ ...prev, ...Object.fromEntries(used.map(v => [v.id, v])) }));
     setDetailPromoItems((pi.data as any[]) ?? []);
     setDetailSelections((sel.data as any[]) ?? []);
     // Phase 13 — exchange context + revision history.
@@ -1845,7 +1881,7 @@ const InvoicesPage: React.FC = () => {
    *  can show their name immediately, without refetching the whole table. */
   const refreshCustomer = useCallback(async (id: string) => {
     const { data } = await supabase.from('customers')
-      .select('id, full_name, phone, email, referred_by').eq('id', id).maybeSingle();
+      .select('id, full_name, phone, email, referred_by, date_of_birth').eq('id', id).maybeSingle();
     if (!data) return;
     setCustomerById(cur => ({ ...cur, [id]: data }));
   }, []);
@@ -2037,6 +2073,8 @@ const InvoicesPage: React.FC = () => {
       row('Invoice date', b.business_date ?? '—', a.business_date ?? '—'),
       row('Affiliate', b.affiliate_id ? 'set' : 'none', a.affiliate_id ? 'set' : 'none'),
       row('Manual discount', money(Number(b.manual_discount ?? 0)), money(Number(a.manual_discount ?? 0))),
+      // Every discount together, the lines' own included.
+      row('All discounts', money(Number(b.discount_total ?? 0)), money(Number(a.discount_total ?? 0))),
       row('Notes', String(b.notes ?? '—'), String(a.notes ?? '—')),
       row('Edits', String(b.edit_count ?? 0), String(a.edit_count ?? 0)),
     ];
@@ -2185,8 +2223,39 @@ const InvoicesPage: React.FC = () => {
   // The server resolves these whatever state the record is in now, so a
   // deactivated payment method, a deleted voucher or customer still prints.
   const printedMethod = (id: any): string => srvName(id) || txt(methods.find(m => m.id === id)?.name);
-  const printedVoucher = (id: any): string => srvName(id) || txt(vouchers.find(v => v.id === id)?.name);
+  const printedVoucher = (id: any): string => srvName(id) || txt(voucherById(id)?.name);
   const printedCustomer = (d: any): string => txt(detailNames?.customer_name) || txt(customerOf(d?.customer_id)?.full_name) || '—';
+  // A saved line's discount other than FOC: a voucher (any category), a
+  // manual amount or a percentage. Exchange credit is not one: it is the
+  // value returned, and FOC may still go beside it as before.
+  const lineHasDiscount = (it: InvoiceItem) => !!it.line_discount_type || !!it.line_voucher_id;
+  /** A line's discount on the invoice screen, for staff: what it is, how much,
+   *  and for a manual or percentage discount its internal reason, which no
+   *  printed or sent copy carries. */
+  const lineDiscountDetail = (it: InvoiceItem): React.ReactNode => {
+    const amount = Number(it.line_discount ?? 0);
+    if (!(amount > 0)) return null;
+    const type = it.line_discount_type ?? (it.line_voucher_id ? null : 'exchange');
+    const typed = type === 'manual' || type === 'percentage';
+    const label = type === 'manual' ? 'Manual discount'
+      : type === 'percentage' ? `Percentage discount ${formatPercent(it.line_discount_percent)}%`
+      : type === 'exchange' ? 'Exchange credit'
+      : (() => {
+        const category = (it.line_discount_type as 'voucher' | 'birthday' | 'staff' | null) ?? voucherCategory(voucherById(it.line_voucher_id)) ?? 'voucher';
+        return `🎟 ${printedVoucher(it.line_voucher_id) || 'Voucher'}${category !== 'voucher' ? ` (${VOUCHER_CATEGORY_LABELS[category].toLowerCase()} discount)` : ''}`;
+      })();
+    return (
+      <div data-testid="invoice-line-discount" style={{ fontSize: 11, color: 'var(--success)' }}>
+        {label} − {money(amount)}
+        {typed && (
+          <span data-testid="invoice-line-discount-reason" style={{ color: 'var(--text-muted)' }}>
+            {' '}· internal reason:{' '}
+            {String(it.line_discount_reason ?? '').trim() ? <strong>{it.line_discount_reason}</strong> : <em>none recorded</em>}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [sendBusy, setSendBusy] = useState<'whatsapp' | 'email' | null>(null);
@@ -2248,6 +2317,10 @@ const InvoicesPage: React.FC = () => {
         const focQty = Number((it as any).foc_quantity ?? 0);
         const notes: string[] = [];
         if (focQty > 0) notes.push(`FOC ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`}`);
+        // The line's discount by name and amount, as on the print (an ASCII
+        // minus: the PDF's built-in fonts have no other). Never its reason.
+        const lineDiscount = printedLineDiscount(it, printedVoucher(it.line_voucher_id), '-');
+        if (lineDiscount) notes.push(lineDiscount);
         if (it.price_overridden) notes.push('Manual price override');
         const tk = ticketDetail(it);
         if (tk) {
@@ -2413,8 +2486,10 @@ const InvoicesPage: React.FC = () => {
       ].join('');
     };
     const itemRows = detailItems.map(it => {
-      const lv = (it as any).line_voucher_id
-        ? `<div class="mut">Voucher ${esc(printedVoucher((it as any).line_voucher_id))} −S$${Number((it as any).line_discount ?? 0).toFixed(2)}</div>` : '';
+      // The line's one discount: "<voucher name> −S$x", "Discount −S$x" or
+      // "Discount 10% −S$x". Its reason is internal and never printed.
+      const lineDiscount = printedLineDiscount(it, printedVoucher(it.line_voucher_id));
+      const lv = lineDiscount ? `<div class="mut">${esc(lineDiscount)}</div>` : '';
       const tu = Number((it as any).topup_amount ?? 0) > 0 ? `<div class="mut">incl. top-up S$${Number((it as any).topup_amount).toFixed(2)}</div>` : '';
       const md = '';
       const ov = it.price_overridden ? `<div class="mut"><b>Manual Override</b>${it.override_reason ? ` — ${esc(it.override_reason)}` : ''}</div>` : '';
@@ -3322,6 +3397,9 @@ const InvoicesPage: React.FC = () => {
                             event_ticket_option_id: '', event_days: [],
                             attendees: e.target.value === 'event_ticket' ? [firstTicketPerson()] : [],
                             ...(e.target.value === 'event_ticket' ? { quantity: 1 } : {}),
+                            // Another kind of line starts without a discount.
+                            discount: '', foc_quantity: 0, foc_reason_id: '', foc_reason: '', foc_all: false, line_voucher_id: '',
+                            discount_amount: '', discount_percent: '', discount_reason: '', discount_untyped: false,
                             rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 130 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
@@ -3407,7 +3485,7 @@ const InvoicesPage: React.FC = () => {
                         ) : line.kind === 'product' ? (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
                             value={line.product_id}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { product_id: v }) : l))}
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? keepAllowedDiscount(withCatalogueItem(l, { product_id: v })) : l))}
                             options={storeProducts.map(p => { const a = productAvail(p.id); return {
                               value: p.id, label: `${p.name} — ${a.label}${a.needsOverride ? ' *' : ''}`,
                               sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}`, searchPrices: [priceFor(activeStore, p.id)] }; })} />
@@ -3498,72 +3576,179 @@ const InvoicesPage: React.FC = () => {
                           disabled={line.kind === 'credit_package' || line.kind === 'premium_bundle' || line.kind === 'event_ticket'}
                           title={(line.kind === 'credit_package' || line.kind === 'premium_bundle') ? 'Credit purchases are always quantity 1'
                             : line.kind === 'event_ticket' ? 'One ticket per person named below' : undefined}
-                          onChange={e => setCLines(ls => ls.map((l, j) => j === i
-                            ? { ...l, quantity: Math.min(Math.max(0, Math.floor(+e.target.value || 0)), 9999) } : l))} />
-                        <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(price * line.quantity) : '—'}</span>
+                          onChange={e => setCLines(ls => ls.map((l, j) => {
+                            if (j !== i) return l;
+                            // "All free" stays all free; any other free quantity stays as chosen (withQuantity).
+                            return withQuantity(l, Math.min(Math.max(0, Math.floor(+e.target.value || 0)), 9999));
+                          }))} />
+                        {/* The line's value before FOC and discounts (a promotion's top-up included). */}
+                        <span style={{ width: 78, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{price ? money(fromCents(linePreview[i]?.gross ?? 0)) : '—'}</span>
                         <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setCLines(ls => ls.filter((_, j) => j !== i))} disabled={cLines.length === 1}><X size={13} /></button>
                       </div>
                       {editingInvoiceId && isOwnerOrManager(profile?.role) && <label className="invoice-finance-amount">Unit price
                         <input aria-label={`Line ${i + 1} unit price`} type="number" min="0" step="0.01" value={line.unit_price ?? ''}
                           onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, unit_price: Number(e.target.value) } : l))} />
                       </label>}
-                      {/* Phase 12 — FOC. Quantity stays full (stock still moves); only the charge drops.
-                          Credit purchases don't take a product-style FOC. */}
-                      {line.kind !== 'credit_package' && line.kind !== 'premium_bundle'
-                        && (line.kind !== 'product' || line.product_id)
-                        && (line.kind !== 'event_ticket' || line.event_ticket_option_id) && (line.quantity ?? 0) > 0 && (
-                        <div className="invoice-choice-group" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>FOC:</span>
-                          <select
-                            value={String(line.foc_quantity ?? 0)}
-                            onChange={e => { const q = +e.target.value; setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_quantity: q, ...(q === 0 ? { foc_reason_id: '', foc_reason: '' } : {}) } : l)); }}
-                            style={{ width: 108, fontSize: 12.5 }}>
-                            <option value="0">None</option>
-                            {Array.from({ length: Math.min(Math.max(0, Math.floor(line.quantity || 0)), 100) }, (_, k) => k + 1).map(q => (
-                              <option key={q} value={q}>{q === line.quantity ? `All ${q} free` : `${q} free`}</option>
+                      {/* One discount per line (384): FOC, or a voucher (Vouchers,
+                          Birthday or Staff), or a manual S$ amount, or a
+                          percentage — never two. FOC keeps the full quantity
+                          (stock still moves); only the charge drops. Credit
+                          purchases take none: a discount would scale down the
+                          credit they grant. */}
+                      {(() => {
+                        const choice: DiscountChoice = line.discount ?? '';
+                        const options = discountOptionsOf(line);
+                        const m = linePreview[i];
+                        const setLine = (fn: (l: LineDraft) => LineDraft) => setCLines(ls => ls.map((l, j) => j === i ? fn(l) : l));
+                        const focText = `${(line.foc_quantity ?? 0) === line.quantity ? `all ${line.quantity}` : `${line.foc_quantity} of ${line.quantity}`} free`;
+                        if (options.length === 0) {
+                          // A credit purchase given away with Make FOC goes back unchanged.
+                          return (line.foc_quantity ?? 0) > 0 ? (
+                            <div className="invoice-choice-group" style={{ marginLeft: 118, marginTop: -2, fontSize: 11.5, color: 'var(--text-muted)' }}>
+                              FOC ({focText}), given with Make FOC — kept as it is.
+                            </div>) : null;
+                        }
+                        const ready = (line.kind !== 'product' || !!line.product_id)
+                          && (line.kind !== 'event_ticket' || !!line.event_ticket_option_id) && (line.quantity ?? 0) > 0;
+                        if (!ready && choice === '') return null;
+                        const fixed = choice === 'legacy' || choice === 'exchange';
+                        const offered = choice === '' || fixed || options.includes(choice);
+                        const thirdParty = line.kind === 'product' && !!line.product_id && isThirdParty(line.product_id);
+                        const less = (c: number) => <span style={{ fontSize: 11.5, color: 'var(--success)' }}>− {money(fromCents(c))}</span>;
+                        const field = { fontSize: 12.5 };
+                        return (
+                          <div className="invoice-choice-group invoice-line-discount" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Discount:</span>
+                            <select aria-label={`Line ${i + 1} discount`} value={choice} disabled={choice === 'exchange'}
+                              onChange={e => setLine(l => chooseDiscount(l, e.target.value as DiscountChoice))}
+                              style={{ ...field, width: 'auto', minWidth: 190 }}>
+                              {(fixed || !offered) && <option value={choice}>{DISCOUNT_CHOICE_LABELS[choice]}{offered ? '' : unchangedDraft(line) ? ' (as saved)' : ' (not on this line)'}</option>}
+                              {options.map(c => <option key={c || 'none'} value={c}>{DISCOUNT_CHOICE_LABELS[c]}</option>)}
+                            </select>
+                            {choice === 'foc' && (
+                              <>
+                                <select aria-label={`Line ${i + 1} free quantity`} value={String(line.foc_quantity ?? 0)}
+                                  onChange={e => { const q = +e.target.value; setLine(l => ({ ...l, foc_quantity: q, foc_all: q > 0 && q === Math.floor(l.quantity || 0) })); }}
+                                  style={{ ...field, width: 108 }}>
+                                  {!((line.foc_quantity ?? 0) > 0) && <option value="0">How many?</option>}
+                                  {/* Free quantity is kept while the quantity is retyped; more than the quantity is refused on save. */}
+                                  {(line.foc_quantity ?? 0) > Math.floor(line.quantity || 0) && <option value={String(line.foc_quantity)}>{line.foc_quantity} free — more than the quantity</option>}
+                                  {Array.from({ length: Math.min(Math.max(0, Math.floor(line.quantity || 0)), 100) }, (_, k) => k + 1).map(q => (
+                                    <option key={q} value={q}>{q === line.quantity ? `All ${q} free` : `${q} free`}</option>
+                                  ))}
+                                </select>
+                                <select aria-label={`Line ${i + 1} FOC reason`} value={line.foc_reason_id ?? ''}
+                                  onChange={e => setLine(l => ({ ...l, foc_reason_id: e.target.value }))}
+                                  style={{ ...field, flex: 1, maxWidth: 220 }}>
+                                  <option value="">— Reason (required) —</option>
+                                  {line.foc_reason_id && !focReasons.some(r => r.id === line.foc_reason_id) && <option value={line.foc_reason_id}>{line.foc_reason || 'Saved FOC reason'} (historical)</option>}
+                                  {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' *' : ''}</option>)}
+                                </select>
+                                <input aria-label={`Line ${i + 1} FOC note`} type="text" placeholder="Note" value={line.foc_reason ?? ''}
+                                  onChange={e => setLine(l => ({ ...l, foc_reason: e.target.value }))}
+                                  style={{ ...field, flex: 1, maxWidth: 200 }} />
+                                {m && m.foc > 0 ? <span style={{ fontSize: 11.5, color: 'var(--success)' }}>free {money(fromCents(m.foc))}</span> : null}
+                              </>
+                            )}
+                            {isVoucherChoice(choice) && (() => {
+                              // Today's vouchers of this category the line is big
+                              // enough for, and the one it already has even if it is
+                              // no longer offered.
+                              const ofCategory = discountVouchers.filter(v => voucherCategory(v) === choice);
+                              const eligible = ofCategory.filter(v => v.voucher_kind !== 'fixed_discount' || toCents(v.discount_amount) < (m?.charged ?? 0));
+                              const id = line.line_voucher_id;
+                              const kept = !!id && !eligible.some(v => v.id === id);
+                              const chosen = voucherById(id);
+                              const saved = savedDraftOf(line);
+                              // The birthday check the server makes, said here first.
+                              // It only warns: the server has the final say. The
+                              // server checks a new or changed line, and a line
+                              // saved as a Birthday discount again when the
+                              // correction moves the invoice's customer or date;
+                              // a saved line it keeps as it is gets no warning.
+                              const customer = cCustomer ? customerOf(cCustomer) : null;
+                              // The invoice as saved (the detail view is closed while it is edited).
+                              const savedInvoice = editingInvoiceId ? editBaseRef.current : null;
+                              const moved = !!savedInvoice && ((cCustomer || '') !== (savedInvoice.customer_id || '')
+                                || (cBusinessDate || '') !== String(savedInvoice.business_date ?? '').slice(0, 10));
+                              const rechecked = !unchangedDraft(line) || (moved && !line.discount_untyped);
+                              const birthday = choice !== 'birthday' || !rechecked ? null
+                                : !cCustomer ? birthdayProblem(chosen?.birthday_rule, { hasCustomer: false })
+                                : customer ? birthdayProblem(chosen?.birthday_rule, { hasCustomer: true, dob: customer.date_of_birth, businessDate: cBusinessDate
+                                    // An invoice saved with no business date is dated the day it was made, as the server reads it.
+                                    || (savedInvoice ? invoiceDate(savedInvoice) : '') || singaporeToday() })
+                                : null;
+                              return (
+                                <>
+                                  <select aria-label={`Line ${i + 1} voucher`} value={id}
+                                    onChange={e => { const v = e.target.value; setLine(l => ({ ...l, line_voucher_id: v,
+                                      // A saved untyped voucher goes back untyped only while it is the one chosen.
+                                      discount_untyped: !!saved?.discount_untyped && saved.line_voucher_id === v && saved.discount === l.discount })); }}
+                                    style={{ ...field, flex: 1, maxWidth: 320 }}>
+                                    <option value="">— Choose a voucher —</option>
+                                    {kept && <option value={id}>{printedVoucher(id) || 'Saved voucher'} ({ofCategory.some(v => v.id === id) ? 'more than this line' : 'historical'})</option>}
+                                    {eligible.map(v => <option key={v.id} value={v.id}>{discountVoucherLabel(v)}</option>)}
+                                  </select>
+                                  {m && m.discount > 0 ? less(m.discount) : null}
+                                  {m?.voucherRefused && <span style={{ fontSize: 11.5, color: 'var(--danger)' }}>
+                                    This voucher needs the line's value above {money(Number(chosen?.discount_amount ?? 0))}.</span>}
+                                  {birthday && <div role="note" data-testid="birthday-discount-note" style={{ flexBasis: '100%', fontSize: 11.5, color: 'var(--danger)' }}>
+                                    {birthday} The server checks it again when you save.</div>}
+                                </>
+                              );
+                            })()}
+                            {(choice === 'manual' || choice === 'percentage') && (
+                              <>
+                                {choice === 'manual'
+                                  ? <label style={{ display: 'flex', alignItems: 'center', gap: 4, margin: 0, fontSize: 12.5, fontWeight: 400 }}>S$
+                                      <input aria-label={`Line ${i + 1} discount amount`} type="number" min={0} step={0.01} placeholder="0.00"
+                                        value={line.discount_amount ?? ''} onChange={e => setLine(l => ({ ...l, discount_amount: e.target.value }))}
+                                        style={{ ...field, width: 90 }} /></label>
+                                  : <label style={{ display: 'flex', alignItems: 'center', gap: 4, margin: 0, fontSize: 12.5, fontWeight: 400 }}>
+                                      <input aria-label={`Line ${i + 1} discount percent`} type="number" min={0} max={100} step="any" placeholder="0"
+                                        value={line.discount_percent ?? ''} onChange={e => setLine(l => ({ ...l, discount_percent: e.target.value }))}
+                                        style={{ ...field, width: 70 }} />%</label>}
+                                <input aria-label={`Line ${i + 1} discount reason`} type="text" maxLength={300}
+                                  placeholder="Reason (internal, required)" value={line.discount_reason ?? ''}
+                                  onChange={e => setLine(l => ({ ...l, discount_reason: e.target.value }))}
+                                  style={{ ...field, flex: 1, minWidth: 160, maxWidth: 280 }} />
+                                {m && m.discount > 0 ? less(m.discount) : null}
+                              </>
+                            )}
+                            {choice === 'legacy' && (
+                              <div data-testid="legacy-line-discount" style={{ flexBasis: '100%', fontSize: 11.5, color: 'var(--text-muted)' }}>
+                                Saved before one discount per line: FOC ({focText}) and the voucher {printedVoucher(line.line_voucher_id) || 'Saved voucher'}
+                                {line.saved_money ? ` −${money(line.saved_money.line_discount)}` : ''}. Both stay as they are while this line is unchanged.
+                                To change the line, choose one discount for it.
+                              </div>
+                            )}
+                            {/* Exchange credit is kept only while the line is: the server
+                                drops it from a changed line (as it did before 384), and so
+                                does the preview. */}
+                            {choice === 'exchange' && (unchangedDraft(line) ? (
+                              <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                                {line.saved_money ? `${money(line.saved_money.line_discount)} ` : ''}from the exchange{(line.foc_quantity ?? 0) > 0 ? `, and FOC (${focText})` : ''} — kept as it is.
+                              </span>
+                            ) : (
+                              <span role="note" data-testid="exchange-credit-dropped" style={{ fontSize: 11.5, color: 'var(--danger)' }}>
+                                Changing this line drops its exchange credit{line.saved_money ? ` of ${money(line.saved_money.line_discount)}` : ''}
+                                {(line.foc_quantity ?? 0) > 0 ? `; its FOC (${focText}) stays` : ''}. Undo the change to keep it.
+                              </span>
                             ))}
-                          </select>
-                          {(line.foc_quantity ?? 0) > 0 && (
-                            <>
-                              <select value={line.foc_reason_id ?? ''}
-                                onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_reason_id: e.target.value } : l))}
-                                style={{ flex: 1, maxWidth: 220, fontSize: 12.5 }}>
-                                <option value="">— Reason (required) —</option>
-                                {line.foc_reason_id && !focReasons.some(r => r.id === line.foc_reason_id) && <option value={line.foc_reason_id}>{line.foc_reason || 'Saved FOC reason'} (historical)</option>}
-                                {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' *' : ''}</option>)}
-                              </select>
-                              <input type="text" placeholder="Note" value={line.foc_reason ?? ''}
-                                onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, foc_reason: e.target.value } : l))}
-                                style={{ flex: 1, maxWidth: 200, fontSize: 12.5 }} />
-                              {price ? (
-                                <span style={{ fontSize: 11.5, color: 'var(--success)' }}>
-                                  free {money(price * (line.foc_quantity ?? 0))}
-                                </span>
-                              ) : null}
-                            </>
-                          )}
-                        </div>
-                      )}
-                      {line.kind === 'product' && line.product_id && isThirdParty(line.product_id) && (
-                        <div style={{ marginLeft: 118, marginTop: -2, fontSize: 11.5, color: 'var(--text-muted)' }}>
-                          3rd-party product — discount vouchers don't apply. A manual
-                          discount still does.
-                        </div>
-                      )}
-                      {line.kind === 'product' && line.product_id && !isThirdParty(line.product_id) && discountVouchers.length > 0 && (
-                        <div className="invoice-choice-group" style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 118, marginTop: -2 }}>
-                          <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Line voucher:</span>
-                          <select value={line.line_voucher_id} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, line_voucher_id: e.target.value } : l))} style={{ flex: 1, maxWidth: 320, fontSize: 12.5 }}>
-                            <option value="">— None —</option>
-                            {discountVouchers.filter(v => v.voucher_kind !== 'fixed_discount' || (v.discount_amount ?? 0) < (lineUnit(line) ?? 0) * line.quantity).map(v => (
-                              <option key={v.id} value={v.id}>
-                                {v.name} — {v.voucher_kind === 'fixed_discount' ? money(v.discount_amount ?? 0) + ' off' : `${v.discount_percent}% off${v.max_discount_cap ? ` (cap ${money(v.max_discount_cap)})` : ''}`}
-                              </option>
-                            ))}
-                          </select>
-                          {line.line_voucher_id && price ? <span style={{ fontSize: 11.5, color: 'var(--success)' }}>− {money(voucherDiscAmount(vouchers.find(v => v.id === line.line_voucher_id), price * line.quantity))}</span> : null}
-                        </div>
-                      )}
+                            {(choice === 'manual' || choice === 'percentage') && (
+                              <div style={{ flexBasis: '100%', fontSize: 11, color: 'var(--text-muted)' }}>
+                                The reason is kept for staff and never printed or sent to the customer.
+                              </div>
+                            )}
+                            {thirdParty && (
+                              <div style={{ flexBasis: '100%', fontSize: 11, color: 'var(--text-muted)' }}>
+                                3rd-party product — vouchers, birthday and staff discounts don't apply. A manual or
+                                percentage discount does.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {line.kind === 'event_ticket' && line.event_ticket_option_id && (() => {
                         const o = ticketOption(line.event_ticket_option_id);
                         if (!o) return null;
@@ -3819,15 +4004,18 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
-            {cStore && discountVouchers.length > 0 && (
+            {cStore && (discountVouchers.length > 0 || !!cDiscountVoucher) && (
               <div className="form-group">
-                <label>Discount Voucher (optional — one per invoice{hasPromoLine ? '; not available on bundle invoices' : ''})</label>
-                <select value={cDiscountVoucher} onChange={e => setCDiscountVoucher(e.target.value)} disabled={hasPromoLine}>
+                <label htmlFor="invoice-discount-voucher">Discount Voucher (optional — one per invoice{hasPromoLine ? '; not available on bundle invoices' : ''})</label>
+                <select id="invoice-discount-voucher" value={cDiscountVoucher} onChange={e => setCDiscountVoucher(e.target.value)} disabled={hasPromoLine}>
                   <option value="">— None —</option>
+                  {/* A saved voucher no longer offered stays chosen, named, rather
+                      than showing as "None" while it is still sent. */}
+                  {cDiscountVoucher && !eligibleWholeVouchers.some(v => v.id === cDiscountVoucher) && (
+                    <option value={cDiscountVoucher}>{printedVoucher(cDiscountVoucher) || 'Saved voucher'} (historical)</option>
+                  )}
                   {eligibleWholeVouchers.map(v => (
-                    <option key={v.id} value={v.id}>
-                      {v.name} — {v.voucher_kind === 'fixed_discount' ? money(v.discount_amount ?? 0) + ' off' : `${v.discount_percent}% off${v.max_discount_cap ? ` (cap ${money(v.max_discount_cap)})` : ''}`}
-                    </option>
+                    <option key={v.id} value={v.id}>{discountVoucherLabel(v)}</option>
                   ))}
                 </select>
                 <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>Applied to the invoice subtotal. The exact amount is confirmed on the created invoice.</span>
@@ -3865,13 +4053,15 @@ const InvoicesPage: React.FC = () => {
                 })()}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-                <div style={{ textAlign: 'right', fontSize: 13, color: 'var(--text-secondary)' }}>Subtotal: <strong>{money(createSubtotal)}</strong></div>
+                {/* The invoice's own subtotal (what is charged, top-ups included), then
+                    its discounts in the order the server applies them. */}
+                <div data-testid="invoice-preview-subtotal" style={{ textAlign: 'right', fontSize: 13, color: 'var(--text-secondary)' }}>Subtotal: <strong>{money(createSubtotal)}</strong></div>
                 {focValuePreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--success)' }}>FOC given: {money(focValuePreview)}</div>}
-                {topupPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>+ top-up {money(topupPreview)}</div>}
-                {(cDiscount || 0) > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− manual discount {money(cDiscount)}</div>}
-                {lineVoucherDiscountPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− line vouchers {money(lineVoucherDiscountPreview)}</div>}
+                {topupPreview > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>incl. top-up {money(topupPreview)}</div>}
+                {lineDiscountPreview > 0 && <div data-testid="invoice-preview-line-discounts" style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− line discounts {money(lineDiscountPreview)}</div>}
+                {totalsPreview.manual > 0 && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− manual discount {money(fromCents(totalsPreview.manual))}</div>}
                 {cDiscountVoucher && <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' }}>− voucher discount {money(voucherDiscountPreview)}</div>}
-                <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 700, marginTop: 2 }}>Total: {money(previewTotal)}</div>
+                <div data-testid="invoice-preview-total" style={{ textAlign: 'right', fontSize: 16, fontWeight: 700, marginTop: 2 }}>Total: {money(previewTotal)}</div>
               </div>
             </div>
             </>)}
@@ -4229,14 +4419,15 @@ const InvoicesPage: React.FC = () => {
                       <React.Fragment key={it.id}>
                         <tr>
                           <td>{it.line_kind === 'voucher' ? `🎟 ${itemName(it)}` : isPromo ? `🧩 ${itemName(it)}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${itemName(it)}` : it.line_kind === 'rental' ? `Rental: ${itemName(it)}` : itemName(it)}
-                            {it.line_kind === 'product' && (it as any).line_voucher_id ? <div style={{ fontSize: 11, color: 'var(--success)' }}>🎟 {printedVoucher((it as any).line_voucher_id) || 'Voucher'} − {money(Number((it as any).line_discount ?? 0))}</div> : null}
+                            {lineDiscountDetail(it)}
                             {(() => { const tk = ticketDetail(it); return tk ? (
                               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                                 {tk.days && <div>Day{((it as any).event_days ?? []).length === 1 ? '' : 's'}: {tk.days}</div>}
                                 {tk.people && <div>For: {tk.people}</div>}
                               </div>) : null; })()}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
-                            {Number(it.foc_quantity ?? 0) === 0 && detail.status !== 'paid' && detail.status !== 'completed_foc'
+                            {/* One discount per line: a line with a discount is not offered FOC. */}
+                            {Number(it.foc_quantity ?? 0) === 0 && !lineHasDiscount(it) && detail.status !== 'paid' && detail.status !== 'completed_foc'
                               && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
                               <div style={{ fontSize: 11 }}>
                                 <button className="btn btn-secondary btn-sm" style={{ padding: '1px 7px', fontSize: 10.5 }}
@@ -4602,12 +4793,18 @@ const InvoicesPage: React.FC = () => {
         <Modal title="Make line FOC" maxWidth={420} onClose={() => setFocLine(null)}
           footer={<>
             <button className="btn btn-secondary" onClick={() => setFocLine(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleApplyLineFoc} disabled={focBusy}>
+            <button className="btn btn-primary" onClick={handleApplyLineFoc} disabled={focBusy || lineHasDiscount(focLine)}>
               {focBusy ? 'Applying…' : 'Apply FOC'}
             </button>
           </>}>
           <div className="form-grid">
             {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
+            {lineHasDiscount(focLine) && (
+              <div className="alert alert-warning" role="alert" style={{ fontSize: 12.5 }}>
+                This line already has a discount. A line has FOC or one discount, never both: correct the
+                invoice to change its discount to FOC.
+              </div>
+            )}
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
               The full quantity still leaves inventory and any entitlement is still created — only the charge is waived.
             </div>

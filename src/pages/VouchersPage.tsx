@@ -2,7 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Voucher, VoucherKind, VoucherStoreStock, Store, VOUCHER_KIND_LABELS, isOwnerOrManager } from '../types';
+import { Voucher, VoucherKind, VoucherStoreStock, Store, VOUCHER_KIND_LABELS, VOUCHER_CATEGORY_LABELS, BIRTHDAY_RULE_LABELS,
+  VoucherDiscountCategory, BirthdayRule, isOwnerOrManager } from '../types';
 import StorePriceEditor from '../components/StorePriceEditor';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Ticket, RefreshCw, Boxes } from 'lucide-react';
@@ -15,7 +16,19 @@ const blank = (v?: Voucher) => ({
   max_discount_cap: v?.max_discount_cap ?? 0, qty_type: v?.qty_type ?? 'unlimited',
   selling_price: v?.selling_price ?? 0, valid_from: v?.valid_from ?? '', valid_until: v?.valid_until ?? '',
   is_active: v?.is_active ?? true, description: v?.description ?? '', terms: v?.terms ?? '',
+  // 384: where a discount voucher is offered on an invoice line.
+  discount_category: (v?.discount_category ?? 'voucher') as VoucherDiscountCategory,
+  birthday_rule: (v?.birthday_rule ?? '') as BirthdayRule | '',
 });
+
+/** "Birthday · in the birth month", for a discount voucher; null for a normal one. */
+const categoryText = (v: Voucher): string | null => {
+  if (v.voucher_kind === 'normal') return null;
+  const c = v.discount_category ?? 'voucher';
+  return c === 'birthday' && v.birthday_rule
+    ? `${VOUCHER_CATEGORY_LABELS[c]} · ${BIRTHDAY_RULE_LABELS[v.birthday_rule].toLowerCase()}`
+    : VOUCHER_CATEGORY_LABELS[c];
+};
 
 const VouchersPage: React.FC = () => {
   const { profile } = useAuth();
@@ -63,6 +76,10 @@ const VouchersPage: React.FC = () => {
     if (!form.code.trim()) { setErr('Code is required.'); return; }
     if (form.voucher_kind === 'fixed_discount' && form.discount_amount <= 0) { setErr('Fixed discount amount must be greater than zero.'); return; }
     if (form.voucher_kind === 'percentage_discount' && (form.discount_percent <= 0 || form.discount_percent > 100)) { setErr('Discount percent must be between 0 and 100.'); return; }
+    const isDiscount = form.voucher_kind !== 'normal';
+    if (isDiscount && form.discount_category === 'birthday' && !form.birthday_rule) {
+      setErr('Choose when the birthday discount applies: on the birthday itself, or in the birth month.'); return;
+    }
     setSaving(true); setErr(null);
     const payload: any = {
       name: form.name.trim(), code: form.code.trim(), voucher_kind: form.voucher_kind,
@@ -72,6 +89,9 @@ const VouchersPage: React.FC = () => {
       qty_type: form.qty_type, selling_price: form.selling_price,
       valid_from: form.valid_from || null, valid_until: form.valid_until || null,
       is_active: form.is_active, description: form.description.trim() || null, terms: form.terms.trim() || null,
+      // A normal voucher has no category; only a birthday one has a rule.
+      discount_category: isDiscount ? form.discount_category : null,
+      birthday_rule: isDiscount && form.discount_category === 'birthday' ? form.birthday_rule : null,
     };
     const res = editId
       ? await supabase.from('vouchers').update(payload).eq('id', editId).select().single()
@@ -135,6 +155,7 @@ const VouchersPage: React.FC = () => {
               { header: 'Name', value: (v: any) => v.name },
               { header: 'Code', value: (v: any) => v.code },
               { header: 'Type', value: (v: any) => v.voucher_kind },
+              { header: 'Offered as', value: (v: any) => categoryText(v) ?? '' },
               { header: 'Qty type', value: (v: any) => v.qty_type },
               { header: 'Selling price', value: (v: any) => Number(v.selling_price ?? 0) },
               { header: 'Valid from', value: (v: any) => v.valid_from ? new Date(v.valid_from).toLocaleDateString('en-GB') : '' },
@@ -163,7 +184,8 @@ const VouchersPage: React.FC = () => {
                   <tr key={v.id}>
                     <td><strong>{v.name}</strong></td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{v.code}</td>
-                    <td>{kindBadge(v.voucher_kind)}</td>
+                    <td>{kindBadge(v.voucher_kind)}
+                      {categoryText(v) && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>{categoryText(v)}</div>}</td>
                     <td style={{ fontSize: 13 }}>
                       {v.voucher_kind === 'fixed_discount' ? money(v.discount_amount ?? 0)
                         : v.voucher_kind === 'percentage_discount' ? `${v.discount_percent}%${v.max_discount_cap ? ` (cap ${money(v.max_discount_cap)})` : ''}`
@@ -202,9 +224,9 @@ const VouchersPage: React.FC = () => {
               <div className="form-group">
                 <label>Voucher Type</label>
                 <select value={form.voucher_kind} onChange={e => setForm(f => ({ ...f, voucher_kind: e.target.value as VoucherKind }))}>
-                  <option value="normal">Normal (sellable)</option>
-                  <option value="fixed_discount">Fixed Amount Discount</option>
-                  <option value="percentage_discount">Percentage Discount</option>
+                  <option value="normal">{VOUCHER_KIND_LABELS.normal}</option>
+                  <option value="fixed_discount">{VOUCHER_KIND_LABELS.fixed_discount}</option>
+                  <option value="percentage_discount">{VOUCHER_KIND_LABELS.percentage_discount}</option>
                 </select>
               </div>
               <div className="form-group">
@@ -221,6 +243,37 @@ const VouchersPage: React.FC = () => {
               </div>
             </div>
 
+            {form.voucher_kind !== 'normal' && (
+              <div className="form-grid-2">
+                <div className="form-group">
+                  <label htmlFor="voucher-discount-category">Offered on an invoice line as</label>
+                  <select id="voucher-discount-category" value={form.discount_category}
+                    onChange={e => setForm(f => ({ ...f, discount_category: e.target.value as VoucherDiscountCategory }))}>
+                    <option value="voucher">Voucher</option>
+                    <option value="birthday">Birthday discount</option>
+                    <option value="staff">Staff discount</option>
+                  </select>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    Which choice of a line's Discount lists this voucher: Vouchers, Birthday discount or Staff discount.
+                  </div>
+                </div>
+                {form.discount_category === 'birthday' && (
+                  <div className="form-group">
+                    <label htmlFor="voucher-birthday-rule">Birthday rule *</label>
+                    <select id="voucher-birthday-rule" value={form.birthday_rule}
+                      onChange={e => setForm(f => ({ ...f, birthday_rule: e.target.value as BirthdayRule | '' }))}>
+                      <option value="">— Choose —</option>
+                      <option value="actual_date">On the birthday (the actual date)</option>
+                      <option value="whole_month">In the birth month (the whole month)</option>
+                    </select>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                      Checked against the customer's date of birth on the invoice date. One birthday-discount
+                      invoice per customer per year.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {form.voucher_kind === 'fixed_discount' && (
               <div className="form-group"><label>Discount Amount (S$)</label><input type="number" min={0} step={0.01} value={form.discount_amount || ''} onChange={e => setForm(f => ({ ...f, discount_amount: +e.target.value }))} placeholder="e.g. 72" /></div>
             )}

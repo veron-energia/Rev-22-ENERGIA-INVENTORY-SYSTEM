@@ -432,7 +432,19 @@ export interface InvoiceItem {
   voucher_id?: string | null;
   promotion_id?: string | null;
   line_voucher_id?: string | null;
+  // The line's one discount, in S$ (384): a voucher's, a manual amount or a
+  // percentage of the line. Exchange invoices also keep their exchange credit
+  // here, with no voucher and no type.
   line_discount?: number;
+  // 384: which discount it is. Null on lines saved before 384, where a
+  // line_voucher_id stands for that voucher's category.
+  line_discount_type?: LineDiscountType | null;
+  line_discount_percent?: number | null;
+  // Internal (manual and percentage discounts): shown to staff on the
+  // invoice, never printed or sent to the customer.
+  line_discount_reason?: string | null;
+  line_discount_by?: string | null;
+  line_discount_at?: string | null;
   topup_amount?: number;
   quantity: number;
   unit_price: number;
@@ -606,6 +618,14 @@ export interface CommissionPayout {
 // ── Phase 5C: Voucher types ──────────────────────────────────────────────────
 export type VoucherKind = 'normal' | 'fixed_discount' | 'percentage_discount';
 export type VoucherQtyType = 'unlimited' | 'limited';
+// 384: where a discount voucher is offered on an invoice line — under
+// Vouchers, Birthday discount or Staff discount. Null for a normal voucher.
+export type VoucherDiscountCategory = 'voucher' | 'birthday' | 'staff';
+// A birthday voucher applies on the birthday itself, or anywhere in the birth month.
+export type BirthdayRule = 'actual_date' | 'whole_month';
+// A line's discount (invoice_items.line_discount_type). FOC is not one of
+// them: it keeps its own columns, and a line has FOC or one of these.
+export type LineDiscountType = VoucherDiscountCategory | 'manual' | 'percentage';
 
 export interface Voucher {
   id: string;
@@ -615,6 +635,9 @@ export interface Voucher {
   discount_amount: number | null;
   discount_percent: number | null;
   max_discount_cap: number | null;
+  // 384; absent until it is applied.
+  discount_category?: VoucherDiscountCategory | null;
+  birthday_rule?: BirthdayRule | null;
   qty_type: VoucherQtyType;
   selling_price: number;
   valid_from: string | null;
@@ -634,10 +657,18 @@ export interface VoucherStoreStock {
   updated_at: string;
 }
 
+// The two discount kinds say "voucher": "Percentage discount" is the name of
+// a typed percentage on an invoice line, which is not a voucher at all.
 export const VOUCHER_KIND_LABELS: Record<VoucherKind, string> = {
   normal: 'Normal (sellable)',
-  fixed_discount: 'Fixed Amount Discount',
-  percentage_discount: 'Percentage Discount',
+  fixed_discount: 'Fixed-amount voucher',
+  percentage_discount: 'Percent-off voucher',
+};
+export const VOUCHER_CATEGORY_LABELS: Record<VoucherDiscountCategory, string> = {
+  voucher: 'Voucher', birthday: 'Birthday', staff: 'Staff',
+};
+export const BIRTHDAY_RULE_LABELS: Record<BirthdayRule, string> = {
+  actual_date: 'On the birthday', whole_month: 'In the birth month',
 };
 
 // ── Phase 5D: Promotion types ────────────────────────────────────────────────

@@ -24,7 +24,7 @@ test('a ticket line is sent with its option, days and a name for every person', 
   assert.match(branch, /event_days: \[\.\.\.\(l\.event_days \?\? \[\]\)\]\.sort\(\)/);
   assert.match(branch, /guest_id: a\.guest_id/, 'a saved person keeps their guest record');
   assert.match(branch, /name: a\.name\.trim\(\)/);
-  assert.match(branch, /\.\.\.ovr\(l\), \.\.\.foc\(l\)/, 'a saved line sends its id and price back, and FOC travels as on any line');
+  assert.match(branch, /\.\.\.ovr\(l\), \.\.\.disc\(l\)/, 'a saved line sends its id and price back, and its one discount (FOC or another) travels as on any line');
 });
 
 test('the form refuses a ticket without its days or without every name, before the server does', () => {
@@ -37,8 +37,10 @@ test('a ticket is priced from the options on sale for the business date', () => 
   assert.match(page, /rpc\('event_ticket_options_for_sale',\s*\{ p_store_id: activeStore, p_business_date: cBusinessDate \}\)/);
   assert.match(page, /l\.kind === 'event_ticket' \? \(ticketOptions\.find\(o => o\.option_id === l\.event_ticket_option_id\)\?\.unit_price \?\? null\)/);
   // The totals must recompute when the options (and so the prices) change.
+  // Every line's money, and so every total, comes from one memo (linePreview).
   const deps = page.match(/creditPkgs, creditBundles, ticketOptions\]\)/g) ?? [];
-  assert.equal(deps.length, 2, 'both memoised totals depend on the ticket options');
+  assert.equal(deps.length, 1, 'the memoised line money depends on the ticket options');
+  assert.match(page, /const linePreview: LineMoney\[\] = useMemo\(/, 'the totals are worked out from the memoised line money');
 });
 
 test('editing an invoice brings back each person on its tickets by guest id', () => {

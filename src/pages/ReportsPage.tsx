@@ -22,6 +22,24 @@ const cents = (n: number) => Math.round(Number(n ?? 0) * 100) / 100;
 const dateOnly = (d: string | null | undefined) => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '—';
 const time = (v: string | null | undefined) => v ? new Date(v).getTime() : 0;
 
+// Each invoice's line discounts by type (owner, 3 Oct 2026), as
+// report_discounts returns them since 384: Vouchers, Birthday, Staff,
+// Manual and Percentage. A line saved before 384 with a voucher counts under
+// that voucher's category; a line discount with neither is exchange credit,
+// kept apart. The invoice-level manual discount and Discount Voucher keep
+// their own columns. FOC has its own report.
+const DISCOUNT_COLUMNS: { header: string; value: (r: any) => number }[] = [
+  { header: 'Vouchers', value: r => Number(r.line_voucher_discount ?? 0) },
+  { header: 'Birthday', value: r => Number(r.birthday_discount ?? 0) },
+  { header: 'Staff discount', value: r => Number(r.staff_discount ?? 0) },
+  { header: 'Manual (line)', value: r => Number(r.line_manual_discount ?? 0) },
+  { header: 'Percentage', value: r => Number(r.line_percentage_discount ?? 0) },
+  { header: 'Manual (invoice)', value: r => Number(r.manual_discount ?? 0) },
+  { header: 'Invoice voucher', value: r => Number(r.voucher_discount ?? 0) },
+  { header: 'Exchange credit', value: r => Number(r.exchange_credit ?? 0) },
+  { header: 'Save Earth', value: r => Number(r.save_earth ?? 0) },
+];
+
 async function fetchReportRows(build: () => any, orderBy = ['id']): Promise<any[]> {
   const rows: any[] = [];
   for (let offset = 0; ; offset += 1000) {
@@ -667,9 +685,8 @@ const ReportsPage: React.FC = () => {
         col('Status', r => String(r.status).replace('_', ' ')), col('Type', r => r.is_legacy ? 'Legacy' : 'Purchased')] };
       case 'r_discounts': return { rows: repDiscounts, sheet: 'Discounts', columns: [
         col('Invoice', r => r.invoice_no), col('Business date', pricingDate), col('Store', r => r.store_name), col('Staff', r => r.staff_names ?? null),
-        col('Customer', r => r.customer_name), col('Save Earth', r => cents(r.save_earth)), col('Invoice voucher', r => cents(r.voucher_discount)),
-        col('Promotion lines (in Line)', r => cents(r.promotion_discount)), col('Line', r => cents(r.line_discount)),
-        col('Manual', r => cents(r.manual_discount)), col('Total', r => cents(r.total_discount))] };
+        col('Customer', r => r.customer_name), ...DISCOUNT_COLUMNS.map(c => col(c.header, r => cents(c.value(r)))),
+        col('Total', r => cents(r.total_discount))] };
       case 'r_foc': return { rows: repFoc, sheet: 'FOC', columns: [
         col('Invoice', r => r.invoice_no), col('Business date', focDate), col('Customer', r => r.customer_name), col('Kind', r => r.line_kind),
         col('Item', r => r.description), col('Qty', r => Number(r.quantity)), col('FOC Qty', r => Number(r.foc_quantity)),
@@ -816,6 +833,11 @@ const ReportsPage: React.FC = () => {
       </div>}
       {['top_products', 'vouchers', 'promotions', 'specials'].includes(tab) && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
         Line sales use discounted receipt shares and the recorded refund lines. Mixed cash and wallet refunds allocate only the external-money share proportionally. Invoiced quantities count invoices with receipts in this period; they are not a stock-return measure.
+      </p>}
+      {tab === 'r_discounts' && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        Each line discount under its own type: Vouchers, Birthday and Staff (by the voucher's category), Manual and Percentage.
+        The invoice-level manual discount and Discount Voucher have their own columns. Exchange credit is the value returned on
+        an exchange, not a discount, and is kept apart. FOC has its own report.
       </p>}
       {tab === 'vouchers' && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
         Uses and Discount Given are read from the invoices with receipts in this period: each line redeemed with the voucher, and each invoice given it as an invoice-level discount.
@@ -1319,9 +1341,12 @@ const ReportsPage: React.FC = () => {
               )}
               {tab === 'r_discounts' && (
                 <table>
-                  <thead><tr><th>Invoice</th><th>Business date</th><th>Store</th><th>Staff</th><th>Customer</th><th style={{ textAlign: 'right' }}>Save Earth</th><th style={{ textAlign: 'right' }}>Invoice voucher</th><th style={{ textAlign: 'right' }}>Promotion lines (in Line)</th><th style={{ textAlign: 'right' }}>Line</th><th style={{ textAlign: 'right' }}>Manual</th><th style={{ textAlign: 'right' }}>Total</th></tr></thead>
-                  <tbody>{repDiscounts.length === 0 ? <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No discounts</td></tr>
-                    : repDiscounts.map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{pricingDate(r)}</td><td style={{ fontSize: 12 }}>{r.store_name}</td><td style={{ fontSize: 12 }}>{r.staff_names ?? '—'}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td><td style={{ textAlign: 'right' }}>{money(Number(r.save_earth))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.voucher_discount))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.promotion_discount))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.line_discount))}</td><td style={{ textAlign: 'right' }}>{money(Number(r.manual_discount))}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.total_discount))}</td></tr>)}</tbody>
+                  <thead><tr><th>Invoice</th><th>Business date</th><th>Store</th><th>Staff</th><th>Customer</th>
+                    {DISCOUNT_COLUMNS.map(c => <th key={c.header} style={{ textAlign: 'right' }}>{c.header}</th>)}<th style={{ textAlign: 'right' }}>Total</th></tr></thead>
+                  <tbody>{repDiscounts.length === 0 ? <tr><td colSpan={6 + DISCOUNT_COLUMNS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No discounts</td></tr>
+                    : repDiscounts.map((r, i) => <tr key={i}><td>{r.invoice_no}</td><td style={{ fontSize: 12 }}>{pricingDate(r)}</td><td style={{ fontSize: 12 }}>{r.store_name}</td><td style={{ fontSize: 12 }}>{r.staff_names ?? '—'}</td><td style={{ fontSize: 12 }}>{r.customer_name}</td>
+                      {DISCOUNT_COLUMNS.map(c => <td key={c.header} style={{ textAlign: 'right' }}>{money(c.value(r))}</td>)}
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.total_discount))}</td></tr>)}</tbody>
                 </table>
               )}
             </>

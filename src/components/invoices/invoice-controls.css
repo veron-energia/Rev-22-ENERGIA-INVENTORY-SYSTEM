@@ -36,6 +36,9 @@
 .invoice-recipient-picker { min-width: 0; }
 .invoice-recipient-picker button { white-space: normal; overflow-wrap: anywhere; min-height: 44px !important; }
 @media (max-width: 600px) {
+  /* A line's Discount row (384): on a phone each field takes the width. */
+  .invoice-line-discount > select, .invoice-line-discount > input,
+  .invoice-line-discount > label { flex: 1 1 100% !important; max-width: 100% !important; width: 100% !important; }
   .invoice-editor-line { flex-wrap: wrap; }
   .invoice-editor-line > * { min-width: 0; max-width: 100%; }
   .invoice-editor-line > div { flex-basis: 100% !important; order: 2; }

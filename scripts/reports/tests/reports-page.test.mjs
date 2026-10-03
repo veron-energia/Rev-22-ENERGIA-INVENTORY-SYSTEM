@@ -245,7 +245,7 @@ function createBackend(fx) {
     },
     report_pricing: () => [{ invoice_id: 'inv-01', invoice_no: 'INV-2026-0001', paid_date: '2026-08-05', store_name: 'North Store', customer_name: 'Customer 01',
       line_kind: 'product', item_name: 'Product Alpha', quantity: 2, unit_price: 100 }],
-    report_discounts: () => [{ invoice_id: 'inv-12', invoice_no: 'INV-2026-0012', paid_date: '2026-09-18', store_name: 'South Store', staff_names: 'Staff Two',
+    report_discounts: () => fx.discountRows ?? [{ invoice_id: 'inv-12', invoice_no: 'INV-2026-0012', paid_date: '2026-09-18', store_name: 'South Store', staff_names: 'Staff Two',
       customer_name: 'Customer 04', save_earth: 0, voucher_discount: 25, promotion_discount: 0, line_discount: 0, manual_discount: 5, total_discount: 30 }],
     report_foc_lines: () => [{ invoice_id: 'inv-09', invoice_no: 'INV-2026-0009', customer_name: 'Customer 06', line_kind: 'product', description: 'Product Gamma',
       quantity: 1, foc_quantity: 1, normal_value: 80, foc_value: 80, charged_value: 0, foc_reason: 'Goodwill', foc_by_name: 'Staff Two', settled_at: '2026-09-24T17:00:00Z' }],
@@ -640,8 +640,37 @@ test('B14: TikTok rows say "No match needed", run newest first, and the all-peri
   assert.equal(cards()['Fees as imported'], 'S$-81.50');
 });
 
+const DISCOUNT_HEADERS = ['Invoice', 'Business date', 'Store', 'Staff', 'Customer', 'Vouchers', 'Birthday', 'Staff discount', 'Manual (line)',
+  'Percentage', 'Manual (invoice)', 'Invoice voucher', 'Exchange credit', 'Save Earth', 'Total'];
+
 test('B16: the Discounts headings say what the columns hold', async () => {
   await mount();
   await selectTab('Discounts');
-  assert.deepEqual(tables()[0].headers.slice(5, 8), ['Save Earth', 'Invoice voucher', 'Promotion lines (in Line)']);
+  assert.deepEqual(tables()[0].headers, DISCOUNT_HEADERS);
+  // INV-2026-0012 has no line discounts: its invoice-level manual and voucher show in their own columns.
+  assert.deepEqual(dataRows(0), [['INV-2026-0012', '18/09/2026', 'South Store', 'Staff Two', 'Customer 04',
+    'S$0.00', 'S$0.00', 'S$0.00', 'S$0.00', 'S$0.00', 'S$5.00', 'S$25.00', 'S$0.00', 'S$0.00', 'S$30.00']]);
+});
+
+test('384: each line discount shows under its own type, as report_discounts splits it; exchange credit apart', async () => {
+  const fx = makeFixture();
+  // report_discounts (384) splits the line discounts by type: a line saved
+  // before 384 with a voucher under that voucher's category, a line discount
+  // with neither voucher nor type as exchange credit. The page shows what it
+  // returns, and reads no invoice lines of its own for it.
+  fx.discountRows = [{ invoice_id: 'inv-31', invoice_no: 'INV-2026-0031', paid_date: '2026-09-22', store_name: 'North Store', staff_names: 'Staff One',
+    customer_name: 'Customer 02', save_earth: 0, voucher_discount: 20, promotion_discount: 0, line_discount: 41.5, manual_discount: 6, total_discount: 67.5,
+    line_voucher_discount: 4, birthday_discount: 12, staff_discount: 5, line_manual_discount: 10, line_percentage_discount: 3.5, exchange_credit: 7 }];
+  await mount({ fixture: fx });
+  await selectTab('Discounts');
+  assert.deepEqual(tables()[0].headers, DISCOUNT_HEADERS);
+  assert.deepEqual(dataRows(0), [['INV-2026-0031', '22/09/2026', 'North Store', 'Staff One', 'Customer 02',
+    'S$4.00', 'S$12.00', 'S$5.00', 'S$10.00', 'S$3.50', 'S$6.00', 'S$20.00', 'S$7.00', 'S$0.00', 'S$67.50']]);
+  assert.ok(!/reason/i.test(tables()[0].headers.join(' ')), 'no reason column: line reasons are internal to the invoice');
+  assert.equal(callsOf('invoice_items').filter(c => c.cols === '*').length, 0, 'the split is the server\'s, not re-read from the lines');
+  const exported = await exportWith(pageExport());
+  assert.deepEqual(exported.sheet.ws.header, DISCOUNT_HEADERS, 'the export carries the same columns');
+  const row = exported.sheet.ws.body[0];
+  assert.deepEqual(DISCOUNT_HEADERS.slice(5).map(h => row[h]), [4, 12, 5, 10, 3.5, 6, 20, 7, 0, 67.5]);
+  assert.deepEqual(globalThis.__renderErrors, []);
 });

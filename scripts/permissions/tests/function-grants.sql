@@ -65,7 +65,12 @@ declare
                              'web_order_link_summary','web_order_person_email','web_order_number_people',
                              'web_order_hand_invoices','web_order_can_link',
                              -- 381: the nudge the database's cron job sends
-                             'web_order_sync_ping'];
+                             'web_order_sync_ping',
+                             -- 384: the rules of an invoice line's one Discount
+                             'invoice_line_discount_kind','invoice_line_discount_for','invoice_birthday_check',
+                             'invoice_birthday_lines_check','invoice_line_discount_take','invoice_line_discount_write',
+                             'invoice_line_discount_rebase','invoice_line_discount_only','trg_voucher_discount_category',
+                             'trg_invoice_item_line_discount_reason'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

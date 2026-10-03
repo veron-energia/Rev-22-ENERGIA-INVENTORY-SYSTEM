@@ -151,9 +151,12 @@ export function makeFixture({ extraCustomers = 0, extraInvoices = 0 } = {}) {
   });
   const discounts = [
     { invoice_id: 'inv-02', invoice_no: 'INV-2026-0002', paid_date: '2026-08-12', store_name: 'North Store', staff_names: 'Staff One, Staff Two',
-      customer_name: 'Customer 02', save_earth: 0, voucher_discount: 30, promotion_discount: 0, line_discount: 0, manual_discount: 0, total_discount: 30 },
+      customer_name: 'Customer 02', save_earth: 0, voucher_discount: 30, promotion_discount: 0, line_discount: 0, manual_discount: 0, total_discount: 30,
+      line_voucher_discount: 0, birthday_discount: 0, staff_discount: 0, line_manual_discount: 0, line_percentage_discount: 0, exchange_credit: 0 },
     { invoice_id: 'inv-07', invoice_no: 'INV-2026-0007', paid_date: '2026-09-15', store_name: 'South Store', staff_names: 'Staff Two',
-      customer_name: 'Customer 02', save_earth: 0, voucher_discount: 0, promotion_discount: 0, line_discount: 50, manual_discount: 0, total_discount: 50 },
+      customer_name: 'Customer 02', save_earth: 0, voucher_discount: 0, promotion_discount: 0, line_discount: 50, manual_discount: 0, total_discount: 50,
+      // 384: the line discounts by type, as report_discounts splits them.
+      line_voucher_discount: 0, birthday_discount: 20, staff_discount: 0, line_manual_discount: 15, line_percentage_discount: 10, exchange_credit: 5 },
   ];
   const focLines = [
     { invoice_id: 'inv-01', invoice_no: 'INV-2026-0001', invoice_status: 'paid', store_id: 'st-1', customer_name: 'Customer 01', line_kind: 'product',
