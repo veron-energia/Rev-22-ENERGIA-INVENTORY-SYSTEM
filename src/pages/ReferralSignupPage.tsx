@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import PhoneInput from '../components/PhoneInput';
+import { referralBookingUrl } from '../lib/referral/bookingLink.mjs';
 import '../styles/referral-landing.css';
 
 // Public /r/:referralCode — creates a CUSTOMER under the affiliate. It does NOT
@@ -16,11 +17,12 @@ import '../styles/referral-landing.css';
 // below are taken from that page so the two do not drift apart.
 //
 // The signup call, the honeypot and the phone validation are unchanged.
-
-/** Where a NEW registration is sent. Existing customers are not sent here: the
- *  page tells people to book a free therapy, and the offer is for first timers,
- *  so somebody already on file stays put and is told nothing changed. */
-const THANK_YOU_URL = 'https://energia.sg/ty';
+//
+// A NEW registration goes straight to the booking page (392), not to
+// energia.sg/ty, with its details and the referrer filled in so the
+// appointment carries the affiliate's name. Existing customers are not sent
+// there: the offer is for first timers, so somebody already on file stays put
+// and is told nothing changed.
 
 const HERO_IMG = 'https://energia.sg/wp-content/uploads/2025/01/6719068c50fcd_mockup-1024x758.png.webp';
 const LOGO_IMG = 'https://energia.sg/wp-content/uploads/2021/03/Energia-Logo-Rectangle-Two.png.webp';
@@ -93,18 +95,21 @@ const ReferralSignupPage: React.FC = () => {
     const res = data as any;
     if (res?.ok === false) { setBusy(false); setErr(res.message || 'Registration could not be completed.'); return; }
 
-    // A NEW registration goes to the thank-you page, which is where the booking
-    // link and the gift instructions live. Somebody already on file does not:
-    // the offer is for first timers, and sending them there would tell them to
-    // claim a bundle they are not entitled to. They stay here and are told that
-    // nothing was changed. `busy` is deliberately left true on the redirect so
-    // the button cannot be pressed twice while the browser navigates away.
+    // A NEW registration goes to the booking page with its details and the
+    // referrer filled in. Somebody already on file does not: the offer is for
+    // first timers, and sending them there would tell them to claim a bundle
+    // they are not entitled to. They stay here and are told that nothing was
+    // changed. `busy` is deliberately left true on the redirect so the button
+    // cannot be pressed twice while the browser navigates away.
     if (res?.outcome === 'already_registered') {
       setBusy(false);
       setDone(res?.message || 'You are already registered with Energia. Nothing was changed.');
       return;
     }
-    window.location.href = THANK_YOU_URL;
+    window.location.href = referralBookingUrl({
+      firstName: f.first, lastName: f.last, email: f.email, phone: f.phone,
+      affiliateLabel: res?.affiliate_label,
+    });
   };
 
   const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) => (

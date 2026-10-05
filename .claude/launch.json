@@ -109,6 +109,16 @@
         "vite.tiktok-preview.config.mts"
       ],
       "port": 5189
+    },
+    {
+      "name": "referral-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.referral-preview.config.mts"
+      ],
+      "port": 5188
     }
   ]
 }

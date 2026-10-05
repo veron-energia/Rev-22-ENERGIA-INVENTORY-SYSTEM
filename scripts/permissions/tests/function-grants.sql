@@ -70,7 +70,9 @@ declare
                              'invoice_line_discount_kind','invoice_line_discount_for','invoice_birthday_check',
                              'invoice_birthday_lines_check','invoice_line_discount_take','invoice_line_discount_write',
                              'invoice_line_discount_rebase','invoice_line_discount_only','trg_voucher_discount_category',
-                             'trg_invoice_item_line_discount_reason'];
+                             'trg_invoice_item_line_discount_reason',
+                             -- 392: the referrer's name as a booking prints it
+                             'affiliate_calendar_label'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon
