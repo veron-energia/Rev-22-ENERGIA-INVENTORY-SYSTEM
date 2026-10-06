@@ -75,7 +75,13 @@ declare
                              'affiliate_calendar_label',
                              -- 393: waiting special items follow their invoice
                              'special_doc_invoice_problem','cancel_waiting_special_docs',
-                             'settle_waiting_special_docs_on_refund','trg_special_docs_follow_line_removed'];
+                             'settle_waiting_special_docs_on_refund','trg_special_docs_follow_line_removed',
+                             -- 394: the affiliate login WhatsApps, their outbox and the cron job's dispatcher
+                             'affiliate_whatsapp_message','affiliate_whatsapp_enqueue',
+                             'trg_affiliate_whatsapp_welcome','trg_affiliate_whatsapp_reactivated',
+                             'affiliate_whatsapp_take','affiliate_whatsapp_payload','affiliate_whatsapp_mark_sending',
+                             'affiliate_whatsapp_settle','affiliate_whatsapp_reconcile','affiliate_whatsapp_dispatch',
+                             'ads_wa_country_code'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon
