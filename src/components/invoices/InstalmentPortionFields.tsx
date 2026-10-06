@@ -41,26 +41,33 @@ export function portionProblem(p: InstalmentPortion | undefined, receivedNow: nu
  * invoice_payment_arrangements row is written. The duration is recorded on the
  * invoice for reference, which is what instalmentText displays.
  */
-export function InstalmentPortionFields({ value, onChange, methods, receivedNow, onReceivedNow, error }: {
+export function InstalmentPortionFields({ value, onChange, methods, receivedNow, onReceivedNow, error, onMethodPicked, methodAside }: {
   value: InstalmentPortion;
   onChange: (v: InstalmentPortion) => void;
   methods: { id: string; name: string; is_wallet_credit?: boolean; is_active?: boolean; deleted_at?: string | null }[];
   receivedNow: number;
   onReceivedNow: (n: number) => void;
   error?: string | null;
+  /** Staff chose the real method themselves (the store's QR pops up for GrabPay or Atome). */
+  onMethodPicked?: (id: string) => void;
+  /** Shown beside the real method, e.g. its Show QR button. */
+  methodAside?: React.ReactNode;
 }) {
   const preset = [3, 6, 9, 12];
   return (
     <fieldset className="instalment-portion">
       <legend>Instalment</legend>
 
-      <InvoiceSearchSelect label="Actual payment method" value={value.method_id}
-        onChange={id => onChange({ ...value, method_id: id })}
-        options={methods
-          // Wallet credit is not an instalment channel, and Instalment can
-          // never be its own underlying method.
-          .filter(m => !m.is_wallet_credit && m.is_active !== false && !m.deleted_at && m.id !== INSTALMENT_METHOD)
-          .map(m => ({ value: m.id, label: m.name }))} />
+      <div className="instalment-method">
+        <InvoiceSearchSelect label="Actual payment method" value={value.method_id}
+          onChange={id => { onChange({ ...value, method_id: id }); onMethodPicked?.(id); }}
+          options={methods
+            // Wallet credit is not an instalment channel, and Instalment can
+            // never be its own underlying method.
+            .filter(m => !m.is_wallet_credit && m.is_active !== false && !m.deleted_at && m.id !== INSTALMENT_METHOD)
+            .map(m => ({ value: m.id, label: m.name }))} />
+        {methodAside}
+      </div>
 
       <label>Duration
         <div className="instalment-months">

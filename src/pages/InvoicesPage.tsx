@@ -37,6 +37,8 @@ import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProble
 import { singaporeToday, invoiceDate, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
+import { PaymentQrPopup, PaymentQrLineAction } from '../components/invoices/PaymentQrPopup';
+import { paymentQrFor } from '../lib/invoices/paymentQr.mjs';
 import '../components/invoices/invoice-controls.css';
 
 import { fetchInvoicePage, fetchAllMatchingInvoices } from '../lib/invoices/listPage';
@@ -365,6 +367,13 @@ const InvoicesPage: React.FC = () => {
   const [payLines, setPayLines] = useState<{ payment_method_id: string; amount: number; instalment?: InstalmentPortion }[]>([]);
   /** Per-line instalment problems, shown beside the line they belong to. */
   const [payLineErrors, setPayLineErrors] = useState<Record<number, string>>({});
+  /** The payment line whose store QR is showing, and the method it was opened
+   *  for (an instalment's is its real method). */
+  const [payQr, setPayQr] = useState<{ invoiceId: string; line: number; methodId: string; instalment: boolean } | null>(null);
+  /** Each payment line's row and Show QR buttons, so a closing QR hands focus
+   *  back to its own line. */
+  const payLineRows = useRef<(HTMLDivElement | null)[]>([]);
+  const payQrButtons = useRef(new Map<string, HTMLButtonElement>());
   // The instalment arrangement is chosen where the money is taken now, not at
   // the top of the creation form. It is still invoice-level metadata.
   const [payInstalment, setPayInstalment] = useState<InstalmentDetails>({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
@@ -1611,6 +1620,7 @@ const InvoicesPage: React.FC = () => {
     // recorded without anyone noticing.
     programmaticPayRef.current = true; payTouchedRef.current = false;
     setPayLines([{ payment_method_id: '', amount: remaining > 0 ? remaining : 0 }]);
+    setPayQr(null);
     setPayInstalment({
       instalment_category: (inv as any).instalment_category ?? '',
       instalment_method_id: (inv as any).instalment_method_id ?? '',
@@ -1624,6 +1634,25 @@ const InvoicesPage: React.FC = () => {
   };
 
   const payTotal = useMemo(() => payLines.reduce((s, p) => s + (p.amount || 0), 0), [payLines]);
+
+  // PayNow, GrabPay and Atome show a QR for the customer to scan (Owner, 6 Oct
+  // 2026): this invoice's store's, or another store's when it has none.
+  const storeQrFor = (methodId: string | undefined) =>
+    methodId ? paymentQrFor(methods.find(m => m.id === methodId), detail?.store_id, stores) : null;
+  /** Staff picked a method on a line: a QR method shows its code straight away. */
+  const showPayQr = (line: number, methodId: string, instalment: boolean) => {
+    if (detail && storeQrFor(methodId)?.image) setPayQr({ invoiceId: detail.id, line, methodId, instalment });
+  };
+  // A QR belongs to the invoice it was opened on.
+  useEffect(() => { setPayQr(null); }, [detail?.id]);
+  const payQrButtonRef = (line: number, instalment: boolean) => (el: HTMLButtonElement | null) => {
+    const k = `${line}:${instalment}`;
+    if (el) payQrButtons.current.set(k, el); else payQrButtons.current.delete(k);
+  };
+  /** Where focus goes when the QR closes: its line's Show QR, else that line's method picker. */
+  const payQrReturnFocus = (line: number, instalment: boolean) =>
+    payQrButtons.current.get(`${line}:${instalment}`)
+      ?? payLineRows.current[line]?.querySelector<HTMLElement>('.invoice-search-select > button');
 
   // Phase 12 — close a fully-FOC invoice with no payment.
   useEffect(() => {
@@ -2686,8 +2715,18 @@ const InvoicesPage: React.FC = () => {
   // Read by handlers that run after this render, without a stale closure.
   pageRef.current = page; rangeInvalidRef.current = rangeInvalid; pageRowsRef.current = pageRows;
   createOpenRef.current = createOpen; editingIdRef.current = editingInvoiceId;
+  // The QR stays up only while its line still has the method it was opened for.
+  const payQrView = (() => {
+    if (!payQr || !detail || payQr.invoiceId !== detail.id) return null;
+    const line = payLines[payQr.line];
+    const now = !line ? undefined : payQr.instalment
+      ? (line.payment_method_id === INSTALMENT_METHOD ? line.instalment?.method_id : undefined)
+      : line.payment_method_id;
+    const qr = now === payQr.methodId ? storeQrFor(now) : null;
+    return qr?.image ? { qr, image: qr.image, amount: line.amount || 0, line: payQr.line, instalment: payQr.instalment } : null;
+  })();
   dialogsOpenRef.current = createOpen || guidedOpen || chooserOpen || !!actionType || !!focLine
-    || !!stockReviewFor || !!priceReview || !!quickCustomerFor;
+    || !!stockReviewFor || !!priceReview || !!quickCustomerFor || !!payQrView;
 
   return (
     <div>
@@ -4634,9 +4673,9 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
                     <React.Fragment key={i}>
-                    <div className="invoice-payment-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div className="invoice-payment-row" ref={el => { payLineRows.current[i] = el; }} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <InvoiceSearchSelect value={pl.payment_method_id} placeholder="Select payment method"
-                        onChange={id => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: id } : l))}
+                        onChange={id => { setPayLines(ls => ls.map((l, j) => j === i ? { ...l, payment_method_id: id } : l)); showPayQr(i, id, false); }}
                         options={[
                           // An arrangement, offered beside the methods because
                           // that is where a person looks for it — but it is
@@ -4649,6 +4688,9 @@ const InvoicesPage: React.FC = () => {
                       <input type="number" min={0} step={0.01} value={pl.amount || ''}
                         placeholder="Amount" style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
+                      {pl.payment_method_id !== INSTALMENT_METHOD &&
+                        <PaymentQrLineAction qr={storeQrFor(pl.payment_method_id)} buttonRef={payQrButtonRef(i, false)}
+                          onShow={() => showPayQr(i, pl.payment_method_id, false)} />}
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setPayLines(ls => ls.filter((_, j) => j !== i))} disabled={payLines.length === 1}><X size={13} /></button>
                     </div>
                     {pl.payment_method_id === INSTALMENT_METHOD && (
@@ -4658,7 +4700,10 @@ const InvoicesPage: React.FC = () => {
                         methods={methods}
                         receivedNow={pl.amount || 0}
                         onReceivedNow={n => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: n } : l))}
-                        error={payLineErrors[i] ?? null} />
+                        error={payLineErrors[i] ?? null}
+                        onMethodPicked={id => showPayQr(i, id, true)}
+                        methodAside={<PaymentQrLineAction qr={storeQrFor(pl.instalment?.method_id)} buttonRef={payQrButtonRef(i, true)}
+                          onShow={() => showPayQr(i, pl.instalment?.method_id ?? '', true)} />} />
                     )}
                     </React.Fragment>
                   ))}
@@ -4784,6 +4829,11 @@ const InvoicesPage: React.FC = () => {
         </Modal>
       )}
 
+      {payQrView && detail && (
+        <PaymentQrPopup qr={payQrView.qr} image={payQrView.image} amount={payQrView.amount}
+          reference={detail.invoice_no} onClose={() => setPayQr(null)}
+          returnFocusTo={() => payQrReturnFocus(payQrView.line, payQrView.instalment)} />
+      )}
       {priceReview && detail && (
         <PaymentPriceReview review={priceReview} busy={payBusy}
           onClose={() => setPriceReview(null)}

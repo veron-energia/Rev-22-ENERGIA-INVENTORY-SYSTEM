@@ -24,6 +24,7 @@
     "check:deliverability": "sh scripts/auth-email/check-deliverability.sh",
     "test:invoice-dates": "node scripts/invoice-dates/tests/dates.test.mjs",
     "test:invoices": "node --test scripts/invoices/tests/*.test.mjs",
+    "test:payment-qr": "node --test scripts/invoices/tests/payment-qr.test.mjs scripts/invoices/tests/payment-qr-popup.test.mjs",
     "test:invoice-actions": "node --test scripts/invoice-actions/tests/*.test.mjs",
     "test:invoice-packages": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-packages/tests/create-overload-repair.sql",
     "test:invoice-payments": "node --test scripts/invoice-payments/tests/*.test.mjs",
