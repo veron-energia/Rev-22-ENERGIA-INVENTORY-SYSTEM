@@ -28,11 +28,17 @@ if (!globalThis.crypto?.randomUUID) {
 const calls = [];
 let planNow;
 const stub = {
-  from: () => ({ select: () => ({ eq: () => ({ is: () => ({ order: () => Promise.resolve({ data: [
+  // The invoice's special sales and rentals (393) are read by invoice; the
+  // warehouses are the active ones, by name.
+  from: table => ({ select: () => ({ eq: () => (table === 'special_sales' || table === 'rentals')
+    ? Promise.resolve({ data: stub.waiting[table] ?? [], error: null })
+    : ({ is: () => ({ order: () => Promise.resolve({ data: [
     { id: 'wh-1', name: 'Main Warehouse' }, { id: 'wh-2', name: 'Overflow Warehouse' }] }) }) }) }) }),
+  waiting: {},
   rpc: (name, args) => {
     calls.push({ name, args });
     if (name === 'invoice_action_plan') return Promise.resolve({ data: planNow(args), error: null });
+    if (name === 'invoice_action_request_detail') return Promise.resolve({ data: stub.detail, error: null });
     if (name === 'invoice_rentals_awaiting_return') return Promise.resolve({ data: [], error: null });
     if (name === 'request_invoice_action_v2') return Promise.resolve({ data: { request_id: 'REQ-1' }, error: null });
     if (name === 'resolve_invoice_action_v2') return Promise.resolve({ data: stub.resolveResult, error: null });
@@ -371,6 +377,114 @@ check('and the outcome is still shown', text().includes('Refund of S$200.00 reco
 const beforeDoneClose = confirmed;
 await click(byText('button', 'Close'));
 check('closing a finished success message asks nothing', confirmed === beforeDoneClose);
+
+// ---------------------------------------------------------------------
+// 393: a partial refund asks about each machine still waiting for a
+// warehouse; the answer goes with the request and the approver sees it.
+// ---------------------------------------------------------------------
+calls.length = 0;
+stub.waiting = { special_sales: [
+  { id: 'SPS-A', sale_no: 'SPS-2026-0010', status: 'pending', warehouse_id: null, source_store_id: null,
+    invoice_item_id: 'L2', special_products: { name: 'Fixture Chair' } },
+  { id: 'SPS-B', sale_no: 'SPS-2026-0011', status: 'completed', warehouse_id: 'wh-1', source_store_id: null,
+    invoice_item_id: 'L2', special_products: { name: 'Fixture Chair' } }], rentals: [] };
+const chairLines = [
+  { invoice_item_id: 'L1', name: 'Pet Corset', line_kind: 'product', quantity: 2, selected_quantity: 2, amount: 200 },
+  { invoice_item_id: 'L2', name: 'Massage Chair', line_kind: 'special_product', quantity: 1, selected_quantity: 1, amount: 900 }];
+planNow = () => basePlan({ lines: chairLines });
+await render({ canApprove: false });
+await click(byText('button', 'Partial refund'));
+check('a partial refund asks about the waiting machine, by its invoice line',
+  text().includes('Is the customer still taking this item?') && text().includes('Massage Chair · SPS-2026-0010'));
+check('a released machine is not asked about', !text().includes('SPS-2026-0011'));
+check('nothing is chosen for the person',
+  Array.from(document.querySelectorAll('input[name="waiting-SPS-A"]')).every(r => !r.checked));
+await type(document.querySelector('.invoice-guided-lines input'), '1');
+check('continuing waits for the answer, and says so',
+  byText('button', 'Continue').disabled && text().includes('Answer for each item waiting for a warehouse'));
+await click(document.querySelectorAll('input[name="waiting-SPS-A"]')[1]);
+check('"No" is an answer', !byText('button', 'Continue').disabled);
+planNow = () => basePlan({ action: 'refund_partial', refund_amount: 100,
+  lines: [{ invoice_item_id: 'L1', name: 'Pet Corset', line_kind: 'product', quantity: 2, selected_quantity: 1, amount: 100 }] });
+await click(byText('button', 'Continue'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'One corset back; the chair is not wanted');
+await click(byText('button', 'Continue'));
+check('the review says what happens to the machine',
+  text().includes('Massage Chair · SPS-2026-0010: the customer is not taking it, so it is cancelled'));
+await click(byText('button', 'Submit refund request'));
+check('the answer goes with the request, on its first line',
+  JSON.stringify(calls.find(c => c.name === 'request_invoice_action_v2')?.args.p_lines)
+    === '[{"invoice_item_id":"L1","quantity":1,"waiting":[{"doc_id":"SPS-A","still_taking":false}]}]',
+  JSON.stringify(calls.find(c => c.name === 'request_invoice_action_v2')?.args.p_lines));
+
+// A full refund does not ask: it cancels every waiting machine, and says so.
+calls.length = 0;
+planNow = () => basePlan({ lines: chairLines });
+await render({ canApprove: false });
+await click(byText('button', 'Full refund'));
+check('a full refund does not ask', !text().includes('Is the customer still taking this item?'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Everything back');
+await click(byText('button', 'Continue'));
+check('and the review says the waiting machine is cancelled',
+  text().includes('A refund of the whole invoice cancels') && text().includes('Massage Chair · SPS-2026-0010'));
+await click(byText('button', 'Submit refund request'));
+check('and sends no answers', JSON.stringify(calls.find(c => c.name === 'request_invoice_action_v2')?.args.p_lines) === '[]');
+
+// The approver sees the requester's answer.
+calls.length = 0;
+planNow = () => basePlan({ lines: chairLines });
+const oneCorset = basePlan({ action: 'refund_partial', refund_amount: 100,
+  lines: [{ invoice_item_id: 'L1', name: 'Pet Corset', line_kind: 'product', quantity: 2, selected_quantity: 1, amount: 100 }] });
+stub.detail = { request_id: 'REQ-9', status: 'pending', action: 'refund_partial', reason: 'One corset back',
+  requested_by: 'Fixture Staff', store: 'Adelphi', changed: false, legacy: false,
+  requested_lines: [{ invoice_item_id: 'L1', quantity: 1, waiting: [{ doc_id: 'SPS-A', still_taking: true }] }],
+  requested_plan: oneCorset, current_plan: oneCorset };
+await render({ canApprove: true, requestId: 'REQ-9' });
+check('the approver sees what the requester answered',
+  text().includes('Massage Chair · SPS-2026-0010: the customer is still taking it, so it keeps waiting'));
+check('and cannot change it', !document.querySelector('input[name="waiting-SPS-A"]'));
+
+// A "partial" refund of every line in full closes the invoice, which cancels
+// every waiting machine whatever was answered: it does not ask, and neither
+// review says the machine keeps waiting.
+calls.length = 0;
+planNow = () => basePlan({ lines: chairLines });
+await render({ canApprove: false });
+await click(byText('button', 'Partial refund'));
+const lineInputs = document.querySelectorAll('.invoice-guided-lines input');
+await type(lineInputs[0], '1');
+check('one corset of two still asks', text().includes('Is the customer still taking this item?'));
+await type(lineInputs[0], '2');
+await type(lineInputs[1], '1');
+check('every line in full does not ask',
+  !text().includes('Is the customer still taking this item?') && text().includes('Every line goes back in full'));
+check('and continues without an answer', !byText('button', 'Continue').disabled);
+planNow = () => basePlan({ action: 'refund_partial', refund_amount: 1100, lines: chairLines });
+await click(byText('button', 'Continue'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Everything back after all');
+await click(byText('button', 'Continue'));
+check('the review says the refund closes the invoice and cancels the machine',
+  text().includes('closes the invoice and cancels every item still waiting') && text().includes('Massage Chair · SPS-2026-0010')
+  && !text().includes('keeps waiting'));
+await click(byText('button', 'Submit refund request'));
+check('and sends no answers',
+  JSON.stringify(calls.find(c => c.name === 'request_invoice_action_v2')?.args.p_lines)
+    === '[{"invoice_item_id":"L1","quantity":2},{"invoice_item_id":"L2","quantity":1}]',
+  JSON.stringify(calls.find(c => c.name === 'request_invoice_action_v2')?.args.p_lines));
+
+// The approver of such a request, answered "still taking", is told the truth.
+calls.length = 0;
+planNow = () => basePlan({ lines: chairLines });
+stub.detail = { ...stub.detail, request_id: 'REQ-10',
+  requested_lines: [{ invoice_item_id: 'L1', quantity: 2, waiting: [{ doc_id: 'SPS-A', still_taking: true }] },
+                    { invoice_item_id: 'L2', quantity: 1 }],
+  requested_plan: basePlan({ action: 'refund_partial', refund_amount: 1100, lines: chairLines }),
+  current_plan: basePlan({ action: 'refund_partial', refund_amount: 1100, lines: chairLines }) };
+await render({ canApprove: true, requestId: 'REQ-10' });
+check('an approver of a refund that closes the invoice is not told the machine keeps waiting',
+  !text().includes('keeps waiting') && text().includes('closes the invoice and cancels every item still waiting')
+  && text().includes('whatever was answered'));
+stub.waiting = {};
 
 // ---------------------------------------------------------------------
 // A blocked invoice offers nothing to click.

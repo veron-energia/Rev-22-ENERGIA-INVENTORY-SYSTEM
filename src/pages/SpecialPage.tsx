@@ -6,8 +6,9 @@ import { supabase, fetchCustomersByIds } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
   SpecialProduct, SpecialProductStock, SpecialSale, Rental, Warehouse, Customer, PaymentMethod,
-  SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, RENTAL_STATUS_LABELS, isOwnerOrManager,
+  SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, isOwnerOrManager,
 } from '../types';
+import { specialSaleBadge, rentalStatusLabel } from '../lib/special/waitingItems';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, X, Download, Printer, MessageCircle, Mail} from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
@@ -587,9 +588,10 @@ const SpecialPage: React.FC = () => {
 
   const RentalBadge: React.FC<{ r: Rental }> = ({ r }) => {
     const s: RentalStatus = isOverdue(r) ? 'overdue' : r.status;
-    const cls = s === 'returned' ? 'badge-success' : s === 'paid' ? 'badge-primary' : s === 'active' ? 'badge-accent'
-      : s === 'overdue' ? 'badge-danger' : s === 'cancelled' ? 'badge-muted' : 'badge-muted';
-    return <span className={`badge ${cls}`}>{RENTAL_STATUS_LABELS[s]}</span>;
+    const cls = s === 'returned' ? 'badge-success' : s === 'paid' || s === 'awaiting_fulfilment' ? 'badge-primary'
+      : s === 'active' ? 'badge-accent' : s === 'overdue' ? 'badge-danger' : 'badge-muted';
+    // A cancelled rental says why: refunded, its invoice cancelled, its line removed (393).
+    return <span className={`badge ${cls}`}>{rentalStatusLabel(s, r.notes)}</span>;
   };
 
 
@@ -731,7 +733,7 @@ const SpecialPage: React.FC = () => {
                   <td style={{ textAlign: 'right' }}>{s.quantity}</td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(s.total_amount))}</td>
                   <td style={{ fontSize: 12 }}>{pmName(s.payment_method_id)}</td>
-                  <td>{s.status === 'paid' ? <span className="badge badge-success">Paid</span> : <span className="badge badge-muted">Cancelled{s.stock_returned ? ' · stock back' : ''}</span>}</td>
+                  <td>{(() => { const b = specialSaleBadge(s); return <span className={`badge badge-${b.tone}`}>{b.label}</span>; })()}</td>
                   <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('sale', s)} title="Print this sale"><Printer size={13} /> Print</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('whatsapp', 'sale', s)}

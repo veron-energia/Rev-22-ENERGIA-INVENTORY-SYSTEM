@@ -5,6 +5,8 @@ import { singaporeToday } from '../../lib/invoices/business';
 import { CustomerSearchSelect } from '../SearchSelect';
 import { InvoiceBenefitEvidenceReview } from './InvoiceBenefitEvidenceReview';
 import { InvoiceRewardResolution } from './InvoiceRewardResolution';
+import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
+import { type WaitingAnswers, unansweredItems, withWaitingAnswers } from '../../lib/special/waitingItems';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
 type Mode = '' | 'refund' | 'payment' | 'cancel' | 'reopen' | 'transfer';
@@ -50,6 +52,15 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   // Set when a refund or cancellation is refused because the package's
   // qualification rewards are still outstanding. The review answers it.
   const [rewardReview, setRewardReview] = useState(false);
+  // 393: special products and rentals still waiting for a warehouse. A refund
+  // asks, for each, whether the customer is still taking it.
+  const waitingItems = useWaitingItems(invoiceId, payments);
+  const [waitingAnswers, setWaitingAnswers] = useState<WaitingAnswers>({});
+  // Every line going back in full closes the invoice, which cancels them all
+  // without asking (the Owner, 6 Oct 2026).
+  const wholeInvoice = !!options?.lines?.length && options.lines.every(l =>
+    Number(l.remaining) <= 0.005 || (lineAmounts[l.invoice_item_id] ?? 0) >= Number(l.remaining) - 0.005);
+  const waitingLeft = wholeInvoice ? [] : unansweredItems(waitingItems, waitingAnswers);
   useEffect(() => {
     let cancelled = false;
     setOptions(null);
@@ -62,7 +73,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   const open = async (next: Mode) => {
     onActiveChange?.(true);
     setMode(next); setError(''); setReason(''); setRequestId(crypto.randomUUID()); setConfirmed(false); setBenefitOverpayment(false);
-    setLineAmounts({}); setBenefitAmounts({}); setSourceAmounts({}); setStock({}); setPreview(null);
+    setLineAmounts({}); setBenefitAmounts({}); setSourceAmounts({}); setStock({}); setPreview(null); setWaitingAnswers({});
     setTransferBenefit(''); setTransferCustomer(''); setTransferStore('');
     if (next === 'reopen') {
       const { data, error } = await supabase.rpc('invoice_reopen_preview', { p_invoice_id: invoiceId });
@@ -96,6 +107,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   const submit = async () => {
     if (!reason.trim()) { setError('Enter a reason for the audit history.'); return; }
     if (mode === 'refund' && !confirmed) { setError('Confirm the actual refund and stock outcomes before recording.'); return; }
+    if (mode === 'refund' && waitingLeft.length) { setError('Say whether the customer is still taking each item waiting for a warehouse.'); return; }
     setBusy(true); setError('');
     try {
       let result;
@@ -105,7 +117,8 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
           invoice_item_id: id === 'excess' ? null : id, amount, overpayment: benefitOverpayment && (options?.benefits || []).some(b => b.invoice_item_id === id),
           benefits: (options?.benefits || []).filter(b => b.invoice_item_id === id && benefitAmounts[b.id] > 0).map(b => ({ benefit_id: b.id, amount: benefitAmounts[b.id] })),
         }));
-        result = await supabase.rpc('refund_invoice_recorded', { ...common, p_lines: lines,
+        result = await supabase.rpc('refund_invoice_recorded', { ...common,
+          p_lines: wholeInvoice ? lines : withWaitingAnswers(lines, waitingItems, waitingAnswers),
           p_sources: Object.entries(sourceAmounts).filter(([, amount]) => amount > 0).map(([payment_id, amount]) => ({ payment_id, amount })),
           p_stock: Object.entries(stock).filter(([, q]) => q.sellable_quantity + q.damaged_quantity + q.not_returned_quantity > 0).map(([movement_id, q]) => ({ movement_id, ...q })),
         });
@@ -191,6 +204,11 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
               onChange={e => setStock(v => ({ ...v, [s.movement_id]: { ...(v[s.movement_id] || { sellable_quantity: 0, damaged_quantity: 0, not_returned_quantity: 0 }), [key]: Number(e.target.value) } }))} />
           </label>)}
         </fieldset>)}
+        {wholeInvoice
+          ? waitingItems.length > 0 && <p>Every line goes back in full, so the {waitingItems.length === 1 ? 'item' : `${waitingItems.length} items`} still
+              waiting for a warehouse {waitingItems.length === 1 ? 'is' : 'are'} cancelled with the refund.</p>
+          : <WaitingItemsQuestion items={waitingItems} answers={waitingAnswers} onChange={setWaitingAnswers}
+              lineName={id => options.lines.find(l => l.invoice_item_id === id)?.name} disabled={busy} />}
         <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> I confirm the actual money/credit returned and the stock outcomes above. Blank stock quantities do not return stock.</label>
       </>}
       {mode === 'payment' && <>
@@ -201,6 +219,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         <InvoiceSearchSelect value={methodId} onChange={setMethodId} options={methods.filter(m => m.is_active && !m.deleted_at).map(m => ({ value: m.id, label: m.name }))} />
       </>}
       {mode === 'cancel' && <p>Cancellation releases outstanding stock deductions and unused benefits. Existing payments and consumed benefits remain in history. Record any actual refund separately.</p>}
+      {mode === 'cancel' && waitingItems.length > 0 && <p>Special products and rentals still waiting for a warehouse are cancelled with the invoice.</p>}
       {mode === 'reopen' && (preview ? <>
         <p>{preview.explanation}</p>
         <p>Invoice total: {money(preview.total)} · Net payments: {money(preview.net_received)} · Payment required to settle again: {money(Math.max(0, Number(preview.total) - Number(preview.net_received)))}</p>
@@ -213,7 +232,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       <label>Reason (required)<textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
       <div className="invoice-finance-actions">
         <button className="btn btn-secondary" disabled={busy} onClick={close}>Back</button>
-        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001))} onClick={submit}>
+        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0))} onClick={submit}>
           {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'cancel' ? 'Confirm cancellation' : 'Record with audit history'}
         </button>
       </div>

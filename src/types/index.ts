@@ -733,7 +733,8 @@ export interface PromotionChoiceOption {
 
 // ── Phase 5E: Special products & rentals ─────────────────────────────────────
 export type SpecialRateType = 'day' | 'week' | 'month' | 'year';
-export type RentalStatus = 'draft' | 'paid' | 'active' | 'returned' | 'overdue' | 'cancelled';
+// 'awaiting_fulfilment': raised by a paid invoice, waiting for a warehouse.
+export type RentalStatus = 'awaiting_fulfilment' | 'draft' | 'paid' | 'active' | 'returned' | 'overdue' | 'cancelled';
 export type ReturnCondition = 'good' | 'damaged' | 'lost';
 
 export interface SpecialProduct {
@@ -763,7 +764,7 @@ export interface Rental {
   notes: string | null; created_by: string | null; created_at: string; cancelled_at: string | null;
 }
 export const RATE_TYPE_LABELS: Record<SpecialRateType, string> = { day: 'Per Day', week: 'Per Week', month: 'Per Month', year: 'Per Year' };
-export const RENTAL_STATUS_LABELS: Record<RentalStatus, string> = { draft: 'Draft', paid: 'Paid', active: 'Active', returned: 'Returned', overdue: 'Overdue', cancelled: 'Cancelled' };
+export const RENTAL_STATUS_LABELS: Record<RentalStatus, string> = { awaiting_fulfilment: 'Waiting for a warehouse', draft: 'Draft', paid: 'Paid', active: 'Active', returned: 'Returned', overdue: 'Overdue', cancelled: 'Cancelled' };
 
 // ── Phase 6C: staff service + commission ─────────────────────────────────────
 export interface InvoiceServiceStaff { id: string; invoice_id: string; staff_id: string; created_at: string; }

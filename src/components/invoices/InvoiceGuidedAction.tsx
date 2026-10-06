@@ -3,6 +3,9 @@ import { supabase } from '../../lib/supabase';
 // The popup's own styles. Approvals opens it from a separate page bundle, so it
 // cannot rely on the invoices page having loaded them first.
 import './invoice-controls.css';
+import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
+import { type WaitingAnswers, unansweredItems, waitingAnswerList, waitingAnswersOf, waitingItemLabel,
+  withWaitingAnswers } from '../../lib/special/waitingItems';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
 
@@ -149,6 +152,35 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   const [whFilter, setWhFilter] = useState('');
   const [rentalReturn, setRentalReturn] = useState<Record<string, { warehouse_id: string; condition: string }>>({});
+  // 393: special products and rentals still waiting for a warehouse. A partial
+  // refund asks, for each, whether the customer is still taking it; the
+  // answers go with the request and are honoured when it is approved.
+  const waitingItems = useWaitingItems(invoiceId);
+  const [waitingAnswers, setWaitingAnswers] = useState<WaitingAnswers>({});
+  // What a full refund would take back now. A partial refund that takes back
+  // all of it closes the invoice, which cancels every waiting item whatever
+  // was answered, so it is not asked about and the review says so.
+  const [fullPlan, setFullPlan] = useState<Plan | null>(null);
+  const coversWholeInvoice = (() => {
+    if (action !== 'refund_partial' || !fullPlan?.lines?.length) return false;
+    // Choosing: every line still refundable, at its full quantity.
+    if (step <= 2 || plan?.action !== 'refund_partial')
+      return fullPlan.lines.every(f => (quantities[f.invoice_item_id] ?? 0) >= f.quantity);
+    // Worked out: each of those lines' whole remaining amount.
+    return fullPlan.lines.every(f => {
+      const l = plan.lines.find(x => x.invoice_item_id === f.invoice_item_id);
+      return !!l && Number(l.amount) >= Number(f.amount) - 0.005;
+    });
+  })();
+  const waitingLeft = coversWholeInvoice ? [] : unansweredItems(waitingItems, waitingAnswers);
+  // Each line's name as any plan gave it: a partial refund's plan lists only
+  // the lines chosen, but a machine is still known by its own line's name.
+  const [lineNames, setLineNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const lines = [...(fullPlan?.lines ?? []), ...(plan?.lines ?? [])];
+    if (lines.length) setLineNames(n => ({ ...n, ...Object.fromEntries(lines.map(l => [l.invoice_item_id, l.name])) }));
+  }, [plan, fullPlan]);
+  const lineName = (id: string) => lineNames[id];
   const dialog = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(null);
   // Kept in a ref so the key handler, bound once, always sees the current one.
@@ -206,7 +238,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   // Step 1 needs the line list, which the plan already carries.
   useEffect(() => {
     if (reviewing) return;
-    void derive('refund_full', {});
+    void derive('refund_full', {}).then(p => { if (p) setFullPlan(p); });
   }, [derive, reviewing]);
 
   // Approval mode: load the request, then show its CURRENT effects.
@@ -230,9 +262,16 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
           { sellable_quantity: s.proposed_sellable, damaged_quantity: 0, not_returned_quantity: 0 }])));
       }
       setStep(4);
+      // 393: whether this partial refund closes the invoice, for what the
+      // review says about items waiting for a warehouse. Not knowing, it
+      // says what the answers do.
+      if (d.action === 'refund_partial') {
+        supabase.rpc('invoice_action_plan', { p_invoice_id: invoiceId, p_action: 'refund_full', p_lines: [] })
+          .then(({ data: full, error: ferr }) => { if (!cancelled && !ferr && full) setFullPlan(full as Plan); });
+      }
     });
     return () => { cancelled = true; };
-  }, [reviewRequestId]);
+  }, [reviewRequestId, invoiceId]);
 
   const chooseAction = async (next: Action) => {
     setAction(next);
@@ -257,8 +296,12 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     if (reviewing) { await approve(reviewRequestId!); return; }
     if (!action || !reason.trim()) { setError('Enter a reason for the audit history.'); return; }
     setBusy(true); setError('');
-    const lines = Object.entries(quantities).filter(([, q]) => q > 0)
+    const chosen = Object.entries(quantities).filter(([, q]) => q > 0)
       .map(([invoice_item_id, quantity]) => ({ invoice_item_id, quantity }));
+    // Only a partial refund that leaves the invoice open asks; one that takes
+    // it all back, a full refund or a cancellation closes them all.
+    const lines = action === 'refund_partial' && !coversWholeInvoice
+      ? withWaitingAnswers(chosen, waitingItems, waitingAnswers) : chosen;
     const { data, error } = await supabase.rpc('request_invoice_action_v2', {
       p_invoice_id: invoiceId, p_action: action, p_lines: lines,
       p_reason: reason.trim(), p_return_notes: returnNotes.trim() || null, p_request_id: requestId,
@@ -340,7 +383,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     || returnNotes.trim().length > 0
     || Object.values(quantities).some(q => q > 0)
     || Object.values(overrideReasons).some(r => (r ?? '').trim().length > 0)
-    || Object.keys(overrideAmounts).length > 0;
+    || Object.keys(overrideAmounts).length > 0
+    || (!reviewing && Object.keys(waitingAnswers).length > 0);
 
   // The project's existing pattern for abandoning work is a confirm(); a
   // finished success message closes straight away, with nothing to lose.
@@ -439,6 +483,16 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             ))}
           </fieldset>
         )}
+        {step === 2 && (coversWholeInvoice
+          ? waitingItems.length > 0 && (
+            <p className="muted">Every line goes back in full, so the {waitingItems.length === 1 ? 'item' : `${waitingItems.length} items`} still
+              waiting for a warehouse {waitingItems.length === 1 ? 'is' : 'are'} cancelled when the refund is recorded.</p>)
+          : (<>
+            <WaitingItemsQuestion items={waitingItems} answers={waitingAnswers} onChange={setWaitingAnswers}
+              lineName={lineName} disabled={busy} />
+            {waitingLeft.length > 0 && Object.values(quantities).some(q => q > 0) && (
+              <p className="muted">Answer for each item waiting for a warehouse to continue.</p>)}
+          </>))}
 
         {step === 3 && (
           <div className="invoice-guided-why">
@@ -572,6 +626,45 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               </>);
             })()}
 
+            {(() => {
+              // 393: what happens to the items still waiting for a warehouse.
+              const label = (id: string) => {
+                const item = waitingItems.find(w => w.doc_id === id);
+                return item ? waitingItemLabel(item, lineName) : 'An item no longer waiting';
+              };
+              const asked = reviewing ? waitingAnswersOf(detail?.requested_lines) : waitingAnswerList(waitingItems, waitingAnswers);
+              if (action === 'refund_partial' && !coversWholeInvoice) {
+                if (!asked.length) return reviewing && waitingItems.length > 0 ? (
+                  <section className="invoice-guided-section">
+                    <h5>Waiting for a warehouse</h5>
+                    <p className="muted">This request was raised without saying whether the customer is still taking
+                      them, so an item is cancelled only if its line goes back in full.</p>
+                    <ul>{waitingItems.map(w => <li key={w.doc_id}>{label(w.doc_id)}</li>)}</ul>
+                  </section>) : null;
+                return (
+                  <section className="invoice-guided-section">
+                    <h5>Waiting for a warehouse</h5>
+                    <ul>{asked.map(a => (
+                      <li key={a.doc_id}>{label(a.doc_id)}: {a.still_taking
+                        ? 'the customer is still taking it, so it keeps waiting'
+                        : 'the customer is not taking it, so it is cancelled'}</li>))}</ul>
+                  </section>);
+              }
+              if (!waitingItems.length) return null;
+              // A cancellation, a full refund, or a partial refund that takes
+              // back everything still refundable: the invoice closes.
+              const what = action === 'cancel' ? 'Cancelling the invoice cancels'
+                : action === 'refund_partial' ? 'This refund takes back everything still refundable, so it closes the invoice and cancels'
+                : 'A refund of the whole invoice cancels';
+              return (
+                <section className="invoice-guided-section">
+                  <h5>Waiting for a warehouse</h5>
+                  <p className="muted">{what} every item still waiting for a warehouse
+                    {asked.length > 0 ? ', whatever was answered' : ''}:</p>
+                  <ul>{waitingItems.map(w => <li key={w.doc_id}>{label(w.doc_id)}</li>)}</ul>
+                </section>);
+            })()}
+
             {plan.stock.length > 0 && (
               <fieldset className="invoice-guided-stock">
                 <legend>Confirm the goods</legend>
@@ -687,7 +780,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
           {step === 2 && (<>
             <button type="button" className="btn" onClick={() => setStep(1)}>Back</button>
             <button type="button" className="btn btn-primary"
-              disabled={busy || !Object.values(quantities).some(q => q > 0)}
+              disabled={busy || !Object.values(quantities).some(q => q > 0) || waitingLeft.length > 0}
               onClick={async () => { await derive('refund_partial', quantities); setStep(3); }}>Continue</button>
           </>)}
           {step === 3 && (<>

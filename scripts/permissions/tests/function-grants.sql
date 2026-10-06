@@ -72,7 +72,10 @@ declare
                              'invoice_line_discount_rebase','invoice_line_discount_only','trg_voucher_discount_category',
                              'trg_invoice_item_line_discount_reason',
                              -- 392: the referrer's name as a booking prints it
-                             'affiliate_calendar_label'];
+                             'affiliate_calendar_label',
+                             -- 393: waiting special items follow their invoice
+                             'special_doc_invoice_problem','cancel_waiting_special_docs',
+                             'settle_waiting_special_docs_on_refund','trg_special_docs_follow_line_removed'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon
