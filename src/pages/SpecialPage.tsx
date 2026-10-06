@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, whatsappNumber, emailAddress } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
@@ -9,6 +10,11 @@ import {
   SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, isOwnerOrManager,
 } from '../types';
 import { specialSaleBadge, rentalStatusLabel } from '../lib/special/waitingItems';
+import {
+  ReturnForm, initialReturnForm, withReturnedOn, lateDaysOn, lateNotice, lateFeeSum, lateFeeAmounts,
+  stockHome, returnProblem, returnRpcArgs, needsStoreChoice, lateFeeStatus, overdueNote, receiptLateFee,
+  shortDate, withCondition, isDay,
+} from '../lib/special/rentalReturn';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, X, Download, Printer, MessageCircle, Mail} from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
@@ -67,12 +73,17 @@ const SpecialPage: React.FC = () => {
   // so the letterhead is taken from the store.
   const [brandStores, setBrandStores] = useState<any[]>([]);
   const [staffProfiles, setStaffProfiles] = useState<any[]>([]);
+  // Every special product, deleted ones too: an old rental may be of one, and
+  // whether it is a warehouse product decides where its Return puts it back.
+  const [spAll, setSpAll] = useState<{ id: string; name: string; product_id: string | null }[]>([]);
+  // The late fees invoiced at a Return (396), by invoice id.
+  const [lateInvoices, setLateInvoices] = useState<Record<string, { invoice_no: string; status: string }>>({});
   const [loading, setLoading] = useState(true);
 
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [sp, st, si, sa, re, wh, pm, sto, prof] = await Promise.all([
+    const [sp, st, si, sa, re, wh, pm, sto, prof, spa] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('warehouse_inventory').select('warehouse_id,product_id,current_qty'),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
@@ -87,6 +98,7 @@ const SpecialPage: React.FC = () => {
       supabase.from('payment_methods').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('id,full_name').is('deleted_at', null),
+      supabase.from('special_products').select('id,name,product_id'),
     ]);
     const spRows = (sp.data as SpecialProduct[]) ?? [];
     setRows(spRows);
@@ -124,11 +136,17 @@ const SpecialPage: React.FC = () => {
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setBrandStores((sto.data as any[]) ?? []);
     setStaffProfiles((prof.data as any[]) ?? []);
+    setSpAll((spa.data as any[]) ?? []);
+    const lateIds = [...new Set(((re.data as any[]) ?? []).map(x => x.late_fee_invoice_id).filter(Boolean))] as string[];
+    if (lateIds.length > 0) {
+      const { data: li } = await supabase.from('invoices').select('id,invoice_no,status').in('id', lateIds);
+      setLateInvoices(Object.fromEntries(((li as any[]) ?? []).map(x => [x.id, { invoice_no: x.invoice_no, status: x.status }])));
+    } else setLateInvoices({});
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const spName = (id: string) => rows.find(r => r.id === id)?.name ?? '—';
+  const spName = (id: string) => rows.find(r => r.id === id)?.name ?? spAll.find(r => r.id === id)?.name ?? '—';
   const whName = (id: string) => warehouses.find(w => w.id === id)?.name ?? '—';
   const cuName = (id: string | null) => id ? (customers.find(c => c.id === id)?.full_name ?? '—') : '—';
   const pmName = (id: string | null) => id ? (methods.find(m => m.id === id)?.name ?? '—') : '—';
@@ -137,10 +155,10 @@ const SpecialPage: React.FC = () => {
   const totalIn = (list: SpecialProductStock[]) => list.reduce((a, b) => a + (b.current_qty || 0), 0);
   const stockOf = (spId: string, whId?: string) => stock.filter(s => s.special_product_id === spId && (!whId || s.warehouse_id === whId));
   const isOverdue = (r: Rental) => (r.status === 'paid' || r.status === 'active') && todayStr() > r.expected_return_date;
-  const latePreview = (r: Rental) => {
-    const days = Math.max(0, Math.round((new Date(todayStr()).getTime() - new Date(r.expected_return_date).getTime()) / 86400000));
-    return { days, total: days * r.late_fee_per_day * r.quantity };
-  };
+  // Where a rental went out from: the store it was released from, else its warehouse.
+  const releasedFrom = (r: Rental) => r.source_store_id
+    ? (brandStores.find((s2: any) => s2.id === r.source_store_id)?.name ?? '—') : whName(r.warehouse_id);
+  const lateInvoiceNo = (r: Rental) => r.late_fee_invoice_id ? (lateInvoices[r.late_fee_invoice_id]?.invoice_no ?? null) : null;
 
   // Special sales and rentals are their own transactions with their own numbers,
   // so they get a printable receipt rather than being forced through an invoice.
@@ -236,7 +254,10 @@ const SpecialPage: React.FC = () => {
     const wh = warehouses.find((w: any) => w.id === row.warehouse_id);
     const b: any = brandStores[0] ?? {};
     const fee = Number(kind === 'sale' ? row.total_amount : row.rental_fee) || 0;
-    const late = Number(row.late_fee_total ?? 0);
+    // A late fee invoiced at the Return (396) is on its own invoice: named
+    // here, not added again.
+    const lateFee = receiptLateFee(row, kind === 'rental' ? lateInvoiceNo(row) : null);
+    const late = lateFee.inTotal;
     const d = (v: any) => v ? new Date(v).toLocaleDateString('en-GB') : '';
     return {
       kindLabel: kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental',
@@ -258,7 +279,8 @@ const SpecialPage: React.FC = () => {
             ...(kind === 'rental'
               ? [`${row.periods} x ${row.rate_type}`,
                  `From ${d(row.start_date)} — due back ${d(row.expected_return_date)}`,
-                 ...(row.returned_at ? [`Returned ${d(row.returned_at)}`] : [])]
+                 ...(row.returned_at ? [`Returned ${d(row.returned_at)}`] : []),
+                 ...(lateFee.note ? [lateFee.note] : [])]
               : []),
           ],
         },
@@ -324,7 +346,10 @@ const SpecialPage: React.FC = () => {
     const d = (v: any) => v ? new Date(v).toLocaleDateString('en-GB') : '—';
 
     const fee = Number(kind === 'sale' ? row.total_amount : row.rental_fee) || 0;
-    const late = Number(row.late_fee_total ?? 0);
+    // A late fee invoiced at the Return (396) is on its own invoice: named
+    // here, not added again.
+    const lateFee = receiptLateFee(row, kind === 'rental' ? lateInvoiceNo(row) : null);
+    const late = lateFee.inTotal;
 
     const lines: PrintLine[] = kind === 'sale'
       ? [{ name: prod?.name ?? 'Special product', qty: row.quantity,
@@ -337,6 +362,7 @@ const SpecialPage: React.FC = () => {
              `${row.periods} × ${row.rate_type}`,
              `From ${d(row.start_date)} — due back ${d(row.expected_return_date)}`,
              ...(row.returned_at ? [`Returned ${d(row.returned_at)}${row.return_condition ? ` · ${row.return_condition}` : ''}`] : []),
+             ...(lateFee.note ? [lateFee.note] : []),
            ] },
          ...(late > 0 ? [{
            name: `Late fee — ${row.late_days} day(s)`,
@@ -562,28 +588,41 @@ const SpecialPage: React.FC = () => {
     if (error) alert(error.message); else load();
   };
 
-  // ── Return rental modal ──
+  // ── Return rental modal (396, the Owner's rules of 6 Oct 2026) ──
+  // When it came back, its condition, whether it goes back into stock where it
+  // came from, and for a late return "No late fee" (the default) or "Charge
+  // late fee", invoiced on an invoice of its own and paid there and then. The
+  // rules live in lib/special/rentalReturn; the database checks them again.
   const [retFor, setRetFor] = useState<Rental | null>(null);
-  const [retCondition, setRetCondition] = useState<ReturnCondition>('good');
-  const [retStock, setRetStock] = useState(true);
-  const [retMethod, setRetMethod] = useState(''); const [retRef, setRetRef] = useState('');
+  const [retForm, setRetForm] = useState<ReturnForm | null>(null);
   const [retBusy, setRetBusy] = useState(false); const [retErr, setRetErr] = useState<string | null>(null);
+  // What the Return recorded, shown in the dialog with the late fee's invoice.
+  const [retDone, setRetDone] = useState<any | null>(null);
   const openReturn = (r: Rental) => {
-    setRetFor(r); setRetCondition('good'); setRetStock(true);
-    setRetMethod(methods[0]?.id ?? ''); setRetRef(''); setRetErr(null);
+    setRetFor(r); setRetForm(initialReturnForm(r, todayStr())); setRetErr(null); setRetDone(null);
   };
+  const closeReturn = () => { setRetFor(null); setRetForm(null); setRetDone(null); setRetErr(null); };
+  const setRet = (patch: Partial<ReturnForm>) => setRetForm(f => (f ? { ...f, ...patch } : f));
+  // Paid there and then, by a method that is not wallet credit; none chosen for staff.
+  const lateFeeMethods = methods.filter(m => !m.is_wallet_credit);
+  const retHome = retFor ? stockHome(retFor, {
+    warehouses: warehouses.map(w => ({ id: w.id, name: w.name })),
+    stores: brandStores.map((s2: any) => ({ id: s2.id, name: s2.name })),
+    isWarehouseProduct: !!spAll.find(x => x.id === retFor.special_product_id)?.product_id,
+  }) : null;
+  const retProblem = retFor && retForm ? returnProblem(retForm, retFor, {
+    today: todayStr(), walletMethodIds: methods.filter(m => m.is_wallet_credit).map(m => m.id),
+  }) : null;
   const submitReturn = async () => {
-    if (!retFor) return;
-    const late = latePreview(retFor);
+    if (!retFor || !retForm) return;
+    if (retProblem) { setRetErr(retProblem); return; }
     setRetBusy(true); setRetErr(null);
-    const { error } = await supabase.rpc('return_rental', {
-      p_rental_id: retFor.id, p_condition: retCondition, p_return_stock: retStock,
-      p_late_payment_method_id: late.total > 0 ? (retMethod || null) : null,
-      p_late_reference: late.total > 0 ? (retRef.trim() || null) : null, p_note: null,
-    });
+    const { data, error } = await supabase.rpc('return_rental_with_fee', returnRpcArgs(retFor.id,
+      { ...retForm, returnStock: retForm.returnStock && !!retHome?.canRestock }, retFor));
     setRetBusy(false);
     if (error) { setRetErr(error.message); return; }
-    setRetFor(null); load();
+    setRetDone(data ?? {});
+    load();
   };
 
   const RentalBadge: React.FC<{ r: Rental }> = ({ r }) => {
@@ -624,6 +663,7 @@ const SpecialPage: React.FC = () => {
               { header: 'Period', value: (x: any) => `${x.periods} x ${x.rate_type}` },
               { header: 'Fee', value: (x: any) => Number(x.rental_fee ?? 0) },
               { header: 'Late fee', value: (x: any) => Number(x.late_fee_total ?? 0) },
+              { header: 'Late fee invoice', value: (x: any) => x.late_fee_invoice_id ? (lateInvoices[x.late_fee_invoice_id]?.invoice_no ?? '') : '' },
               { header: 'Due back', value: (x: any) => x.expected_return_date ? new Date(x.expected_return_date).toLocaleDateString('en-GB') : '' },
               { header: 'Status', value: (x: any) => x.status },
             ] : [
@@ -752,16 +792,26 @@ const SpecialPage: React.FC = () => {
           : <table>
               <thead><tr><th>Rental</th><th>Product</th><th>Customer</th><th style={{ textAlign: 'right' }}>Qty</th><th>Period</th><th style={{ textAlign: 'right' }}>Fee</th><th>Due back</th><th>Status</th><th></th></tr></thead>
               <tbody>{rentals.map(r => {
-                const late = latePreview(r);
+                const overdue = overdueNote(r, todayStr());
+                const lateStatus = lateFeeStatus(r, lateInvoiceNo(r));
                 return (
                 <tr key={r.id}>
                   <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.rental_no}</td>
-                  <td><strong>{spName(r.special_product_id)}</strong><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{whName(r.warehouse_id)}</div></td>
+                  <td><strong>{spName(r.special_product_id)}</strong><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{releasedFrom(r)}</div></td>
                   <td style={{ fontSize: 12.5 }}>{cuName(r.customer_id)}</td>
                   <td style={{ textAlign: 'right' }}>{r.quantity}</td>
                   <td style={{ fontSize: 12 }}>{r.periods} × {RATE_TYPE_LABELS[r.rate_type].replace('Per ', '').toLowerCase()}{r.periods > 1 ? 's' : ''}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(r.start_date).toLocaleDateString()} →</div></td>
-                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.rental_fee))}{r.late_fee_total > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>+{money(Number(r.late_fee_total))} late</div>}</td>
-                  <td style={{ fontSize: 12 }}>{new Date(r.expected_return_date).toLocaleDateString()}{isOverdue(r) && late.days > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{late.days}d late · {money(late.total)}</div>}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.rental_fee))}
+                    {/* 396: the late fee charged at the Return, and its invoice. */}
+                    {lateStatus && <div style={{ fontSize: 11, fontWeight: 500, color: Number(r.late_fee_total) > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>
+                      {r.late_fee_invoice_id
+                        ? <>+{money(Number(r.late_fee_total))} late · <Link to={`/invoices?review=${r.late_fee_invoice_id}`}
+                            title="Open the late fee's invoice to print or send it">{lateInvoiceNo(r) ?? 'invoice'}</Link>
+                            {lateInvoices[r.late_fee_invoice_id] && lateInvoices[r.late_fee_invoice_id].status !== 'paid'
+                              && ` (${lateInvoices[r.late_fee_invoice_id].status.replace(/_/g, ' ')})`}</>
+                        : lateStatus}
+                    </div>}</td>
+                  <td style={{ fontSize: 12 }}>{new Date(r.expected_return_date).toLocaleDateString()}{isOverdue(r) && overdue && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{overdue}</div>}</td>
                   <td><RentalBadge r={r} />{r.return_condition && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{r.return_condition}{r.stock_returned === false ? ' · not restocked' : r.stock_returned ? ' · restocked' : ''}</div>}</td>
                   <td><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     {r.status === 'draft' && <>
@@ -1281,36 +1331,153 @@ const SpecialPage: React.FC = () => {
         </Modal>
       )}
 
-      {/* Return rental */}
-      {retFor && (() => { const late = latePreview(retFor); return (
-        <Modal title={`Return — ${retFor.rental_no}`} maxWidth={460} onClose={() => setRetFor(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setRetFor(null)}>Cancel</button><button className="btn btn-primary" onClick={submitReturn} disabled={retBusy}>{retBusy ? 'Processing…' : 'Confirm Return'}</button></>}>
+      {/* Return rental (396) */}
+      {retFor && retForm && (() => {
+        const late = lateDaysOn(retFor, retForm.returnedOn);
+        const charging = retForm.choice === 'charge' && late > 0;
+        const fee = lateFeeAmounts(retForm, retFor);
+        const sum = lateFeeSum(retForm, retFor);
+        const needStore = needsStoreChoice(retFor);
+        const done = retDone;
+        return (
+        <Modal title={`Return — ${retFor.rental_no}`} maxWidth={520} onClose={closeReturn}
+          footer={done
+            ? <button className="btn btn-primary" onClick={closeReturn}>Done</button>
+            : <><button className="btn btn-secondary" onClick={closeReturn}>Cancel</button>
+              <button className="btn btn-primary" onClick={submitReturn} disabled={retBusy || !!retProblem}
+                title={retProblem ?? undefined}>
+                {retBusy ? 'Recording…' : charging && fee.total > 0 ? `Confirm Return · collect ${money(fee.total)}` : 'Confirm Return'}</button></>}>
+          {done ? (
+            <div className="form-grid">
+              <div className="alert alert-success" style={{ marginBottom: 0 }}><span>✓</span><div>
+                <strong>{retFor.rental_no}</strong> returned on {shortDate(String(done.returned_on ?? retForm.returnedOn))}.
+                {Number(done.restocked_quantity ?? 0) > 0
+                  ? done.stock_location_type === 'special_stock'
+                    ? <> {done.restocked_quantity} put back into the old special stock at {done.stock_location_name ?? 'its warehouse'}; warehouse stock did not change.</>
+                    : <> {done.restocked_quantity} put back into {done.stock_location_name ?? 'its'} stock.</>
+                  : done.stock_note ? <> {done.stock_note}</> : <> No stock changed.</>}
+              </div></div>
+              {done.invoice_id ? (
+                <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
+                  Late fee <strong>{money(Number(done.late_fee_total ?? 0))}</strong> invoiced and paid on{' '}
+                  <strong>{done.invoice_no}</strong>{done.store_name ? <> ({done.store_name})</> : null}.
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Link className="btn btn-secondary btn-sm" to={`/invoices?review=${done.invoice_id}`}>
+                      Open invoice {done.invoice_no}</Link>
+                    <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>to print it or send it to the customer</span>
+                  </div>
+                </div>
+              ) : Number(done.late_days ?? 0) > 0
+                ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{done.late_days} day{Number(done.late_days) === 1 ? '' : 's'} late, no late fee charged.</div>
+                : null}
+            </div>
+          ) : (
           <div className="form-grid">
             {retErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{retErr}</div></div>}
-            <div className="form-group"><label>Condition</label>
-              <select value={retCondition} onChange={e => setRetCondition(e.target.value as ReturnCondition)}>
-                <option value="good">Good</option><option value="damaged">Damaged</option><option value="lost">Lost</option>
-              </select>
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {spName(retFor.special_product_id)} × {retFor.quantity} · {cuName(retFor.customer_id)} ·
+              {' '}out {shortDate(retFor.start_date)}, due back {shortDate(retFor.expected_return_date)}
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-              <input type="checkbox" checked={retStock} onChange={e => setRetStock(e.target.checked)} style={{ width: 'auto' }} />
-              <div><div style={{ fontSize: 13, fontWeight: 600 }}>Return {retFor.quantity} to warehouse stock</div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Untick for lost or unusable items.</div></div>
-            </label>
-            {late.total > 0 ? (
+            <div className="form-grid-2">
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Returned on</label>
+                <input type="date" value={retForm.returnedOn} min={String(retFor.start_date).slice(0, 10)} max={todayStr()}
+                  onChange={e => setRetForm(f => (f ? withReturnedOn(f, retFor, e.target.value) : f))} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Condition</label>
+                <select value={retForm.condition}
+                  onChange={e => { const c = e.target.value as ReturnCondition; setRetForm(f => (f ? withCondition(f, c) : f)); }}>
+                  <option value="good">Good</option><option value="damaged">Damaged</option><option value="lost">Lost</option>
+                </select>
+              </div>
+            </div>
+            {retHome?.canRestock ? (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: retForm.condition === 'lost' ? 'not-allowed' : 'pointer', padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                {/* A lost unit never goes back into stock: "Lost" unticks and locks the box. */}
+                <input type="checkbox" checked={retForm.returnStock} disabled={retForm.condition === 'lost'}
+                  onChange={e => setRet({ returnStock: e.target.checked })} style={{ width: 'auto' }} />
+                <div><div style={{ fontSize: 13, fontWeight: 600 }}>{retHome.label}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                  {retForm.condition === 'lost' ? 'A lost unit does not go back into stock: no stock changes.' : retHome.hint}</div></div>
+              </label>
+            ) : retHome && (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>{retHome.note}</div></div>
+            )}
+            {/* Nothing about lateness until a date is chosen (a cleared date input gives ''). */}
+            {!isDay(retForm.returnedOn) ? null : late === 0 ? (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>{lateNotice(retFor, retForm.returnedOn)}</div></div>
+            ) : (
               <>
-                <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div><strong>{late.days} day{late.days > 1 ? 's' : ''} late</strong> — late fee {money(retFor.late_fee_per_day)} × {late.days} × {retFor.quantity} = <strong>{money(late.total)}</strong>, collected now.</div></div>
-                <div className="form-grid-2">
-                  <div className="form-group"><label>Late Fee Payment Method *</label>
-                    <select value={retMethod} onChange={e => setRetMethod(e.target.value)}>{methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
-                  </div>
-                  <div className="form-group"><label>Reference</label><input value={retRef} onChange={e => setRetRef(e.target.value)} placeholder="Optional" /></div>
+                <div className="alert alert-warning" style={{ marginBottom: 0 }}><span>⚠</span><div>{lateNotice(retFor, retForm.returnedOn)}</div></div>
+                <div style={{ display: 'flex', gap: 6 }} role="radiogroup" aria-label="Late fee">
+                  <button type="button" role="radio" aria-checked={retForm.choice === 'none'}
+                    className={`btn btn-sm ${retForm.choice === 'none' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setRet({ choice: 'none' })}>No late fee</button>
+                  <button type="button" role="radio" aria-checked={retForm.choice === 'charge'}
+                    className={`btn btn-sm ${retForm.choice === 'charge' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setRet({ choice: 'charge' })}>Charge late fee</button>
                 </div>
+                {charging && (
+                  <>
+                    <div className="form-grid-2">
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Days to charge</label>
+                        <input type="number" min={1} max={late} step={1} value={retForm.days}
+                          onChange={e => setRet({ days: e.target.value })} />
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Up to {late}; fewer needs no reason.</div></div>
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Daily late fee (S$) *</label>
+                        <input type="number" min={0} step={0.01} value={retForm.rate} placeholder="Type the rate"
+                          onChange={e => setRet({ rate: e.target.value })} />
+                        {retFor.quantity > 1 && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Per unit, for {retFor.quantity} units.</div>}</div>
+                    </div>
+                    <div className="form-grid-2">
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Discount</label>
+                        <select value={retForm.discount} onChange={e => setRet({ discount: e.target.value as ReturnForm['discount'] })}>
+                          <option value="">No discount</option>
+                          <option value="manual">Amount (S$)</option>
+                          <option value="percentage">Percentage (%)</option>
+                        </select></div>
+                      {retForm.discount === 'manual' && (
+                        <div className="form-group" style={{ marginBottom: 0 }}><label>Discount (S$)</label>
+                          <input type="number" min={0} step={0.01} value={retForm.discountAmount}
+                            onChange={e => setRet({ discountAmount: e.target.value })} /></div>)}
+                      {retForm.discount === 'percentage' && (
+                        <div className="form-group" style={{ marginBottom: 0 }}><label>Discount (%)</label>
+                          <input type="number" min={0} max={100} step={0.001} value={retForm.discountPercent}
+                            onChange={e => setRet({ discountPercent: e.target.value })} /></div>)}
+                    </div>
+                    {retForm.discount && (
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Reason for the discount *</label>
+                        <input value={retForm.discountReason} onChange={e => setRet({ discountReason: e.target.value })}
+                          placeholder="Internal: stays on the invoice for staff, never printed" /></div>)}
+                    {sum && <div style={{ fontSize: 13 }}>Late fee: {sum}</div>}
+                    <div className="form-grid-2">
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Paid by *</label>
+                        <select value={retForm.paymentMethodId} onChange={e => setRet({ paymentMethodId: e.target.value })}>
+                          <option value="">Choose…</option>
+                          {lateFeeMethods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select></div>
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Reference</label>
+                        <input value={retForm.reference} onChange={e => setRet({ reference: e.target.value })} placeholder="Optional" /></div>
+                    </div>
+                    {needStore && (
+                      <div className="form-group" style={{ marginBottom: 0 }}><label>Invoice in store *</label>
+                        <select value={retForm.storeId} onChange={e => setRet({ storeId: e.target.value })}>
+                          <option value="">Choose…</option>
+                          {brandStores.map((s2: any) => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
+                        </select>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>This rental has no store of its own.</div></div>)}
+                    <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                      Confirm Return invoices the late fee on an invoice of its own, for {cuName(retFor.customer_id)},
+                      {' '}dated {shortDate(retForm.returnedOn)}, and records its payment. No commission is earned on it.
+                    </div>
+                  </>
+                )}
               </>
-            ) : <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Returned on time — no late fee.</div></div>}
+            )}
+            {retProblem && !retErr && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{retProblem}</div>}
           </div>
+          )}
         </Modal>
-      ); })()}
+        );
+      })()}
     </div>
   );
 };

@@ -81,7 +81,11 @@ declare
                              'trg_affiliate_whatsapp_welcome','trg_affiliate_whatsapp_reactivated',
                              'affiliate_whatsapp_take','affiliate_whatsapp_payload','affiliate_whatsapp_mark_sending',
                              'affiliate_whatsapp_settle','affiliate_whatsapp_reconcile','affiliate_whatsapp_dispatch',
-                             'ads_wa_country_code'];
+                             'ads_wa_country_code',
+                             -- 396: a rental's late fee and its stock; 397: the old Return, which
+                             -- wrote the retired special_product_stock (callable until 397)
+                             'invoice_is_late_fee','rental_put_back_stock','trg_invoice_item_late_fee_guard',
+                             'return_rental','return_rental_to_warehouse'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

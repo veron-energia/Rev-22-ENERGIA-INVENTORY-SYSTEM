@@ -843,7 +843,7 @@ const ReportsPage: React.FC = () => {
         Uses and Discount Given are read from the invoices with receipts in this period: each line redeemed with the voucher, and each invoice given it as an invoice-level discount.
       </p>}
       {tab === 'specials' && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        Invoice sales and rental receipts follow the selected sales period. Standalone billed amounts use the document date and require payment review; late charges use the recorded return date. These charges are shown separately and are excluded from recognized invoice sales.
+        Invoice sales and rental receipts follow the selected sales period. Standalone billed amounts use the document date and require payment review; late fees use the recorded return date. Standalone amounts are shown separately and are excluded from recognized invoice sales. A late fee charged at a rental's Return is invoiced on an invoice of its own, so it is in invoice sales too; older late fees collected on the rental are not.
       </p>}
       {(() => {
         // Headline figures for the invoice-sales period, so the answer is visible
@@ -966,6 +966,8 @@ const ReportsPage: React.FC = () => {
                   {staffSales && !staffSales.error && (() => {
                     const revenue = Number(staffSales.revenue ?? 0), movedIn = Number(staffSales.backfill_in ?? 0);
                     const movedOut = Number(staffSales.backfill_out ?? 0), staffTotal = Number(staffSales.staff_total ?? 0);
+                    // 396: rental late fees are revenue credited to no member of staff.
+                    const lateFees = Number(staffSales.late_fees_not_credited ?? 0);
                     const off = Math.abs(Number(staffSales.difference ?? 0)) >= 0.005;
                     // The headline comes from the money loaded when the page opened (or was
                     // refreshed); this report is fetched again for every period. Money
@@ -975,7 +977,8 @@ const ReportsPage: React.FC = () => {
                       <div style={{ padding: '10px 14px', fontSize: 12.5, borderBottom: '1px solid var(--border)' }}>
                         <div>
                           Revenue <strong>{money(revenue)}</strong>
-                          {movedIn !== 0 && <> + earlier part payments credited to this period <strong>{money(movedIn)}</strong></>}
+                          {lateFees !== 0 && <> − rental late fees, credited to no one <strong>{money(lateFees)}</strong></>}
+                          {movedIn !== 0 &&<> + earlier part payments credited to this period <strong>{money(movedIn)}</strong></>}
                           {movedOut !== 0 && <> − part payments credited to a later period <strong>{money(movedOut)}</strong></>}
                           {' '}= staff total <strong>{money(staffTotal)}</strong>
                           {Number(staffSales.credited_as_creator ?? 0) !== 0 && <span style={{ color: 'var(--text-muted)' }}>

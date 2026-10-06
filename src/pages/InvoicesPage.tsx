@@ -1259,7 +1259,14 @@ const InvoicesPage: React.FC = () => {
       .then(({ data }) => { if (live) setStaffMayCorrect(data === true); });
     return () => { live = false; };
   }, [isStaff, detail?.id, detail?.status]);
-  const canCorrectInvoice = canManageInvoice || staffMayCorrect;
+  // 396: a rental's late fee is set once, at its Return on the Special page,
+  // and its line is never corrected here (the database refuses). Its customer,
+  // store and date are the rental's and the return's, so Correct Invoice is
+  // not offered; a wrong payment method, amount or date is corrected on the
+  // payment itself ("Correct amount / date"), and money goes back by a refund
+  // or a cancellation.
+  const isLateFeeInvoice = detailItems.some(it => it.line_kind === 'late_fee');
+  const canCorrectInvoice = (canManageInvoice || staffMayCorrect) && !isLateFeeInvoice;
   // In the correction form: a staff member's correction, with the money parts read-only.
   const staffCorrection = editingPaid && isStaff;
   const refundCancelButton = detail && canManageInvoice ? (
@@ -2198,7 +2205,8 @@ const InvoicesPage: React.FC = () => {
   // Shared by the printed document and the WhatsApp / email message.
   const KIND_LABEL: Record<string, string> = { product: 'Product', voucher: 'Voucher', promotion: 'Promotion',
     therapy: 'Therapy', credit_package: 'Credit Package', premium_bundle: 'Premium Bundle',
-    special_product: 'Special product', rental: 'Rental', treatment: 'Treatment', event_ticket: 'Event ticket' };
+    special_product: 'Special product', rental: 'Rental', treatment: 'Treatment', event_ticket: 'Event ticket',
+    late_fee: 'Late fee' };
   // An event ticket's days and people, as the guest list holds them now.
   const ticketDetail = (it: any): { days: string; people: string } | null => {
     if (it.line_kind !== 'event_ticket') return null;
@@ -4151,7 +4159,7 @@ const InvoicesPage: React.FC = () => {
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{refundCancelButton}</>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{refundCancelButton}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
               ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
@@ -4170,7 +4178,7 @@ const InvoicesPage: React.FC = () => {
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button>
                   <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
-                  <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}><FileText size={14} /> Edit Invoice</button>
+                  {!isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}><FileText size={14} /> Edit Invoice</button>}
                   {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
@@ -4437,6 +4445,13 @@ const InvoicesPage: React.FC = () => {
                 {eventTagErr && <span style={{ color: 'var(--danger)', fontSize: 11.5 }}>{eventTagErr}</span>}
               </div>
             )}
+            {isLateFeeInvoice && (
+              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
+                This invoice is a rental's late fee, charged and paid at its Return on the Special page. The late fee
+                itself cannot be changed afterwards. A wrong payment method, amount or date is corrected on the payment
+                below (Correct amount / date); to give money back, refund or cancel this invoice.
+              </div></div>
+            )}
             {/* Items */}
             <div>
               <label>Items</label>
@@ -4466,7 +4481,7 @@ const InvoicesPage: React.FC = () => {
                               </div>) : null; })()}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {/* One discount per line: a line with a discount is not offered FOC. */}
-                            {Number(it.foc_quantity ?? 0) === 0 && !lineHasDiscount(it) && detail.status !== 'paid' && detail.status !== 'completed_foc'
+                            {Number(it.foc_quantity ?? 0) === 0 && !lineHasDiscount(it) && it.line_kind !== 'late_fee' && detail.status !== 'paid' && detail.status !== 'completed_foc'
                               && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
                               <div style={{ fontSize: 11 }}>
                                 <button className="btn btn-secondary btn-sm" style={{ padding: '1px 7px', fontSize: 10.5 }}

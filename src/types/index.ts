@@ -86,6 +86,7 @@ export interface PaymentMethod {
   is_active: boolean;
   deleted_at: string | null;
   created_at: string;
+  is_wallet_credit?: boolean;
 }
 
 // Role display helpers
@@ -410,8 +411,10 @@ export interface InvoiceItem {
   id: string;
   invoice_id: string;
   product_id: string | null;
+  // 'late_fee' (396): a rental's late fee, alone on an invoice of its own,
+  // written only by the rental's Return on the Special page.
   line_kind?: 'product' | 'voucher' | 'promotion' | 'therapy'
-    | 'credit_package' | 'premium_bundle' | 'special_product' | 'rental' | 'event_ticket';
+    | 'credit_package' | 'premium_bundle' | 'special_product' | 'rental' | 'event_ticket' | 'late_fee';
   // An event ticket (370): its option and the day(s) it covers.
   event_ticket_option_id?: string | null;
   event_days?: string[] | null;
@@ -762,6 +765,15 @@ export interface Rental {
   late_days: number; late_fee_per_day: number; late_fee_total: number;
   late_payment_method_id: string | null; late_payment_reference: string | null;
   notes: string | null; created_by: string | null; created_at: string; cancelled_at: string | null;
+  // Where it was released from (a warehouse, or a store: warehouse_id null)
+  // and the invoice that raised it; old-style rentals have no invoice or store.
+  source_store_id?: string | null; store_id?: string | null; invoice_id?: string | null;
+  // Set when fulfil_special_doc released it; an old-style rental has none.
+  fulfilled_at?: string | null;
+  // 396: the late fee charged at the Return, on an invoice of its own; waived
+  // = returned late with "No late fee". late_fee_total is after its discount.
+  late_fee_invoice_id?: string | null; late_fee_days?: number | null; late_fee_rate?: number | null;
+  late_fee_waived?: boolean | null;
 }
 export const RATE_TYPE_LABELS: Record<SpecialRateType, string> = { day: 'Per Day', week: 'Per Week', month: 'Per Month', year: 'Per Year' };
 export const RENTAL_STATUS_LABELS: Record<RentalStatus, string> = { awaiting_fulfilment: 'Waiting for a warehouse', draft: 'Draft', paid: 'Paid', active: 'Active', returned: 'Returned', overdue: 'Overdue', cancelled: 'Cancelled' };

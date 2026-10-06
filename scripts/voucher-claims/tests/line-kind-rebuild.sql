@@ -14,9 +14,11 @@ begin
    from pg_enum e join pg_type t on t.oid=e.enumtypid where t.typname='invoice_line_kind';
  if position('voucher_claim' in v_kinds) > 0 then
   raise exception 'voucher_claim is still a line kind'; end if;
- -- 369 adds event_ticket at the end; a database before it has the rest.
+ -- 369 adds event_ticket at the end, and 395 late_fee after it; a database
+ -- before them has the rest.
  if v_kinds not in ('product,voucher,promotion,therapy,credit_package,premium_bundle,special_product,rental',
-                    'product,voucher,promotion,therapy,credit_package,premium_bundle,special_product,rental,event_ticket') then
+                    'product,voucher,promotion,therapy,credit_package,premium_bundle,special_product,rental,event_ticket',
+                    'product,voucher,promotion,therapy,credit_package,premium_bundle,special_product,rental,event_ticket,late_fee') then
   raise exception 'The real line kinds changed: %', v_kinds; end if;
 
  -- the default survived the rebuild

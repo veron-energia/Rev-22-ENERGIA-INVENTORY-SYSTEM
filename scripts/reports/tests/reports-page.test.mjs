@@ -239,9 +239,12 @@ function createBackend(fx) {
     report_sales_by_service_staff: a => {
       const ev = fx.ledger.filter(e => inPeriod(e.sales_date, a?.p_from, a?.p_to));
       const revenue = ev.reduce((s, e) => s + e.amount, 0);
-      return { revenue, backfill_in: 0, backfill_out: 0, staff_total: revenue, credited_as_creator: 0, wallet_credit_not_counted: 0, difference: 0,
+      // 396: rental late fees are in revenue and credited to no member of staff.
+      const late = fx.staffLateFees ?? 0;
+      return { revenue, backfill_in: 0, backfill_out: 0, staff_total: revenue - late, late_fees_not_credited: late,
+        credited_as_creator: 0, wallet_credit_not_counted: 0, difference: 0,
         rows: [{ staff_id: 'u-1', staff_name: 'Staff One', is_active: true, invoices_served: new Set(ev.map(e => e.invoice_id)).size,
-          shared_sales: revenue, receipts_on_invoices_served: revenue, credited_as_creator: 0, backfilled_in: 0 }] };
+          shared_sales: revenue - late, receipts_on_invoices_served: revenue - late, credited_as_creator: 0, backfilled_in: 0 }] };
     },
     report_pricing: () => [{ invoice_id: 'inv-01', invoice_no: 'INV-2026-0001', paid_date: '2026-08-05', store_name: 'North Store', customer_name: 'Customer 01',
       line_kind: 'product', item_name: 'Product Alpha', quantity: 2, unit_price: 100 }],
@@ -672,5 +675,17 @@ test('384: each line discount shows under its own type, as report_discounts spli
   assert.deepEqual(exported.sheet.ws.header, DISCOUNT_HEADERS, 'the export carries the same columns');
   const row = exported.sheet.ws.body[0];
   assert.deepEqual(DISCOUNT_HEADERS.slice(5).map(h => row[h]), [4, 12, 5, 10, 3.5, 6, 20, 7, 0, 67.5]);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('396: Sales by Service Staff counts rental late fees in revenue, credits them to no one, and still matches the headline', async () => {
+  const fx = makeFixture();
+  fx.staffLateFees = 36;
+  await mount({ fixture: fx });
+  await selectTab('Sales by Service Staff');
+  const t = text();
+  assert.match(t, /Revenue S\$2260\.00 − rental late fees, credited to no one S\$36\.00 = staff total S\$2224\.00/);
+  assert.ok(!/Press Refresh/.test(t), 'no "press Refresh" warning: revenue equals the headline');
+  assert.ok(!/away from revenue/.test(t), 'no difference alert');
   assert.deepEqual(globalThis.__renderErrors, []);
 });
