@@ -10,6 +10,8 @@ import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
 import { CustomerSearchSelect } from '../components/SearchSelect';
 import { CoverageLine } from '../components/therapy/coverage';
+import DownlineModal from '../components/referrals/DownlineModal';
+import { visitFilterArgs, visitFilterActive, sgDate } from '../lib/referral/campaign.mjs';
 
 // join_person_name() in the database: the two parts, trimmed, single-spaced,
 // with either side allowed to be empty. Mirrored here so the name the form
@@ -49,6 +51,14 @@ const CustomersPage: React.FC = () => {
   // Phase 14 — customer source: filter + staff correction.
   const [sourceFilter, setSourceFilter] = useState('');
   const [sourceOpts, setSourceOpts] = useState<{ id: string; label: string; requires_details: boolean }[]>([]);
+  // 398: visited the centre (customer_centre_visits) and the first visit date.
+  const [visitedFilter, setVisitedFilter] = useState<'' | 'visited' | 'not_visited'>('');
+  const [visitFrom, setVisitFrom] = useState('');
+  const [visitTo, setVisitTo] = useState('');
+  const visitArgs = useMemo(() => visitFilterArgs(visitedFilter, visitFrom, visitTo), [visitedFilter, visitFrom, visitTo]);
+  const visitFiltered = visitFilterActive(visitedFilter, visitFrom, visitTo);
+  // 398: the downline with visits, Owner/Manager.
+  const [downlineFor, setDownlineFor] = useState<Customer | null>(null);
   const [srcFor, setSrcFor] = useState<Customer | null>(null);
   const [srcOptId, setSrcOptId] = useState('');
   const [srcDetails, setSrcDetails] = useState('');
@@ -99,6 +109,7 @@ const CustomersPage: React.FC = () => {
         p_source: sourceFilter || null,
         p_limit: PAGE_SIZE,
         p_offset: page * PAGE_SIZE,
+        ...visitArgs,
       }),
       supabase.from('customer_phone_history').select('customer_id,phone,reason,created_at'),
       supabase.rpc('active_customer_source_options'),
@@ -109,14 +120,14 @@ const CustomersPage: React.FC = () => {
     setPhoneHistory((ph.data as any[]) ?? []);
     setSourceOpts((srcs.data as any[]) ?? []);
     setLoading(false);
-  }, [debouncedSearch, sourceFilter, page]);
+  }, [debouncedSearch, sourceFilter, page, visitArgs]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     const t = setTimeout(() => { setDebouncedSearch(search); setPage(0); }, 300);
     return () => clearTimeout(t);
   }, [search]);
-  useEffect(() => { setPage(0); }, [sourceFilter]);
+  useEffect(() => { setPage(0); }, [sourceFilter, visitArgs]);
 
   const openOverview = async (c: Customer) => {
     setOverviewFor(c); setOverview(null); setOvLoading(true);
@@ -269,6 +280,7 @@ const CustomersPage: React.FC = () => {
         p_query: debouncedSearch.trim() || null,
         p_source: sourceFilter || null,
         p_limit: PAGE, p_offset: offset,
+        ...visitArgs,
       });
       const batch = (data as any[]) ?? [];
       out.push(...batch);
@@ -295,6 +307,7 @@ const CustomersPage: React.FC = () => {
               { header: 'Customer ID', value: (c: any) => (String(c.notes ?? '').match(/CUST-\d+/i) || [''])[0] },
               { header: 'Source', value: (c: any) => c.source_label ?? '' },
               { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
+              { header: 'First Visit', value: (c: any) => c.first_visit_on ? sgDate(c.first_visit_on) : '' },
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
 
@@ -326,6 +339,7 @@ const CustomersPage: React.FC = () => {
               { header: 'Is Referrer', value: (c: any) => c.is_referrer ? 'Yes' : 'No' },
               { header: 'Notes', value: (c: any) => c.notes ?? '' },
               { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
+              { header: 'First Visit', value: (c: any) => c.first_visit_on ? sgDate(c.first_visit_on) : '' },
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
@@ -344,15 +358,34 @@ const CustomersPage: React.FC = () => {
           {sourceOpts.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
           <option value="__none">No source recorded</option>
         </select>
+        {/* 398: a health survey through the centre's own QR link, or a
+            consultant's survey with answers, a note or a file; an event's
+            survey from a later day's note or file (customer_centre_visits). */}
+        <select value={visitedFilter} onChange={e => setVisitedFilter(e.target.value as '' | 'visited' | 'not_visited')}
+          style={{ maxWidth: 150 }} title="Visited the centre: a health survey through the centre's own QR link, or a consultant's survey with answers, a note or a file. An event's survey counts only from a later day's note or file." aria-label="Visited">
+          <option value="">All customers</option>
+          <option value="visited">Visited</option>
+          <option value="not_visited">Not visited</option>
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+          First visit
+          <input type="date" value={visitFrom} aria-label="First visit from" disabled={visitedFilter === 'not_visited'}
+            onChange={e => setVisitFrom(e.target.value)} style={{ width: 145 }} />
+          –
+          <input type="date" value={visitTo} aria-label="First visit to" disabled={visitedFilter === 'not_visited'}
+            onChange={e => setVisitTo(e.target.value)} style={{ width: 145 }} />
+        </label>
+        {visitFiltered && <button type="button" className="btn btn-secondary btn-sm"
+          onClick={() => { setVisitedFilter(''); setVisitFrom(''); setVisitTo(''); }}>Clear visit filters</button>}
       </div>
 
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-          : filtered.length === 0 ? <div className="empty-state"><Users size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>{debouncedSearch || sourceFilter ? 'No customers match this search' : 'No customers yet'}</p></div>
+          : filtered.length === 0 ? <div className="empty-state"><Users size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>{debouncedSearch || sourceFilter || visitFiltered ? 'No customers match this search' : 'No customers yet'}</p></div>
           : (
             <table>
-              <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Source</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Source</th><th title="The first visit to the centre: a health survey through the centre's own QR link, or a consultant's survey with answers, a note or a file">First visit</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {filtered.map(c => (
                   <tr key={c.id}>
@@ -363,10 +396,14 @@ const CustomersPage: React.FC = () => {
                       {(c as any).source_label ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}
                       {(c as any).source_details && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{(c as any).source_details}</div>}
                     </td>
+                    <td style={{ fontSize: 12.5 }}>{c.first_visit_on ? sgDate(c.first_visit_on) : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                     <td>{c.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openOverview(c)}><Eye size={13} /> View</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}>Profile</button>
+                      {/* 398: Owner/Manager, as customer_downline_visits checks. */}
+                      {canComplete && <button className="btn btn-secondary btn-sm btn-icon" title="Downline: Tier 1 and Tier 2, with visits"
+                        aria-label={`Downline of ${c.full_name}`} onClick={() => setDownlineFor(c)}><Users size={13} /></button>}
                       <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
                       <button className="btn btn-secondary btn-sm" title="Change customer source (old surveys keep their snapshot)"
                         onClick={() => { setSrcFor(c); setSrcOptId((c as any).source_option_id ?? ''); setSrcDetails((c as any).source_details ?? ''); setSrcReason(''); setSrcErr(null); }}>Source</button>
@@ -788,6 +825,8 @@ const CustomersPage: React.FC = () => {
                   <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Customers referred</div>
                     <div style={{ fontSize: 20, fontWeight: 700 }}>{profileStats.referred_count ?? 0}</div>
+                    <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 6, gap: 4 }}
+                      onClick={() => setDownlineFor(profileFor)}><Users size={13} /> Downline</button>
                   </div>
                   <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Referred by</div>
@@ -803,6 +842,7 @@ const CustomersPage: React.FC = () => {
                 {profileFor.date_of_birth && <span>· DOB: {new Date(profileFor.date_of_birth).toLocaleDateString()}</span>}
                 {profileFor.gender && <span>· {profileFor.gender === 'other' ? (profileFor.gender_other || 'Other') : (profileFor.gender.charAt(0).toUpperCase() + profileFor.gender.slice(1))}</span>}
                 {profileFor.occupation && <span>· {profileFor.occupation}</span>}
+                {profileFor.first_visit_on !== undefined && <span>· First visit: {profileFor.first_visit_on ? sgDate(profileFor.first_visit_on) : 'not yet'}</span>}
               </div>
               {canComplete && (() => {
                 const hist = phoneHistory.filter(h => h.customer_id === profileFor.id).sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -869,6 +909,8 @@ const CustomersPage: React.FC = () => {
           )}
         </Modal>
       )}
+      {/* Last, so it opens above the Profile window it can be opened from. */}
+      {downlineFor && <DownlineModal customerId={downlineFor.id} name={downlineFor.full_name} onClose={() => setDownlineFor(null)} />}
     </div>
   );
 };

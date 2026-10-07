@@ -5,7 +5,9 @@ import { useAuth } from '../context/AuthContext';
 import { isOwner, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
-import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink } from 'lucide-react';
+import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink, Gift } from 'lucide-react';
+import DownlineModal from '../components/referrals/DownlineModal';
+import ReferralPromotionPanel from '../components/referrals/ReferralPromotionPanel';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -100,6 +102,10 @@ const AffiliatesPage: React.FC = () => {
   const canUnlink = isOwner(profile?.role);
 
   const [rows, setRows] = useState<DirRow[]>([]);
+  // 398, Owner/Manager: the affiliates, or the referral promotion's report;
+  // and one affiliate's downline with visits.
+  const [view, setView] = useState<'affiliates' | 'promotion'>('affiliates');
+  const [downlineFor, setDownlineFor] = useState<DirRow | null>(null);
   const [claims, setClaims] = useState<ClaimRow[]>([]);
   const [rejected, setRejected] = useState<ClaimRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -490,11 +496,22 @@ const AffiliatesPage: React.FC = () => {
         </div>
       )}
 
-      <div style={{ position: 'relative', marginBottom: 12, maxWidth: 320 }}>
+      {canManage && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12 }} role="tablist" aria-label="Affiliates view">
+          <button type="button" role="tab" aria-selected={view === 'affiliates'} className={`btn btn-sm ${view === 'affiliates' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setView('affiliates')} style={{ gap: 4 }}><Users size={14} /> Affiliates</button>
+          <button type="button" role="tab" aria-selected={view === 'promotion'} className={`btn btn-sm ${view === 'promotion' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setView('promotion')} style={{ gap: 4 }}><Gift size={14} /> Referral promotion</button>
+        </div>
+      )}
+
+      {canManage && view === 'promotion' && <ReferralPromotionPanel isOwner={canUnlink} />}
+
+      {(!canManage || view === 'affiliates') && <div style={{ position: 'relative', marginBottom: 12, maxWidth: 320 }}>
         <Search size={15} style={{ position: 'absolute', left: 10, top: 10, color: 'var(--text-muted)' }} />
         <input className="input" style={{ paddingLeft: 32 }} placeholder="Search name or code…" aria-label="Search affiliates"
           value={canManage ? q : staffQ} onChange={e => canManage ? setQ(e.target.value) : setStaffQ(e.target.value)} />
-      </div>
+      </div>}
 
       {!canManage && (
         <div className="card" style={{ padding: 0, overflow: 'auto' }}>
@@ -528,7 +545,7 @@ const AffiliatesPage: React.FC = () => {
         </div>
       )}
 
-      {canManage && <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+      {canManage && view === 'affiliates' && <div className="card" style={{ padding: 0, overflow: 'auto' }}>
         <table className="table" style={{ width: '100%' }}>
           <thead><tr>
             <th>Affiliate</th><th>Status</th><th>Portal Account</th><th>Referral Code</th>
@@ -567,6 +584,8 @@ const AffiliatesPage: React.FC = () => {
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <button className="btn btn-secondary btn-sm" title="Referral QR and link" disabled={!r.referral_code} style={{ marginRight: 6 }}
                         onClick={() => setLinkFor({ name: r.name, code: r.referral_code, usable: !suspended && r.status === 'active', status: suspended ? 'suspended' : r.status })}><QrCode size={14} /></button>
+                      <button className="btn btn-secondary btn-sm" title="Downline: Tier 1 and Tier 2, with visits" aria-label={`Downline of ${r.name}`}
+                        onClick={() => setDownlineFor(r)} style={{ marginRight: 6 }}><Users size={14} /></button>
                       <button className="btn btn-secondary btn-sm" title="Correct referrer" onClick={() => { setFixFor(r); setFixRef(''); setFixReason(''); }} style={{ marginRight: 6 }}><Edit3 size={14} /></button>
                       {suspended
                         ? <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => reactivate(r)} style={{ gap: 4 }}><PlayCircle size={14} /> Reactivate</button>
@@ -828,6 +847,8 @@ const AffiliatesPage: React.FC = () => {
           </div>
         </Modal>
       )}
+
+      {downlineFor && <DownlineModal customerId={downlineFor.customer_id} name={downlineFor.name} onClose={() => setDownlineFor(null)} />}
 
       {/* Delete Claim confirmation */}
       {deleteFor && (

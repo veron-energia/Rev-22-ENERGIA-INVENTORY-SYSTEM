@@ -330,6 +330,8 @@ export interface Customer {
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+  /** search_customers (398): the first visit to the centre, a Singapore date. */
+  first_visit_on?: string | null;
 }
 
 export interface Affiliate {

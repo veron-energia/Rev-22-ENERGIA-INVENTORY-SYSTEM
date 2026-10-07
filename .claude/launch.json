@@ -129,6 +129,16 @@
         "vite.payment-qr-preview.config.mts"
       ],
       "port": 5187
+    },
+    {
+      "name": "visits-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.visits-preview.config.mts"
+      ],
+      "port": 5190
     }
   ]
 }
