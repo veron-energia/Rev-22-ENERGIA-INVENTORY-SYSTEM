@@ -95,7 +95,16 @@ declare
                              'invoice_goods_out','invoice_before_full_payment','invoice_goods_kept_check',
                              'invoice_handover_internal',
                              -- 401: who may see or act on a location's loans, and one loan as the pages read it
-                             'stock_loan_access','stock_loan_json'];
+                             'stock_loan_access','stock_loan_json',
+                             -- 402: the TikTok ads engine, which Pabbly calls with the service key
+                             -- and nobody signs in to use: the sheet write and its pieces, the
+                             -- calendar import, the morning email and the earlier sheet writes
+                             'ads_cell_literal','ads_flag_wa_phone_conflicts','ads_items_key',
+                             'ads_link_all_lead_customers','ads_may_contact','ads_money_text',
+                             'ads_resolve_all_attendance','ads_row_j_value','ads_row_p_value',
+                             'ads_row_r_value','ads_rpc_alert_email','ads_rpc_calendar_bulk',
+                             'ads_rpc_mark_all_written','ads_rpc_row_state_column','ads_rpc_sheet_blocks',
+                             'ads_rpc_sheet_columns','ads_rpc_sheet_write','ads_rpc_sheet_written'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon
@@ -191,9 +200,40 @@ begin
   if to_regprocedure('public.search_customers(text,text,integer,integer)') is not null then
     raise exception 'FAIL: the four-argument search_customers(text,text,integer,integer) is back; 398 dropped it'; end if;
 
+  -- 10. Nothing of the TikTok ads engine is a client role's (402). Pabbly
+  --     reaches it with the service key; no page, member of staff or
+  --     affiliate does. Its tables keep their rows out by row-level security
+  --     with no policy, but a grant on one is still a door left open, and its
+  --     views read past that security (check 11). Supabase grants anon and
+  --     authenticated everything on a new table or view, so an ads_* table or
+  --     view added without revoking them is named here.
+  select string_agg(c.relname, ', ' order by c.relname) into bad
+    from pg_class c join pg_namespace n2 on n2.oid = c.relnamespace
+   where n2.nspname = 'public' and c.relname like 'ads\_%' and c.relkind in ('r','p','v','m','f')
+     and (has_table_privilege('anon', c.oid, 'select,insert,update,delete,truncate,references,trigger')
+          or has_table_privilege('authenticated', c.oid, 'select,insert,update,delete,truncate,references,trigger'));
+  if bad is not null then
+    raise exception 'FAIL: an ads_* table or view is open to a client role: %', bad; end if;
+
+  -- 11. A view reads its tables with its owner's rights unless it is marked
+  --     security_invoker, and a materialized view holds its rows outright, so
+  --     row-level security stops neither. A client role must not read one.
+  --     Before 402 a signed-out visitor read every TikTok lead's purchase
+  --     total through ads_lead_purchase_totals, and any signed-in session
+  --     (anyone can create an affiliate login) every lead's WhatsApp number
+  --     through ads_desired_sheet.
+  select string_agg(c.relname, ', ' order by c.relname) into bad
+    from pg_class c join pg_namespace n2 on n2.oid = c.relnamespace
+   where n2.nspname = 'public' and c.relkind in ('v','m')
+     and not exists (select 1 from pg_depend d where d.objid = c.oid and d.deptype = 'e')
+     and not (c.relkind = 'v' and coalesce(array_to_string(c.reloptions, ','), '') ~* 'security_invoker=(true|on|yes|1)')
+     and (has_table_privilege('anon', c.oid, 'select') or has_table_privilege('authenticated', c.oid, 'select'));
+  if bad is not null then
+    raise exception 'FAIL: a view that reads past row-level security is readable by a client role: %', bad; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, and no client role reads a view past row-level security', n;
 end $$;
