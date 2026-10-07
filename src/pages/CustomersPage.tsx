@@ -12,6 +12,7 @@ import { CustomerSearchSelect } from '../components/SearchSelect';
 import { CoverageLine } from '../components/therapy/coverage';
 import DownlineModal from '../components/referrals/DownlineModal';
 import { visitFilterArgs, visitFilterActive, sgDate } from '../lib/referral/campaign.mjs';
+import CustomerLoans from '../components/stock-loans/CustomerLoans';
 
 // join_person_name() in the database: the two parts, trimmed, single-spaced,
 // with either side allowed to be empty. Mirrored here so the name the form
@@ -844,6 +845,8 @@ const CustomersPage: React.FC = () => {
                 {profileFor.occupation && <span>· {profileFor.occupation}</span>}
                 {profileFor.first_visit_on !== undefined && <span>· First visit: {profileFor.first_visit_on ? sgDate(profileFor.first_visit_on) : 'not yet'}</span>}
               </div>
+              {/* 401: stock lent to this customer or affiliate (the stores the viewer works in). */}
+              <CustomerLoans customerId={profileFor.id} />
               {canComplete && (() => {
                 const hist = phoneHistory.filter(h => h.customer_id === profileFor.id).sort((a, b) => b.created_at.localeCompare(a.created_at));
                 return hist.length > 0 ? (

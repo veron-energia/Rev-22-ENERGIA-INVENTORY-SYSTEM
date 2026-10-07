@@ -1,11 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { SearchSelect } from '../components/SearchSelect';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Store, StoreInventory, Product, isOwnerOrManager } from '../types';
+import { Store, StoreInventory, Product, isOwnerOrManager, canManageWarehouseStock } from '../types';
 import { Modal } from '../components/ui';
-import { RefreshCw, Store as StoreIcon, AlertTriangle, SlidersHorizontal, MinusCircle } from 'lucide-react';
+import { RefreshCw, Store as StoreIcon, AlertTriangle, SlidersHorizontal, MinusCircle, HandHelping } from 'lucide-react';
+import RecordUseModal from '../components/stock-loans/RecordUseModal';
+import LendModal from '../components/stock-loans/LendModal';
+import TakeBackModal from '../components/stock-loans/TakeBackModal';
+import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
+import { useStockLoans } from '../components/stock-loans/useStockLoans';
+import { StockLoan } from '../lib/stock-loans/stockLoans';
 
 interface Row { product: Product; inv: StoreInventory | null; }
 
@@ -18,36 +23,16 @@ const StoreInventoryPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   // Recording a use is a real consumption (demo, sample, tester), not a
   // counting correction — so staff can do it themselves, unlike an adjustment.
+  // Every line is recorded in one call (401), so a refused line records none.
   const [useOpen, setUseOpen] = useState(false);
-  const [useLines, setUseLines] = useState<{ product_id: string; quantity: number }[]>([{ product_id: '', quantity: 0 }]);
-  const [useReason, setUseReason] = useState('');
-  const [useNote, setUseNote] = useState('');
-  const [useBusy, setUseBusy] = useState(false);
-  const [useErr, setUseErr] = useState<string | null>(null);
-  const submitUse = async () => {
-    const valid = useLines.filter(l => l.product_id && l.quantity > 0);
-    if (valid.length === 0) { setUseErr('Add at least one product with a quantity.'); return; }
-    const ids = valid.map(l => l.product_id);
-    if (new Set(ids).size !== ids.length) { setUseErr('The same product is listed more than once.'); return; }
-    if (!useReason.trim()) { setUseErr('A reason is required.'); return; }
-    setUseBusy(true); setUseErr(null);
-    for (const line of valid) {
-      const { error } = await supabase.rpc('record_stock_use', {
-        p_location_type: 'store', p_location_id: selectedStore,
-        p_product_id: line.product_id, p_quantity: line.quantity,
-        p_reason: useReason.trim(), p_note: useNote.trim() || null,
-      });
-      if (error) {
-        setUseBusy(false);
-        setUseErr(`${products.find(p => p.id === line.product_id)?.name ?? 'A product'}: ${error.message}`);
-        loadInventory(selectedStore);
-        return;
-      }
-    }
-    setUseBusy(false); setUseOpen(false);
-    setUseLines([{ product_id: '', quantity: 0 }]); setUseReason(''); setUseNote('');
-    loadInventory(selectedStore);
-  };
+  // Lending: stock that is coming back. It leaves the shelf now and shows on
+  // the On loan tab until it is taken back (401).
+  const [lendOpen, setLendOpen] = useState(false);
+  const [takeBack, setTakeBack] = useState<StockLoan | null>(null);
+  const [tab, setTab] = useState<'stock' | 'loans'>('stock');
+  const [showClosed, setShowClosed] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
+  const canWarehouse = canManageWarehouseStock(profile?.role);
   const [inventory, setInventory] = useState<StoreInventory[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -93,6 +78,21 @@ const StoreInventoryPage: React.FC = () => {
 
   useEffect(() => { loadBase(); }, [loadBase]);
   useEffect(() => { if (selectedStore) loadInventory(selectedStore); }, [selectedStore, loadInventory]);
+  useEffect(() => { setFlash(null); }, [selectedStore]);
+  const loans = useStockLoans('store', selectedStore, showClosed);
+  // Lend, Take back and Record use need access to this store (Owner and
+  // Admin: every store; others: the stores they are assigned to), which the
+  // database answers as can_act with the On loan list. Managers can read
+  // every store's list, so a store they are not assigned to shows it without
+  // the buttons. Unknown (not answered yet, or the read failed): Lend and
+  // Record use stay, and the database checks them as before.
+  const actHere = loans.canAct !== false;
+  const noActTitle = actHere ? undefined : 'You are not assigned to this store';
+  const available = Object.fromEntries(inventory.map(i => [i.product_id, i.current_qty]));
+  const done = (message: string) => {
+    setUseOpen(false); setLendOpen(false); setTakeBack(null); setFlash(message);
+    loadInventory(selectedStore); loans.reload();
+  };
 
   const rows: Row[] = products.map(p => ({
     product: p, inv: inventory.find(i => i.product_id === p.id) ?? null,
@@ -140,12 +140,15 @@ const StoreInventoryPage: React.FC = () => {
               { header: 'SKU', value: (r: any) => r.product.sku },
               { header: 'Store', value: () => stores.find(s2 => s2.id === selectedStore)?.name ?? '' },
               { header: 'Stock', value: (r: any) => Number(r.inv?.current_qty ?? 0) },
+              { header: 'Out on loan', value: (r: any) => Number(loans.outBy[r.product.id] ?? 0) },
               { header: 'Threshold', value: (r: any) => r.inv?.low_stock_threshold ?? '' },
               { header: 'Status', value: (r: any) => stockStatus(r).label },
             ]} />
-          <button className="btn btn-secondary" onClick={() => loadInventory(selectedStore)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          <button className="btn btn-primary" disabled={!selectedStore}
-            onClick={() => { setUseErr(null); setUseLines([{ product_id: '', quantity: 0 }]); setUseReason(''); setUseNote(''); setUseOpen(true); }}>
+          <button className="btn btn-secondary" onClick={() => { loadInventory(selectedStore); loans.reload(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="btn btn-secondary" disabled={!selectedStore || !actHere} title={noActTitle} onClick={() => { setFlash(null); setLendOpen(true); }}>
+            <HandHelping size={16} /> Lend
+          </button>
+          <button className="btn btn-primary" disabled={!selectedStore || !actHere} title={noActTitle} onClick={() => { setFlash(null); setUseOpen(true); }}>
             <MinusCircle size={16} /> Record Use
           </button>
         </div>
@@ -163,6 +166,18 @@ const StoreInventoryPage: React.FC = () => {
       {selectedStore && (
         <>
           {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read store stock: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
+          {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }} role="tablist" aria-label="Store stock views">
+            <button role="tab" aria-selected={tab === 'stock'} className={`btn btn-sm ${tab === 'stock' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('stock')}>Stock</button>
+            <button role="tab" aria-selected={tab === 'loans'} className={`btn btn-sm ${tab === 'loans' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('loans')}>
+              On loan ({loans.open.length}){loans.overdue > 0 && <span className="badge badge-danger" style={{ marginLeft: 4 }}>{loans.overdue} overdue</span>}
+            </button>
+          </div>
+          {tab === 'loans' ? (
+            <OnLoanPanel open={loans.open} closed={loans.closed} today={loans.today} loading={loans.loading} error={loans.error}
+              showClosed={showClosed} onShowClosed={setShowClosed} onReload={loans.reload}
+              canAct={loans.canAct === true} onTakeBack={l => { setFlash(null); setTakeBack(l); }} />
+          ) : (<>
           <div style={{ marginBottom: 14, maxWidth: 360 }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />
             <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
@@ -178,7 +193,7 @@ const StoreInventoryPage: React.FC = () => {
               : rows.length === 0 ? <div className="empty-state"><StoreIcon size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No products</p></div>
               : (
                 <table>
-                  <thead><tr><th>Product</th><th>SKU</th><th style={{ textAlign: 'right' }}>Stock</th><th>Threshold</th><th>Status</th>{canSetThreshold && <th></th>}</tr></thead>
+                  <thead><tr><th>Product</th><th>SKU</th><th style={{ textAlign: 'right' }}>Stock</th><th style={{ textAlign: 'right' }} title="Lent out from this store and not yet taken back; not in Stock">Out on loan</th><th>Threshold</th><th>Status</th>{canSetThreshold && <th></th>}</tr></thead>
                   <tbody>
                     {rows.map(r => {
                       const st = stockStatus(r);
@@ -207,6 +222,9 @@ const StoreInventoryPage: React.FC = () => {
                           </td>
                           <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{r.product.sku}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 15 }}>{r.inv?.current_qty ?? 0}</td>
+                          <td style={{ textAlign: 'right' }}>{loans.outBy[r.product.id]
+                            ? <button className="btn btn-secondary btn-sm" onClick={() => setTab('loans')} title="Show the On loan list">{loans.outBy[r.product.id]}</button>
+                            : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                           <td>{r.inv?.low_stock_threshold ? r.inv.low_stock_threshold : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                           <td><span className={`badge ${st.cls}`}>{st.label === 'Low Stock' && <AlertTriangle size={11} />}{st.label}</span></td>
                           {canSetThreshold && <td><button className="btn btn-secondary btn-sm" onClick={() => openThreshold(r)}><SlidersHorizontal size={13} /> Threshold</button></td>}
@@ -218,6 +236,7 @@ const StoreInventoryPage: React.FC = () => {
               )}
             </div>
           </div>
+          </>)}
         </>
       )}
 
@@ -233,47 +252,17 @@ const StoreInventoryPage: React.FC = () => {
       )}
 
       {useOpen && (
-        <Modal title="Record stock used in the store" maxWidth={520} onClose={() => setUseOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setUseOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={submitUse} disabled={useBusy}>{useBusy ? 'Recording…' : 'Record Use'}</button></>}>
-          <div className="form-grid">
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              For stock genuinely consumed here — demo units, testers, samples, internal use.
-              The stock reduces immediately and is logged against you. Use an Adjustment instead
-              if you are correcting a miscount.
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Products *</label>
-              {useLines.map((l, i) => (
-                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
-                  <div style={{ flex: 1 }}>
-                    <SearchSelect
-                      options={products.map((p: any) => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
-                      value={l.product_id}
-                      exclude={useLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
-                      onChange={v => setUseLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
-                      placeholder="Search product name or SKU…" />
-                  </div>
-                  <input type="number" min={1} value={l.quantity || ''} placeholder="Qty" style={{ width: 90 }}
-                    onChange={e => setUseLines(ls => ls.map((x, j) => j === i ? { ...x, quantity: +e.target.value } : x))} />
-                  <button className="btn btn-secondary btn-sm btn-icon" disabled={useLines.length === 1}
-                    onClick={() => setUseLines(ls => ls.filter((_, j) => j !== i))} title="Remove">×</button>
-                </div>
-              ))}
-              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
-                onClick={() => setUseLines(ls => [...ls, { product_id: '', quantity: 0 }])}>+ Add another product</button>
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Reason *</label>
-              <input value={useReason} onChange={e => setUseReason(e.target.value)} placeholder="e.g. Demo unit opened for a customer" />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Note</label>
-              <textarea rows={2} value={useNote} onChange={e => setUseNote(e.target.value)} placeholder="Optional" />
-            </div>
-            {useErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{useErr}</div></div>}
-          </div>
-        </Modal>
+        <RecordUseModal locationType="store" locationId={selectedStore}
+          locationName={stores.find(s2 => s2.id === selectedStore)?.name ?? 'Store'}
+          products={products} onClose={() => setUseOpen(false)} onDone={done} />
+      )}
+      {lendOpen && (
+        <LendModal locationType="store" locationId={selectedStore}
+          locationName={stores.find(s2 => s2.id === selectedStore)?.name ?? 'Store'}
+          products={products} available={available} onClose={() => setLendOpen(false)} onDone={done} />
+      )}
+      {takeBack && (
+        <TakeBackModal loan={takeBack} canWarehouse={canWarehouse} onClose={() => setTakeBack(null)} onDone={done} />
       )}
     </div>
   );

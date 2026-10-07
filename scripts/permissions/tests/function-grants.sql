@@ -93,7 +93,9 @@ declare
                              -- 399: goods handed over before full payment: what is out, the
                              -- correction's check, and the hand-over behind the payment and the button
                              'invoice_goods_out','invoice_before_full_payment','invoice_goods_kept_check',
-                             'invoice_handover_internal'];
+                             'invoice_handover_internal',
+                             -- 401: who may see or act on a location's loans, and one loan as the pages read it
+                             'stock_loan_access','stock_loan_json'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

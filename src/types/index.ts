@@ -137,9 +137,14 @@ export type StockMovementType =
   | 'invoice_cancel_return'
   | 'invoice_refund_return'
   | 'inventory_adjustment'
+  | 'exchange_return_in'
+  | 'exchange_replacement_out'
   | 'transfer_dispatch'
   | 'transfer_receipt'
-  | 'transfer_discrepancy';
+  | 'transfer_discrepancy'
+  // 400: stock lent out of a store or warehouse, and taken back into one
+  | 'loan_out'
+  | 'loan_return';
 
 export interface StockMovement {
   id: string;
@@ -234,9 +239,15 @@ export const MOVEMENT_LABELS: Record<StockMovementType, string> = {
   invoice_cancel_return: 'Cancel Return',
   invoice_refund_return: 'Refund Return',
   inventory_adjustment: 'Adjustment',
+  // As stock_history_type_label shows them (its catch-all for these two).
+  exchange_return_in: 'Exchange Return In',
+  exchange_replacement_out: 'Exchange Replacement Out',
   transfer_dispatch: 'Transfer Dispatch',
   transfer_receipt: 'Transfer Receipt',
   transfer_discrepancy: 'Transfer Discrepancy',
+  // 401: stock_history_type_label's words.
+  loan_out: 'Lent out',
+  loan_return: 'Loan returned',
 };
 
 export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {

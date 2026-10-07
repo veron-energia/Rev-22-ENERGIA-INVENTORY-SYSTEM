@@ -149,6 +149,16 @@
         "vite.handover-preview.config.mts"
       ],
       "port": 5183
+    },
+    {
+      "name": "stock-loans-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.stock-loans-preview.config.mts"
+      ],
+      "port": 5211
     }
   ]
 }

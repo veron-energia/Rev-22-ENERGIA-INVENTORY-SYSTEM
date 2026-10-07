@@ -7,20 +7,37 @@ import {
   canManageWarehouseStock, isOwnerOrManager, isManagerOrAbove,
 } from '../types';
 import { SearchSelect } from '../components/SearchSelect';
-import { Modal, NoAccess, RoleGate } from '../components/ui';
-import { Plus, PackagePlus, RefreshCw, Warehouse as WarehouseIcon, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { Modal, NoAccess } from '../components/ui';
+import { PackagePlus, RefreshCw, Warehouse as WarehouseIcon, AlertTriangle, SlidersHorizontal, MinusCircle, HandHelping } from 'lucide-react';
+import RecordUseModal from '../components/stock-loans/RecordUseModal';
+import LendModal from '../components/stock-loans/LendModal';
+import TakeBackModal from '../components/stock-loans/TakeBackModal';
+import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
+import { useStockLoans } from '../components/stock-loans/useStockLoans';
+import { StockLoan } from '../lib/stock-loans/stockLoans';
 
 interface Row {
   product: Product;
   inv: WarehouseInventory | null;
 }
 
+// The access check is a component of its own, so the page's hooks always run
+// in the same order (it used to return before them).
 const WarehouseInventoryPage: React.FC = () => {
   const { profile } = useAuth();
   if (!isManagerOrAbove(profile?.role) && profile?.role !== 'inventory_manager') {
     return <NoAccess message="Warehouse inventory is available to Owners, Managers, and Inventory Managers." />;
   }
+  return <WarehouseInventoryView />;
+};
+
+const WarehouseInventoryView: React.FC = () => {
+  const { profile } = useAuth();
+  // Stock In, Record use, Lend and Take back all need the warehouse stock
+  // permission the database checks (Owner, Manager, Inventory Manager); an
+  // Admin sees the page and the On loan list but changes nothing.
   const canStockIn = canManageWarehouseStock(profile?.role);
+  const canUseStock = canManageWarehouseStock(profile?.role);
   const canSetThreshold = isOwnerOrManager(profile?.role);
 
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -42,6 +59,14 @@ const WarehouseInventoryPage: React.FC = () => {
   // Threshold modal
   const [thresholdRow, setThresholdRow] = useState<Row | null>(null);
   const [thresholdVal, setThresholdVal] = useState(0);
+
+  // Record use and lending (401)
+  const [useOpen, setUseOpen] = useState(false);
+  const [lendOpen, setLendOpen] = useState(false);
+  const [takeBack, setTakeBack] = useState<StockLoan | null>(null);
+  const [tab, setTab] = useState<'stock' | 'loans'>('stock');
+  const [showClosed, setShowClosed] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
 
   const loadBase = useCallback(async () => {
     const [{ data: wh }, { data: prod }] = await Promise.all([
@@ -65,6 +90,17 @@ const WarehouseInventoryPage: React.FC = () => {
 
   useEffect(() => { loadBase(); }, [loadBase]);
   useEffect(() => { if (selectedWh) loadInventory(selectedWh); }, [selectedWh, loadInventory]);
+  useEffect(() => { setFlash(null); }, [selectedWh]);
+  const loans = useStockLoans('warehouse', selectedWh, showClosed);
+  // The database's own answer (can_act) agrees with canUseStock; Take back is
+  // offered only once it has said so, Lend and Record use unless it said no.
+  const actHere = canUseStock && loans.canAct !== false;
+  const available = Object.fromEntries(inventory.map(i => [i.product_id, i.current_qty]));
+  const whName = warehouses.find(w => w.id === selectedWh)?.name ?? 'Warehouse';
+  const done = (message: string) => {
+    setUseOpen(false); setLendOpen(false); setTakeBack(null); setFlash(message);
+    loadInventory(selectedWh); loans.reload();
+  };
 
   const rows: Row[] = products.map(p => ({
     product: p,
@@ -145,10 +181,13 @@ const WarehouseInventoryPage: React.FC = () => {
               { header: 'SKU', value: (r: any) => r.product.sku },
               { header: 'Warehouse', value: () => warehouses.find(w => w.id === selectedWh)?.name ?? '' },
               { header: 'Stock', value: (r: any) => Number(r.inv?.current_qty ?? 0) },
+              { header: 'Out on loan', value: (r: any) => Number(loans.outBy[r.product.id] ?? 0) },
               { header: 'Threshold', value: (r: any) => r.inv?.low_stock_threshold ?? '' },
               { header: 'Status', value: (r: any) => stockStatus(r).label },
             ]} />
-          <button className="btn btn-secondary" onClick={() => loadInventory(selectedWh)}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="btn btn-secondary" onClick={() => { loadInventory(selectedWh); loans.reload(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          {canUseStock && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setLendOpen(true); }}><HandHelping size={16} /> Lend</button>}
+          {canUseStock && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setUseOpen(true); }}><MinusCircle size={16} /> Record Use</button>}
           {canStockIn && <button className="btn btn-primary" onClick={() => { setSiForm({ reason: '', note: '', reference: '' }); setSiErr(null); setSiLines([{ product_id: '', quantity: 0 }]); setStockInOpen(true); }} disabled={!selectedWh}><PackagePlus size={16} /> Stock In</button>}
         </div>
       </div>
@@ -167,6 +206,18 @@ const WarehouseInventoryPage: React.FC = () => {
       {selectedWh && (
         <>
           {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read warehouse stock: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
+          {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }} role="tablist" aria-label="Warehouse stock views">
+            <button role="tab" aria-selected={tab === 'stock'} className={`btn btn-sm ${tab === 'stock' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('stock')}>Stock</button>
+            <button role="tab" aria-selected={tab === 'loans'} className={`btn btn-sm ${tab === 'loans' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('loans')}>
+              On loan ({loans.open.length}){loans.overdue > 0 && <span className="badge badge-danger" style={{ marginLeft: 4 }}>{loans.overdue} overdue</span>}
+            </button>
+          </div>
+          {tab === 'loans' ? (
+            <OnLoanPanel open={loans.open} closed={loans.closed} today={loans.today} loading={loans.loading} error={loans.error}
+              showClosed={showClosed} onShowClosed={setShowClosed} onReload={loans.reload}
+              canAct={canUseStock && loans.canAct === true} onTakeBack={l => { setFlash(null); setTakeBack(l); }} />
+          ) : (<>
           <div style={{ marginBottom: 14, maxWidth: 360 }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />
             <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
@@ -183,7 +234,7 @@ const WarehouseInventoryPage: React.FC = () => {
               : rows.length === 0 ? <div className="empty-state"><WarehouseIcon size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No products</p></div>
               : (
                 <table>
-                  <thead><tr><th>Product</th><th>SKU</th><th style={{ textAlign: 'right' }}>Stock</th><th>Threshold</th><th>Status</th>{canSetThreshold && <th></th>}</tr></thead>
+                  <thead><tr><th>Product</th><th>SKU</th><th style={{ textAlign: 'right' }}>Stock</th><th style={{ textAlign: 'right' }} title="Lent out from this warehouse and not yet taken back; not in Stock">Out on loan</th><th>Threshold</th><th>Status</th>{canSetThreshold && <th></th>}</tr></thead>
                   <tbody>
                     {rows.map(r => {
                       const st = stockStatus(r);
@@ -192,6 +243,9 @@ const WarehouseInventoryPage: React.FC = () => {
                           <td><strong>{r.product.name}</strong></td>
                           <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{r.product.sku}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 15 }}>{r.inv?.current_qty ?? 0}</td>
+                          <td style={{ textAlign: 'right' }}>{loans.outBy[r.product.id]
+                            ? <button className="btn btn-secondary btn-sm" onClick={() => setTab('loans')} title="Show the On loan list">{loans.outBy[r.product.id]}</button>
+                            : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                           <td>{r.inv?.low_stock_threshold ? r.inv.low_stock_threshold : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                           <td><span className={`badge ${st.cls}`}>{st.label === 'Low Stock' && <AlertTriangle size={11} />}{st.label}</span></td>
                           {canSetThreshold && <td><button className="btn btn-secondary btn-sm" onClick={() => openThreshold(r)}><SlidersHorizontal size={13} /> Threshold</button></td>}
@@ -203,6 +257,7 @@ const WarehouseInventoryPage: React.FC = () => {
               )}
             </div>
           </div>
+          </>)}
         </>
       )}
 
@@ -243,6 +298,18 @@ const WarehouseInventoryPage: React.FC = () => {
             </div>
           </div>
         </Modal>
+      )}
+
+      {useOpen && (
+        <RecordUseModal locationType="warehouse" locationId={selectedWh} locationName={whName}
+          products={products} onClose={() => setUseOpen(false)} onDone={done} />
+      )}
+      {lendOpen && (
+        <LendModal locationType="warehouse" locationId={selectedWh} locationName={whName}
+          products={products} available={available} onClose={() => setLendOpen(false)} onDone={done} />
+      )}
+      {takeBack && (
+        <TakeBackModal loan={takeBack} canWarehouse={canUseStock} onClose={() => setTakeBack(null)} onDone={done} />
       )}
 
       {/* Threshold modal */}
