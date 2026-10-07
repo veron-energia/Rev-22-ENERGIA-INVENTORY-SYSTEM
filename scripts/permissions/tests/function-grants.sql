@@ -89,7 +89,11 @@ declare
                              -- 398: who visited the centre, the referral date, and a referral
                              -- promotion's counting and tiers
                              'customer_centre_visits','tg_customers_referral_date',
-                             'referral_campaign_friends','referral_campaign_standing'];
+                             'referral_campaign_friends','referral_campaign_standing',
+                             -- 399: goods handed over before full payment: what is out, the
+                             -- correction's check, and the hand-over behind the payment and the button
+                             'invoice_goods_out','invoice_before_full_payment','invoice_goods_kept_check',
+                             'invoice_handover_internal'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

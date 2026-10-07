@@ -46,6 +46,9 @@ import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefres
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
+import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
+  goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
+import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -355,6 +358,18 @@ const InvoicesPage: React.FC = () => {
   const [eventTagErr, setEventTagErr] = useState<string | null>(null);
   // Which event each listed invoice is a sale of.
   const [eventByInvoice, setEventByInvoice] = useState<Record<string, string>>({});
+  // 399: goods handed over before full payment. The open invoice's goods
+  // (collected, to collect, out, history); the answer a part payment needs
+  // ("Nothing taken" or the items taken now); which goods window is open; and
+  // the listed invoices with goods out.
+  const [detailGoods, setDetailGoods] = useState<GoodsStatus | null>(null);
+  const [detailGoodsErr, setDetailGoodsErr] = useState<string | null>(null);
+  const [goodsUnavailable, setGoodsUnavailable] = useState(false);
+  const [handoverAnswer, setHandoverAnswer] = useState<HandoverAnswer>(null);
+  const [handoverPick, setHandoverPick] = useState<HandoverPick>(emptyPick());
+  const [goodsModal, setGoodsModal] = useState<'handover' | 'return' | null>(null);
+  const [goodsNote, setGoodsNote] = useState<string | null>(null);
+  const [goodsOutByInvoice, setGoodsOutByInvoice] = useState<Record<string, number>>({});
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
   // Payment methods per invoice for the whole list, so the table can show them
   // and the search can match on them. Keyed by invoice for a direct lookup.
@@ -1177,7 +1192,9 @@ const InvoicesPage: React.FC = () => {
           p_items: allItems, p_header: header });
     setCSaving(false);
     if (error) {
-      setCErr(error.message);
+      // 399: a correction that takes off goods the customer already took says
+      // so plainly (the machine prefix off): record them as returned first.
+      setCErr(goodsRefusal(error.message) ?? error.message);
       setCorrectionPreview(null);
       // Someone else saved this invoice first (expected_edit_count). Say so
       // where the entries are, with the review, rather than as a bare refusal.
@@ -1548,6 +1565,19 @@ const InvoicesPage: React.FC = () => {
     setDetailNames(null);
     const namesLoaded = supabase.rpc('invoice_display_names', { p_invoice_id: inv.id })
       .then(({ data }) => { if (!superseded()) setDetailNames(data ?? null); });
+    // 399: its goods: collected, to collect, handed over early. A part payment
+    // asks what the customer took from these, so they are read before it can
+    // be recorded (paymentBlocker). Before 399 is in the database there is
+    // nothing to read and nothing to ask.
+    setDetailGoods(null); setDetailGoodsErr(null); setGoodsUnavailable(false);
+    setHandoverAnswer(null); setHandoverPick(emptyPick()); setGoodsModal(null); setGoodsNote(null);
+    const goodsLoaded = supabase.rpc('invoice_goods_status', { p_invoice_id: inv.id })
+      .then(({ data, error }) => {
+        if (superseded()) return;
+        if (!error) { setDetailGoods(goodsFromRpc(data)); return; }
+        if ((error as any).code === 'PGRST202' || /Could not find the function/i.test(error.message)) setGoodsUnavailable(true);
+        else setDetailGoodsErr(`The goods on this invoice could not be read (${error.message}). Reload the invoice before recording a part payment.`);
+      });
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
     setSendErr(null); setSendNote(null); setCreditNote(null);
@@ -1635,7 +1665,7 @@ const InvoicesPage: React.FC = () => {
     });
     setPayErr(null); setPayOutcome(null); setPayDate(singaporeToday());
     // Everything the printed and sent copies read is in: they may be made now.
-    await Promise.all([namesLoaded, billToLoaded]).catch(() => { /* the copy falls back to the page's own names */ });
+    await Promise.all([namesLoaded, billToLoaded, goodsLoaded]).catch(() => { /* the copy falls back to the page's own names */ });
     if (superseded()) return;
     detailDataForRef.current = inv.id; setDetailLoadedFor(inv.id);
   };
@@ -1741,9 +1771,24 @@ const InvoicesPage: React.FC = () => {
     if (instalmentError) return instalmentError;
     if (!payDate) return 'Choose the date this payment was received.';
     if (payDate > singaporeToday()) return 'A payment cannot be dated in the future.';
+    // 399: a part payment on an invoice with goods to collect is saved only
+    // with an answer: "Nothing taken" or the items taken now (the Owner, 6 Oct
+    // 2026). The goods must have been read to ask.
+    const outstanding = Number(detailFinancial?.outstanding ?? 0);
+    if (!goodsUnavailable && payTotal > 0 && payTotal < outstanding - 0.005
+        && ['draft', 'unpaid', 'partially_paid'].includes(detail.status)) {
+      if (detailGoodsErr) return detailGoodsErr;
+      if (!detailGoods) return 'Reading the goods on this invoice…';
+    }
+    if (needsHandoverAnswer(detailGoods, payTotal, outstanding)) {
+      const problem = handoverProblem(detailGoods, handoverAnswer, handoverPick);
+      if (problem) return problem;
+    }
     return null;
   };
   const payBlockedReason = paymentBlocker();
+  /** 399: whether this payment is a part payment that asks what the customer took. */
+  const askGoods = needsHandoverAnswer(detailGoods, payTotal, Number(detailFinancial?.outstanding ?? 0));
 
   const handlePay = async () => {
     if (!detail) return;
@@ -1790,11 +1835,14 @@ const InvoicesPage: React.FC = () => {
 
     setPayBusy(true); setPayErr(null); setPayOutcome(null);
     const invoiceId = detail.id;
+    // 399: the goods the customer took with a part payment are saved with it,
+    // in the same transaction ("Nothing taken" is an answer too).
+    const handover = askGoods && detailGoods ? handoverPayload(detailGoods, handoverAnswer, handoverPick) : null;
     // The money goes in first. The instalment label is stamped afterwards, so a
     // failed payment can never leave terms behind for money that was not taken.
     const { data, error } = await supabase.rpc('record_invoice_settlement', {
       p_invoice_id: invoiceId,
-      p_payload: { receipts, arrangements: [] },
+      p_payload: { receipts, arrangements: [], ...(handover ? { handover } : {}) },
       p_request_id: paymentRequestId,
     });
     setPayBusy(false);
@@ -1837,7 +1885,22 @@ const InvoicesPage: React.FC = () => {
     // A fresh request id: this payment is done, the next one is a new request.
     setPaymentRequestId(crypto.randomUUID());
     await openDetail(invRow as Invoice);
+    const taken = (res?.handover?.items ?? []) as { name: string; quantity: number }[];
+    if (taken.length > 0 && detailIdRef.current === invoiceId) {
+      setGoodsNote(`Handed over with this payment: ${taken.map(i => `${i.name} × ${i.quantity}`).join(', ')}.`);
+    }
     void refreshList({ afterSave: 'The payment was recorded', changed: [invoiceId] });
+  };
+
+  /** 399: a hand-over or a return was recorded: reload the invoice and the list. */
+  const goodsDone = async (message: string) => {
+    const id = detail?.id;
+    setGoodsModal(null);
+    if (!id) return;
+    noteLocalChangeRef.current([id]);
+    try { await refreshDetail(id); } catch { /* the note below still says it was saved */ }
+    if (detailIdRef.current === id) setGoodsNote(message);
+    void refreshList({ afterSave: message, changed: [id] });
   };
 
   const handleDelete = async (inv: Invoice) => {
@@ -1938,6 +2001,18 @@ const InvoicesPage: React.FC = () => {
     setEventByInvoice(prev => ({ ...prev, ...out }));
   }, []);
 
+  // 399: which listed unpaid or part-paid invoices have goods out with the
+  // customer ("Goods out"), and how many. A failure leaves the badges off.
+  const loadGoodsOutFor = useCallback(async (ids: string[]) => {
+    const wanted = ids.filter(Boolean);
+    if (wanted.length === 0) return;
+    const { data, error } = await supabase.rpc('invoice_list_goods_out', { p_invoice_ids: wanted });
+    if (error || !mountedRef.current) return;
+    const out: Record<string, number> = Object.fromEntries(wanted.map(id => [id, 0]));
+    for (const r of ((data as any[]) ?? [])) out[r.invoice_id] = Number(r.quantity ?? 0);
+    setGoodsOutByInvoice(prev => ({ ...prev, ...out }));
+  }, []);
+
   const loadPaymentMethodsFor = useCallback(async (ids: string[]) => {
     const missing = ids.filter(Boolean);
     if (missing.length === 0) return;
@@ -1995,6 +2070,7 @@ const InvoicesPage: React.FC = () => {
       rememberNames(res.rows as any[]);
       void loadPaymentMethodsFor(res.rows.map(r => r.id));
       void loadEventsFor(res.rows.map(r => r.id));
+      void loadGoodsOutFor(res.rows.filter(r => ['draft', 'unpaid', 'partially_paid'].includes(String(r.status))).map(r => r.id));
       return true;
     } catch (e: any) {
       if (ticket !== pageRequestRef.current || !mountedRef.current) return true;
@@ -2312,6 +2388,18 @@ const InvoicesPage: React.FC = () => {
       walletMethodIds: [...walletMethodIds, ...methods.filter(m => (m as any).is_wallet_credit).map(m => m.id)],
       fetchBalances: customerId => supabase.rpc('customer_credit_balances', { p_customer_id: customerId }),
     });
+  // 399: an unpaid or part-paid copy lists what was collected and what is
+  // still to collect instead of "checked and collected", read fresh when the
+  // copy is made (a hand-over may have been recorded elsewhere since). A fully
+  // paid invoice keeps the standard line and reads nothing. If the read fails,
+  // the goods already on screen for this invoice are used, else the copy says
+  // nothing about collection.
+  const goodsForCopy = async (inv: Invoice): Promise<GoodsStatus | null> => {
+    if (!['draft', 'unpaid', 'partially_paid'].includes(String(inv.status))) return null;
+    const { data, error } = await supabase.rpc('invoice_goods_status', { p_invoice_id: inv.id });
+    if (!error) return goodsFromRpc(data);
+    return detailGoods && detailGoods.invoice_id === inv.id ? detailGoods : null;
+  };
   // Called once a copy has actually gone out — written into the print window,
   // sent, or saved — never before, so it never reports a copy that was not
   // made. Says so when it went without the credit balance: it could not be
@@ -2329,13 +2417,21 @@ const InvoicesPage: React.FC = () => {
   // be corrected (Correct / Edit Invoice build their form from those rows).
   const docReady = !!detail && detailLoadedFor === detail.id && !detailReadsOut.some(h => h.invoiceId === detail.id);
   const docWaitTitle = docReady ? undefined : 'Loading this invoice…';
+  // 399: goods a customer takes on an unpaid or part-paid invoice with no
+  // payment (a later visit). Anyone who may record a payment here may.
+  const handOverButton = detail && detailGoods?.can_hand_over && detailGoods.invoice_id === detail.id ? (
+    <button className="btn btn-secondary" onClick={() => { setGoodsNote(null); setGoodsModal('handover'); }}
+      disabled={!docReady} title={docWaitTitle ?? 'Record goods the customer takes now, before paying in full'}>
+      Hand over items</button>
+  ) : null;
 
   // The customer copy as a real A5 PDF — same content as the printed customer
   // half. Built in src/lib/invoicePdf.ts. Async because the credit balance on it
   // is read fresh each time; `unreadable` says it could not be.
   const buildPdfDoc = async (): Promise<{ pdf: PdfDoc; invoiceId: string; unreadable: boolean } | null> => {
     if (!detail) return null;
-    const { line: creditBalance, unreadable } = await creditBalanceNow(detail, detailPayments);
+    const [{ line: creditBalance, unreadable }, goodsNow] = await Promise.all([
+      creditBalanceNow(detail, detailPayments), goodsForCopy(detail)]);
     const store: any = stores.find(s2 => s2.id === detail.store_id) ?? {};
     const cust = customerOf(detail.customer_id);
     const bal = Number(detailFinancial?.outstanding ?? 0);
@@ -2388,6 +2484,12 @@ const InvoicesPage: React.FC = () => {
         store.bank_account ? `CIMB corporate account: ${store.bank_account}` : '',
       ].filter(Boolean),
       staffName: creatorName(detail),
+      // 399: an unpaid or part-paid invoice lists its goods, Collected and To
+      // collect, and its terms never say "checked and collected"; once paid
+      // in full it keeps the standard line. On a long invoice the lists
+      // shorten, or go into the terms in a few words (fitAroundCollection).
+      termsText: copyTermsText(detail.status),
+      collection: copyCollection(detail.status, goodsNow),
       policyText: store.policy_text ?? null,
       footerBits: [
         store.phone ? `DID: ${store.phone}` : '',
@@ -2496,8 +2598,12 @@ const InvoicesPage: React.FC = () => {
   const printInvoice = async (w: Window) => {
     if (!detail) return;
     setCreditNote(null);
-    const credit = await creditBalanceNow(detail, detailPayments);
+    const [credit, goodsNow] = await Promise.all([creditBalanceNow(detail, detailPayments), goodsForCopy(detail)]);
     const creditBlock = creditBalanceHtml(credit.line);
+    // 399: an unpaid or part-paid invoice never says everything was collected:
+    // it lists its goods, Collected and To collect, above the signatures.
+    const termsText = copyTermsText(detail.status);
+    const collectionLines = copyCollectionLines(detail.status, goodsNow);
     const store = stores.find(s => s.id === detail.store_id);
     const cust = customerOf(detail.customer_id);
     // "First Last (Referrer, Source)" — a missing referrer or source prints
@@ -2509,6 +2615,8 @@ const InvoicesPage: React.FC = () => {
     // invoice; fall back to the person printing it if that is not recorded.
     const signedByName = creatorName(detail);
     const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const collectionBlock = collectionLines
+      ? `<h2>Goods</h2><div data-testid="print-goods">${collectionLines.map(l => `<div>${esc(l)}</div>`).join('')}</div>` : '';
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
       const chosen = detailSelections.filter(s => s.invoice_item_id === it.id);
@@ -2680,14 +2788,17 @@ const InvoicesPage: React.FC = () => {
         ${creditBlock}
         ${therapyBlock}
         ${authorisedBlock}
+        ${collectionBlock}
         <div class="signrow">
           <div class="sign">
             <div class="signline signed">${esc(signedByName)}</div>Staff Signature
           </div>
           <div class="sign"><div class="signline"></div>Customer Signature</div>
         </div>
-        <div class="terms"><b>GOODS AND SERVICES SOLD ARE NEITHER REFUNDABLE NOR EXCHANGEABLE.
-          GOODS AND SERVICES HAVE BEEN CHECKED AND COLLECTED.</b></div>
+        ${termsText
+          ? `<div class="terms"><b>${esc(termsText.toUpperCase())}</b></div>`
+          : `<div class="terms"><b>GOODS AND SERVICES SOLD ARE NEITHER REFUNDABLE NOR EXCHANGEABLE.
+          GOODS AND SERVICES HAVE BEEN CHECKED AND COLLECTED.</b></div>`}
         ${st.policy_text ? `<div class="policy"><b>CANCELLATION / EXCHANGE / REFUND POLICY</b><br/>${esc(st.policy_text).replace(/\n/g, '<br/>')}</div>` : ''}
         ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
         ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
@@ -2739,7 +2850,7 @@ const InvoicesPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Invoices</h2><p>Create invoices for a store. Stock is deducted only when an invoice is fully paid.</p></div>
+        <div><h2>Invoices</h2><p>Create invoices for a store. Stock is deducted when an invoice is paid in full, or earlier for goods handed over before that.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-secondary" onClick={() => void refreshList()} disabled={refreshing} aria-busy={refreshing}
             title="Reload this page of invoices with its count and totals">
@@ -2942,7 +3053,12 @@ const InvoicesPage: React.FC = () => {
                       )}
                       {eventByInvoice[inv.id] && (
                         <div><span className="badge badge-primary" style={{ fontSize: 10 }} title="Event sale">🎉 {eventByInvoice[inv.id]}</span></div>
-                      )}</td>
+                      )}
+                      {['draft', 'unpaid', 'partially_paid'].includes(String(inv.status)) && (() => {
+                        const b = goodsOutBadge(goodsOutByInvoice[inv.id]);
+                        return b ? <div><span className="badge badge-accent" style={{ fontSize: 10 }} title={b.title}
+                          data-testid="invoice-goods-out">{b.label}</span></div> : null;
+                      })()}</td>
                     <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
@@ -4179,6 +4295,7 @@ const InvoicesPage: React.FC = () => {
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button>
                   <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
                   {!isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}><FileText size={14} /> Edit Invoice</button>}
+                  {handOverButton}
                   {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
@@ -4219,6 +4336,7 @@ const InvoicesPage: React.FC = () => {
                     <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
                       title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>}
+                  {handOverButton}
                   {refundCancelButton}
                   {detail.is_full_foc && Number(detail.total_amount) <= 0
                     ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
@@ -4668,6 +4786,14 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
+            {/* 399: what the customer collected and what is still to collect,
+                and every hand-over, "Nothing taken" and return. */}
+            {goodsNote && <div role="status" className="alert alert-info" data-testid="invoice-goods-note" style={{ marginBottom: 0 }}><span>ℹ</span><div>{goodsNote}</div></div>}
+            {(detailGoodsErr || (detailGoods && (detailGoods.open || detailGoods.history.length > 0))) && (
+              <InvoiceGoodsPanel goods={detailGoods} error={detailGoodsErr}
+                onRecordReturn={isOwnerOrManager(profile?.role) ? () => setGoodsModal('return') : undefined} />
+            )}
+
             {/* Payment entry (only if not fully paid) */}
             {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (() => {
               // Wallet Credit can never pay for a Credit Package or Premium Bundle.
@@ -4752,15 +4878,35 @@ const InvoicesPage: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}><span>This payment</span><strong>{money(payTotal)}</strong></div>
                   {payTotal >= Number(detailFinancial?.outstanding ?? 0) - 0.001 && payTotal > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: 'var(--success)', fontWeight: 600 }}>
-                      <CheckCircle2 size={15} /> This completes the invoice — stock will be deducted.
+                      <CheckCircle2 size={15} /> This completes the invoice — {Number(detailGoods?.collected_total ?? 0) > 0
+                        ? 'the goods not yet collected will be deducted.' : 'stock will be deducted.'}
                     </div>
                   )}
                 </div>
+                {/* 399: a part payment asks what the customer took now. */}
+                {askGoods && detailGoods && (
+                  <HandoverQuestion goods={detailGoods} answer={handoverAnswer} pick={handoverPick}
+                    onAnswer={setHandoverAnswer} onPick={setHandoverPick} disabled={payBusy} />
+                )}
+                {!askGoods && detailGoods?.fulfil_from_warehouse && detailGoods.to_collect_total > 0
+                  && payTotal > 0 && payTotal < Number(detailFinancial?.outstanding ?? 0) - 0.005 && (
+                  <p style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                    This invoice is fulfilled from a warehouse: its goods leave the warehouse when it is paid in full.
+                  </p>
+                )}
               </div>
               );
             })()}
           </div>
         </Modal>
+      )}
+
+      {/* 399: Hand over items, and Record items returned (Owner/Manager). */}
+      {detail && detailGoods && detailGoods.invoice_id === detail.id && goodsModal === 'handover' && (
+        <HandoverModal goods={detailGoods} onClose={() => setGoodsModal(null)} onDone={msg => void goodsDone(msg)} />
+      )}
+      {detail && detailGoods && detailGoods.invoice_id === detail.id && goodsModal === 'return' && (
+        <ReturnItemsModal goods={detailGoods} onClose={() => setGoodsModal(null)} onDone={msg => void goodsDone(msg)} />
       )}
 
       {therapyNote && (

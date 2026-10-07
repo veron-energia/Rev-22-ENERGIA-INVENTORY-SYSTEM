@@ -139,6 +139,16 @@
         "vite.visits-preview.config.mts"
       ],
       "port": 5190
+    },
+    {
+      "name": "handover-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.handover-preview.config.mts"
+      ],
+      "port": 5183
     }
   ]
 }

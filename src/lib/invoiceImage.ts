@@ -1,4 +1,5 @@
-import { PdfDoc, PdfLine, CopyDrawing, fitAroundCreditBalance, creditBesideTotals } from './invoicePdf';
+import { PdfDoc, PdfLine, CopyDrawing, fitAroundCreditBalance, fitAroundCollection, creditBesideTotals, copyTerms,
+  copyCollectionDrawn } from './invoicePdf';
 import { wrapCreditDetail } from './invoices/creditBalanceLine.mjs';
 
 /**
@@ -26,10 +27,13 @@ const BLACK = '#111111';
 export function documentImageBlob(d: PdfDoc): Promise<Blob> {
   let c: HTMLCanvasElement;
   try {
-    // The credit balance line gives way on the image as it does on the PDF —
-    // see fitAroundCreditBalance. A canvas thrown away is released at once:
-    // phones cap the canvas memory a page may hold.
-    c = fitAroundCreditBalance(d, drawDocumentImage, H - (M / 2), old => { old.width = 0; old.height = 0; });
+    // The goods and then the credit balance line give way on the image as on
+    // the PDF — see fitAroundCollection and fitAroundCreditBalance. A canvas
+    // thrown away is released at once: phones cap the canvas memory a page
+    // may hold.
+    const release = (old: HTMLCanvasElement) => { old.width = 0; old.height = 0; };
+    c = fitAroundCreditBalance(d, dd => fitAroundCollection(dd, drawDocumentImage, H - (M / 2), release),
+                               H - (M / 2), release);
   } catch (e) {
     return Promise.reject(e);
   }
@@ -207,6 +211,16 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
     font(3.64); x.fillStyle = BLACK;
   }
 
+  // ---- Goods collected and still to collect (399), as on the PDF -----
+  font(2.9);
+  const goodsLines = copyCollectionDrawn(d, RIGHT - M, t => wrap(t, RIGHT - M), t => x.measureText(t).width);
+  if (goodsLines.length) {
+    y += 1.5 * MM;
+    x.fillStyle = BLACK;
+    for (const ln of goodsLines) { x.fillText(ln, M, y); y += 3.4 * MM; }
+  }
+  font(3.64);
+
   // ---- Signatures ---------------------------------------------------
   y = Math.max(y + 4 * MM, H - 56 * MM);
   const colW = (RIGHT - M - 6 * MM) / 2;
@@ -226,9 +240,7 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
   x.beginPath(); x.moveTo(M, y); x.lineTo(RIGHT, y); x.stroke();
   y += 3.4 * MM;
   font(2.6, 'bold'); x.fillStyle = BLACK;
-  for (const ln of wrap(
-    (d.termsText ?? 'Goods and services sold are neither refundable nor exchangeable. Goods and services have been checked and collected.').toUpperCase(),
-    RIGHT - M)) { x.fillText(ln, M, y); y += 3.2 * MM; }
+  for (const ln of wrap(copyTerms(d).toUpperCase(), RIGHT - M)) { x.fillText(ln, M, y); y += 3.2 * MM; }
 
   if (d.policyText) {
     y += 1.2 * MM;
