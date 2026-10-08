@@ -1,5 +1,5 @@
-// Visits, downlines and referral promotions on screen (398). The database
-// decides who visited, who counts and which tier is reached
+// Visits, downlines and referral promotions on screen (398, 404). The
+// database decides who visited, who counts and which tier is reached
 // (customer_centre_visits, referral_campaign_friends,
 // referral_campaign_standing); these helpers only shape what the pages send
 // and show, so the wording and the request stay the same everywhere.
@@ -74,6 +74,52 @@ export function statusNote(campaign) {
   return `Provisional: the promotion runs ${w}; counts can still change. Rewards are given after it ends, for the highest tier reached.`;
 }
 
+/** 404: a referrer's friends referred in the window who have not visited
+ *  yet (the Owner, 8 Oct 2026). The report sends it as not_yet_visited; a
+ *  database before 404 does not, and then the friends listed without a visit
+ *  are counted here. */
+export function notYetVisited(row) {
+  if (row && row.not_yet_visited != null && Number.isFinite(Number(row.not_yet_visited))) return Number(row.not_yet_visited);
+  return (row?.friends ?? []).filter(f => !f?.counted && !f?.first_visit_on).length;
+}
+
+/** The line under a referrer's name: their friends referred in the window
+ *  who have not visited at all (the only ones the report lists without
+ *  counting them). Once the promotion has ended it says they did not visit
+ *  during it or since: a friend who first visits after the end is no longer
+ *  listed, so the figure is not every friend who missed the promotion. No
+ *  line when there are none, so "0 referred" is never read as nobody
+ *  referred. */
+export function notYetVisitedLine(n, status) {
+  const count = Math.max(0, Math.trunc(Number(n)) || 0);
+  if (count === 0) return '';
+  const who = count === 1 ? '1 friend referred in the window' : `${count} friends referred in the window`;
+  return status === 'final'
+    ? `${who} did not visit during it or since`
+    : `${who} ${count === 1 ? 'has' : 'have'} not visited yet`;
+}
+
+/** What the friend table says about a friend (404): counted; not counted
+ *  because they have not visited yet, which once the promotion has ended
+ *  means they did not visit during it. A database before 404 also listed
+ *  friends whose first visit fell outside the window. */
+export function friendStatus(friend, status) {
+  if (friend?.counted) return 'Yes';
+  if (!friend?.first_visit_on) return status === 'final' ? 'No visit during the promotion' : 'Not yet visited';
+  return 'Visit outside the window';
+}
+
+/** What the referrer table says when it shows nobody (404). With "Only
+ *  referrers with a friend counted" ticked, the report can still list
+ *  referrers whose friends are all waiting for a first visit, so it does not
+ *  say there are none. */
+export function emptyReportNote(listed, onlyCounted) {
+  if (onlyCounted && Number(listed) > 0) {
+    return 'No referrer has a friend counted in this promotion yet. Untick "Only referrers with a friend counted" to see the friends referred during it who have not visited.';
+  }
+  return 'No friend counts in this promotion yet, and no friend referred during it is waiting for a first visit';
+}
+
 /** The affiliate portal's one line about their own progress. */
 export function progressLine(p) {
   if (!p || !p.campaign) return '';
@@ -83,6 +129,21 @@ export function progressLine(p) {
   const more = Number(p.to_next);
   const reached = p.tier_reached != null ? ` You have reached tier ${p.tier_reached}.` : '';
   return `${friends} — ${more} more to reach ${p.next_tier}.${reached}`;
+}
+
+/** 404: the portal's line about the friends the affiliate referred during
+ *  the promotion who have not visited the centre yet (not_yet_visited:
+ *  counts only, past customers left out by the database). '' when there are
+ *  none, when the database does not send the figure (before 404), and once
+ *  the promotion has ended: then nothing they do changes that promotion, and
+ *  a friend who visited after the end is no longer in the figure. */
+export function portalNotYetVisitedLine(p) {
+  if (!p || !p.campaign || p.campaign.status === 'final') return '';
+  const n = Math.max(0, Math.trunc(Number(p.not_yet_visited)) || 0);
+  if (n === 0) return '';
+  return n === 1
+    ? "1 friend you referred during the promotion hasn't visited yet."
+    : `${n} friends you referred during the promotion haven't visited yet.`;
 }
 
 /** The reward lines as give_referral_campaign_reward takes them, or the

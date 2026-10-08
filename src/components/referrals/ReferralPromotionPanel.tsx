@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
 import { SearchSelect } from '../SearchSelect';
 import { ExcelExportButton } from '../ExcelExport';
-import { sgDate, sgDayOf, statusNote, rewardItems, windowLabel } from '../../lib/referral/campaign.mjs';
+import { sgDate, sgDayOf, statusNote, rewardItems, windowLabel, notYetVisited, notYetVisitedLine, friendStatus, emptyReportNote } from '../../lib/referral/campaign.mjs';
 import type { CampaignInfo } from '../../lib/referral/campaign.mjs';
 import { RefreshCw, Gift, ChevronDown, ChevronRight, Undo2, Plus, Trash2 } from 'lucide-react';
 
@@ -15,7 +15,8 @@ interface Reward {
 }
 interface ReferrerRow {
   referrer_customer_id: string; name: string; phone: string | null; is_affiliate: boolean;
-  counted: number; referred_in_window: number;
+  /** 404: friends referred in the window who have not visited yet (absent before 404). */
+  counted: number; not_yet_visited?: number;
   tier_reached: number | null; next_tier: number | null; to_next: number | null;
   reward: Reward | null; friends: Friend[];
 }
@@ -36,9 +37,12 @@ async function readAll<T>(build: () => any): Promise<T[]> {
 }
 
 /**
- * A referral promotion's report (398, the Owner's rules of 6 Oct 2026):
- * every referrer with a friend referred in the window, the friends counted
- * (referred and first visiting the centre in the window), the tier reached
+ * A referral promotion's report (398, the Owner's rules of 6 Oct 2026; 404,
+ * the Owner's rule of 8 Oct 2026): every referrer with a friend listed, the
+ * friends counted (a first visit to the centre in the window, whenever they
+ * were referred, the referral recorded by its last day; past customers
+ * never; a form through the centre's link dated the day it was sent), the
+ * friends referred in the window who have not visited yet, the tier reached
  * and the next one, each friend on opening the row, and the reward. After the
  * window ends an Owner or Manager marks the reward given: the products, their
  * quantities and the store they come from, which takes them out of that
@@ -166,7 +170,7 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
             { header: 'Phone', value: r => r.phone ?? '' },
             { header: 'Affiliate', value: r => r.is_affiliate ? 'Yes' : 'No' },
             { header: 'Friends Counted', value: r => r.counted },
-            { header: 'Referred In Window', value: r => r.referred_in_window },
+            { header: 'Referred In Window, Not Yet Visited', value: r => notYetVisited(r) },
             { header: 'Tier Reached', value: r => r.tier_reached ?? '' },
             { header: 'Next Tier', value: r => r.next_tier ?? '' },
             { header: 'More To Next Tier', value: r => r.to_next ?? '' },
@@ -185,8 +189,12 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
           <div>
             <strong>{c.title}</strong> — {statusNote(c)}<br />
             <span style={{ fontSize: 12.5 }}>
-              A Tier 1 friend counts when they were referred in the window (links without a referral date use the date the customer was created)
-              and first visited the centre in the same window. Tiers: {tiers}. The reward is for the highest tier reached only.
+              A Tier 1 friend counts when their first visit to the centre is in the promotion, whenever they were referred (the referral must be
+              recorded by its last day; links without a referral date use the date the customer was created). Friends referred during the
+              promotion who have not visited yet are listed too, not counted. A past customer (a paid or part-paid invoice dated before the
+              promotion started) is neither counted nor listed; cancelled, refunded, unpaid and FOC invoices do not make one. A visit through
+              the centre's QR link counts on the day the form was sent, not the date written on it, so a friend's first visit here can differ
+              from the Customers page. Tiers: {tiers}. The reward is for the highest tier reached only.
             </span>
           </div>
         </div>
@@ -200,9 +208,10 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
           </tr></thead>
           <tbody>
             {loading && !report && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>Loading…</td></tr>}
-            {report && rows.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>No friends referred in this promotion yet</td></tr>}
+            {report && rows.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>{emptyReportNote(report.referrers?.length ?? 0, onlyCounted)}</td></tr>}
             {rows.map(r => {
               const isOpen = !!open[r.referrer_customer_id];
+              const waitingLine = notYetVisitedLine(notYetVisited(r), c?.status);
               return (
                 <React.Fragment key={r.referrer_customer_id}>
                   <tr>
@@ -213,7 +222,7 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
                       </button>
                     </td>
                     <td><strong>{r.name}</strong>{r.is_affiliate && <span className="badge badge-primary" style={{ marginLeft: 6, fontSize: 10 }}>Affiliate</span>}
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.referred_in_window} referred in the window</div></td>
+                      {waitingLine && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{waitingLine}</div>}</td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 13 }}>{r.phone ?? '—'}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.counted}</td>
                     <td style={{ textAlign: 'right' }}>{r.tier_reached ?? '—'}</td>
@@ -246,7 +255,9 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
                       <td></td>
                       <td colSpan={7} style={{ background: 'var(--surface-2)' }}>
                         <table style={{ fontSize: 12 }}>
-                          <thead><tr><th>Friend</th><th>Phone</th><th>Referred</th><th>First visit</th><th>Counts</th></tr></thead>
+                          <thead><tr><th>Friend</th><th>Phone</th><th>Referred</th>
+                            <th title="For the promotion: a form through the centre's QR link is dated the day it was sent">First visit (promotion)</th>
+                            <th>Counts</th></tr></thead>
                           <tbody>
                             {r.friends.map(f => (
                               <tr key={f.customer_id}>
@@ -255,7 +266,7 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
                                 <td>{sgDate(f.referred_on)}</td>
                                 <td>{f.first_visit_on ? sgDate(f.first_visit_on) : 'Not yet'}</td>
                                 <td>{f.counted ? <span className="badge badge-success">Yes</span>
-                                  : <span className="badge badge-muted">{f.first_visit_on ? 'Visit outside the window' : 'No visit yet'}</span>}</td>
+                                  : <span className="badge badge-muted">{friendStatus(f, c?.status)}</span>}</td>
                               </tr>
                             ))}
                           </tbody>

@@ -90,6 +90,8 @@ declare
                              -- promotion's counting and tiers
                              'customer_centre_visits','tg_customers_referral_date',
                              'referral_campaign_friends','referral_campaign_standing',
+                             -- 404: the visit rule, every survey that is a visit with its dates
+                             'customer_centre_visit_days',
                              -- 399: goods handed over before full payment: what is out, the
                              -- correction's check, and the hand-over behind the payment and the button
                              'invoice_goods_out','invoice_before_full_payment','invoice_goods_kept_check',

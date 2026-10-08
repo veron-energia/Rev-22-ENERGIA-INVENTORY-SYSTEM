@@ -4,9 +4,15 @@
 // RPC call is recorded on window.__calls.
 const params = new URLSearchParams(window.location.search);
 const status = params.get('status') ?? 'provisional';
+// 404: the portal's friends referred during the promotion who have not
+// visited yet (?waiting=1 for the singular, ?waiting=0 hides the line, as
+// does ?status=final).
+const waiting = Number(params.get('waiting') ?? '2');
 
-const friend = (n: number, name: string, counted: boolean, visit: string | null) => ({
-  customer_id: `f-${n}`, name, phone: `+659139${String(8000 + n)}`, referred_on: '2026-10-03', first_visit_on: visit, counted });
+// 404: a friend counts by their first visit (whenever referred); the others
+// listed were referred in the window and have not visited yet.
+const friend = (n: number, name: string, counted: boolean, visit: string | null, referred = '2026-10-03') => ({
+  customer_id: `f-${n}`, name, phone: `+659139${String(8000 + n)}`, referred_on: referred, first_visit_on: visit, counted });
 
 const report = {
   campaign: { code: '2026-10', title: 'October referral promotion', reward_reason: 'October referral reward',
@@ -14,20 +20,20 @@ const report = {
   campaigns: [{ code: '2026-10', title: 'October referral promotion', starts_on: '2026-10-01', ends_on: '2026-10-31' }],
   referrers: [
     { referrer_customer_id: 'c-bob', name: 'Bob Lim', phone: '+6591398070', is_affiliate: true,
-      counted: 21, referred_in_window: 23, tier_reached: 20, next_tier: 50, to_next: 29,
+      counted: 21, not_yet_visited: 2, referred_in_window: 20, tier_reached: 20, next_tier: 50, to_next: 29,
       reward: status === 'final' ? { reward_id: 'rw-1', tier: 20, friends_counted: 21, given_at: '2026-11-02T03:00:00+00:00',
         given_by_name: 'Preview owner', store_id: 's-1', store_name: 'Preview Main Store', note: null,
         items: [{ product_id: 'p-gift', product_name: 'Preview Gift Set', quantity: 2, use_no: 'SU-PREVIEW-0001' }] } : null,
       friends: [friend(1, 'Fixture Friend 1', true, '2026-10-04')] },
     { referrer_customer_id: 'c-fay', name: 'Fay Lum', phone: '+6591398050', is_affiliate: true,
-      counted: 12, referred_in_window: 15, tier_reached: 10, next_tier: 20, to_next: 8, reward: null,
+      counted: 12, not_yet_visited: 1, referred_in_window: 10, tier_reached: 10, next_tier: 20, to_next: 8, reward: null,
       friends: [friend(2, 'Gia Lo', true, '2026-10-05'), friend(3, 'Kit Au', true, '2026-10-07'),
-                friend(4, 'Ian Su', false, null), friend(5, 'Jo Yee', false, '2026-09-20')] },
+                friend(5, 'Jo Yee', true, '2026-10-09', '2026-08-14'), friend(4, 'Ian Su', false, null, '2026-10-10')] },
     { referrer_customer_id: 'c-gia', name: 'Gia Lo', phone: '+6591398051', is_affiliate: false,
-      counted: 1, referred_in_window: 1, tier_reached: null, next_tier: 10, to_next: 9, reward: null,
+      counted: 1, not_yet_visited: 0, referred_in_window: 1, tier_reached: null, next_tier: 10, to_next: 9, reward: null,
       friends: [friend(6, 'Oli Ting', true, '2026-10-12')] },
     { referrer_customer_id: 'c-ned', name: 'Ned Bo', phone: '+6591398058', is_affiliate: false,
-      counted: 0, referred_in_window: 2, tier_reached: null, next_tier: 10, to_next: 10, reward: null,
+      counted: 0, not_yet_visited: 2, referred_in_window: 2, tier_reached: null, next_tier: 10, to_next: 10, reward: null,
       friends: [friend(7, 'Max Ow', false, null), friend(8, 'Lou Ang', false, null)] },
   ],
 };
@@ -90,7 +96,7 @@ function rpcData(name: string, a: any): any {
       { customer_name: 'Gia Lo', tier: 'tier1', referral_date: '2026-10-03T02:00:00Z', joined_at: '2026-10-03T02:00:00Z', purchases: 1, total_spent: 120, your_commission: 18 },
       { customer_name: 'Cal Ee', tier: 'tier1', referral_date: null, joined_at: '2026-08-04T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0 },
     ], tier2: [] };
-    case 'affiliate_portal_campaign_progress': return { campaign: { ...report.campaign }, counted: 12, referred_in_window: 15,
+    case 'affiliate_portal_campaign_progress': return { campaign: { ...report.campaign }, counted: 12, not_yet_visited: waiting, referred_in_window: 10,
       tier_reached: 10, next_tier: 20, to_next: 8, reward_tier: null, reward_given_at: null };
     default: return null;
   }

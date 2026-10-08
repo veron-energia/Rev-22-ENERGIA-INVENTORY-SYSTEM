@@ -2,17 +2,21 @@ import React, { useEffect, useState } from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
 import { portalRpc, money, dateStr } from '../lib/affiliatePortal';
 import { DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
-import { progressLine, windowLabel, sgDayOf } from '../lib/referral/campaign.mjs';
+import { progressLine, portalNotYetVisitedLine, windowLabel, sgDayOf } from '../lib/referral/campaign.mjs';
 import type { PortalProgress } from '../lib/referral/campaign.mjs';
 
 /** 398: the signed-in affiliate's own progress in the referral promotion
  *  (affiliate_portal_campaign_progress): their friends counted and the next
- *  tier. Counts only; their Tier 1 list is below. */
+ *  tier. Counts only; their Tier 1 list is below. 404: a friend counts by
+ *  their first visit to the centre, past customers never (the Owner, 8 Oct
+ *  2026); while the promotion runs, how many friends they referred during
+ *  it have not visited yet (a count, no names; hidden at 0 and after it ends). */
 const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
   if (!p.campaign) return null;
   const c = p.campaign;
   const ended = c.status === 'final';
   const reached = new Set((c.tiers ?? []).filter(t => p.tier_reached != null && t <= p.tier_reached));
+  const waiting = portalNotYetVisitedLine(p);
   return (
     <div className="card portal-break" data-promotion={c.code} style={{ padding: 16, marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'baseline' }}>
@@ -20,13 +24,15 @@ const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
         <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{windowLabel(c.starts_on, c.ends_on)}{ended ? ' · ended' : ' · so far'}</span>
       </div>
       <div style={{ fontSize: 15, fontWeight: 600, marginTop: 8 }}>{progressLine(p)}</div>
+      {waiting && <div data-not-yet-visited style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>{waiting}</div>}
       <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
         {(c.tiers ?? []).map(t => (
           <span key={t} className={`badge ${reached.has(t) ? 'badge-success' : 'badge-muted'}`}>{t} friends</span>
         ))}
       </div>
       <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 10 }}>
-        A friend counts when you referred them during the promotion and they visited the centre during it too.
+        A friend counts when their first visit to the centre is during the promotion, whenever you referred them, as long as you referred them by its last day.
+        {' '}Friends who were already paying customers before it started do not count.
         {ended
           ? (p.reward_given_at ? ` Your tier ${p.reward_tier} reward was given on ${sgDayOf(p.reward_given_at)}.` : ' Rewards are given now that it has ended, for the highest tier reached.')
           : ' Rewards are given after it ends, for the highest tier you reach.'}

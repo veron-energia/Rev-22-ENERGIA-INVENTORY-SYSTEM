@@ -1,4 +1,4 @@
-// The screens of 398, rendered for real against a fake backend.
+// The screens of 398 (and 404's promotion wording), rendered for real against a fake backend.
 //
 // src/pages/CustomersPage.tsx, src/pages/AffiliatesPage.tsx (with
 // ReferralPromotionPanel and DownlineModal) and src/pages/AffiliateNetworkPage.tsx
@@ -14,11 +14,21 @@
 // page and the Affiliates page; the Affiliates page's Referral promotion tab
 // (Owner/Manager) shows friends counted, tier reached, next tier and each
 // friend, says "provisional" and offers no reward until the promotion has
-// ended; then a reward is marked with a store and products the store holds,
+// ended; 404 (the Owner, 8 Oct 2026): a friend counts by their first visit,
+// whenever referred, and the friends referred in the window who have not
+// visited yet are shown, not counted ("Not yet visited"; after the
+// promotion, "No visit during the promotion"), from the report's
+// not_yet_visited or, before 404, from the friends listed without a visit;
+// then a reward is marked with a store and products the store holds,
 // sending exactly those to give_referral_campaign_reward; the Owner alone
 // undoes one, with a reason, putting stock back or not; the affiliate portal
 // shows the affiliate's own count and next tier, and nothing when the
-// database does not have it yet.
+// database does not have it yet. 404's further rules (the Owner, 8 Oct
+// 2026): the tab states that past customers are neither counted nor listed
+// and that a QR-link form is dated the day it was sent (the friend table's
+// "First visit (promotion)"); the portal says how many friends referred
+// during the promotion have not visited yet, a count only, hidden at 0,
+// without the figure and after the promotion ends.
 //
 // Run: node --test scripts/referrals/tests/promotion-pages.test.mjs
 import { test, after } from 'node:test';
@@ -89,18 +99,19 @@ const { AffiliatesPage, CustomersPage, AffiliateNetworkPage, MemoryRouter, creat
 // ── fixture ────────────────────────────────────────────────────────────────
 const CAMPAIGN = { code: '2026-10', title: 'October referral promotion', reward_reason: 'October referral reward',
   starts_on: '2026-10-01', ends_on: '2026-10-31', tiers: [10, 20, 50, 80], today: '2026-10-06', status: 'provisional' };
-const friend = (id, name, counted, visit) => ({ customer_id: id, name, phone: '+659139' + id.slice(-4).padStart(4, '0'),
-  referred_on: '2026-10-03', first_visit_on: visit, counted });
+const friend = (id, name, counted, visit, referred = '2026-10-03') => ({ customer_id: id, name, phone: '+659139' + id.slice(-4).padStart(4, '0'),
+  referred_on: referred, first_visit_on: visit, counted });
 function makeFixture() {
+  // Fay: Jo Yee was referred in August and first visited in October (404: she counts).
   const fay = { referrer_customer_id: 'c-fay', name: 'Fay Lum', phone: '+6591390050', is_affiliate: true,
-    counted: 12, referred_in_window: 14, tier_reached: 10, next_tier: 20, to_next: 8, reward: null,
-    friends: [friend('f-0001', 'Gia Lo', true, '2026-10-05'), friend('f-0002', 'Ian Su', false, null),
-              friend('f-0003', 'Jo Yee', false, '2026-09-20')] };
+    counted: 12, not_yet_visited: 2, referred_in_window: 13, tier_reached: 10, next_tier: 20, to_next: 8, reward: null,
+    friends: [friend('f-0001', 'Gia Lo', true, '2026-10-05'), friend('f-0003', 'Jo Yee', true, '2026-10-09', '2026-08-14'),
+              friend('f-0002', 'Ian Su', false, null), friend('f-0005', 'Kai Ho', false, null, '2026-10-20')] };
   const gia = { referrer_customer_id: 'c-gia', name: 'Gia Lo', phone: '+6591390051', is_affiliate: false,
-    counted: 1, referred_in_window: 1, tier_reached: null, next_tier: 10, to_next: 9, reward: null,
+    counted: 1, not_yet_visited: 0, referred_in_window: 1, tier_reached: null, next_tier: 10, to_next: 9, reward: null,
     friends: [friend('f-0004', 'Oli Ting', true, '2026-10-12')] };
   const bob = { referrer_customer_id: 'c-bob', name: 'Bob Lim', phone: '+6591390070', is_affiliate: true,
-    counted: 21, referred_in_window: 21, tier_reached: 20, next_tier: 50, to_next: 29,
+    counted: 21, not_yet_visited: 0, referred_in_window: 21, tier_reached: 20, next_tier: 50, to_next: 29,
     reward: { reward_id: 'rw-1', tier: 20, friends_counted: 21, given_at: '2026-10-31T23:30:00+00:00', given_by_name: 'Owner One',
       store_id: 's-1', store_name: 'Fixture Store', note: null,
       items: [{ product_id: 'p-gift', product_name: 'Gift Set', quantity: 2, use_no: 'SU-2026-9001' }] },
@@ -127,7 +138,7 @@ function makeFixture() {
     store_inventory: [{ id: 'si-1', store_id: 's-1', product_id: 'p-gift', current_qty: 5 }, { id: 'si-2', store_id: 's-1', product_id: 'p-bottle', current_qty: 1 },
                       { id: 'si-3', store_id: 's-1', product_id: 'p-none', current_qty: 0 }],
     progress: { campaign: { code: '2026-10', title: CAMPAIGN.title, starts_on: '2026-10-01', ends_on: '2026-10-31', tiers: [10, 20, 50, 80], status: 'provisional' },
-                counted: 3, referred_in_window: 5, tier_reached: null, next_tier: 10, to_next: 7, reward_tier: null, reward_given_at: null },
+                counted: 3, not_yet_visited: 2, referred_in_window: 4, tier_reached: null, next_tier: 10, to_next: 7, reward_tier: null, reward_given_at: null },
   };
 }
 
@@ -291,19 +302,84 @@ test('the Referral promotion tab: counts, tiers, friends, and provisional until 
   assert.deepEqual(callsOf('referral_campaign_report').map(c => c.args), [{ p_campaign: null }]);
   assert.ok(document.querySelector('[data-status="provisional"]'), 'says provisional');
   assert.ok(text().includes('Provisional: the promotion runs 1 Oct – 31 Oct 2026'));
+  // 404: the rule is the first visit, whenever the friend was referred.
+  assert.ok(text().includes('A Tier 1 friend counts when their first visit to the centre is in the promotion, whenever they were referred'), 'the rule');
+  assert.ok(!text().includes('first visited the centre in the same window'), 'not the 398 rule');
+  // 404 (the Owner's further rules): past customers, and a form dated the day it was sent.
+  assert.ok(text().includes('A past customer (a paid or part-paid invoice dated before the promotion started) is neither counted nor listed'), 'past customers');
+  assert.ok(text().includes("counts on the day the form was sent, not the date written on it, so a friend's first visit here can differ from the Customers page"), 'the day sent');
   const fay = row('Fay Lum');
   assert.ok(fay.textContent.includes('12') && fay.textContent.includes('20 (8 more)'), fay.textContent);
+  assert.ok(fay.textContent.includes('2 friends referred in the window have not visited yet'), fay.textContent);
+  assert.ok(!/\b13 (friends )?referred/.test(fay.textContent), 'referred_in_window is not shown');
+  // Gia counts only a friend who has visited: no "0 referred in the window" line under her name.
+  assert.ok(!row('Gia Lo').textContent.includes('referred in the window'), row('Gia Lo').textContent);
   const mark = button('Mark reward given', fay);
   assert.ok(mark && mark.disabled, 'no reward before the promotion ends');
   assert.ok(row('Bob Lim').textContent.includes('Given · tier 20') && row('Bob Lim').textContent.includes('SU-2026-9001'));
   // Given at 07:30 on 1 Nov in Singapore (23:30 on 31 Oct in UTC): shown as the Singapore day.
   assert.ok(row('Bob Lim').textContent.includes('01/11/2026') && !row('Bob Lim').textContent.includes('31/10/2026'), row('Bob Lim').textContent);
   absent(button('Undo', row('Bob Lim')), 'a Manager cannot undo');
-  // The drill-down.
+  // The drill-down: a friend referred in August counts (her referral date shown); two not yet visited.
   await click(fay.querySelector('button[aria-label="Friends of Fay Lum"]'));
-  assert.ok(text().includes('Gia Lo') && text().includes('No visit yet') && text().includes('Visit outside the window'));
+  assert.ok([...document.querySelectorAll('th')].some(th => th.textContent === 'First visit (promotion)'), 'the promotion\'s first visit');
+  const jo = [...document.querySelectorAll('tr')].find(tr => tr.firstElementChild?.textContent === 'Jo Yee');
+  assert.ok(jo && jo.textContent.includes('14/08/2026') && jo.textContent.includes('09/10/2026') && jo.textContent.includes('Yes'), jo?.textContent);
+  const waiting = [...document.querySelectorAll('tr')].filter(tr => tr.lastElementChild?.textContent === 'Not yet visited');
+  assert.deepEqual(waiting.map(tr => tr.firstElementChild.textContent), ['Ian Su', 'Kai Ho']);
+  assert.ok(waiting.every(tr => tr.textContent.includes('Not yet')), 'no first visit');
+  assert.ok(!text().includes('Visit outside the window') && !text().includes('No visit yet'));
   // A referrer below the first tier has nothing to mark.
   absent(button('Mark reward given', row('Gia Lo')), 'nothing to give below the first tier');
+});
+
+test('after the promotion ends, the friends who did not visit say so', async () => {
+  await mount(AffiliatesPage, 'manager', b => { b.fx.report.campaign.status = 'final'; });
+  await click(buttons().find(b => b.textContent.trim() === 'Referral promotion'));
+  assert.ok(row('Fay Lum').textContent.includes('2 friends referred in the window did not visit during it or since'), row('Fay Lum').textContent);
+  await click(row('Fay Lum').querySelector('button[aria-label="Friends of Fay Lum"]'));
+  const none = [...document.querySelectorAll('tr')].filter(tr => tr.lastElementChild?.textContent === 'No visit during the promotion');
+  assert.deepEqual(none.map(tr => tr.firstElementChild.textContent), ['Ian Su', 'Kai Ho']);
+  assert.ok(!text().includes('Not yet visited'));
+});
+
+test('against a database before 404 the page counts the friends without a visit itself', async () => {
+  await mount(AffiliatesPage, 'manager', b => {
+    for (const r of b.fx.report.referrers) delete r.not_yet_visited;
+    // 398 also listed a friend referred in the window whose first visit fell outside it.
+    b.fx.report.referrers[1].friends.push(friend('f-0006', 'Lim Bo', false, '2026-09-20', '2026-10-04'));
+  });
+  await click(buttons().find(b => b.textContent.trim() === 'Referral promotion'));
+  assert.deepEqual(globalThis.__renderErrors, []);
+  assert.ok(row('Fay Lum').textContent.includes('2 friends referred in the window have not visited yet'), row('Fay Lum').textContent);
+  assert.ok(!row('Gia Lo').textContent.includes('referred in the window'), row('Gia Lo').textContent);
+  await click(row('Fay Lum').querySelector('button[aria-label="Friends of Fay Lum"]'));
+  assert.ok(text().includes('Visit outside the window'));
+});
+
+test('with nobody listed, the report says so', async () => {
+  await mount(AffiliatesPage, 'manager', b => { b.fx.report.referrers = []; });
+  await click(buttons().find(b => b.textContent.trim() === 'Referral promotion'));
+  assert.ok(text().includes('No friend counts in this promotion yet, and no friend referred during it is waiting for a first visit'));
+});
+
+test('with "Only referrers with a friend counted" hiding everyone, the table does not say nobody is waiting', async () => {
+  // Only Ned is listed: two friends referred in October, neither visited yet.
+  await mount(AffiliatesPage, 'manager', b => {
+    b.fx.report.referrers = [{ referrer_customer_id: 'c-ned', name: 'Ned Bo', phone: '+6591390058', is_affiliate: false,
+      counted: 0, not_yet_visited: 2, referred_in_window: 2, tier_reached: null, next_tier: 10, to_next: 10, reward: null,
+      friends: [friend('f-0007', 'Max Ow', false, null), friend('f-0008', 'Lou Ang', false, null)] }];
+  });
+  await click(buttons().find(b => b.textContent.trim() === 'Referral promotion'));
+  assert.ok(row('Ned Bo').textContent.includes('2 friends referred in the window have not visited yet'), row('Ned Bo').textContent);
+  const filter = [...document.querySelectorAll('label')].find(l => l.textContent.includes('Only referrers with a friend counted'))?.querySelector('input');
+  await click(filter);
+  assert.ok(filter.checked, 'the filter is ticked');
+  absent(row('Ned Bo'), 'Ned is hidden by the filter');
+  assert.ok(text().includes('No referrer has a friend counted in this promotion yet.'), text());
+  assert.ok(!text().includes('no friend referred during it is waiting for a first visit'), 'not the untrue line');
+  await click(filter);
+  assert.ok(row('Ned Bo'), 'unticked, Ned is back');
 });
 
 test('after the promotion ends, a reward is marked with a store and products it holds, exactly as chosen', async () => {
@@ -369,11 +445,33 @@ test('the portal shows the affiliate\'s own count and next tier, and nothing whe
   assert.ok(card, 'the progress card');
   assert.ok(card.textContent.includes('3 friends counted — 7 more to reach 10.'), card.textContent);
   assert.ok(card.textContent.includes('1 Oct – 31 Oct 2026 · so far'));
+  // 404: the rule is the first visit, whenever the affiliate referred them; past customers never; no names.
+  assert.ok(card.textContent.includes('A friend counts when their first visit to the centre is during the promotion, whenever you referred them, as long as you referred them by its last day. Friends who were already paying customers before it started do not count. Rewards are given after it ends'), card.textContent);
+  // 404: how many friends referred during the promotion have not visited yet, a count only.
+  const waiting = card.querySelector('[data-not-yet-visited]');
+  assert.ok(waiting, 'the not-yet-visited line');
+  assert.equal(waiting.textContent, "2 friends you referred during the promotion haven't visited yet.");
   assert.deepEqual(callsOf('affiliate_portal_campaign_progress').map(c => c.args), [undefined], 'it sends no id: the database knows who is asking');
   await mount(AffiliateNetworkPage, 'staff', b => b.failures.set('affiliate_portal_campaign_progress',
     { code: 'PGRST202', message: 'Could not find the function public.affiliate_portal_campaign_progress' }));
   absent(document.querySelector('[data-promotion]'), 'no card');
   assert.ok(!text().includes('Could not find'), 'and no error');
+});
+
+test('404: the portal\'s not-yet-visited line: singular, hidden at 0, absent without the figure', async () => {
+  await mount(AffiliateNetworkPage, 'staff', b => { b.fx.progress.not_yet_visited = 1; });
+  let card = document.querySelector('[data-promotion="2026-10"]');
+  assert.equal(card.querySelector('[data-not-yet-visited]')?.textContent, "1 friend you referred during the promotion hasn't visited yet.");
+  await mount(AffiliateNetworkPage, 'staff', b => { b.fx.progress.not_yet_visited = 0; });
+  card = document.querySelector('[data-promotion="2026-10"]');
+  absent(card.querySelector('[data-not-yet-visited]'), 'hidden at 0');
+  assert.ok(!card.textContent.includes('visited yet'), card.textContent);
+  // A database before 404 sends no figure.
+  await mount(AffiliateNetworkPage, 'staff', b => { delete b.fx.progress.not_yet_visited; });
+  assert.deepEqual(globalThis.__renderErrors, []);
+  card = document.querySelector('[data-promotion="2026-10"]');
+  assert.ok(card && card.textContent.includes('3 friends counted'), 'the card still shows');
+  absent(card.querySelector('[data-not-yet-visited]'), 'no line without the figure');
 });
 
 test('after the promotion, the portal gives the reward\'s day in Singapore', async () => {
@@ -384,4 +482,7 @@ test('after the promotion, the portal gives the reward\'s day in Singapore', asy
   });
   const card = document.querySelector('[data-promotion="2026-10"]');
   assert.ok(card && card.textContent.includes('Your tier 10 reward was given on 01/11/2026.'), card?.textContent);
+  // 404: after the end the not-yet-visited line is not shown (the fixture still sends 2).
+  absent(card.querySelector('[data-not-yet-visited]'), 'no not-yet-visited line after the promotion');
+  assert.ok(!card.textContent.includes("haven't visited yet"), card.textContent);
 });
