@@ -152,6 +152,9 @@
 }
 .events-choice input { margin-top: 3px !important; }
 .events-choice.checked { border-color: var(--primary); background: var(--primary-light); }
+/* 403: a choice the order cannot take (no phone), and the customer search under its choice. */
+label.events-choice.unavailable { cursor: not-allowed; opacity: 0.65; }
+.events-web-search { margin: -2px 0 0 24px; }
 /* 380: staff-link registrations and the actions an open order has. */
 .events-web-actions { flex-direction: column; align-items: flex-end; }
 .events-web-actions .btn { white-space: nowrap; }

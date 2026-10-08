@@ -25,7 +25,10 @@
 // every order whatever the status filter. An order says when an invoice made
 // by hand has the buyer's phone, one paid other than the price is sent to be
 // invoiced by hand and linked, and one refused while the channel was off can
-// be linked.
+// be linked. Since 403, an order whose payment gave no name shows the name
+// the buyer registered with, a phone taken from the registration says so, and
+// Create invoice bills any customer a search finds; with no phone, a new
+// customer and a match say why they cannot be made.
 //
 // Run: node --test scripts/events/tests/events-page.test.mjs
 process.env.TZ = 'America/Los_Angeles'; // west of UTC, where a date-only value parsed as a Date shows a day early
@@ -677,7 +680,8 @@ test('Create invoice sends the customer chosen, a new customer, or leaves the ma
   let m = modal();
   assert.ok(m.textContent.includes('2 customers have this phone'), 'the reason it waits is shown');
   const radios = [...m.querySelectorAll('input[type="radio"]')];
-  assert.deepEqual(radios.map(r => r.value), ['customer:c-2', 'customer:c-3', 'new', 'auto']);
+  // 403: Choose another customer (any customer, found by a search) after the candidates.
+  assert.deepEqual(radios.map(r => r.value), ['customer:c-2', 'customer:c-3', 'search', 'new', 'auto']);
   assert.ok(radios.every(r => !r.checked), 'with customers to choose from, nothing is picked for staff');
   const two = radios[0].closest('label').textContent;
   assert.ok(two.includes('Customer Two') && two.includes('+65 9123 0020 · two@tests.invalid') && two.includes(`Last invoice ${full('2026-08-14')}`), two);
@@ -769,6 +773,128 @@ test('a HitPay order says so: its badge, its sandbox, the channel\'s HitPay meth
   assert.equal(body.find(r => r.Buyer === 'Guest Hit')['Paid through'], 'HitPay');
   assert.equal(body.find(r => r.Buyer === 'Guest Hit')['Order ID (checkout)'], '9e9be41b-2866-4307-8621-e35c633c431f');
   assert.equal(body.find(r => r.Buyer === 'Guest Twenty')['Paid through'], 'Stripe');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('Create invoice bills any customer a search finds, and an order with no phone shows the registered name and says why (403)', async () => {
+  const fx = makeFixture();
+  const hitpay = (id, extra) => ({ ...fx.web.orders.at(-1), id, provider: 'hitpay', livemode: true, status: 'needs_review',
+    stripe_session_id: `0b0c0d0e-0000-4000-8000-00000000000${id.slice(-1)}`, invoice_id: null, invoice_no: null,
+    quantity: 1, unit_amount: 61, amount_total: 61, early_bird: false, paid_at: '2026-10-07T12:00:00Z', buyer_name: 'Website buyer', ...extra });
+  const noPhone = 'The buyer\'s phone number could not be read, so the customer must be chosen';
+  fx.web.orders.push(
+    // HitPay gave no name or phone; the buyer registered without a WhatsApp the server could read.
+    hitpay('wo-7', { buyer_phone: null, buyer_email: 'guest27@tests.invalid', buyer_first_name: 'Guest', buyer_last_name: 'Twenty-Seven',
+      buyer_phone_readable: false, buyer_phone_from_registration: false, review_reason: noPhone,
+      attendees: [{ name: 'Guest Twenty-Seven', email: null, whatsapp: null }], names_at: '2026-10-08T01:00:00Z' }),
+    // The registration's WhatsApp is shared by two customers.
+    hitpay('wo-8', { buyer_phone: '+6591230028', buyer_first_name: 'Guest', buyer_last_name: 'Twenty-Eight',
+      buyer_phone_readable: true, buyer_phone_from_registration: true,
+      review_reason: '2 customers share the buyer\'s phone, so the customer must be chosen',
+      attendees: [{ name: 'Guest Twenty-Eight', email: null, whatsapp: null }], names_at: '2026-10-08T01:05:00Z',
+      candidates: [
+        { customer_id: 'c-2', full_name: 'Customer Two', phone: '+6591230028', email: null, last_invoice_at: null },
+        { customer_id: 'c-3', full_name: 'Customer Three', phone: '+6591230028', email: null, last_invoice_at: null },
+      ] }),
+    // No phone, and not registered yet.
+    hitpay('wo-9', { buyer_phone: null, buyer_phone_readable: false, review_reason: noPhone, attendees: null, names_at: null }),
+    // The payment gave a name and a phone; the buyer registered under another spelling.
+    hitpay('wo-6', { buyer_name: 'Guest Twenty-Six', buyer_phone: '+6591230026', buyer_email: 'guest26@tests.invalid',
+      buyer_first_name: 'Guestie', buyer_last_name: 'Twenty-Six', buyer_phone_readable: true, buyer_phone_from_registration: false,
+      review_reason: 'It was paid more than 2 hours after the checkout opened. Check the payment in HitPay before creating its invoice',
+      attendees: [{ name: 'Guestie Twenty-Six', email: null, whatsapp: null }], names_at: '2026-10-08T02:00:00Z' }));
+  await openWebOrders({ setup: b => { b.handlers.web_orders_list = () => fx.web; } });
+
+  const seven = orderRow('wo-7');
+  const name7 = seven.querySelector('td:nth-child(2) strong');
+  assert.equal(name7.textContent, 'Guest Twenty-Seven', 'the registered name, not the website\'s placeholder');
+  assert.equal(name7.title, 'The name the buyer registered with: the payment gave none');
+  assert.equal(seven.querySelector('.events-web-phone'), null, 'no phone, none shown');
+  const phone8 = orderRow('wo-8').querySelector('.events-web-phone');
+  assert.equal(phone8.textContent, '+6591230028 (from the registration)');
+  assert.equal(phone8.title, 'The payment gave no phone: this is the WhatsApp the buyer registered with');
+  assert.equal(orderRow('wo-3').querySelector('.events-web-phone').textContent, '+65 9123 0021', 'a payment\'s phone says nothing more');
+  assert.equal(orderRow('wo-9').querySelector('td:nth-child(2) strong').textContent, 'Website buyer', 'not registered yet: the payment\'s name');
+  assert.equal(orderRow('wo-3').querySelector('td:nth-child(2) strong').title, '', 'a name the payment gave has no note');
+  const six = orderRow('wo-6').querySelector('td:nth-child(2) strong');
+  assert.deepEqual([six.textContent, six.title], ['Guest Twenty-Six', ''], 'a name the payment gave is kept, whatever the registration says');
+
+  // No phone: the search is the way, already open, and nothing is sent until a customer is found.
+  await click(button('Create invoice', seven));
+  let m = modal();
+  assert.ok(m.textContent.includes('Create the invoice for Guest Twenty-Seven'), 'the dialog names the registered buyer');
+  assert.ok(m.querySelector('.events-preview').textContent.includes('Guest Twenty-Seven · guest27@tests.invalid'), m.querySelector('.events-preview').textContent);
+  let radios = [...m.querySelectorAll('input[type="radio"]')];
+  assert.deepEqual(radios.map(r => r.value), ['search', 'new', 'auto']);
+  assert.deepEqual(radios.map(r => [r.checked, r.disabled]), [[true, false], [false, true], [false, true]],
+    'Choose another customer is chosen; a new customer and a match cannot be made without a phone');
+  const newText = radios[1].closest('label').textContent;
+  assert.ok(newText.includes('Not possible without the buyer\'s phone, which a new customer needs.')
+    && newText.includes('The payment gave no phone, and none could be taken from the buyer\'s registration.'), newText);
+  assert.ok(radios[2].closest('label').textContent.includes('Not possible without the buyer\'s phone, which is what it matches by.'));
+  assert.ok(!m.textContent.includes('Made from the buyer\'s name, phone and email.'), 'the old description is not shown');
+  assert.equal(button('Create invoice', footer()).disabled, true, 'nothing is sent until a customer is found');
+  const search = m.querySelector('.events-web-search button');
+  assert.equal(search.textContent.trim(), 'Search name, phone or email…');
+  await click(search);
+  await setValue(m.querySelector('.events-web-search input'), 'One');
+  await act(async () => { await new Promise(r => setTimeout(r, 300)); });
+  await tick();
+  assert.ok(backend.calls.some(c => c.kind === 'table' && c.name === 'customers'), 'the search asks the server');
+  const hit = [...m.querySelectorAll('.events-web-search div')].find(d => d.firstChild?.textContent === 'Customer One');
+  await click(hit);
+  assert.ok(m.querySelector('.events-web-search button').textContent.includes('Customer One'), 'the customer found is shown');
+  await click(button('Create invoice', footer()));
+  assert.deepEqual(callsOf('web_order_resolve').map(c => c.args), [{ p_order_id: 'wo-7', p_customer_id: 'c-1', p_new_customer: false }]);
+  assert.ok(modal().textContent.includes('Invoice INV-TEST-0102 is created.'));
+  await click(button('Close', footer()));
+
+  // Not registered yet: the WhatsApp they register with will be used.
+  await click(button('Create invoice', orderRow('wo-9')));
+  assert.ok(modal().textContent.includes('Create the invoice for Website buyer'));
+  assert.ok(modal().querySelector('input[value="new"]').closest('label').textContent
+    .includes('The payment gave no phone; the WhatsApp the buyer registers with on the website will be used.'));
+  await click(button('Cancel', footer()));
+
+  // A name and a phone the payment gave: the dialog keeps the payment's name.
+  await click(button('Create invoice', orderRow('wo-6')));
+  m = modal();
+  assert.ok(m.textContent.includes('Create the invoice for Guest Twenty-Six'), 'the dialog names the payment\'s buyer');
+  assert.ok(m.querySelector('.events-preview').textContent.includes('Guest Twenty-Six · +6591230026 · guest26@tests.invalid'),
+    m.querySelector('.events-preview').textContent);
+  assert.ok(!m.textContent.includes('Guestie') && !m.textContent.includes('(from the registration)'));
+  assert.deepEqual([...m.querySelectorAll('input[type="radio"]')].map(r => [r.value, r.checked, r.disabled]),
+    [['search', false, false], ['new', false, false], ['auto', true, false]], 'with a phone, a match is still the default');
+  await click(button('Cancel', footer()));
+
+  // A phone from the registration: the candidates, then any other customer; every choice open.
+  await click(button('Create invoice', orderRow('wo-8')));
+  m = modal();
+  assert.ok(m.querySelector('.events-preview').textContent.includes('Guest Twenty-Eight · +6591230028 (from the registration)'));
+  radios = [...m.querySelectorAll('input[type="radio"]')];
+  assert.deepEqual(radios.map(r => r.value), ['customer:c-2', 'customer:c-3', 'search', 'new', 'auto']);
+  assert.ok(radios.every(r => !r.checked && !r.disabled), 'with candidates nothing is picked, and nothing is closed');
+  assert.ok(m.textContent.includes('Made from the buyer\'s name, phone and email.'));
+  assert.equal(m.querySelector('.events-web-search'), null, 'the search shows once it is chosen');
+  await click(radios[2]);
+  assert.equal(button('Create invoice', footer()).disabled, true);
+  await click(m.querySelector('.events-web-search button'));
+  await act(async () => { await new Promise(r => setTimeout(r, 300)); });
+  await tick();
+  await click([...m.querySelectorAll('.events-web-search div')].find(d => d.firstChild?.textContent === 'Customer One'));
+  await click(button('Create invoice', footer()));
+  assert.deepEqual(callsOf('web_order_resolve').at(-1).args, { p_order_id: 'wo-8', p_customer_id: 'c-1', p_new_customer: false },
+    'a customer who is not a candidate');
+  await click(button('Close', footer()));
+
+  globalThis.__exports = [];
+  await click(button('Export Excel'));
+  await click(button('Export 9 row(s)', footer()));
+  const body = globalThis.__exports.at(-1).sheet.ws.body;
+  assert.ok(body.some(r => r.Buyer === 'Guest Twenty-Six') && !body.some(r => r.Buyer.includes('Guestie')),
+    'the export keeps a name the payment gave');
+  assert.ok(body.some(r => r.Buyer === 'Guest Twenty-Seven' && r.Phone === ''), 'the export names the buyer as registered');
+  assert.ok(body.some(r => r.Buyer === 'Website buyer'), 'and keeps the placeholder where nobody registered');
   assert.deepEqual(globalThis.__renderErrors, []);
 });
 

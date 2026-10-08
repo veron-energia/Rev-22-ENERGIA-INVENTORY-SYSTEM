@@ -175,6 +175,8 @@ type WebOrder = {
   buyer_name: string; buyer_email: string | null; buyer_phone: string | null;
   checkout_opened_at: string; paid_at: string; attendees: WebPerson[] | null; names_at: string | null;
   invoice_id: string | null; customer_id: string | null; review_reason: string | null; candidate_ids: string[];
+  // 403: the name parts the buyer registered with, and a phone taken from the registration.
+  buyer_first_name?: string | null; buyer_last_name?: string | null; phone_from_registration?: boolean;
 };
 // ?allow_test=0 previews the channel once it no longer accepts Stripe test
 // orders: the test order recorded before then cannot be invoiced.
@@ -256,6 +258,18 @@ const webOrders: WebOrder[] = [
     buyer_name: 'Test Buyer', buyer_phone: '+65 9123 0039', paid_at: at(addDays(TODAY, -2), '09:00'),
     attendees: [person('Test Buyer', '39')], names_at: at(addDays(TODAY, -2), '09:00'),
     review_reason: 'A test registration' }),
+  // 403: HitPay gave no name and no phone; the buyer registered without a WhatsApp.
+  webOrder({ id: 'wo-10', provider: 'hitpay', stripe_session_id: '5f1c2a7e-0d4b-4c39-9a51-000000000010', status: 'needs_review',
+    ticket: 'day1', quantity: 1, unit_amount: 61, buyer_name: 'Website buyer', buyer_email: 'guest40@tests.invalid',
+    buyer_first_name: 'Guest', buyer_last_name: 'Forty', paid_at: at(TODAY, '08:40'),
+    attendees: [{ name: 'Guest Forty', email: null, whatsapp: null }], names_at: at(TODAY, '09:15'),
+    review_reason: 'The buyer\'s phone number could not be read, so the customer must be chosen' }),
+  // 403: HitPay gave no phone; the WhatsApp the buyer registered with is shared by two customers.
+  webOrder({ id: 'wo-11', provider: 'hitpay', stripe_session_id: '5f1c2a7e-0d4b-4c39-9a51-000000000011', status: 'needs_review',
+    ticket: 'day2', quantity: 1, unit_amount: 61, buyer_name: 'Website buyer', buyer_phone: '+6591230020',
+    buyer_first_name: 'Guest', buyer_last_name: 'Forty-One', phone_from_registration: true, paid_at: at(TODAY, '07:50'),
+    attendees: [{ name: 'Guest Forty-One', email: null, whatsapp: null }], names_at: at(TODAY, '08:05'),
+    review_reason: '2 customers share the buyer\'s phone, so the customer must be chosen', candidate_ids: ['c-09', 'c-10'] }),
 ];
 // The invoiced order's people, on the guest list from its invoice.
 guests.push(...webOrders[0].attendees!.map(a => guest({ name: a.name, phone: a.whatsapp, customer_id: a.name === 'Guest Twenty' ? 'c-03' : null,
@@ -520,6 +534,9 @@ const rpcs: Record<string, (a: any) => unknown> = {
         id: o.id, stripe_session_id: o.stripe_session_id, livemode: o.livemode, status: o.status, ticket: o.ticket,
         ticket_label: PASSES[o.ticket].label, quantity: o.quantity, unit_amount: o.unit_amount, amount_total: o.amount_total,
         early_bird: o.early_bird, buyer_name: o.buyer_name, buyer_email: o.buyer_email, buyer_phone: o.buyer_phone,
+        // 403
+        buyer_first_name: o.buyer_first_name ?? null, buyer_last_name: o.buyer_last_name ?? null,
+        buyer_phone_readable: !!o.buyer_phone, buyer_phone_from_registration: !!o.phone_from_registration,
         checkout_opened_at: o.checkout_opened_at, paid_at: o.paid_at, attendees: o.attendees, names_at: o.names_at,
         invoice_id: o.invoice_id, invoice_no: invoices.find(i => i.id === o.invoice_id)?.invoice_no ?? null,
         review_reason: o.review_reason,
@@ -591,10 +608,15 @@ const rpcs: Record<string, (a: any) => unknown> = {
     }
     const digits = (p: string | null) => String(p ?? '').replace(/\D/g, '');
     const newCustomer = () => {
-      const c = { id: newId('c'), full_name: o.buyer_name, phone: o.buyer_phone ?? '', email: o.buyer_email ?? '', notes: null, deleted_at: null };
+      const c = { id: newId('c'), full_name: [o.buyer_first_name, o.buyer_last_name].filter(Boolean).join(' ') || o.buyer_name, phone: o.buyer_phone ?? '', email: o.buyer_email ?? '', notes: null, deleted_at: null };
       CUSTOMERS.push(c);
       return c.id;
     };
+    // A new customer, or a match, needs the buyer's phone (web_order_customer).
+    if (!p_customer_id && !digits(o.buyer_phone)) {
+      Object.assign(o, { status: 'needs_review', review_reason: 'The buyer\'s phone number could not be read, so the customer must be chosen', candidate_ids: [] });
+      return { status: 'needs_review', invoice_no: null, review_reason: o.review_reason };
+    }
     let customerId: string;
     if (p_customer_id) customerId = CUSTOMERS.find(c => c.id === p_customer_id)?.id ?? refuse('Customer not found');
     else if (p_new_customer) customerId = newCustomer();

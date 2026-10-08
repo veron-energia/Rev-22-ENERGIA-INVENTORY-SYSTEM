@@ -3,12 +3,14 @@ import { AlertTriangle, CreditCard, Globe, Link2, RefreshCw, RotateCcw, Store, U
 import { supabase } from '../../lib/supabase';
 import { Modal, ReasonModal } from '../ui';
 import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
+import { CustomerSearchSelect } from '../SearchSelect';
 import {
   EventRow, WEB_ORDER_MODE_BADGE, WEB_ORDER_MODE_LABELS, WEB_ORDER_STATUS_BADGE, WEB_ORDER_STATUS_LABELS,
   WebOrder, WebOrderLinkPreview, WebOrderList, WebOrderMode, WebOrderOutcome, fmtDate, fmtDateTime, fmtSgDate, fmtTime, money,
   normalizeWebOrderLinkPreview, normalizeWebOrderList, normalizeWebOrderOutcome, sgStamp, slug,
-  webOrderAmountDiffers, webOrderCanDismiss, webOrderCanInvoice, webOrderCanLink, webOrderCanRestore, webOrderDatePaid, webOrderIsOpen,
-  webOrderPaidThrough, webOrderProviderName, webOrderSource, webOrderStatusText, webOrderTestPlace, webOrderTestRefused,
+  webOrderAmountDiffers, webOrderBuyerName, webOrderCanDismiss, webOrderCanInvoice, webOrderCanLink, webOrderCanRestore,
+  webOrderDatePaid, webOrderIsOpen, webOrderNamedAtRegistration, webOrderPaidThrough, webOrderProviderName, webOrderSource,
+  webOrderStatusText, webOrderTestPlace, webOrderTestRefused,
 } from './model';
 
 /*
@@ -32,6 +34,13 @@ import {
  * registration is dismissed (and can be restored).
  * The website asks the inventory for the invoice numbers and fills its
  * workbook with them itself.
+ *
+ * 403: a payment can come with no buyer name or phone (HitPay gave neither for
+ * some buyers). The order then shows the name the buyer registered with, and
+ * takes the WhatsApp they registered with as its phone (said where the phone
+ * is shown); on a live channel it is then matched by it as at payment. Create
+ * invoice can also bill any customer staff find by name, phone or email, which
+ * is the way when there is still no phone to match or make a customer by.
  */
 
 const MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
@@ -55,9 +64,15 @@ const handInvoicesText = (o: WebOrder) => o.hand_invoices
   .map(h => (h.invoice_no ? `${h.invoice_no}${h.store ? ` (${h.store})` : ''}` : `an invoice at ${h.store ?? 'another store'}`))
   .join(', ');
 
+/** 403: the buyer's phone, saying so when it is the WhatsApp they registered with (the payment gave none). */
+const REGISTERED_PHONE = 'The payment gave no phone: this is the WhatsApp the buyer registered with';
+const phoneText = (o: WebOrder) =>
+  (o.buyer_phone ? `${o.buyer_phone}${o.buyer_phone_from_registration ? ' (from the registration)' : ''}` : null);
+
 export const WEB_ORDER_COLUMNS: ExcelColumn<WebOrder>[] = [
   { header: 'Paid at (SGT)', value: o => sgStamp(o.paid_at) },
-  { header: 'Buyer', value: o => o.buyer_name },
+  // 403: the registered name where the payment gave none.
+  { header: 'Buyer', value: o => webOrderBuyerName(o) },
   { header: 'Phone', value: o => o.buyer_phone ?? '' },
   { header: 'Email', value: o => o.buyer_email ?? '' },
   { header: 'Pass', value: o => o.ticket_label },
@@ -263,7 +278,10 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                         : <span className="events-muted">—</span>}
                     </td>
                     <td className="events-web-wide">
-                      <strong>{o.buyer_name || '—'}</strong>
+                      {/* 403: the name the buyer registered with, where the payment gave none. */}
+                      <strong title={webOrderNamedAtRegistration(o) ? 'The name the buyer registered with: the payment gave none' : undefined}>
+                        {webOrderBuyerName(o) || '—'}
+                      </strong>
                       {o.provider === 'hitpay' && (
                         <> <span className="badge badge-muted" title="Paid through HitPay">HitPay</span></>
                       )}
@@ -273,7 +291,11 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                       {!o.livemode && (
                         <> <span className="badge badge-accent" title={`Paid in ${webOrderTestPlace(o.provider)}: no money was taken`}>Test</span></>
                       )}
-                      {o.buyer_phone && <div className="events-sub">{o.buyer_phone}</div>}
+                      {o.buyer_phone && (
+                        <div className="events-sub events-web-phone" title={o.buyer_phone_from_registration ? REGISTERED_PHONE : undefined}>
+                          {phoneText(o)}
+                        </div>
+                      )}
                       {o.buyer_email && <div className="events-sub">{o.buyer_email}</div>}
                       {o.staff_name && <div className="events-sub events-web-staff">Registered by {o.staff_name}</div>}
                     </td>
@@ -448,7 +470,7 @@ const OrderSummary: React.FC<{ order: WebOrder; dated?: boolean }> = ({ order, d
           {order.checkout_opened_at && <> · checkout opened {fmtDateTime(order.checkout_opened_at)}{dating}</>}
         </span>
       )}
-      <span>{[order.buyer_name, order.buyer_phone, order.buyer_email].filter(Boolean).join(' · ')}</span>
+      <span>{[webOrderBuyerName(order), phoneText(order), order.buyer_email].filter(Boolean).join(' · ')}</span>
       {!order.livemode && <span>A {webOrderProviderName(order.provider)} {order.provider === 'hitpay' ? 'sandbox' : 'test'} order: no money was taken.</span>}
     </div>
   );
@@ -464,27 +486,35 @@ const WorkbookNote: React.FC<{ order: WebOrder }> = ({ order }) => (
 
 /*
  * Creates the invoice for a recorded or parked order: for a customer staff
- * pick, for a new customer made from the buyer, or matched by the buyer's
- * phone exactly as a live order is.
+ * pick (one with the buyer's phone, or, 403, any customer they find), for a
+ * new customer made from the buyer, or matched by the buyer's phone exactly as
+ * a live order is. The last two need a phone the server can read; without one
+ * they are shown but cannot be chosen, and staff find the customer instead.
  */
 const ResolveModal: React.FC<{
   order: WebOrder;
   onClose: () => void;
   onResolved: (r: WebOrderOutcome) => void;
 }> = ({ order, onClose, onResolved }) => {
-  // 'auto', 'new', or 'customer:<id>'. With candidates to choose from nothing
-  // is picked for the person.
-  const [choice, setChoice] = useState(order.candidates.length ? '' : 'auto');
+  const hasPhone = order.buyer_phone_readable;
+  // 'auto', 'new', 'customer:<id>', or 'search' (403: the customer found, in
+  // `found`). With candidates to choose from nothing is picked for the person;
+  // with no phone, finding the customer is the one way.
+  const [choice, setChoice] = useState(order.candidates.length ? '' : hasPhone ? 'auto' : 'search');
+  const [found, setFound] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<WebOrderOutcome | null>(null);
+  const customerId = choice === 'search' ? found || null
+    : choice.startsWith('customer:') ? choice.slice('customer:'.length) : null;
+  const ready = !!choice && (choice !== 'search' || !!found);
 
   const submit = async () => {
-    if (!choice) return;
+    if (!ready) return;
     setBusy(true); setErr(null);
     const { data, error } = await supabase.rpc('web_order_resolve', {
       p_order_id: order.id,
-      p_customer_id: choice.startsWith('customer:') ? choice.slice('customer:'.length) : null,
+      p_customer_id: customerId,
       p_new_customer: choice === 'new',
     });
     setBusy(false);
@@ -494,24 +524,30 @@ const ResolveModal: React.FC<{
     onResolved(r);
   };
 
-  const option = (value: string, title: React.ReactNode, ...details: (string | null)[]) => (
-    <label key={value} className={`events-inline events-choice${choice === value ? ' checked' : ''}`}>
+  const option = (value: string, title: React.ReactNode, details: (string | null)[], unavailable = false) => (
+    <label key={value} className={`events-inline events-choice${choice === value ? ' checked' : ''}${unavailable ? ' unavailable' : ''}`}>
       <input type="radio" name="web-order-bill-to" value={value} checked={choice === value}
-        disabled={busy} onChange={() => setChoice(value)} />
+        disabled={busy || unavailable} onChange={() => setChoice(value)} />
       <span>
         <strong>{title}</strong>
         {details.filter(Boolean).map((d, i) => <span key={i} className="events-sub" style={{ display: 'block' }}>{d}</span>)}
       </span>
     </label>
   );
+  // 403: why a new customer or a match cannot be made: there is no phone.
+  const noPhone = order.buyer_phone
+    ? 'The buyer\'s phone cannot be read.'
+    : order.names_at
+      ? 'The payment gave no phone, and none could be taken from the buyer\'s registration.'
+      : 'The payment gave no phone; the WhatsApp the buyer registers with on the website will be used.';
 
   return (
-    <Modal title={`Create the invoice for ${order.buyer_name || 'this order'}`} maxWidth={560} onClose={onClose}
+    <Modal title={`Create the invoice for ${webOrderBuyerName(order) || 'this order'}`} maxWidth={560} onClose={onClose}
       footer={outcome ? (
         <button className="btn btn-primary" onClick={onClose}>Close</button>
       ) : <>
         <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={() => void submit()} disabled={busy || !choice}>
+        <button className="btn btn-primary" onClick={() => void submit()} disabled={busy || !ready}>
           {busy ? 'Creating…' : 'Create invoice'}
         </button>
       </>}>
@@ -578,12 +614,23 @@ const ResolveModal: React.FC<{
             <div>
               <div className="events-section-title">Who is the invoice for?</div>
               <div className="events-rows" role="radiogroup" aria-label="Bill to">
-                {order.candidates.map(c => option(`customer:${c.customer_id}`, c.full_name,
+                {order.candidates.map(c => option(`customer:${c.customer_id}`, c.full_name, [
                   [c.phone, c.email].filter(Boolean).join(' · ') || null,
-                  c.last_invoice_at ? `Last invoice ${fmtSgDate(c.last_invoice_at)}` : 'No invoices yet'))}
-                {option('new', 'Create a new customer', 'Made from the buyer\'s name, phone and email.')}
-                {option('auto', 'Match automatically',
-                  'By the buyer\'s phone, as a live order is: one customer with it is used, none makes a new one, two or more come back here.')}
+                  c.last_invoice_at ? `Last invoice ${fmtSgDate(c.last_invoice_at)}` : 'No invoices yet']))}
+                {/* 403: any customer, found by name, phone or email. */}
+                {option('search', 'Choose another customer', ['Any customer already on the system: search by name, phone or email.'])}
+                {choice === 'search' && (
+                  <div className="events-web-search">
+                    <CustomerSearchSelect value={found} onChange={setFound} disabled={busy}
+                      placeholder="Search name, phone or email…" />
+                  </div>
+                )}
+                {option('new', 'Create a new customer', hasPhone
+                  ? ['Made from the buyer\'s name, phone and email.']
+                  : ['Not possible without the buyer\'s phone, which a new customer needs.', noPhone], !hasPhone)}
+                {option('auto', 'Match automatically', hasPhone
+                  ? ['By the buyer\'s phone, as a live order is: one customer with it is used, none makes a new one, two or more come back here.']
+                  : ['Not possible without the buyer\'s phone, which is what it matches by.', noPhone], !hasPhone)}
               </div>
             </div>
           </>
@@ -633,7 +680,7 @@ const LinkModal: React.FC<{
   };
 
   return (
-    <Modal title={`Link ${order.buyer_name || 'this order'} to an existing invoice`} maxWidth={560} onClose={onClose}
+    <Modal title={`Link ${webOrderBuyerName(order) || 'this order'} to an existing invoice`} maxWidth={560} onClose={onClose}
       footer={outcome ? (
         <button className="btn btn-primary" onClick={onClose}>Close</button>
       ) : <>

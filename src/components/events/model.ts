@@ -87,6 +87,12 @@ export interface WebOrder {
   id: string; provider: WebOrderProvider; stripe_session_id: string; livemode: boolean; status: WebOrderStatus;
   ticket: string; ticket_label: string; quantity: number; unit_amount: number; amount_total: number; early_bird: boolean;
   buyer_name: string; buyer_email: string | null; buyer_phone: string | null;
+  /** 403: the name parts the buyer registered with on the website (null until they do). */
+  buyer_first_name: string | null; buyer_last_name: string | null;
+  /** 403: whether the phone policy can read buyer_phone, so the buyer can be matched or made by it. */
+  buyer_phone_readable: boolean;
+  /** 403: the payment gave no phone, and buyer_phone is the WhatsApp the buyer registered with. */
+  buyer_phone_from_registration: boolean;
   checkout_opened_at: string | null; paid_at: string | null;
   attendees: WebOrderPerson[] | null; names_at: string | null;
   invoice_id: string | null; invoice_no: string | null; review_reason: string | null;
@@ -204,6 +210,10 @@ export function normalizeWebOrder(r: any): WebOrder {
     quantity: num(r?.quantity), unit_amount: num(r?.unit_amount), amount_total: num(r?.amount_total),
     early_bird: !!r?.early_bird,
     buyer_name: String(r?.buyer_name ?? ''), buyer_email: str(r?.buyer_email), buyer_phone: str(r?.buyer_phone),
+    // 403's fields; a database without it says nothing, and any phone is taken as readable.
+    buyer_first_name: str(r?.buyer_first_name), buyer_last_name: str(r?.buyer_last_name),
+    buyer_phone_readable: typeof r?.buyer_phone_readable === 'boolean' ? r.buyer_phone_readable : !!str(r?.buyer_phone),
+    buyer_phone_from_registration: r?.buyer_phone_from_registration === true,
     checkout_opened_at: str(r?.checkout_opened_at), paid_at: str(r?.paid_at),
     // Null until the buyer registers the names.
     attendees: Array.isArray(r?.attendees)
@@ -453,6 +463,20 @@ export const webOrderAmountDiffers = (o: Pick<WebOrder, 'provider' | 'review_rea
 /** 380: only a staff-link registration is set aside (a test, say) or brought back. */
 export const webOrderCanDismiss = (o: Pick<WebOrder, 'status' | 'provider'>) => o.provider === 'door' && webOrderIsOpen(o);
 export const webOrderCanRestore = (o: Pick<WebOrder, 'status' | 'provider'>) => o.provider === 'door' && o.status === 'dismissed';
+
+/** 403: the name the website sends when the payment (Stripe or HitPay) gave none. */
+export const WEB_ORDER_PLACEHOLDER_BUYER = 'Website buyer';
+/**
+ * 403: the buyer's name: the payment's, or, where the payment gave none (the
+ * website's "Website buyer"), the name the buyer registered with, once they have.
+ */
+export function webOrderBuyerName(o: Pick<WebOrder, 'buyer_name' | 'buyer_first_name' | 'buyer_last_name'>): string {
+  const registered = [o.buyer_first_name, o.buyer_last_name].map(s => (s ?? '').trim()).filter(Boolean).join(' ');
+  return o.buyer_name.trim() === WEB_ORDER_PLACEHOLDER_BUYER && registered ? registered : o.buyer_name;
+}
+/** 403: the buyer's name is the one they registered with, the payment having given none. */
+export const webOrderNamedAtRegistration = (o: Pick<WebOrder, 'buyer_name' | 'buyer_first_name' | 'buyer_last_name'>) =>
+  webOrderBuyerName(o) !== o.buyer_name;
 
 /** Where the order came from: the website's checkout or its staff link. */
 export const webOrderSource = (o: Pick<WebOrder, 'provider'>) => (o.provider === 'door' ? 'Staff link' : 'Website');
