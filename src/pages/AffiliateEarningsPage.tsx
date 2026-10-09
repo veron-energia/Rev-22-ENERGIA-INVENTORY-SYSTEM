@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, money, dateStr, statusLabel } from '../lib/affiliatePortal';
+import { portalRpc, money, dateStr, statusLabel, earningsFigures, DEDUCTION_NOTE } from '../lib/affiliatePortal';
 import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
 
 const AffiliateEarningsPage: React.FC = () => {
@@ -10,6 +10,7 @@ const AffiliateEarningsPage: React.FC = () => {
 
   const byMonth: any[] = e?.by_month ?? [];
   const byPurchase: any[] = e?.by_purchase ?? [];
+  const owed = earningsFigures(e?.summary);
 
   return (
     <AffiliateLayout>
@@ -20,11 +21,13 @@ const AffiliateEarningsPage: React.FC = () => {
         <>
           <StatGrid>
             <Stat label="Lifetime Earned" value={money(e.summary?.lifetime)} />
-            <Stat label="Unpaid" value={money(e.summary?.unpaid)} accent="var(--warning)" />
+            <Stat label="Unpaid" value={money(owed.unpaid)} accent="var(--warning)" />
+            {owed.deduction > 0 && <Stat label="Deduction to be recovered" value={money(owed.deduction)} accent="var(--danger)" />}
             <Stat label="Paid" value={money(e.summary?.paid)} accent="var(--success)" />
             <Stat label="Blocked" value={money(e.summary?.blocked)} accent="var(--danger)" />
             <Stat label="Reversed" value={money(e.summary?.reversed)} />
           </StatGrid>
+          {owed.deduction > 0 && <p className="portal-break" style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '-8px 0 18px' }}>{DEDUCTION_NOTE}</p>}
 
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>By Tier</h3>
           <StatGrid>

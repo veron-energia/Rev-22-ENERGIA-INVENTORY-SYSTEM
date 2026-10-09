@@ -27,7 +27,6 @@ import {
   Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail, AlertTriangle } from 'lucide-react';
 
 import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel';
-import { InvoiceRefundCancelChooser } from '../components/invoices/InvoiceRefundCancelChooser';
 import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
 import { CorrectionPreview } from '../components/invoices/CorrectionPreview';
 import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockEvidenceReview';
@@ -35,13 +34,13 @@ import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { singaporeToday, invoiceDate, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
-  type InvoiceSortField, type SortDirection } from '../lib/invoices/business';
+  type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes } from '../lib/invoices/business';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import { PaymentQrPopup, PaymentQrLineAction } from '../components/invoices/PaymentQrPopup';
 import { paymentQrFor } from '../lib/invoices/paymentQr.mjs';
 import '../components/invoices/invoice-controls.css';
 
-import { fetchInvoicePage, fetchAllMatchingInvoices } from '../lib/invoices/listPage';
+import { fetchInvoicePage, fetchAllMatchingInvoices, type InvoiceListResult } from '../lib/invoices/listPage';
 import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefresh, announcedMatchesShown } from '../lib/invoices/listRefresh';
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
@@ -286,7 +285,9 @@ const InvoicesPage: React.FC = () => {
 
   // Detail / payment modal
   const [detailFinancial, setDetailFinancial] = useState<any>(null);
-  const [chooserOpen, setChooserOpen] = useState(false);
+  // 409: on a cancelled invoice still holding money, what its customer already
+  // had from it (the guided cancellation's override codes): null until read.
+  const [detailUsedValue, setDetailUsedValue] = useState<string[] | null>(null);
   // Newest first by creation time, which is what the list has always shown.
   // Server-side paging. The list asks the database for one page; it no longer
   // downloads the table and slices it here.
@@ -295,7 +296,7 @@ const InvoicesPage: React.FC = () => {
   const [pageRows, setPageRows] = useState<Invoice[]>([]);
   const [pageTotal, setPageTotal] = useState(0);
   const [pageCount, setPageCount] = useState(0);
-  const [pageSummary, setPageSummary] = useState({ matching: 0, total_amount: 0, outstanding: 0, paid: 0 });
+  const [pageSummary, setPageSummary] = useState<InvoiceListResult['summary']>({ matching: 0, total_amount: 0, outstanding: 0, paid: 0 });
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -346,7 +347,7 @@ const InvoicesPage: React.FC = () => {
   // The guided flow replaces the old two-step chooser: it derives the whole
   // effect set itself, so staff never pick ledger rows.
   const [guidedOpen, setGuidedOpen] = useState(false);
-  const [financeRequest, setFinanceRequest] = useState<{ mode: 'refund' | 'cancel' | 'payment'; paymentId?: string } | null>(null);
+  const [financeRequest, setFinanceRequest] = useState<{ mode: 'refund_due' | 'payment'; paymentId?: string } | null>(null);
   const [detail, setDetail] = useState<Invoice | null>(null);
   const [detailItems, setDetailItems] = useState<InvoiceItem[]>([]);
   const [detailPromoItems, setDetailPromoItems] = useState<any[]>([]);      // fixed contents of promotions on this invoice
@@ -1255,9 +1256,6 @@ const InvoicesPage: React.FC = () => {
     || Boolean((detail as any)?.is_topup) || Boolean((detail as any)?.is_exchange));
   const canEditOrdinary = Boolean(detail) && !needsAuditedCorrection
     && ['draft', 'unpaid'].includes(String(detail?.status));
-  // Something is refundable only when money or credit is actually still held.
-  const hasRefundablePayment = netReceived > 0;
-  const cancellable = Boolean(detail) && !['cancelled', 'refunded'].includes(String(detail?.status));
   const canManageInvoice = isOwnerOrManager(profile?.role);
   // 377: staff correct a paid or part-paid invoice of a store they work at.
   // Prices, payment amounts and dates, removing or splitting a payment, the
@@ -1286,10 +1284,30 @@ const InvoicesPage: React.FC = () => {
   const canCorrectInvoice = (canManageInvoice || staffMayCorrect) && !isLateFeeInvoice;
   // In the correction form: a staff member's correction, with the money parts read-only.
   const staffCorrection = editingPaid && isStaff;
-  const refundCancelButton = detail && canManageInvoice ? (
+  // 409: everyone uses the guided Refund / Cancel. An Owner or Manager
+  // confirms it there; anyone else raises it as a request (the dialog's
+  // canApprove=false), which changes nothing on the invoice until an Owner or
+  // Manager approves it on Approvals. A cancelled or refunded invoice has
+  // nothing left to refund or cancel (the server refuses it).
+  const refundCancelButton = detail && profile?.role && !['cancelled', 'refunded'].includes(String(detail.status)) ? (
     <button className="btn invoice-refund-cancel" onClick={() => setGuidedOpen(true)}
-      title="Cancel this invoice, or record a refund">
-      <FileText size={14} /> Refund / Cancel</button>
+      title={canManageInvoice ? 'Cancel this invoice, or record a refund'
+        : 'Ask an Owner or Manager to cancel this invoice or refund it. Nothing changes until they approve.'}>
+      <FileText size={14} /> {canManageInvoice ? 'Refund / Cancel' : 'Request refund / cancel'}</button>
+  ) : null;
+  // 409: money still owed back on a cancelled or refunded invoice (a
+  // cancellation approved before the money went back) is recorded when it is
+  // actually paid back. Owner or Manager; the server checks again. Not on a
+  // cancelled invoice whose customer already had part of it: the cancellation
+  // kept that, so not all of what it holds is owed back (the finance section
+  // says so instead).
+  const refundStillDue = Number(detailFinancial?.refund_due ?? 0);
+  const recordRefundDueButton = detail && canManageInvoice && ['cancelled', 'refunded'].includes(String(detail.status))
+      && refundStillDue > 0.005
+      && (String(detail.status) === 'refunded' || (detailUsedValue !== null && detailUsedValue.length === 0)) ? (
+    <button className="btn btn-primary" onClick={() => setFinanceRequest({ mode: 'refund_due' })}
+      title={`Record that the ${money(refundStillDue)} still due has gone back to the customer`}>
+      <CreditCard size={14} /> Record refund paid</button>
   ) : null;
 
   const openEdit = () => {
@@ -1552,7 +1570,7 @@ const InvoicesPage: React.FC = () => {
     if (superseded()) return;
     if (fullRow) inv = fullRow as Invoice;
     setPaymentRequestId(crypto.randomUUID());
-    setDetail(inv); setDetailFinancial(null);
+    setDetail(inv); setDetailFinancial(null); setDetailUsedValue(null);
     // Still not ready (set above, before the first read): `detail` is the new
     // row from here; another invoice's rows go at once.
     if (detailDataForRef.current !== inv.id) {
@@ -1651,6 +1669,17 @@ const InvoicesPage: React.FC = () => {
     if (superseded()) return;
     setDetailRevisions((revs as InvoiceRevision[]) ?? []);
     setDetailFinancial(financial.data);
+    // 409: money still held on a cancelled invoice is only owed back in full
+    // when its customer had nothing from it; the cancellation's own plan says
+    // what was used. Read before "Record refund paid" is offered.
+    if (financial.data?.status === 'cancelled' && Number(financial.data?.refund_due ?? 0) > 0.005) {
+      supabase.rpc('invoice_action_plan', { p_invoice_id: inv.id, p_action: 'cancel', p_lines: [] })
+        .then(({ data, error }) => {
+          if (superseded()) return;
+          // Unreadable: offered, and the database refuses it if anything was used.
+          setDetailUsedValue(error ? [] : usedValueCodes(data as any));
+        });
+    } else setDetailUsedValue([]);
     const remaining = Number(financial.data?.outstanding ?? 0);
     // No method is chosen for the operator. Defaulting to the first method, or
     // to whatever the previous customer used, is how the wrong one gets
@@ -1912,27 +1941,9 @@ const InvoicesPage: React.FC = () => {
     void refreshList({ afterSave: 'The invoice was deleted', changed: [inv.id] });
   };
 
-  // Phase 4: request refund or cancellation
-  const [actionType, setActionType] = useState<'invoice_refund' | 'invoice_cancel' | null>(null);
-  const [actionReturnStock, setActionReturnStock] = useState(true);
-  const [actionReason, setActionReason] = useState('');
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionErr, setActionErr] = useState<string | null>(null);
-
-  const submitAction = async () => {
-    if (!detail || !actionType) return;
-    if (!actionReason.trim()) { setActionErr('A reason is required.'); return; }
-    setActionBusy(true); setActionErr(null);
-    const { error } = await supabase.rpc('request_invoice_action', {
-      p_invoice_id: detail.id, p_type: actionType,
-      p_return_stock: actionReturnStock, p_reason: actionReason.trim(),
-    });
-    setActionBusy(false);
-    if (error) { setActionErr(error.message); return; }
-    noteLocalChangeRef.current([detail.id]);
-    setActionType(null); setActionReason(''); setDetail(null);
-    void refreshList({ afterSave: 'The request was recorded', changed: [detail.id] });
-  };
+  // Refund and cancellation requests go through the guided Refund / Cancel
+  // for every role (409); the retired request_invoice_action moved the
+  // invoice itself to "Refund requested" and could never be approved.
 
   const canExport = isOwnerOrManager(profile?.role);
   const serviceStaffOptions = useMemo(() => profiles.filter(p => SERVICE_STAFF_ROLES.includes(p.role)), [profiles]);
@@ -2843,7 +2854,7 @@ const InvoicesPage: React.FC = () => {
     const qr = now === payQr.methodId ? storeQrFor(now) : null;
     return qr?.image ? { qr, image: qr.image, amount: line.amount || 0, line: payQr.line, instalment: payQr.instalment } : null;
   })();
-  dialogsOpenRef.current = createOpen || guidedOpen || chooserOpen || !!actionType || !!focLine
+  dialogsOpenRef.current = createOpen || guidedOpen || !!focLine
     || !!stockReviewFor || !!priceReview || !!quickCustomerFor || !!payQrView;
 
   return (
@@ -2887,6 +2898,8 @@ const InvoicesPage: React.FC = () => {
               { header: 'Store', value: (i: any) => storeName(i.store_id) },
               { header: 'Customer', value: (i: any) => i.customer_name ?? custName(i.customer_id) },
               { header: 'Total', value: (i: any) => Number(i.total_amount ?? 0) },
+              // 409: as the table's column: nothing on a cancelled, refunded or FOC invoice.
+              { header: 'Outstanding', value: (i: any) => invoiceListOutstanding(i) },
               { header: 'Net payments held', value: (i: any) => Number(i.paid_amount ?? 0) },
               { header: 'Instalments', value: (i: any) => instalmentText(i, methods) },
               // Kept in step with the table: the export mirrors these columns,
@@ -3062,9 +3075,10 @@ const InvoicesPage: React.FC = () => {
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
                     <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
-                    <td style={{ textAlign: 'right', color: Number(inv.total_amount) - Number(inv.paid_amount) > 0 ? 'var(--accent)' : 'var(--success)' }}
-                      title={`Paid ${money(inv.paid_amount)}`}>
-                      {money(Math.max(0, Number(inv.total_amount ?? 0) - Number(inv.paid_amount ?? 0)))}
+                    {/* 409: a cancelled, refunded or FOC invoice owes nothing, as on the invoice itself. */}
+                    <td style={{ textAlign: 'right', color: invoiceListOutstanding(inv) > 0 ? 'var(--accent)' : 'var(--success)' }}
+                      title={`Paid ${money(inv.paid_amount)}`} data-testid="invoice-row-outstanding">
+                      {money(invoiceListOutstanding(inv))}
                     </td>
                     <td style={{ fontSize: 12.5 }}>
                       {(payMethodsByInvoice[inv.id] ?? []).length > 0
@@ -3099,6 +3113,9 @@ const InvoicesPage: React.FC = () => {
                 {pageSummary.matching > 0 && (
                   <span className="invoice-paging-sum">
                     {' · '}{money(pageSummary.total_amount)} total
+                    {/* 409: how much of that total is cancelled or refunded (nothing is owed on it). */}
+                    {Number(pageSummary.closed_total ?? 0) > 0 && (
+                      <span data-testid="invoice-paging-closed">{` (${money(Number(pageSummary.closed_total))} of it cancelled or refunded)`}</span>)}
                     {pageSummary.outstanding > 0 && `, ${money(pageSummary.outstanding)} outstanding`}
                   </span>
                 )}
@@ -4251,14 +4268,13 @@ const InvoicesPage: React.FC = () => {
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
                   <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
-                  {/* Staff get Correct Invoice here too (377), beside Request Refund. */}
+                  {/* Staff get Correct Invoice here too (377), beside Request refund / cancel (409). */}
                   {canCorrectInvoice && (
                     <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
                       title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>
                   )}
-                  {refundCancelButton}
-                  {!isOwnerOrManager(profile?.role) && <button className="btn btn-danger" onClick={() => { setActionType('invoice_refund'); setActionReturnStock(true); setActionReason(''); setActionErr(null); }}>Request Refund</button>}</>
+                  {refundCancelButton}</>
               : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
               ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
                 <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
@@ -4274,7 +4290,7 @@ const InvoicesPage: React.FC = () => {
                   title={emailAddress(customerOf(detail.customer_id)?.email)
                     ? 'Open your mail client with this invoice ready to send'
                     : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{refundCancelButton}</>
+                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{recordRefundDueButton}{refundCancelButton}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
               ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
@@ -4372,6 +4388,7 @@ const InvoicesPage: React.FC = () => {
             )}
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
+              usedValue={detailUsedValue}
               requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
               onRequestHandled={() => setFinanceRequest(null)}
               onActiveChange={active => { financeActiveRef.current = active; }}
@@ -4950,43 +4967,6 @@ const InvoicesPage: React.FC = () => {
             void refreshList({ afterSave: 'The action was recorded', changed: [id] });
             await refreshDetail(id);
           }} />
-      )}
-
-      {detail && (
-        <InvoiceRefundCancelChooser
-          open={chooserOpen}
-          invoiceNo={detail.invoice_no} status={detail.status} netReceived={netReceived} refundedAmount={refundedAmount}
-          onClose={() => setChooserOpen(false)}
-          canRefund={hasRefundablePayment}
-          canCancel={cancellable}
-          refundBlockedReason="No refundable payment."
-          cancelBlockedReason="This invoice is already cancelled or refunded. Reopening is a separate action in the settlement section."
-          onChoose={choice => {
-            // Opening the chooser mutated nothing; choosing hands over to the
-            // existing workflow, which still asks for its own reason and preview.
-            setChooserOpen(false);
-            setFinanceRequest({ mode: choice });
-          }} />
-      )}
-
-      {actionType && detail && (
-        <Modal title={actionType === 'invoice_refund' ? 'Request Refund' : 'Request Cancellation'} maxWidth={440} onClose={() => setActionType(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setActionType(null)}>Back</button><button className="btn btn-danger" onClick={submitAction} disabled={actionBusy}>{actionBusy ? 'Submitting…' : 'Submit Request'}</button></>}>
-          <div className="form-grid">
-            {actionErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{actionErr}</div></div>}
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-              This sends a request for Owner/Manager approval. {actionType === 'invoice_refund' ? 'Refunds' : 'Cancellations'} reverse any affiliate commission.
-            </p>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-              <input type="checkbox" checked={actionReturnStock} onChange={e => setActionReturnStock(e.target.checked)} style={{ width: 'auto' }} />
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>Return stock to store</div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Tick if items are resellable. Untick if damaged/lost.</div>
-              </div>
-            </label>
-            <div className="form-group"><label>Reason *</label><textarea rows={2} value={actionReason} onChange={e => setActionReason(e.target.value)} placeholder="Why is this being requested?" autoFocus /></div>
-          </div>
-        </Modal>
       )}
 
       {payQrView && detail && (

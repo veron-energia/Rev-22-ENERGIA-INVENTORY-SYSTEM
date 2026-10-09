@@ -1,6 +1,8 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { singaporeToday } from '../lib/invoices/business';
+import { exchangePaymentMethods, bundleLineBlock, componentsExchanged, exchangePaymentProblem,
+         exchangePaymentRowProblem, bundleQuoteFromRpc, affiliateHint, type BundleQuote } from '../lib/exchanges/rules.mjs';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { useAuth } from '../context/AuthContext';
@@ -122,6 +124,33 @@ const ExchangesPage: React.FC = () => {
   const effectiveStore = isStaff
     ? (staffMustChooseStore ? store : (store || assignedStoreId || myStores[0]?.store_id || ''))
     : store;
+
+  // An exchange's additional payment is never wallet credit: the exchange
+  // copies its payments into the replacement invoice and takes no credit, so a
+  // wallet "payment" would mark it paid with nothing taken (408 refuses it too).
+  const payMethods = useMemo(() => exchangePaymentMethods(methods), [methods]);
+
+  // ---- Whole-bundle preview (408): the server's own figures, before Confirm ----
+  // exchange_bundle_preview is the same check the exchange itself makes, so a
+  // swap it refuses is shown as refused here, with the reason.
+  const [bundleQuote, setBundleQuote] = useState<BundleQuote | null>(null);
+  const [bundleQuoteState, setBundleQuoteState] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  const quoteSeq = useRef(0);
+  useEffect(() => {
+    const seq = ++quoteSeq.current;
+    if (mode !== 'bundle' || !invoice || !effectiveStore || !bundleLineId || !newPromoId) {
+      setBundleQuote(null); setBundleQuoteState('idle'); return;
+    }
+    setBundleQuote(null); setBundleQuoteState('loading');
+    supabase.rpc('exchange_bundle_preview', {
+      p_original_invoice_id: invoice.id, p_processing_store_id: effectiveStore,
+      p_original_invoice_item_id: bundleLineId, p_new_promotion_id: newPromoId,
+    }).then(({ data, error }) => {
+      if (seq !== quoteSeq.current) return;   // a later choice has been made
+      const q = error ? null : bundleQuoteFromRpc(data);
+      setBundleQuote(q); setBundleQuoteState(q ? 'ready' : 'failed');
+    });
+  }, [mode, invoice, effectiveStore, bundleLineId, newPromoId]);
 
   const resetWizard = () => {
     setStore(isStaff && myStores.length === 1
@@ -249,6 +278,12 @@ const ExchangesPage: React.FC = () => {
   const receivedNow = pays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
   const outstandingNow = Math.max(0, +(compTopup - receivedNow).toFixed(2));
   const compNonref = mode === 'bundle' ? 0 : Math.max(0, +(modeCredit - replTotal).toFixed(2));
+  // What this exchange charges now: the whole bundle's top-up comes from the
+  // server's preview; product and component exchanges are priced here.
+  const due = mode === 'bundle'
+    ? (bundleQuote && !bundleQuote.problem ? bundleQuote.topup : 0)
+    : compTopup;
+  const selectedBundleLine = bundleLines.find(b => b.id === bundleLineId) ?? null;
 
   // replacement products must match returned type (own/third)
   const replCandidates = products.filter(p => returnedType && returnedType !== 'MIXED' ? p.product_type === returnedType : true);
@@ -262,26 +297,35 @@ const ExchangesPage: React.FC = () => {
       if (returnIds.length === 0) return 'Select at least one item to return.';
       if (returnedType === 'MIXED') return 'All returned items must be the same product type.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
-      if (compTopup > 0 && receivedNow - compTopup > 0.001) return `Payments (${money(receivedNow)}) exceed the additional charge of ${money(compTopup)}.`;
-      if (compTopup > 0 && receivedNow - compTopup < -0.001) {
-        return `${money(compTopup - receivedNow)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
-      }
-      { const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
-        if (bad) return bad; }
     } else if (mode === 'bundle') {
       if (!bundleLineId) return 'Select the bundle being returned.';
+      { const block = bundleLineBlock(selectedBundleLine as any, 'bundle');
+        if (block) return `This bundle cannot be exchanged whole: ${block}.`; }
       if (!newPromoId) return 'Select the replacement bundle.';
+      if (bundleQuoteState === 'loading') return 'Still working out the bundle exchange — try again in a moment.';
+      if (bundleQuoteState !== 'ready' || !bundleQuote) return 'The bundle exchange could not be priced. Refresh the page and try again.';
+      if (bundleQuote.problem) return bundleQuote.problem;
+      if (due > 0 && pays.some(p => p.payment_method_id === INSTALMENT_METHOD)) {
+        return 'A whole-bundle exchange is paid in full now: choose a payment method, not an instalment.';
+      }
     } else if (mode === 'component') {
       if (!bundleLineId) return 'Select the bundle.';
       if (!componentPid) return 'Select the component to exchange.';
+      if (componentsExchanged(selectedBundleLine as any).includes(componentPid)) return 'That item of the bundle has already been exchanged.';
       if (componentQty <= 0) return 'Component quantity must be greater than zero.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
-      if (compTopup > 0 && receivedNow - compTopup > 0.001) return `Payments (${money(receivedNow)}) exceed the additional charge of ${money(compTopup)}.`;
-      if (compTopup > 0 && receivedNow - compTopup < -0.001) {
-        return `${money(compTopup - receivedNow)} of the additional charge is unaccounted for — take it now or cover it with an instalment.`;
-      }
-      { const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
-        if (bad) return bad; }
+    }
+    // Only what is due is sent (nothing when nothing is due): every amount
+    // with a method (a row left on "— Method —" would count here but never be
+    // sent), never a wallet method, never more than is due, and for a whole
+    // bundle exactly the top-up.
+    if (due > 0) {
+      const row = exchangePaymentRowProblem(pays, payMethods.map(m => m.id), INSTALMENT_METHOD);
+      if (row) return row;
+      const paid = exchangePaymentProblem({ due, received: receivedNow, exact: mode === 'bundle' });
+      if (paid) return paid;
+      const bad = pays.map(p => p.payment_method_id === INSTALMENT_METHOD ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
+      if (bad) return bad;
     }
     return null;
   };
@@ -304,7 +348,8 @@ const ExchangesPage: React.FC = () => {
     setBusy(true);
     // An instalment line carries the arrangement; any money taken under it goes
     // in as a receipt through the REAL method, never as "Instalment".
-    const active = (compTopup > 0 || mode === 'bundle') ? pays : [];
+    // Nothing is sent when nothing is due (the server refuses a payment then).
+    const active = due > 0 ? pays : [];
     const payPayload = active
       .filter(p => Number(p.amount) > 0 && (p.payment_method_id === INSTALMENT_METHOD
         ? !!p.instalment?.method_id : !!p.payment_method_id))
@@ -529,7 +574,7 @@ const ExchangesPage: React.FC = () => {
                 <div style={{ display: 'flex', gap: 6 }}>
                   {([['product', 'Product'], ['bundle', 'Whole bundle'], ['component', 'Bundle component']] as const).map(([v, lbl]) => (
                     <button key={v} type="button" className={`btn btn-sm ${mode === v ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => { setMode(v); setReturnIds([]); setBundleLineId(''); setNewPromoId(''); setComponentPid(''); setBundleComps([]); }}>{lbl}</button>
+                      onClick={() => { setMode(v); setReturnIds([]); setBundleLineId(''); setNewPromoId(''); setComponentPid(''); setBundleComps([]); setPays([]); }}>{lbl}</button>
                   ))}
                 </div>
 
@@ -560,8 +605,10 @@ const ExchangesPage: React.FC = () => {
                     <select value={bundleLineId} onChange={e => loadBundleComps(e.target.value)}>
                       <option value="">— Select bundle —</option>
                       {bundleLines.map(i => {
-                        const already = (i as any).exchanged_at;
-                        return <option key={i.id} value={i.id} disabled={!!already}>{promoName(i.promotion_id ?? '')} × {i.quantity}{already ? ' (already exchanged)' : ''}</option>;
+                        // Whole bundle: one bundle whose items were not exchanged on
+                        // their own (408). Component: any bundle not fully exchanged.
+                        const block = bundleLineBlock(i as any, mode);
+                        return <option key={i.id} value={i.id} disabled={!!block}>{promoName(i.promotion_id ?? '')} × {i.quantity}{block ? ` (${block})` : ''}</option>;
                       })}
                     </select>
                     {bundleLines.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No bundles on this invoice.</span>}
@@ -588,8 +635,32 @@ const ExchangesPage: React.FC = () => {
                           searchPrices: [p.fixed_price],
                         }))} />
                     </div>
-                    <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Whole-bundle swap: every component of the old bundle returns to stock and every component of the new bundle is deducted. The exact credit, replacement total, and any top-up or non-refundable balance are computed and shown on the completed exchange.</div></div>
+                    <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Whole-bundle swap: every item of the old bundle goes back to stock and every item of the new bundle is taken out. Only one bundle of products is swapped whole: a bundle with choices, vouchers or therapy, a line of several bundles, or one with an item already exchanged goes through Bundle component.</div></div>
                   </>
+                )}
+
+                {mode === 'bundle' && bundleLineId && newPromoId && (
+                  bundleQuoteState === 'loading'
+                    ? <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Working out the exchange…</div>
+                    : bundleQuoteState === 'failed' || !bundleQuote
+                      ? <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>The bundle exchange could not be priced. Refresh the page and try again.</div></div>
+                      : bundleQuote.problem
+                        ? <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{bundleQuote.problem}</div></div>
+                        : (
+                          <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 12, fontSize: 13 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (returned bundle)</span><strong>{money(bundleQuote.credit)}</strong></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Replacement bundle</span><strong>{money(bundleQuote.replacement)}</strong></div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
+                              {bundleQuote.topup > 0 ? <><span>Additional charge (paid in full now)</span><strong style={{ color: 'var(--primary)' }}>{money(bundleQuote.topup)}</strong></>
+                                : bundleQuote.nonrefundable > 0 ? <><span>Unused value (non-refundable)</span><strong style={{ color: 'var(--danger)' }}>{money(bundleQuote.nonrefundable)}</strong></>
+                                : <><span>Even exchange</span><strong>{money(0)}</strong></>}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.6 }}>
+                              <div>Back to stock: {bundleQuote.returned.map(x => `${x.name} ×${x.quantity}`).join(', ') || '—'}</div>
+                              <div>Out of stock: {bundleQuote.replacement_items.map(x => `${x.name} ×${x.quantity}`).join(', ') || '—'}</div>
+                            </div>
+                          </div>
+                        )
                 )}
 
                 {mode === 'component' && bundleLineId && (
@@ -598,7 +669,10 @@ const ExchangesPage: React.FC = () => {
                     <div style={{ display: 'flex', gap: 6 }}>
                       <select value={componentPid} style={{ flex: 1 }} onChange={e => { setComponentPid(e.target.value); const comp = bundleComps.find(x => x.product_id === e.target.value); setComponentQty(comp?.quantity ?? 1); }}>
                         <option value="">— Select component —</option>
-                        {bundleComps.map(comp => <option key={comp.product_id} value={comp.product_id}>{pName(comp.product_id)} (×{comp.quantity} in bundle)</option>)}
+                        {bundleComps.map(comp => {
+                          const done = componentsExchanged(selectedBundleLine as any).includes(comp.product_id);
+                          return <option key={comp.product_id} value={comp.product_id} disabled={done}>{pName(comp.product_id)} (×{comp.quantity} in bundle){done ? ' (already exchanged)' : ''}</option>;
+                        })}
                       </select>
                       <input type="number" min={1} value={componentQty} style={{ width: 70 }} onChange={e => setComponentQty(+e.target.value)} />
                     </div>
@@ -644,20 +718,19 @@ const ExchangesPage: React.FC = () => {
                   </div>
                 </div>
                 )}
-                {mode === 'bundle' && (
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>If the new bundle costs more, add the top-up payment below; the exact amount is validated on completion.</div>
-                )}
-
-                {(compTopup > 0 || mode === 'bundle') && (
+                {due > 0 && (
                   <div className="form-group">
-                    <label>Additional payment {mode !== 'bundle' ? `(${money(compTopup)} due)` : ''} — one or more methods, or an instalment</label>
+                    <label>Additional payment ({money(due)} due) — {mode === 'bundle'
+                      ? 'exactly this amount, now, by one or more methods'
+                      : 'one or more methods, or an instalment'}</label>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {pays.map((p, i) => (
                         <div key={i} style={{ display: 'flex', gap: 6 }}>
                           <select value={p.payment_method_id} style={{ flex: 1 }} onChange={e => setPays(ps => ps.map((x, j) => j === i ? { ...x, payment_method_id: e.target.value } : x))}>
                             <option value="">— Method —</option>
-                            <option value={INSTALMENT_METHOD}>Instalment — pay over time</option>
-                            {methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            {mode !== 'bundle' && <option value={INSTALMENT_METHOD}>Instalment — pay over time</option>}
+                            {/* Never wallet credit: an exchange takes no credit from the wallet. */}
+                            {payMethods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                           </select>
                           <input type="number" min={0} step="0.01" value={p.amount} style={{ width: 90 }}
                             placeholder={p.payment_method_id === INSTALMENT_METHOD ? 'Now' : 'Amount'}
@@ -666,16 +739,22 @@ const ExchangesPage: React.FC = () => {
                           <button className="btn btn-secondary btn-sm btn-icon" type="button" onClick={() => setPays(ps => ps.filter((_, j) => j !== i))}><Trash2 size={13} /></button>
                         </div>
                       ))}
-                      {pays.map((p, i) => p.payment_method_id === INSTALMENT_METHOD ? (
+                      {pays.map((p, i) => p.payment_method_id === INSTALMENT_METHOD && mode !== 'bundle' ? (
                         <InstalmentPortionFields key={`inst-${i}`}
                           value={p.instalment ?? emptyPortion}
                           onChange={v => setPays(ps => ps.map((x, j) => j === i ? { ...x, instalment: v } : x))}
-                          methods={methods}
+                          methods={payMethods}
                           receivedNow={p.amount || 0}
                           onReceivedNow={n => setPays(ps => ps.map((x, j) => j === i ? { ...x, amount: n } : x))}
                           error={portionProblem(p.instalment, p.amount || 0)} />
                       ) : null)}
-                      <button className="btn btn-secondary btn-sm" type="button" style={{ alignSelf: 'flex-start' }} onClick={() => setPays(ps => [...ps, { payment_method_id: methods[0]?.id ?? '', amount: mode !== 'bundle' && +(compTopup - paySum).toFixed(2) > 0 ? +(compTopup - paySum).toFixed(2) : 0, reference: '' }])}><Plus size={13} /> Add payment</button>
+                      <button className="btn btn-secondary btn-sm" type="button" style={{ alignSelf: 'flex-start' }} onClick={() => setPays(ps => [...ps, { payment_method_id: payMethods[0]?.id ?? '', amount: +(due - paySum).toFixed(2) > 0 ? +(due - paySum).toFixed(2) : 0, reference: '' }])}><Plus size={13} /> Add payment</button>
+                      {mode === 'bundle' && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                          <div>Additional charge: <strong>{money(due)}</strong></div>
+                          <div>Received now: <strong style={{ color: Math.abs(receivedNow - due) < 0.005 ? 'var(--success)' : 'var(--accent)' }}>{money(receivedNow)}</strong></div>
+                        </div>
+                      )}
                       {mode !== 'bundle' && (
                         <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                           <div>Additional charge: <strong>{money(compTopup)}</strong></div>
@@ -718,15 +797,16 @@ const ExchangesPage: React.FC = () => {
                     <label>Referrer / affiliate</label>
                     <SearchSelect value={exAffiliate}
                       onChange={v => setExAffiliate(v as any)}
-                      placeholder="Search affiliate…"
+                      placeholder={originalContext?.affiliate_inherited_id
+                        ? `Same as the original sale (${originalContext.affiliate})` : 'Search affiliate…'}
                       options={[
                         { value: 'none', label: 'None — no affiliate for this exchange' },
                         ...affiliateOptions,
                       ]} />
                     <small>
-                      {originalContext?.affiliate
-                        ? `Original sale: ${originalContext.affiliate}${originalContext.affiliate_still_eligible === false ? ' (no longer eligible)' : ''}.`
-                        : 'The original sale had no affiliate.'}
+                      {/* 408: left empty, an exchange carries the original sale's
+                          affiliate while they are still eligible. */}
+                      {affiliateHint(originalContext)}
                       {' '}Choosing None records None; it does not fall back to the customer’s referrer.
                     </small>
                   </div>
@@ -792,6 +872,14 @@ const ExchangesPage: React.FC = () => {
                     <strong>Whole bundle: {promoName(bundleLines.find(b => b.id === bundleLineId)?.promotion_id ?? '')}</strong>
                     <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{bundleComps.map(cp => `${pName(cp.product_id)} ×${cp.quantity}`).join(', ')}</div>
                     <div style={{ marginTop: 2 }}>→ replacing with: <strong>{promoName(newPromoId)}</strong></div>
+                    {bundleQuote && !bundleQuote.problem && (
+                      <div style={{ marginTop: 4 }}>
+                        Credit {money(bundleQuote.credit)} · Replacement {money(bundleQuote.replacement)} ·{' '}
+                        <strong>{bundleQuote.topup > 0 ? `${money(bundleQuote.topup)} paid now`
+                          : bundleQuote.nonrefundable > 0 ? `${money(bundleQuote.nonrefundable)} unused (non-refundable)`
+                          : 'even exchange'}</strong>
+                      </div>
+                    )}
                   </div>
                 )}
                 {mode === 'component' && componentPid && (

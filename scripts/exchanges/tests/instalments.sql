@@ -9,6 +9,7 @@ do $$
 declare own uuid:=gen_random_uuid(); cc uuid:=gen_random_uuid();
  st uuid; cust uuid; pm uuid; card uuid; p uuid; p2 uuid; promo uuid; promo2 uuid;
  inv uuid; res jsonb; ex uuid; exinv uuid; pos jsonb; arr uuid; n numeric; before_comm int;
+ q_ex int;
 begin
  insert into auth.users(id,email) values(own,'xin-own@tests.invalid'),(cc,'xin-c@tests.invalid');
  insert into profiles(id,full_name,email,role) values
@@ -41,6 +42,8 @@ begin
      'method_id',card,'months',12,'covered_amount',900)),
    'reason','Upgrade','served_by',jsonb_build_array(cc::text)));
  ex:=(res->>'id')::uuid;
+ -- the replacement's shelf count once the exchange has taken it out
+ q_ex:=(select current_qty from store_inventory where store_id=st and product_id=p2);
  pos:=exchange_payment_position(ex);
  if (pos->>'additional_charge')::numeric<>1000 then
   raise exception 'Additional charge should be 1000, got %',pos->>'additional_charge'; end if;
@@ -88,10 +91,11 @@ begin
     <> round(500 * (select coalesce(staff_commission_rate,0) from app_settings where id=true) / 100.0, 2)
     or exists(select 1 from commissions where invoice_id=exinv and status='earned') then
   raise exception 'Commission should follow the 500 received so far, not the charge'; end if;
- -- and no stock or benefit work was repeated
- if (select count(*) from stock_movements where invoice_id=exinv)
-    <> (select count(*) from stock_movements where invoice_id=exinv) then
-  raise exception 'impossible'; end if;
+ -- and no stock or benefit work was repeated (408: this compared a count with
+ -- itself; the replacement's shelf count is what must not move)
+ if (select current_qty from store_inventory where store_id=st and product_id=p2)<>q_ex
+    or exists(select 1 from stock_movements where invoice_id=exinv) then
+  raise exception 'A later receipt took the replacement out of stock again'; end if;
  if (select count(*) from product_exchange_items where exchange_id=ex and direction='replacement')<>1 then
   raise exception 'Recording an instalment repeated the exchange''s stock work'; end if;
 
@@ -106,6 +110,11 @@ begin
   raise exception 'The replacement invoice should now be paid, is %',(select status from invoices where id=exinv); end if;
  if (select paid_at from invoices where id=exinv) is null then
   raise exception 'A settled replacement invoice has no payment date'; end if;
+ -- 408: settling it does not take the replacement out of stock a second time
+ if (select current_qty from store_inventory where store_id=st and product_id=p2)<>q_ex
+    or exists(select 1 from stock_movements where invoice_id=exinv) then
+  raise exception 'Settling the replacement invoice took the replacement out of stock again (% instead of %)',
+    (select current_qty from store_inventory where store_id=st and product_id=p2), q_ex; end if;
  -- three receipts, one arrangement, nothing counted twice
  if (select coalesce(sum(amount),0) from invoice_payments where invoice_id=exinv)<>1000 then
   raise exception 'Receipts total %, not the 1000 charged',

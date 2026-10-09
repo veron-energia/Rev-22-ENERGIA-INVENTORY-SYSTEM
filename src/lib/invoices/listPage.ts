@@ -21,7 +21,12 @@ export type InvoiceListResult = {
   pages: number;
   /** The page size the database actually used, after its own clamp. */
   limit: number;
-  summary: { matching: number; total_amount: number; outstanding: number; paid: number };
+  summary: {
+    matching: number; total_amount: number; outstanding: number; paid: number;
+    /** 409: how much of total_amount is cancelled or refunded, and on how many
+     *  invoices. Absent from a database without 409. */
+    closed_total?: number; closed_count?: number;
+  };
 };
 
 /**
@@ -73,6 +78,8 @@ async function fetchInvoiceWindow(
       total_amount: Number(d?.summary?.total_amount ?? 0),
       outstanding: Number(d?.summary?.outstanding ?? 0),
       paid: Number(d?.summary?.paid ?? 0),
+      ...(d?.summary?.closed_total != null ? {
+        closed_total: Number(d.summary.closed_total), closed_count: Number(d.summary.closed_count ?? 0) } : {}),
     },
   };
 }

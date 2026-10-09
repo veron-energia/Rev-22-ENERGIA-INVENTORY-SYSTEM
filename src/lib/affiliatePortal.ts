@@ -3,16 +3,9 @@ import { supabase } from './supabase';
 export const money = (n: any) => `S$${Number(n ?? 0).toFixed(2)}`;
 export const dateStr = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
 
-// Maps the raw commission_status enum to affiliate-friendly wording.
-export const statusLabel = (s?: string): { label: string; cls: string } => {
-  switch (s) {
-    case 'paid': return { label: 'Paid', cls: 'badge-success' };
-    case 'earned': return { label: 'Unpaid', cls: 'badge-warning' };
-    case 'reversed': return { label: 'Reversed', cls: 'badge-muted' };
-    case 'cancelled': return { label: 'Blocked', cls: 'badge-danger' };
-    default: return { label: s ?? '—', cls: 'badge-muted' };
-  }
-};
+// The wording and figures the portal shows (410: blocked, partly paid, and a
+// deduction rather than a negative Unpaid).
+export { statusLabel, earningsFigures, DEDUCTION_NOTE } from './affiliatePortalFigures';
 
 // All portal reads go through SECURITY DEFINER RPCs that derive identity from
 // auth.uid(); the browser never supplies an affiliate id.

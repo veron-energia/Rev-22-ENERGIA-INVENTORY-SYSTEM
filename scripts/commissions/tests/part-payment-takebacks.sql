@@ -57,9 +57,10 @@
 --           payout on the cancelled sale was accepted.
 --   7b. 6   Part paid two months ago (never paid out), settled last month,
 --           last month paid out in full (90.00), cancelled this month: two
---           months ago 0, last month -90.00 (what was paid), this month 0,
---           nothing payable in any month. Before: last month -150.00, this
---           month +60.00 payable.
+--           months ago 0, last month 0, this month -90.00 (what was paid,
+--           taken back today: 410), nothing payable in any month. Before 410:
+--           last month -90.00, this month 0. Before 357's fix: last month
+--           -150.00, this month +60.00 payable.
 --   7c. 6   As 7b, but last month counts as paid only because of a 10.00
 --           payout that went to ANOTHER invoice of the same referrer. The close
 --           row is still cancelled in its own month, so the cancelled invoice
@@ -1053,9 +1054,11 @@ begin
 
   perform cancel_invoice_recorded(v_inv, 'Customer withdrew', gen_random_uuid());
   perform pg_temp.check(v_sc, (select i.status::text from invoices i where i.id = v_inv) = 'cancelled', 'fixture: cancelled this month');
-  perform pg_temp.check(v_sc, pg_temp.balance(v_ref, pg_temp.prev2_m()) = 0 and pg_temp.balance(v_ref, pg_temp.prev_m()) = -v_paid
-      and pg_temp.balance(v_ref, pg_temp.cur_m()) = 0,
-    format('two months ago 0, last month exactly -%s (what was paid), this month 0 (pre-fix 0 / -150.00 / +60.00), got %s / %s / %s',
+  -- 410: the 90.00 paid out of the settlement row is taken back today; the
+  -- 60.00 of it never paid out is cancelled in its own month (last month).
+  perform pg_temp.check(v_sc, pg_temp.balance(v_ref, pg_temp.prev2_m()) = 0 and pg_temp.balance(v_ref, pg_temp.prev_m()) = 0
+      and pg_temp.balance(v_ref, pg_temp.cur_m()) = -v_paid,
+    format('two months ago 0, last month 0, this month exactly -%s (what was paid, taken back today: 410; before 410 0 / -90.00 / 0; pre-fix 0 / -150.00 / +60.00), got %s / %s / %s',
       v_paid, pg_temp.balance(v_ref, pg_temp.prev2_m()), pg_temp.balance(v_ref, pg_temp.prev_m()), pg_temp.balance(v_ref, pg_temp.cur_m())));
   perform pg_temp.check(v_sc, not exists (select 1 from commissions c where c.invoice_id = v_inv
                                             and c.invoice_paid_date >= pg_temp.cur_m() and c.commission_amount > 0),

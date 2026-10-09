@@ -12,6 +12,7 @@ import { CustomerSearchSelect } from '../components/SearchSelect';
 import { CoverageLine } from '../components/therapy/coverage';
 import DownlineModal from '../components/referrals/DownlineModal';
 import { visitFilterArgs, visitFilterActive, sgDate } from '../lib/referral/campaign.mjs';
+import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
 
 // join_person_name() in the database: the two parts, trimmed, single-spaced,
@@ -273,23 +274,17 @@ const CustomersPage: React.FC = () => {
   const filtered = rows;
 
   // The list is server-paginated, so the on-screen rows are only one page.
-  // Export re-runs the same search without the page limit.
-  const fetchAllForExport = async () => {
-    const out: any[] = [];
-    const PAGE = 1000;
-    for (let offset = 0; ; offset += PAGE) {
-      const { data } = await supabase.rpc('search_customers', {
-        p_query: debouncedSearch.trim() || null,
-        p_source: sourceFilter || null,
-        p_limit: PAGE, p_offset: offset,
-        ...visitArgs,
-      });
-      const batch = (data as any[]) ?? [];
-      out.push(...batch);
-      if (batch.length < PAGE) break;
-    }
-    return out;
-  };
+  // Export re-runs the same search, page by page, in the list's one fixed
+  // order (409), and fails out loud rather than give a short or doubled file.
+  const fetchAllForExport = () => fetchAllCustomerRows<any>(async (limit, offset) => {
+    const { data, error } = await supabase.rpc('search_customers', {
+      p_query: debouncedSearch.trim() || null,
+      p_source: sourceFilter || null,
+      p_limit: limit, p_offset: offset,
+      ...visitArgs,
+    });
+    return { data: (data as any[]) ?? null, error };
+  });
 
 
   return (

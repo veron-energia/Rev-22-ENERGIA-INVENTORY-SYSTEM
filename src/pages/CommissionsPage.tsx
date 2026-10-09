@@ -6,6 +6,7 @@ import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Settings } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { AffiliatePayoutPanel } from '../components/commissions/AffiliatePayoutPanel';
+import { owedSplit } from '../lib/affiliatePayoutPresentation';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -96,7 +97,8 @@ const CommissionsPage: React.FC = () => {
         <div style={{ display: 'flex', gap: 10 }}>
           {tab === 'referrers' && <ExcelExportButton rows={referrers} filename="commission-referrers" sheetName="Referrers" columns={[
             { header: 'Referrer', value: (r: any) => r.full_name || '' }, { header: 'Phone', value: (r: any) => r.phone || '' },
-            { header: 'Lifetime earned', value: (r: any) => Number(r.lifetime_earned) }, { header: 'Unpaid', value: (r: any) => Number(r.unpaid_earned) },
+            { header: 'Lifetime earned', value: (r: any) => Number(r.lifetime_earned) }, { header: 'Unpaid', value: (r: any) => owedSplit(r.unpaid_earned).unpaid },
+            { header: 'Deduction to recover', value: (r: any) => owedSplit(r.unpaid_earned).deduction },
           ]} />}{canPay && <button className="btn btn-secondary" onClick={() => { setRatesDraft(rates); setRatesErr(null); setRatesOpen(true); }}><Settings size={15} /> Rates</button>}{tab === 'referrers' && <button className="btn btn-secondary" onClick={() => { void load(); void loadReferrers(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>}</div>
       </div>
 
@@ -122,7 +124,10 @@ const CommissionsPage: React.FC = () => {
                       <td style={{ textAlign: 'right' }}>{r.direct_referrals}</td>
                       <td style={{ textAlign: 'right' }}>{r.total_downline}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(r.lifetime_earned))}</td>
-                      <td style={{ textAlign: 'right', color: Number(r.unpaid_earned) > 0 ? 'var(--primary)' : 'var(--text-muted)' }}>{money(Number(r.unpaid_earned))}</td>
+                      {/* The affiliate's months netted (410): never a negative Unpaid; what
+                          they owe back is recovered from their later commission. */}
+                      <td style={{ textAlign: 'right', color: Number(r.unpaid_earned) > 0 ? 'var(--primary)' : 'var(--text-muted)' }}>{money(owedSplit(r.unpaid_earned).unpaid)}
+                        {owedSplit(r.unpaid_earned).deduction > 0 && <div style={{ fontSize: 11.5, color: 'var(--danger)' }}>Owes {money(owedSplit(r.unpaid_earned).deduction)} back</div>}</td>
                       <td style={{ textAlign: 'right' }}><button className="btn btn-secondary btn-sm" onClick={() => openDetail(r)}><Network size={13} /> View</button></td>
                     </tr>
                   ))}
@@ -156,9 +161,10 @@ const CommissionsPage: React.FC = () => {
                   </div>
                   <div style={{ padding: 10, background: 'var(--primary-light)', borderRadius: 'var(--radius-sm)' }}>
                     <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Unpaid total</div>
-                    <div style={{ fontSize: 15, fontWeight: 700 }}>{money(Number(detail.lifetime?.total_earned ?? 0))}</div>
+                    <div style={{ fontSize: 15, fontWeight: 700 }}>{money(owedSplit(detail.lifetime?.total_earned).unpaid)}</div>
                   </div>
                 </div>
+                {owedSplit(detail.lifetime?.total_earned).deduction > 0 && <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 4 }}>Deduction to be recovered: {money(owedSplit(detail.lifetime?.total_earned).deduction)}. Commission already paid out was taken back (a refund, a cancellation or a change of affiliate); it comes off this affiliate's later commission before anything more is paid.</div>}
                 {Number(detail.lifetime?.reversed ?? 0) > 0 && <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 4 }}>Reversed: {money(Number(detail.lifetime.reversed))}</div>}
               </div>
 
@@ -174,7 +180,7 @@ const CommissionsPage: React.FC = () => {
                           <td style={{ fontFamily: 'var(--font-display)' }}>{m.month}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(m.tier1))}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(m.tier2))}</td>
-                          <td style={{ textAlign: 'right', color: 'var(--primary)' }}>{money(Number(m.unpaid))}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--primary)' }}>{money(owedSplit(m.unpaid).unpaid)}{owedSplit(m.unpaid).deduction > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>owed back {money(owedSplit(m.unpaid).deduction)}</div>}</td>
                           <td style={{ textAlign: 'right', color: 'var(--success)' }}>{money(Number(m.paid))}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(m.total))}</td>
                         </tr>

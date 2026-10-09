@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, money, dateStr } from '../lib/affiliatePortal';
+import { portalRpc, money, dateStr, earningsFigures, DEDUCTION_NOTE } from '../lib/affiliatePortal';
 import { Users, TrendingUp, Wallet, Clock } from 'lucide-react';
 import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
 
@@ -12,6 +12,7 @@ const AffiliateDashboardPage: React.FC = () => {
   useEffect(() => { portalRpc('affiliate_portal_dashboard').then(setD).catch(e => setErr(e.message)); }, []);
 
   const recent: any[] = d?.recent ?? [];
+  const owed = earningsFigures(d?.earnings);
 
   return (
     <AffiliateLayout>
@@ -29,12 +30,14 @@ const AffiliateDashboardPage: React.FC = () => {
 
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Earnings</h3>
           <StatGrid>
-            <Stat label="Unpaid" value={money(d.earnings?.unpaid)} icon={<Clock size={15} />} accent="var(--warning)" />
+            <Stat label="Unpaid" value={money(owed.unpaid)} icon={<Clock size={15} />} accent="var(--warning)" />
+            {owed.deduction > 0 && <Stat label="Deduction to be recovered" value={money(owed.deduction)} accent="var(--danger)" />}
             <Stat label="Paid" value={money(d.earnings?.paid)} icon={<Wallet size={15} />} accent="var(--success)" />
             <Stat label="Lifetime" value={money(d.earnings?.lifetime)} icon={<TrendingUp size={15} />} />
             {Number(d.earnings?.blocked) > 0 && <Stat label="Blocked" value={money(d.earnings?.blocked)} accent="var(--danger)" />}
             {Number(d.earnings?.reversed) > 0 && <Stat label="Reversed" value={money(d.earnings?.reversed)} />}
           </StatGrid>
+          {owed.deduction > 0 && <p className="portal-break" style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '-8px 0 18px' }}>{DEDUCTION_NOTE}</p>}
 
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Tier Breakdown</h3>
           <StatGrid>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { InvoiceSearchSelect } from './InvoiceSearchSelect';
-import { singaporeToday } from '../../lib/invoices/business';
+import { singaporeToday, usedValueText } from '../../lib/invoices/business';
 import { CustomerSearchSelect } from '../SearchSelect';
 import { InvoiceBenefitEvidenceReview } from './InvoiceBenefitEvidenceReview';
 import { InvoiceRewardResolution } from './InvoiceRewardResolution';
@@ -9,7 +9,23 @@ import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
 import { type WaitingAnswers, unansweredItems, withWaitingAnswers } from '../../lib/special/waitingItems';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
-type Mode = '' | 'refund' | 'payment' | 'cancel' | 'reopen' | 'transfer';
+const cents = (n: unknown) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** 409: the refund still due, taken from the original payments in the order
+ *  listed, each up to what it still holds. */
+export function splitRefundDue(due: number, sources: { payment_id: string; remaining: number }[]): Record<string, number> {
+  let left = cents(due);
+  const out: Record<string, number> = {};
+  for (const s of sources ?? []) {
+    const take = cents(Math.min(left, Number(s.remaining) || 0));
+    if (take > 0) { out[s.payment_id] = take; left = cents(left - take); }
+  }
+  return out;
+}
+// 'refund_due' (409): the refund still owed on a cancelled or refunded invoice,
+// recorded when it has actually gone back. 'refund' is the line-by-line form,
+// reached from it when the money must go back through a purchase's benefits.
+type Mode = '' | 'refund' | 'refund_due' | 'payment' | 'reopen' | 'transfer';
 type Source = { payment_id: string; method: string; wallet: boolean; remaining: number };
 type Benefit = { id: string; invoice_item_id: string; customer_name?: string; customer_id?: string; store_id?: string; benefit_kind?: string; cancelled_unused_value?: number; remaining_value: number; max_refund: number; reward_voucher_id?: string };
 type Stock = { movement_id: string; product_name: string; quantity: number; resolved_quantity: number };
@@ -19,10 +35,15 @@ type Options = { financial: Record<string, any>; sources: Source[]; benefits: Be
 /** All amounts are proposals: the locked database transaction rechecks capacity,
  * source ownership, benefit use and stock evidence before recording anything. */
 export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, stores = [], onChanged,
-  requestedMode = null, requestedPaymentId = null, onRequestHandled, onActiveChange }: {
+  requestedMode = null, requestedPaymentId = null, onRequestHandled, onActiveChange, usedValue = null }: {
   invoiceId: string; canManage: boolean; payments: any[]; methods: any[]; stores?: { id: string; name: string }[]; onChanged: () => Promise<void>;
-  /** Refund, cancel and payment correction are opened from the invoice footer and
-   *  the payments list now, not from this panel's own row of buttons. */
+  /** 409: on a cancelled invoice, what its customer already had from it (the
+   *  guided cancellation's override codes); null while unknown. With any, the
+   *  money it holds is not all owed back, and "Record refund paid" is not
+   *  offered: this says why instead. */
+  usedValue?: string[] | null;
+  /** "Record refund paid" (the invoice footer) and payment correction (the
+   *  payments list) open this panel, not a row of buttons of its own. */
   requestedMode?: Mode | null; requestedPaymentId?: string | null; onRequestHandled?: () => void;
   /** Whether a refund, cancellation, correction or transfer is being entered
    *  here. The invoice view uses it to leave those entries alone when the
@@ -52,6 +73,12 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   // Set when a refund or cancellation is refused because the package's
   // qualification rewards are still outstanding. The review answers it.
   const [rewardReview, setRewardReview] = useState(false);
+  // 409: "Record refund paid" was refused because the money must go back
+  // through the purchase's benefits; the line-by-line form is offered.
+  const [dueByLine, setDueByLine] = useState(false);
+  // Whether the amounts in "Record refund paid" were typed, so a reload of the
+  // invoice's figures does not overwrite them.
+  const [dueTouched, setDueTouched] = useState(false);
   // 393: special products and rentals still waiting for a warehouse. A refund
   // asks, for each, whether the customer is still taking it.
   const waitingItems = useWaitingItems(invoiceId, payments);
@@ -74,12 +101,33 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     onActiveChange?.(true);
     setMode(next); setError(''); setReason(''); setRequestId(crypto.randomUUID()); setConfirmed(false); setBenefitOverpayment(false);
     setLineAmounts({}); setBenefitAmounts({}); setSourceAmounts({}); setStock({}); setPreview(null); setWaitingAnswers({});
-    setTransferBenefit(''); setTransferCustomer(''); setTransferStore('');
+    setTransferBenefit(''); setTransferCustomer(''); setTransferStore(''); setDueByLine(false); setDueTouched(false);
+    if (next === 'refund' && ['cancelled', 'refunded'].includes(options?.financial?.status)) {
+      // From "Record refund paid": what a cancellation would return, line by
+      // line with each line's benefits, as the guided flow works it out. The
+      // person checks it; the server checks everything again.
+      const { data } = await supabase.rpc('invoice_action_plan', { p_invoice_id: invoiceId, p_action: 'cancel', p_lines: [] });
+      const plan = data as any;
+      if (plan) {
+        setLineAmounts(Object.fromEntries((plan.lines ?? []).filter((l: any) => Number(l.amount) > 0)
+          .map((l: any) => [l.invoice_item_id, Number(l.amount)])));
+        setBenefitAmounts(Object.fromEntries((plan.lines ?? []).flatMap((l: any) => (l.benefits ?? [])
+          .filter((b: any) => Number(b.amount) > 0).map((b: any) => [b.benefit_id, Number(b.amount)]))));
+        setSourceAmounts(Object.fromEntries((plan.sources ?? []).map((s: any) => [s.payment_id, Number(s.amount)])));
+      }
+    }
     if (next === 'reopen') {
       const { data, error } = await supabase.rpc('invoice_reopen_preview', { p_invoice_id: invoiceId });
       setPreview(data); setError(error?.message || '');
     }
   };
+  // "Record refund paid" starts from what is still due, taken from the
+  // original payments in the order listed, each up to what it still holds.
+  // The person can change it; the server holds it to the refund due.
+  useEffect(() => {
+    if (mode !== 'refund_due' || !options || dueTouched || (usedValue?.length ?? 0) > 0) return;
+    setSourceAmounts(splitRefundDue(Number(options.financial?.refund_due ?? 0), options.sources));
+  }, [mode, options, dueTouched, usedValue]);
   const currentPayments = payments.filter(p => p.entry_kind !== 'correction_reversal' && !payments.some(r => r.corrects_payment_id === p.id && r.entry_kind === 'correction_reversal'));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => { onActiveChange?.(false); }, []);
@@ -106,13 +154,25 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   };
   const submit = async () => {
     if (!reason.trim()) { setError('Enter a reason for the audit history.'); return; }
+    if (mode === 'refund_due' && dueProblem) { setError(dueProblem); return; }
     if (mode === 'refund' && !confirmed) { setError('Confirm the actual refund and stock outcomes before recording.'); return; }
     if (mode === 'refund' && waitingLeft.length) { setError('Say whether the customer is still taking each item waiting for a warehouse.'); return; }
     setBusy(true); setError('');
     try {
       let result;
       const common = { p_invoice_id: invoiceId, p_reason: reason.trim(), p_request_id: requestId };
-      if (mode === 'refund') {
+      if (mode === 'refund_due') {
+        // 409: on a cancelled invoice nothing is charged any more, so the money
+        // still held is owed back as a whole, not by line: one line without an
+        // item, through the original payments. The server holds it to the
+        // refund due, replays a repeat of this request and audits it.
+        result = await supabase.rpc('refund_invoice_recorded', { ...common,
+          p_lines: [{ invoice_item_id: null, amount: dueTotal }],
+          p_sources: Object.entries(sourceAmounts).filter(([, amount]) => amount > 0)
+            .map(([payment_id, amount]) => ({ payment_id, amount: cents(amount) })),
+          p_stock: [],
+        });
+      } else if (mode === 'refund') {
         const lines = Object.entries(lineAmounts).filter(([, amount]) => amount > 0).map(([id, amount]) => ({
           invoice_item_id: id === 'excess' ? null : id, amount, overpayment: benefitOverpayment && (options?.benefits || []).some(b => b.invoice_item_id === id),
           benefits: (options?.benefits || []).filter(b => b.invoice_item_id === id && benefitAmounts[b.id] > 0).map(b => ({ benefit_id: b.id, amount: benefitAmounts[b.id] })),
@@ -129,7 +189,8 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       } else if (mode === 'payment') {
         result = await supabase.rpc('correct_invoice_payment', { p_payment_id: paymentId, p_amount: amount, p_date: date,
           p_method_id: methodId, p_reason: reason.trim(), p_request_id: requestId });
-      } else result = await supabase.rpc(mode === 'reopen' ? 'reopen_invoice' : 'cancel_invoice_recorded', common);
+      } else if (mode === 'reopen') result = await supabase.rpc('reopen_invoice', common);
+      else throw new Error('Choose what to record.');
       if (result.error) throw result.error;
       close(); await onChanged();
     } catch (e: any) {
@@ -137,12 +198,21 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       setError(message);
       // This refusal has a way forward; offer it instead of a dead end.
       if (/qualification reward entitlements/i.test(message)) setRewardReview(true);
+      // Issued credit or sold vouchers go back through the purchase's own
+      // benefits, line by line (the server refuses the single line for them).
+      if (mode === 'refund_due' && /original unused purchased benefits/i.test(message)) setDueByLine(true);
     }
     finally { setBusy(false); }
   };
   const f = options?.financial;
   const total = Object.values(lineAmounts).reduce((a, b) => a + b, 0);
   const sourceTotal = Object.values(sourceAmounts).reduce((a, b) => a + b, 0);
+  // 409: the refund still due on a cancelled or refunded invoice.
+  const refundDue = Number(f?.refund_due ?? 0);
+  const dueTotal = cents(sourceTotal);
+  const dueProblem = dueTotal <= 0 ? 'Enter how much went back through each payment.'
+    : dueTotal > cents(refundDue) ? `That is more than the ${money(refundDue)} still due.`
+    : !confirmed ? `Confirm that the ${money(dueTotal)} has actually gone back to the customer.` : '';
   const amountInput = (label: string, value: number, max: number, change: (n: number) => void) => <label className="invoice-finance-amount">{label}
     <input aria-label={label} type="number" min="0" max={max} step="0.01" value={value || ''} placeholder="0.00" onChange={e => change(Number(e.target.value))} /></label>;
   return <section className="invoice-finance" aria-label="Invoice settlement and corrections">
@@ -155,6 +225,10 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       }} />}
     {options?.review_notes?.map(note => <p role="status" key={note}>{note}</p>)}
     {f && <p>Net payments held: <strong>{money(f.net_received)}</strong> · Outstanding: <strong>{money(f.outstanding)}</strong> · Refund due: <strong>{money(f.refund_due)}</strong> · Refunded: {money(f.refunded)}</p>}
+    {canManage && f?.status === 'cancelled' && Number(f?.refund_due) > 0.005 && (usedValue?.length ?? 0) > 0 &&
+      <p role="status" data-testid="refund-due-used">This cancelled invoice still holds {money(f.refund_due)}, but its customer already had
+        part of what it sold ({usedValueText(usedValue ?? [])}), which the cancellation kept. Not all of it is owed back, so it cannot be
+        recorded as paid back here; how much goes back is for the Owner to decide.</p>}
     {/* Refund and cancellation are one footer action now, and payment correction
         sits with the payments it corrects. Only what has no other home remains. */}
     {canManage && !mode && <div className="invoice-finance-actions">
@@ -164,7 +238,25 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         <button className="btn btn-secondary" onClick={() => open('reopen')}>Preview reopening</button>}
     </div>}
     {mode && <div className="form-grid">
-      <strong>{mode === 'refund' ? 'Record money or credit actually returned' : mode === 'payment' ? 'Correct a recorded payment' : mode === 'transfer' ? 'Move unused credit or vouchers' : mode === 'reopen' ? 'Reopen invoice' : 'Cancel invoice'}</strong>
+      <strong>{mode === 'refund' ? 'Record money or credit actually returned' : mode === 'refund_due' ? 'Record refund paid' : mode === 'payment' ? 'Correct a recorded payment' : mode === 'transfer' ? 'Move unused credit or vouchers' : 'Reopen invoice'}</strong>
+      {mode === 'refund_due' && options && <>
+        <p>This invoice is {String(f?.status ?? '').replace(/_/g, ' ')} and still holds <strong>{money(refundDue)}</strong> that has not been
+          recorded as returned to the customer. Record it here once it has actually gone back: recording does not send money anywhere. It is
+          recorded against the original payments it came in on; a payment made with credit gets that credit back.</p>
+        <strong>Paid back through</strong>
+        {options.sources.filter(s => Number(s.remaining) > 0).map(s => <div key={s.payment_id}>{amountInput(
+          `${s.method} · ${s.wallet ? 'credit restored' : 'money returned'} · up to ${money(s.remaining)}`,
+          sourceAmounts[s.payment_id], Number(s.remaining), n => { setDueTouched(true); setSourceAmounts(v => ({ ...v, [s.payment_id]: n })); })}</div>)}
+        {options.sources.every(s => Number(s.remaining) <= 0) && <p role="alert">No payment on this invoice still holds money, so there is nothing to record.</p>}
+        <p>Recording {money(dueTotal)} of the {money(refundDue)} still due.</p>
+        {dueTotal > cents(refundDue) && <p role="alert">{dueProblem}</p>}
+        <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> The {money(dueTotal)} has actually
+          gone back to the customer.</label>
+        {dueByLine && <div role="status">
+          <p>This invoice's credit or vouchers were issued, so the money goes back through them, line by line.</p>
+          <button className="btn btn-secondary" disabled={busy} onClick={() => void open('refund')}>Allocate it line by line instead</button>
+        </div>}
+      </>}
       {mode === 'transfer' && <>
         <p>Move the selected benefit’s unused balance to the correct recipient or store. Previously consumed value stays with its original recipient. The invoice buyer and original records remain in history.</p>
         <InvoiceSearchSelect label="Unused benefit" value={transferBenefit} onChange={id => {
@@ -218,8 +310,6 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         <label>Actual payment date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
         <InvoiceSearchSelect value={methodId} onChange={setMethodId} options={methods.filter(m => m.is_active && !m.deleted_at).map(m => ({ value: m.id, label: m.name }))} />
       </>}
-      {mode === 'cancel' && <p>Cancellation releases outstanding stock deductions and unused benefits. Existing payments and consumed benefits remain in history. Record any actual refund separately.</p>}
-      {mode === 'cancel' && waitingItems.length > 0 && <p>Special products and rentals still waiting for a warehouse are cancelled with the invoice.</p>}
       {mode === 'reopen' && (preview ? <>
         <p>{preview.explanation}</p>
         <p>Invoice total: {money(preview.total)} · Net payments: {money(preview.net_received)} · Payment required to settle again: {money(Math.max(0, Number(preview.total) - Number(preview.net_received)))}</p>
@@ -232,8 +322,8 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       <label>Reason (required)<textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
       <div className="invoice-finance-actions">
         <button className="btn btn-secondary" disabled={busy} onClick={close}>Back</button>
-        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0))} onClick={submit}>
-          {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'cancel' ? 'Confirm cancellation' : 'Record with audit history'}
+        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0)) || (mode === 'refund_due' && !!dueProblem)} onClick={submit}>
+          {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'refund_due' ? `Record ${money(dueTotal)} refund paid` : 'Record with audit history'}
         </button>
       </div>
     </div>}

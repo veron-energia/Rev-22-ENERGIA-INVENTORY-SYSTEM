@@ -182,16 +182,22 @@ begin
 
  perform pg_temp.switch_affiliate(inv, pg_temp.fx('affb2'), 'Affiliate was B after payout');
 
+ -- 410 (the Owner, 3 Oct 2026): commission already paid out and then taken
+ -- back is recovered from A's later commission, so A's take-back is dated the
+ -- day of the correction and the month already paid stays as it was paid.
+ -- Before 410 it was dated in the paid month (A at -90.00 there).
  perform pg_temp.check((select status from commissions where id = v_paid) = 'paid'
-    and (select invoice_paid_date from commissions where adjusts_commission_id = v_paid and commission_amount = -90) = d,
-   '2: A''s paid row stands and is taken back by a -90.00 adjustment in the paid month');
+    and (select invoice_paid_date from commissions where adjusts_commission_id = v_paid and commission_amount = -90
+          and status = 'earned') = sg_today(),
+   '2: A''s paid row stands and is taken back by a -90.00 adjustment dated today (410)');
  perform pg_temp.check(pg_temp.live(inv, b) = 90 and pg_temp.live(inv, r) = 31.50, '2: B earns 90.00 and R tier 2 31.50');
  perform pg_temp.check(pg_temp.dates(inv, array[b, r]) = array[d],
    format('2: the re-earned bundle rows keep the paid date %s, got %s', d, pg_temp.dates(inv, array[b, r])));
- perform pg_temp.check(pg_temp.this_month(inv) = 0,
-   format('2: nothing of the invoice moved into this month (%s held here)', pg_temp.this_month(inv)));
- perform pg_temp.check(pg_temp.balance(b, mon) = 90 and pg_temp.balance(a, mon) = -90,
-   '2: the paid month holds both sides: B is owed 90.00, A gives back the 90.00 paid out');
+ perform pg_temp.check(pg_temp.this_month(inv) = 90,
+   format('2: of the invoice, only A''s take-back is in this month (%s held here)', pg_temp.this_month(inv)));
+ perform pg_temp.check(pg_temp.balance(b, mon) = 90 and pg_temp.balance(a, mon) = 0
+    and pg_temp.balance(a, date_trunc('month', sg_today()::timestamp)::date) = -90,
+   '2: the paid month: B is owed 90.00 and A''s stays as paid; A gives back the 90.00 from this month (410)');
 end $$;
 
 -- ═════ 3. A bundle paid in two parts over two months, its affiliate corrected now ═════

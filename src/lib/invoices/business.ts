@@ -111,6 +111,52 @@ export const INVOICE_SORT_FIELDS: { value: InvoiceSortField; label: string }[] =
   { value: 'status', label: 'Status' },
 ];
 
+/** Statuses that owe nothing: a cancelled or refunded sale is over, and an FOC
+ *  invoice is S$0. */
+export const OWES_NOTHING_STATUSES: readonly string[] = ['cancelled', 'refunded', 'completed_foc'];
+
+/**
+ * What the invoice list shows as still owed (409): nothing on a cancelled,
+ * refunded or FOC invoice; otherwise what the database worked out for the row
+ * (invoice_list_page: what the invoice still charges, its total less any line
+ * refunded, less what it holds), or, for a row without that figure, its total
+ * less what is held. The same rule as the invoice's own view
+ * (invoice_financial_position); total minus paid alone showed a cancelled
+ * sale's whole total as owed, and a part refund as still owed.
+ */
+export function invoiceListOutstanding(
+  invoice: { status?: string | null; total_amount?: unknown; paid_amount?: unknown; outstanding?: unknown },
+): number {
+  if (OWES_NOTHING_STATUSES.includes(String(invoice.status ?? ''))) return 0;
+  if (invoice.outstanding != null && invoice.outstanding !== '' && Number.isFinite(Number(invoice.outstanding))) {
+    return Math.max(0, Number(invoice.outstanding));
+  }
+  return Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.paid_amount ?? 0));
+}
+
+/**
+ * What a cancelled invoice's customer already had from it (409), as the
+ * guided cancellation's plan names it: the overrides it asks for when
+ * sessions were delivered, therapy started, vouchers redeemed or credit
+ * spent. A cancellation keeps that, so not all the money the invoice still
+ * holds is owed back, and "Record refund paid" is not offered for it (the
+ * database refuses it too, and also when paid credit released before full
+ * payment was spent).
+ */
+const USED_VALUE_TEXT: Record<string, string> = {
+  session_used: 'sessions delivered',
+  therapy_activated: 'therapy started or its vouchers collected',
+  voucher_redeemed: 'vouchers redeemed',
+  credit_used: 'credit spent',
+};
+export function usedValueCodes(plan: { overrides_required?: { code?: string }[] | null } | null | undefined): string[] {
+  const codes = (plan?.overrides_required ?? []).map(o => String(o?.code ?? '')).filter(c => c in USED_VALUE_TEXT);
+  return Array.from(new Set(codes));
+}
+export function usedValueText(codes: readonly string[]): string {
+  return codes.map(c => USED_VALUE_TEXT[c] ?? c).join(', ');
+}
+
 const SORT_FIELD_SET = new Set<string>(INVOICE_SORT_FIELDS.map(f => f.value));
 /** Only a field this list knows about is ever used. */
 export function isInvoiceSortField(v: unknown): v is InvoiceSortField {

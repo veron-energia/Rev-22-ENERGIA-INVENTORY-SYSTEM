@@ -49,7 +49,9 @@ begin
  perform pg_temp.check((select balance=-15 and paid=15 from affiliate_month_balances() where referrer=ref and month=commission_month),'correcting payment after adjustment releases only difference');
  perform reconcile_invoice_commissions(inv,'Repeat cancelled calculation');
  perform pg_temp.check((select balance=-15 and paid=15 from affiliate_month_balances() where referrer=ref and month=commission_month),'later recalculation preserves corrected cash and anchors');
- perform pg_temp.check((affiliate_portal_earnings()->'summary'->>'paid')::numeric=15 and (affiliate_portal_earnings()->'summary'->>'unpaid')::numeric=-15,'portal preserves effective payment and signed adjustment');
+ -- 410: what is owed back shows as a deduction, never as a negative Unpaid.
+ perform pg_temp.check((affiliate_portal_earnings()->'summary'->>'paid')::numeric=15 and (affiliate_portal_earnings()->'summary'->>'unpaid')::numeric=0
+  and (affiliate_portal_earnings()->'summary'->>'deduction')::numeric=15,'portal preserves effective payment and shows the take-back as a deduction');
  perform pg_temp.check((affiliate_portal_purchases()->0->>'your_commission')::numeric=0,'portal purchase excludes superseded reversals');
  perform affiliate_portal_network(); perform affiliate_portal_payouts();
  raise notice 'PASS: real refund, correction, cancellation and repeat commission reconciliation after partial/full payouts';

@@ -110,6 +110,20 @@ const scenarios = {
     tables: { ...base, invoices: [invoice({ status: 'refunded', paid_amount: 0, paid_at: date })], invoice_items: [lineOf()], invoice_payments: receipt(100) },
     financial: { total: 100, net_received: 0, outstanding: 0, refund_due: 0, refunded: 100, status: 'refunded' },
   },
+  // 409: cancelled with S$40 still held, owed back to the customer.
+  cancelled_due: {
+    tables: { ...base, invoices: [invoice({ status: 'cancelled', paid_amount: 40 })], invoice_items: [lineOf()], invoice_payments: receipt(40) },
+    financial: { total: 100, net_received: 40, outstanding: 0, refund_due: 40, refunded: 0, status: 'cancelled' },
+    plan: { action: 'cancel', refund_due: 40, overrides_required: [], blockers: [], lines: [], sources: [] },
+  },
+  // 409: cancelled with S$30 still held for a session the customer had: the
+  // cancellation kept it, so it is not offered as owed back.
+  cancelled_used: {
+    tables: { ...base, invoices: [invoice({ status: 'cancelled', paid_amount: 30 })], invoice_items: [lineOf()], invoice_payments: receipt(30) },
+    financial: { total: 100, net_received: 30, outstanding: 0, refund_due: 30, refunded: 0, status: 'cancelled' },
+    plan: { action: 'cancel', refund_due: 0, blockers: [], lines: [], sources: [],
+      overrides_required: [{ code: 'session_used', message: 'Sessions from this purchase have been delivered.' }] },
+  },
   voucher: paidWith(lineOf({ line_kind: 'voucher', product_id: null, voucher_id: 'gift-small', unit_price: 40, line_total: 40 })),
   promotion: paidWith(lineOf({ line_kind: 'promotion', product_id: null, promotion_id: 'promo-small', unit_price: 50, line_total: 50 })),
   credit_package: paidWith(lineOf({ line_kind: 'credit_package', product_id: null, credit_package_id: 'credit-small', unit_price: 100, line_total: 100 })),
@@ -143,8 +157,11 @@ const mock = `export const supabase={ from(table) {
  if(name==='invoice_effective_affiliate')data={found:true,has_affiliate:false};
  if(name==='customer_search')data=window.__tables.customers;
  if(name==='invoice_financial_position')data=window.__financial;
- if(name==='invoice_refund_options')data={financial:window.__financial,sources:[],stock:[],benefits:[],lines:[],review_required:false};
+ if(name==='invoice_refund_options')data={financial:window.__financial,stock:[],benefits:[],lines:[],review_required:false,
+   // 409: a payment still holding money, for Record refund paid.
+   sources:Number(window.__financial?.refund_due||0)>0?[{payment_id:'payment',method:'Cash',wallet:false,remaining:Number(window.__financial.net_received)}]:[]};
  if(name==='invoice_benefit_review_options')data={lines:[]};
+ if(name==='invoice_action_plan'&&window.__plan)data=window.__plan;
  if(name==='preview_invoice_correction')data={invoice_no:'INV-TEST',status:'paid',effects:[],needs_review:[],blocking:false};
  if(name==='credit_packages_for_store')data=window.__tables.credit_packages;
  if(name==='premium_bundles_for_store')data=window.__tables.premium_bundles;
@@ -192,8 +209,9 @@ const mount = async (page, scenario, role, { staffMayCorrect = true } = {}) => {
     ? route.fulfill({ contentType: 'text/html', body: '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div></body></html>' })
     : route.abort());
   await page.goto('https://invoice.test/');
-  await page.evaluate(([t, f, r, may, tickets]) => { window.__tables = JSON.parse(JSON.stringify(t)); window.__financial = f; window.__calls = [];
-    window.__role = r; window.__staffMayCorrect = may; window.__ticketOptions = tickets; }, [s.tables, s.financial, role, staffMayCorrect, TICKET_OPTIONS]);
+  await page.evaluate(([t, f, r, may, tickets, plan]) => { window.__tables = JSON.parse(JSON.stringify(t)); window.__financial = f; window.__calls = [];
+    window.__role = r; window.__staffMayCorrect = may; window.__ticketOptions = tickets; window.__plan = plan; },
+    [s.tables, s.financial, role, staffMayCorrect, TICKET_OPTIONS, s.plan ?? null]);
   await page.addStyleTag({ content: css.replace(/^@import.*$/gm, '') });
   await page.addScriptTag({ content: bundle });
   await page.getByRole('button', { name: 'View', exact: true }).first().click();
@@ -245,8 +263,11 @@ try {
     await page.getByRole('button', { name: 'Correct Invoice', exact: true }).waitFor();
     ok('staff are offered Correct Invoice on a paid invoice of their store',
        await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 1);
-    ok('beside Request Refund',
-       await page.getByRole('button', { name: 'Request Refund', exact: true }).count() === 1);
+    // 409: staff raise refunds and cancellations through the guided dialog, as a request.
+    ok('beside Request refund / cancel (the guided dialog, as a request)',
+       await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).count() === 1);
+    ok('the old Request Refund is gone',
+       await page.getByRole('button', { name: 'Request Refund', exact: true }).count() === 0);
     ok('and not the Owner / Manager Refund / Cancel',
        await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).count() === 0);
     ok('the page asked the server about this invoice', await page.evaluate(() =>
@@ -288,18 +309,62 @@ try {
     await page.getByRole('button', { name: 'Correct Invoice', exact: true }).waitFor();
     ok('staff are offered Correct Invoice on a part-paid invoice',
        await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 1);
+    ok('and can ask for a refund or cancellation of it (409; the old button could not)',
+       await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).count() === 1);
+    // The request opens the guided dialog in request mode: it submits a
+    // request and never offers to confirm anything.
+    await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).click();
+    await page.getByRole('dialog').getByText('Cancel invoice', { exact: true }).waitFor();
+    ok('the guided dialog opens for staff', await page.getByRole('dialog').getByText('Full refund', { exact: true }).count() === 1);
+    ok('the old request function is never called', await page.evaluate(() =>
+       !window.__calls.some(c => c.name === 'request_invoice_action')));
+    ok('nothing in the dialog fits wider than the screen', await page.evaluate(() =>
+       document.documentElement.scrollWidth <= window.innerWidth + 1), `${width}px`);
+
+    // 409: an Owner sees "Record refund paid" on a cancelled invoice still
+    // holding money; staff do not.
+    await mount(page, 'cancelled_due', 'owner');
+    await page.getByRole('button', { name: 'Record refund paid', exact: true }).waitFor();
+    ok('an Owner is offered Record refund paid on a cancelled invoice with a refund due',
+       await page.getByRole('button', { name: 'Record refund paid', exact: true }).count() === 1
+       && await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).count() === 0);
+    await page.getByRole('button', { name: 'Record refund paid', exact: true }).click();
+    await page.getByText('Paid back through', { exact: true }).waitFor();
+    ok('it opens the form with the refund due prefilled', await page.getByLabel(/Cash · money returned/).inputValue() === '40');
+    ok('and the form fits the screen', await page.evaluate(() =>
+       document.documentElement.scrollWidth <= window.innerWidth + 1), `${width}px`);
+    await mount(page, 'cancelled_due', 'staff');
+    ok('staff are not offered Record refund paid',
+       await page.getByRole('button', { name: 'Record refund paid', exact: true }).count() === 0);
+    // 409 review: the S$30 held for a delivered session is not owed back.
+    await mount(page, 'cancelled_used', 'owner');
+    await page.getByTestId('refund-due-used').waitFor();
+    ok('on a cancelled invoice whose customer had part of it, Record refund paid is not offered',
+       await page.getByRole('button', { name: 'Record refund paid', exact: true }).count() === 0);
+    ok('the invoice says why: what was used, and that not all of it is owed back',
+       /sessions delivered/.test(await page.getByTestId('refund-due-used').textContent())
+       && /Not all of it is owed back/.test(await page.getByTestId('refund-due-used').textContent()));
+    ok('the page asked the cancellation\'s plan', await page.evaluate(() =>
+       window.__calls.some(c => c.name === 'invoice_action_plan' && c.args.p_action === 'cancel')));
+    ok('and the note fits the screen', await page.evaluate(() =>
+       document.documentElement.scrollWidth <= window.innerWidth + 1), `${width}px`);
+    await mount(page, 'refunded', 'owner');
+    ok('nor is anyone on a refunded invoice with nothing due',
+       await page.getByRole('button', { name: 'Record refund paid', exact: true }).count() === 0);
 
     // Where the server says no (for example a refund request is waiting), it is not offered.
     await mount(page, 'paid', 'staff', { staffMayCorrect: false });
     await page.waitForFunction(() => window.__calls.some(c => c.name === 'staff_may_correct_invoice'));
     ok('staff are not offered Correct Invoice where the server says no',
        await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 0);
-    ok('and still have Request Refund',
-       await page.getByRole('button', { name: 'Request Refund', exact: true }).count() === 1);
+    ok('and still have Request refund / cancel',
+       await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).count() === 1);
 
     await mount(page, 'refunded', 'staff');
     ok('staff are not offered Correct Invoice on a refunded invoice',
        await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 0);
+    ok('nor a refund or cancellation request (nothing is left to refund)',
+       await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).count() === 0);
     ok('and the page did not even ask', await page.evaluate(() =>
        !window.__calls.some(c => c.name === 'staff_may_correct_invoice')));
 

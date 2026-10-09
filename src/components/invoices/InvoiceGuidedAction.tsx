@@ -53,6 +53,8 @@ type Plan = {
   blockers: { code: string; message: string }[];
   summary: string[]; requires_override: boolean; blocked: boolean; plan_hash: string;
   status?: string;
+  /** The money the invoice holds now (invoice_net_received). */
+  net_held?: number;
   /** Money, credits, stock and overrides kept apart — the review renders these
    *  rather than inferring one quantity from another. */
   effects?: {
@@ -173,6 +175,13 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     });
   })();
   const waitingLeft = coversWholeInvoice ? [] : unansweredItems(waitingItems, waitingAnswers);
+  // 409: nothing a refund could return (an unpaid invoice, which staff can now
+  // open this on too, or one whose lines have nothing refundable, like a
+  // part-paid bundle that has released nothing): a refund request could never
+  // be approved, so only a cancellation is offered. Money may still be held,
+  // and the message says so rather than that nothing is held.
+  const nothingToRefund = !reviewing && !!fullPlan && !fullPlan.blocked && Number(fullPlan.refund_amount ?? 0) <= 0;
+  const heldNow = Number(fullPlan?.net_held ?? 0);
   // Each line's name as any plan gave it: a partial refund's plan lists only
   // the lines chosen, but a machine is still known by its own line's name.
   const [lineNames, setLineNames] = useState<Record<string, string>>({});
@@ -283,12 +292,17 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const reject = async () => {
     if (!reviewRequestId || !reason.trim()) { setError('Give the requester a reason for the rejection.'); return; }
     setBusy(true); setError('');
-    const { error } = await supabase.rpc('resolve_invoice_action_v2', {
+    const { data, error } = await supabase.rpc('resolve_invoice_action_v2', {
       p_request_id: reviewRequestId, p_approve: false, p_note: reason.trim(),
     });
     setBusy(false);
     if (error) { setError(error.message); return; }
-    setDone('Request rejected. The requester sees the reason on the invoice. Nothing on the invoice has changed.');
+    // 409: a request raised the old way had moved the invoice to "Refund
+    // requested" or "Cancellation requested"; rejecting it puts it back.
+    const restored = (data as any)?.invoice_status_restored as string | null | undefined;
+    setDone(restored
+      ? `Request rejected. The invoice is back to ${restored.replace(/_/g, ' ')}, as its payments show. Nothing else on it has changed.`
+      : 'Request rejected. The requester sees the reason on the invoice. Nothing on the invoice has changed.');
     try { await onDone(); } catch { /* the rejection is recorded either way */ }
   };
 
@@ -462,11 +476,16 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
           <div className="invoice-guided-choices">
             <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('cancel')}>
               <strong>Cancel invoice</strong><span>Cancel this purchase. Any refund due is shown before confirmation.</span></button>
-            <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('refund_full')}>
+            <button className="btn" disabled={busy || plan?.blocked || nothingToRefund} onClick={() => chooseAction('refund_full')}>
               <strong>Full refund</strong><span>Review the remaining refundable items and amount.</span></button>
-            <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('refund_partial')}>
+            <button className="btn" disabled={busy || plan?.blocked || nothingToRefund} onClick={() => chooseAction('refund_partial')}>
               <strong>Partial refund</strong><span>Choose the items and quantities to refund.</span></button>
           </div>
+        )}
+        {step === 1 && nothingToRefund && (
+          <p className="muted" role="status">{heldNow > 0.005
+            ? `No item on this invoice can be refunded, so it can only be cancelled. It holds ${money(heldNow)} of payments.`
+            : 'Nothing has been paid on this invoice, so it can only be cancelled.'}</p>
         )}
 
         {step === 2 && (
@@ -541,6 +560,9 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
           <div className="invoice-guided-block" role="alert">
             <strong>This request cannot be approved as it stands.</strong>
             <p>{detail.legacy_note}</p>
+            {['refund_requested', 'cancellation_requested'].includes(String(detail.invoice_status)) && (
+              <p className="muted">Rejecting it puts the invoice back to the status its payments show
+                (it reads “{String(detail.invoice_status).replace(/_/g, ' ')}” until then).</p>)}
             <label>Reason for the requester
               <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
             <div className="invoice-guided-foot">

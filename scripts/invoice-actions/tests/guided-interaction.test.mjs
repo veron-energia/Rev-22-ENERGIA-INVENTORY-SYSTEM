@@ -487,6 +487,75 @@ check('an approver of a refund that closes the invoice is not told the machine k
 stub.waiting = {};
 
 // ---------------------------------------------------------------------
+// 409: a request raised the old way (no plan) can only be rejected, and
+// rejecting it puts the invoice back to the status its payments show; the
+// approver is told so. A guided request's rejection still changes nothing.
+// ---------------------------------------------------------------------
+calls.length = 0;
+stub.detail = { request_id: 'REQ-OLD', status: 'pending', action: null, reason: 'Customer changed their mind',
+  requested_by: 'Fixture Staff', store: 'Adelphi', legacy: true, invoice_status: 'refund_requested',
+  legacy_note: 'This request predates the guided workflow.', requested_lines: [], requested_plan: null, current_plan: null };
+stub.resolveResult = { request_id: 'REQ-OLD', status: 'rejected', invoice_status_restored: 'paid' };
+await render({ canApprove: true, requestId: 'REQ-OLD' });
+check('an old-style request says it cannot be approved', text().includes('cannot be approved as it stands'));
+check('and that rejecting it puts the invoice back', text().includes('Rejecting it puts the invoice back to the status its payments show')
+  && text().includes('refund requested'));
+check('it offers no approval', !byText('button', 'Confirm'));
+await type(document.querySelector('.invoice-guided-block textarea'), 'Outside our refund terms');
+await click(Array.from(document.querySelectorAll('.invoice-guided-block button')).find(b => b.textContent === 'Reject'));
+check('rejecting sends a rejection, nothing else',
+  calls.filter(c => c.name === 'resolve_invoice_action_v2').length === 1
+  && calls.find(c => c.name === 'resolve_invoice_action_v2').args.p_approve === false
+  && !calls.some(c => c.name === 'request_invoice_action' || c.name === 'refund_invoice_recorded'));
+check('the approver is told the invoice is back to paid', text().includes('The invoice is back to paid, as its payments show'),
+  text().slice(0, 300));
+
+calls.length = 0;
+stub.detail = { request_id: 'REQ-NEW', status: 'pending', action: 'refund_full', reason: 'Customer returned it',
+  requested_by: 'Fixture Staff', store: 'Adelphi', legacy: false, invoice_status: 'paid', changed: false,
+  requested_lines: [], requested_amount: 200, requested_plan: basePlan(), current_plan: basePlan() };
+stub.resolveResult = { request_id: 'REQ-NEW', status: 'rejected', invoice_status_restored: null };
+planNow = () => basePlan();
+await render({ canApprove: true, requestId: 'REQ-NEW' });
+check('a guided request has no restore note', !text().includes('Rejecting it puts the invoice back'));
+await click(byText('button', 'Reject'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Not this time');
+await click(byText('button', 'Confirm rejection'));
+check('and its rejection says nothing on the invoice changed', text().includes('Nothing on the invoice has changed')
+  && !text().includes('is back to'));
+stub.resolveResult = null;
+
+// 409: staff open this on an unpaid invoice too. With nothing held there is
+// nothing to refund (a refund request could never be approved): only the
+// cancellation is offered, and it is sent as a request.
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action, refund_amount: 0, refund_due: 0, sources: [], stock: [],
+  status: 'unpaid', effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [] } });
+await render({ canApprove: false });
+check('nothing held: Full and Partial refund are not offered',
+  byText('button', 'Full refund')?.disabled === true && byText('button', 'Partial refund')?.disabled === true
+  && text().includes('Nothing has been paid on this invoice, so it can only be cancelled.'));
+check('but the cancellation is', byText('button', 'Cancel invoice')?.disabled === false);
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Customer no longer wants it');
+await click(byText('button', 'Continue'));
+await click(byText('button', 'Submit cancellation request'));
+check('and is sent as a request that an Owner or Manager approves',
+  calls.some(c => c.name === 'request_invoice_action_v2' && c.args.p_action === 'cancel')
+  && !calls.some(c => c.name === 'resolve_invoice_action_v2' || c.name === 'request_invoice_action'));
+// 409 review: money can be held while no line has anything to refund (a
+// part-paid bundle that has released nothing, like INV-2026-0317 before it
+// was cancelled). The message says what is held, never that nothing is.
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action, refund_amount: 0, refund_due: 0, net_held: 1000, sources: [], stock: [],
+  status: 'partially_paid', effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [] } });
+await render({ canApprove: true });
+check('money held but nothing refundable: still only cancellation, and the message says what is held',
+  byText('button', 'Full refund')?.disabled === true && byText('button', 'Partial refund')?.disabled === true
+  && text().includes('No item on this invoice can be refunded, so it can only be cancelled. It holds S$1000.00 of payments.')
+  && !text().includes('Nothing has been paid'));
+
+// ---------------------------------------------------------------------
 // A blocked invoice offers nothing to click.
 // ---------------------------------------------------------------------
 planNow = () => basePlan({ blocked: true,

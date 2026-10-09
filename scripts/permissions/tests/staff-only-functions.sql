@@ -314,7 +314,6 @@ declare
       'reorder_customer_source_options(jsonb)', 'report_events(date,date)',
       'report_sales_by_service_staff(date,date,uuid)',
       'request_inventory_adjustment(location_type,uuid,uuid,integer,text,text)',
-      'request_invoice_action(uuid,text,boolean,text)',
       'request_invoice_action_v2(uuid,text,jsonb,text,text,uuid)',
       'reschedule_purchased_therapy(uuid,date,text)', 'resolve_inventory_adjustment(uuid,boolean,text)',
       'resolve_invoice_action_v2(uuid,boolean,text,text,jsonb,jsonb,boolean)',

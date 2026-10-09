@@ -92,12 +92,23 @@ declare
                              'referral_campaign_friends','referral_campaign_standing',
                              -- 404: the visit rule, every survey that is a visit with its dates
                              'customer_centre_visit_days',
+                             -- 410: an affiliate's months netted, a therapy unit's status by its
+                             -- dates, and the nightly therapy status refresh the cron job runs
+                             'affiliate_referrer_balances','purchased_therapy_status_on','run_therapy_status_refresh',
+                             -- 411: the Xero sales export's rule (the page reads it through
+                             -- xero_sales_events, which checks who is asking)
+                             'xero_sales_event_rows',
                              -- 399: goods handed over before full payment: what is out, the
                              -- correction's check, and the hand-over behind the payment and the button
                              'invoice_goods_out','invoice_before_full_payment','invoice_goods_kept_check',
                              'invoice_handover_internal',
                              -- 401: who may see or act on a location's loans, and one loan as the pages read it
                              'stock_loan_access','stock_loan_json',
+                             -- 408: an exchange's inherited affiliate, its payments, a whole bundle's
+                             -- quote, and what holds an exchanged invoice (with its four triggers)
+                             'exchange_inherited_affiliate','exchange_assert_payments','exchange_bundle_quote',
+                             'exchange_invoice_hold','trg_invoice_exchange_hold','trg_invoice_refund_exchange_hold',
+                             'trg_stock_return_exchange_hold','trg_invoice_item_exchange_hold',
                              -- 402: the TikTok ads engine, which Pabbly calls with the service key
                              -- and nobody signs in to use: the sheet write and its pieces, the
                              -- calendar import, the morning email and the earlier sheet writes
@@ -116,7 +127,11 @@ declare
                              'require_active_staff','require_store_access','write_audit',
                              'auth_email_user_state','auth_email_reserve','auth_email_record_outcome',
                              'commission_outside_rebase_scope','commission_totals_reconciliation',
-                             'preview_commission_rebase_effect','validate_bundle_voucher_selection'];
+                             'preview_commission_rebase_effect','validate_bundle_voucher_selection',
+                             -- 409: the retired staff request, which moved the invoice itself
+                             -- to refund_requested (staff raise guided requests now), and what a
+                             -- cancelled invoice's customer already had (refund_invoice_recorded's)
+                             'request_invoice_action','cancelled_invoice_used_value'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

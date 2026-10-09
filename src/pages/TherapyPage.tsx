@@ -16,6 +16,7 @@ import { HolidayAdmin, HolidayCountryField, suggestCountryFromPhone } from '../c
 import { RecalculationPreview, RewardMappingPreview } from '../components/therapy/TherapyDiagnostics';
 import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
 import '../components/therapy/therapy.css';
+import { purchasedStatusOn, legacyStatusOn } from '../lib/therapy/status';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -485,19 +486,26 @@ const TherapyPage: React.FC = () => {
                   <thead><tr><th>No.</th><th>Customer</th><th>Package / unit</th><th>Invoice</th><th>Benefit</th><th>Deadline</th><th>Activation</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
                   <tbody>
                     {filteredEnts.map(e => {
-                      const stt = PSTATUS[e.status] ?? { cls: 'badge-muted', label: e.status };
+                      // 410: the status by its dates, as the server's checks read it:
+                      // a start date already reached has started, even before the
+                      // nightly refresh has stored it.
+                      const now = purchasedStatusOn(e, sgToday());
+                      const stt = PSTATUS[now] ?? { cls: 'badge-muted', label: now };
                       const u = (e as any).unit as any | null;
                       // Therapy actions only belong on a unit that took therapy.
                       const isTherapy = !u || u.benefit_choice === 'unlimited';
-                      const canAct = isTherapy && (e.status === 'pending_activation' || e.status === 'scheduled');
+                      const canAct = isTherapy && (now === 'pending_activation' || now === 'scheduled');
+                      // Once a start date is set, moving it is a new Claim, which works
+                      // the expiry out again; Reschedule would change only the date shown.
+                      const canReschedule = canAct && !e.activation_date;
                       // Claim covers what Choose benefit, Activate and Claim
                       // vouchers used to do separately, as on Legacy Therapy.
                       // A scheduled unit can be claimed again to start it now
                       // or move its start, as Activate could.
-                      const open = !['cancelled', 'refunded', 'expired', 'active'].includes(e.status);
+                      const open = !['cancelled', 'refunded', 'expired', 'active'].includes(now);
                       const canClaim = open && (!u
                         ? true
-                        : e.status === 'scheduled' ? (u.benefit_choice === 'unlimited' || u.choice_pending)
+                        : now === 'scheduled' ? (u.benefit_choice === 'unlimited' || u.choice_pending)
                         : u.choice_pending ? !u.choice_deadline_passed
                         : u.benefit_choice === 'unlimited' ? true
                         : u.benefit_choice === 'voucher' ? (u.voucher_remaining ?? 0) > 0 && !u.choice_deadline_passed
@@ -544,7 +552,7 @@ const TherapyPage: React.FC = () => {
                               {/* Viewing a made choice, and switching it (Owner or Manager), stay where they were. */}
                               {u && u.offers_choice && !u.choice_pending && (
                                 <button className="btn btn-secondary btn-sm" onClick={() => setBenefitFor(e.id)}>Benefit</button>)}
-                              {canAct && <button className="btn btn-secondary btn-sm" disabled={busy === e.id} onClick={() => doReschedule(e)} title="Reschedule"><CalendarClock size={12} /></button>}
+                              {canReschedule && <button className="btn btn-secondary btn-sm" disabled={busy === e.id} onClick={() => doReschedule(e)} title="Reschedule"><CalendarClock size={12} /></button>}
                               {canManage && canAct && <button className="btn btn-danger btn-sm" disabled={busy === e.id} onClick={() => doRefund(e)}><Ban size={12} /> Refund</button>}
                             </div>
                           </td>
@@ -585,7 +593,8 @@ const TherapyPage: React.FC = () => {
                           : '—'}</td>
                         <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}{expired && <span style={{ color: 'var(--danger)', fontSize: 11 }}> · passed</span>}</td>
                         <td style={{ fontSize: 12 }}>{e.activation_date ? `${d(e.activation_date)} → ${e.expiry_date ? d(e.expiry_date) : '—'}` : '—'}</td>
-                        <td><span className={`badge ${e.status === 'active' ? 'badge-success' : e.status === 'pending_activation' ? 'badge-accent' : 'badge-muted'}`}>{String(e.status).replace('_',' ')}</span></td>
+                        {/* 410: by its dates, as the nightly refresh will store it */}
+                        <td>{(() => { const ls = legacyStatusOn(e, sgToday()); return <span className={`badge ${ls === 'active' ? 'badge-success' : ls === 'pending_activation' ? 'badge-accent' : 'badge-muted'}`}>{String(ls).replace('_',' ')}</span>; })()}</td>
                         <td>{e.entitlement_kind === 'voucher'
                           ? <button className="btn btn-secondary btn-sm" onClick={() => setClaimVouchersFor(e.id)}>
                               <Play size={12} /> Vouchers</button>

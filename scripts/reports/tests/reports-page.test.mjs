@@ -9,7 +9,8 @@
 // It checks what the page promises: separately loaded reports fail on their
 // own tab only and never show as empty, periods reach the reports that take
 // them, the figures follow the owner's rules (tier-1 commission on the listed
-// invoices, Outstanding = Earned − Paid Out, voucher uses read from the sale
+// invoices, Outstanding = Earned − Paid Out and never negative, what was paid
+// out beyond it a deduction to recover (410), voucher uses read from the sale
 // invoices), and every export carries the headings of the table on screen.
 //
 // Run: node --test scripts/reports/tests/reports-page.test.mjs
@@ -556,12 +557,26 @@ test('B4: Sales by Referrer commission is the tier-1 commission on the invoices 
 test('B5 and B11: Commission shows Outstanding = Earned − Paid Out, and a deleted referrer by that name', async () => {
   await mount();
   await selectTab('Commission');
-  assert.deepEqual(tables()[0].headers, ['Referrer', 'Earned (lifetime)', 'Paid Out', 'Reversed', 'Outstanding']);
+  assert.deepEqual(tables()[0].headers, ['Referrer', 'Earned (lifetime)', 'Paid Out', 'Reversed', 'Outstanding', 'Deduction to recover']);
   assert.deepEqual(dataRows(0), [
-    ['Customer 06', 'S$67.00', 'S$12.00', '−S$15.00', 'S$55.00'],
-    ['Customer 05', 'S$10.00', '—', '—', 'S$10.00'],
-    ['Deleted customer', 'S$0.00', '—', '−S$12.00', 'S$0.00'],
+    ['Customer 06', 'S$67.00', 'S$12.00', '−S$15.00', 'S$55.00', '—'],
+    ['Customer 05', 'S$10.00', '—', '—', 'S$10.00', '—'],
+    ['Deleted customer', 'S$0.00', '—', '−S$12.00', 'S$0.00', '—'],
   ]);
+});
+
+test('B5 (410): an affiliate paid out more than their commission now comes to shows Outstanding S$0.00 and the deduction', async () => {
+  // Customer 05 was paid 25.00; a sale refunded after the payout leaves their
+  // commission at 10.00, so 15.00 is recovered from their later commission.
+  const fixture = makeFixture();
+  fixture.affiliates.find(a => a.customer_id === 'c-05').paid = 25;
+  await mount({ fixture });
+  await selectTab('Commission');
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 05'), ['Customer 05', 'S$10.00', 'S$25.00', '—', 'S$0.00', 'S$15.00'],
+    'never a negative Outstanding: the 15.00 shows as a deduction to recover');
+  const exported = await exportWith(pageExport());
+  const row = exported.sheet.ws.body.find(r => r['Referrer'] === 'Customer 05');
+  assert.deepEqual([row['Outstanding'], row['Deduction to recover']], [0, 15], 'the export carries the same two figures');
 });
 
 test('B11: the Affiliate tab lists affiliates by name', async () => {

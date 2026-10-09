@@ -45,6 +45,8 @@ const ApprovalsPage: React.FC = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [rejectFor, setRejectFor] = useState<AdjustmentRequest | null>(null);
   const [rejectNote, setRejectNote] = useState('');
+  // A failed read is said as one, never shown as "Nothing pending".
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,6 +59,7 @@ const ApprovalsPage: React.FC = () => {
       supabase.from('warehouses').select('id,name'),
       supabase.from('profiles').select('id,full_name'),
     ]);
+    setLoadError(req.error ? `The requests could not be loaded (${req.error.message}). Refresh to try again.` : null);
     setRequests((req.data as AdjustmentRequest[]) ?? []);
     setProducts((prod.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -138,6 +141,7 @@ const ApprovalsPage: React.FC = () => {
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
+          : loadError ? <div className="alert alert-danger" role="alert">{loadError}</div>
           : requests.length === 0 ? <div className="empty-state"><ClipboardCheck size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>Nothing pending</p><p style={{ fontSize: 13 }}>Transfer approvals live on the Transfers page.</p></div>
           : (
             <table>
@@ -179,6 +183,12 @@ const ApprovalsPage: React.FC = () => {
             <label>Reason / note (optional)</label>
             <textarea rows={2} value={rejectNote} onChange={e => setRejectNote(e.target.value)} placeholder="Why is this being rejected?" autoFocus />
           </div>
+          {rejectFor.request_type !== 'adjustment' && (
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
+              Rejecting changes no money or stock. A request raised the old way (no plan) put the invoice into
+              “Refund requested” or “Cancellation requested”; rejecting it puts the invoice back to the status its payments show
+              (where that would move stock or settle the invoice, the rejection is refused and nothing changes).
+            </p>)}
         </Modal>
       )}
     </div>

@@ -7,12 +7,15 @@ import { singaporeToday } from '../../lib/invoices/business';
 import { priceCents } from '../../lib/cataloguePriceSearch';
 import '../invoices/invoice-controls.css';
 
-import { Balance, Payout, payoutMoney as money, unavailableName, payoutInRange, payoutExportColumns } from '../../lib/affiliatePayoutPresentation';
+import { Balance, Payout, ReferrerBalance, payoutMoney as money, unavailableName, payoutInRange, payoutExportColumns, referrerBalances, monthPayable, monthKey, remainingPayable, deductionsOutstanding } from '../../lib/affiliatePayoutPresentation';
 type Method = { id: string; name: string; is_active: boolean; deleted_at: string | null; is_wallet_credit: boolean };
 type Form = { referrer: string; month: string; payout?: Payout; amount: string; method: string; date: string; reference: string; notes: string; reason: string; request: string };
 
 export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 'earned' | 'payouts'; canPay: boolean; userId: string; onSaved: () => void }) {
   const [groups, setGroups] = useState<Balance[]>([]), [payouts, setPayouts] = useState<Payout[]>([]), [methods, setMethods] = useState<Method[]>([]);
+  // 410: each affiliate's months netted. A database without 410 sends none;
+  // they are then worked out from the months the same way.
+  const [serverRefs, setServerRefs] = useState<ReferrerBalance[] | null>(null);
   const [names, setNames] = useState<Record<string, string>>({}), [nameError, setNameError] = useState('');
   const [namesLoaded, setNamesLoaded] = useState(false);
   const [loading, setLoading] = useState(true), [loadError, setLoadError] = useState(''), [success, setSuccess] = useState('');
@@ -42,7 +45,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
       if (error) throw error;
       if (!data || !Array.isArray(data.groups) || !Array.isArray(data.payouts)) throw new Error('The payout response is incomplete.');
       if (seq !== sequence.current) return;
-      setGroups(data.groups); setPayouts(data.payouts); setMethods(data.methods || []); setLoadError('');
+      setGroups(data.groups); setPayouts(data.payouts); setMethods(data.methods || []); setServerRefs(Array.isArray(data.referrers) ? data.referrers : null); setLoadError('');
     } catch (e: any) { if (seq === sequence.current) setLoadError(`Balances could not be refreshed: ${e.message}. Refresh before recording or editing a payout.`); }
     finally { if (seq === sequence.current) setLoading(false); }
   }, []);
@@ -52,6 +55,13 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
     try { const saved = sessionStorage.getItem(pendingKey); if (saved) { setForm(JSON.parse(saved)); setUncertain(true); setError('A previous save has an unconfirmed result. Retry the same save to recover its result safely.'); } } catch { /* Storage may be disabled. The in-memory request still prevents duplicate retries. */ }
   }, [pendingKey]);
   const name = (id: string) => names[id] || unavailableName(id);
+  // Commission already paid out and then taken back is recovered from the
+  // affiliate's later commission (the Owner, 3 Oct 2026): what may be paid
+  // for a month is netted across all of the affiliate's months.
+  const refs = useMemo(() => referrerBalances(groups, serverRefs), [groups, serverRefs]);
+  const payableBy = useMemo(() => monthPayable(groups, refs), [groups, refs]);
+  const payableOf = (g: Balance) => payableBy.get(monthKey(g)) ?? 0;
+  const owing = useMemo(() => deductionsOutstanding(refs), [refs]);
   const open = (referrer: string, month: string, balance: number, payout?: Payout) => {
     setError(''); setUncertain(false);
     setForm({ referrer, month, payout, amount: Number(payout?.total_amount ?? balance).toFixed(2), method: payout?.payment_method_id || '', date: payout?.payment_date || singaporeToday(), reference: payout?.reference || '', notes: payout?.notes || '', reason: '', request: crypto.randomUUID() });
@@ -91,6 +101,10 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
     catch (e: any) { setHistoryError(e.message); }
   };
   const visiblePayouts = payouts.filter(p => payoutInRange(p, from, to));
+  // What the server accepts for a new payout: the month's balance, and no more
+  // than the affiliate's months net to (410).
+  const formGroup = form ? groups.find(g => g.referrer === form.referrer && g.month === form.month) : undefined;
+  const formCap = Math.min(Math.max(Number(formGroup?.balance ?? 0), 0), form ? refs.get(form.referrer)?.payable ?? 0 : 0);
   const frozen = loading || !!loadError || uncertain;
   const field = (label: string, key: 'amount' | 'date' | 'reference' | 'notes' | 'reason', type = 'text') => <label className="form-group">{label}<input type={type} step={key === 'amount' ? '0.01' : undefined} min={key === 'amount' ? '0.01' : undefined} max={key === 'date' ? singaporeToday() : undefined} value={form?.[key] || ''} onChange={e => update(key, e.target.value)} /></label>;
   const recordValues = (r: any) => r ? <dl><dt>Amount</dt><dd>{money(r.total_amount)}</dd><dt>Payment date / method</dt><dd>{r.payment_date || r.paid_at?.slice(0, 10)} · {r.payment_method_name || methods.find(m => m.id === r.payment_method_id)?.name || 'Historical method unavailable'}</dd><dt>Reference / notes</dt><dd style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{r.reference || '—'} / {r.notes || '—'}</dd></dl> : null;
@@ -100,12 +114,15 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
     {nameError && <div className="alert alert-danger" role="alert"><div>{nameError}<button className="btn btn-secondary btn-sm" onClick={() => lookupNames(ids)}>Retry names</button></div></div>}
     {namesLoaded && !nameError && ids.some(id => !names[id]) && <div className="alert alert-info">No readable customer name was returned for the rows marked “Name unavailable”. Their full customer IDs are in the row tooltips and export; review the corresponding customer records to resolve their names.</div>}
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
-      <strong>Remaining payable: {money(groups.reduce((s, g) => s + (g.review_reason ? 0 : Math.max(Number(g.balance), 0)), 0))}</strong>
+      <strong>Remaining payable: {money(remainingPayable(refs))}</strong>
+      {owing.count > 0 && <span role="status">Deductions to recover: {money(owing.total)} ({owing.count} affiliate{owing.count === 1 ? '' : 's'}), taken from their later commission before anything more is paid.</span>}
       <button className="btn btn-secondary" onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh payouts'}</button>
       {mode === 'payouts' ? <ExcelExportButton rows={visiblePayouts} filename="affiliate-payouts" sheetName="Commissions" dateOf={(p: Payout) => p.payment_date} dateLabel="Payment date" columns={payoutExportColumns(name)} /> : <ExcelExportButton rows={groups} filename="affiliate-balances" sheetName="Commissions" columns={[
           { header: 'Affiliate', value: (g: Balance) => name(g.referrer) }, { header: 'Affiliate ID', value: (g: Balance) => g.referrer },
           { header: 'Month', value: (g: Balance) => g.month || 'Date needs review' },
           ...(['earned', 'adjustments', 'paid', 'balance'] as const).map(key => ({ header: key, value: (g: Balance) => Number(g[key]) })),
+          { header: 'payable now', value: (g: Balance) => payableOf(g) },
+          { header: 'affiliate deduction to recover', value: (g: Balance) => refs.get(g.referrer)?.deduction ?? 0 },
           { header: 'Review', value: (g: Balance) => g.review_reason || '' },
         ]} />}
     </div>
@@ -114,11 +131,14 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
       <label>Payment date to <input type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
     </div>}
     <div className="card table-wrap">
-      {mode === 'earned' ? <table><thead><tr><th>Commission month</th><th>Affiliate</th><th>Earned</th><th>Adjustments</th><th>Paid</th><th>Remaining</th><th>Action</th></tr></thead><tbody>
-        {groups.map(g => <tr key={`${g.referrer}/${g.month}`}><td>{g.month?.slice(0, 7) || 'Date needs review'}</td><td title={g.referrer}>{name(g.referrer)}</td>
-          <td>{money(g.earned)}</td><td>{money(g.adjustments)}</td><td>{money(g.paid)}</td><td>{money(Math.max(Number(g.balance), 0))}{Number(g.balance) < 0 && <div>Overpaid adjustment: {money(-Number(g.balance))}</div>}</td>
-          <td>{g.review_reason && <p role="status">{g.review_reason}</p>}{canPay && <button className="btn btn-primary btn-sm" disabled={frozen || !g.month || !!g.review_reason || Number(g.balance) <= 0} onClick={() => open(g.referrer, g.month!, g.balance)}>Record payout</button>}</td></tr>)}
-        {!groups.length && <tr><td colSpan={7}>{loading ? 'Loading balances…' : 'No commission balances.'}</td></tr>}
+      {mode === 'earned' ? <table><thead><tr><th>Commission month</th><th>Affiliate</th><th>Earned</th><th>Adjustments</th><th>Paid</th><th>Remaining</th><th>Payable now</th><th>Action</th></tr></thead><tbody>
+        {groups.map(g => { const payable = payableOf(g), ref = refs.get(g.referrer); return <tr key={`${g.referrer}/${g.month}`}><td>{g.month?.slice(0, 7) || 'Date needs review'}</td><td title={g.referrer}>{name(g.referrer)}</td>
+          <td>{money(g.earned)}</td><td>{money(g.adjustments)}</td><td>{money(g.paid)}</td><td>{money(Math.max(Number(g.balance), 0))}{Number(g.balance) < 0 && <div>Owed back: {money(-Number(g.balance))}</div>}</td>
+          <td>{money(payable)}{ref && ref.deduction > 0
+            ? <div style={{ color: 'var(--danger)' }}>Affiliate owes {money(ref.deduction)} back; recovered from later commission first.</div>
+            : !g.review_reason && payable < Math.max(Number(g.balance), 0) && <div>Limited by the affiliate's other months ({money(ref?.payable ?? 0)} payable in all).</div>}</td>
+          <td>{g.review_reason && <p role="status">{g.review_reason}</p>}{canPay && <button className="btn btn-primary btn-sm" disabled={frozen || !g.month || !!g.review_reason || payable <= 0} onClick={() => open(g.referrer, g.month!, payable)}>Record payout</button>}</td></tr>; })}
+        {!groups.length && <tr><td colSpan={8}>{loading ? 'Loading balances…' : 'No commission balances.'}</td></tr>}
       </tbody></table> : <table><thead><tr><th>Payment date / month</th><th>Affiliate</th><th>Amount</th><th>Tier 1 / Tier 2</th><th>Method / reference / notes</th><th>Actions</th></tr></thead><tbody>
         {visiblePayouts.map(p => <tr key={p.id}><td>{p.payment_date}<div>{p.payout_month.slice(0, 7)} · {p.status}</div></td><td title={p.referrer_customer_id}>{name(p.referrer_customer_id)}</td><td>{money(p.total_amount)}</td><td>{money(p.total_tier1)} / {money(p.total_tier2)}</td>
           <td style={{ maxWidth: 300, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{p.payment_method_name || 'Historical method unavailable'}<div>{p.reference}</div><div>{p.notes}</div>{p.allocation_review_reason && <p>{p.allocation_review_reason}</p>}</td>
@@ -133,6 +153,8 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
       {!names[form.referrer] && <p style={{ overflowWrap: 'anywhere' }}>Customer ID: {form.referrer}</p>}
       <p>{form.payout ? 'Correct a mistaken payment record. To record another actual payment, use Record payout. This correction does not transfer or recover money.' : 'Record a payment already made. This does not initiate a bank transfer.'}</p>
       <p>Current remaining balance: {money(groups.find(g => g.referrer === form.referrer && g.month === form.month)?.balance || 0)}</p>
+      {!form.payout && <p>Can be paid now for this month, all of this affiliate's months counted: up to {money(formCap)}</p>}
+      {(refs.get(form.referrer)?.deduction ?? 0) > 0 && <div className="alert alert-warning">This affiliate owes {money(refs.get(form.referrer)!.deduction)} back from commission already paid out and then taken back. It is recovered from their later commission first, so nothing more can be paid yet.</div>}
       {form.payout?.allocation_review_reason && <div className="alert alert-warning">{form.payout.allocation_review_reason} You may correct metadata while the amount stays unchanged.</div>}
       {error && <div className="alert alert-danger" role="alert">{error}</div>}
       <fieldset disabled={busy || uncertain} style={{ border: 0, padding: 0, minWidth: 0 }} className="form-grid">

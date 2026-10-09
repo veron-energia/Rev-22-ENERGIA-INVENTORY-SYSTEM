@@ -8,6 +8,7 @@ import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
 import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink, Gift } from 'lucide-react';
 import DownlineModal from '../components/referrals/DownlineModal';
 import ReferralPromotionPanel from '../components/referrals/ReferralPromotionPanel';
+import { owedSplit } from '../lib/affiliatePayoutPresentation';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -16,6 +17,10 @@ interface DirRow {
   customer_id: string; name: string; status: string; manually_suspended: boolean;
   referral_code: string | null; portal_account: 'not_claimed' | 'claimed' | 'disabled';
   direct_referrals: number; tier2: number; lifetime: number; unpaid: number; blocked: number; last_commission: string | null;
+  /** 410: what the affiliate owes back (commission paid out and then taken
+   *  back), recovered from their later commission. Absent before 410, when
+   *  unpaid itself could be negative. */
+  deduction?: number;
 }
 /** What a staff login may see: enough to identify an affiliate and hand over
  *  their link. Nothing about money, purchases, claims or accounts. */
@@ -577,7 +582,8 @@ const AffiliatesPage: React.FC = () => {
                   <td style={{ textAlign: 'right' }}>{r.direct_referrals}</td>
                   <td style={{ textAlign: 'right' }}>{r.tier2}</td>
                   <td style={{ textAlign: 'right' }}>{money(r.lifetime)}</td>
-                  <td style={{ textAlign: 'right' }}>{money(r.unpaid)}</td>
+                  <td style={{ textAlign: 'right' }}>{money(owedSplit(r.unpaid).unpaid)}
+                    {(r.deduction ?? owedSplit(r.unpaid).deduction) > 0 && <div style={{ fontSize: 11.5, color: 'var(--danger)' }} title="Commission already paid out was taken back; it is recovered from this affiliate's later commission before anything more is paid.">Owes {money(r.deduction ?? owedSplit(r.unpaid).deduction)} back</div>}</td>
                   <td style={{ textAlign: 'right' }}>{Number(r.blocked) > 0 ? money(r.blocked) : '—'}</td>
                   <td>{d(r.last_commission)}</td>
                   {canManage && (
