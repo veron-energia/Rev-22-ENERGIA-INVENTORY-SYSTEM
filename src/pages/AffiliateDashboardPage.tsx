@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, money, dateStr, earningsFigures, DEDUCTION_NOTE } from '../lib/affiliatePortal';
+import { portalRpc, money, dateStr, earningsFigures, settledFigure, DEDUCTION_NOTE } from '../lib/affiliatePortal';
 import { Users, TrendingUp, Wallet, Clock } from 'lucide-react';
 import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
 
@@ -32,6 +32,7 @@ const AffiliateDashboardPage: React.FC = () => {
           <StatGrid>
             <Stat label="Unpaid" value={money(owed.unpaid)} icon={<Clock size={15} />} accent="var(--warning)" />
             {owed.deduction > 0 && <Stat label="Deduction to be recovered" value={money(owed.deduction)} accent="var(--danger)" />}
+            {settledFigure(d.earnings) > 0 && <Stat label="Deduction settled" value={money(settledFigure(d.earnings))} />}
             <Stat label="Paid" value={money(d.earnings?.paid)} icon={<Wallet size={15} />} accent="var(--success)" />
             <Stat label="Lifetime" value={money(d.earnings?.lifetime)} icon={<TrendingUp size={15} />} />
             {Number(d.earnings?.blocked) > 0 && <Stat label="Blocked" value={money(d.earnings?.blocked)} accent="var(--danger)" />}

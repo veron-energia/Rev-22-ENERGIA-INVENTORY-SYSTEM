@@ -29,6 +29,14 @@ export function earningsFigures(summary: { unpaid?: number | string | null; dedu
   return { unpaid: Math.max(unpaidCents, 0) / 100, deduction: Math.max(deductionCents, 0) / 100 };
 }
 
+/** A deduction settled with Energia (414): paid back, written off, or taken
+ *  off a payment outside the app. The summary sends the amount only (never
+ *  the note or how it was settled); 0 before 414. Shown so the figures add up:
+ *  Lifetime − Paid + settled = Unpaid − Deduction. */
+export function settledFigure(summary: { settled?: number | string | null } | null | undefined): number {
+  return Math.max(Math.round(Number(summary?.settled ?? 0) * 100), 0) / 100 || 0;
+}
+
 /** Said beside a deduction, on the portal. */
 export const DEDUCTION_NOTE =
   'Commission already paid to you was taken back, because a purchase was refunded, cancelled or changed. ' +

@@ -148,11 +148,11 @@ const CommissionsPage: React.FC = () => {
                 <label>Lifetime earnings</label>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 6 }}>
                   <div style={{ padding: 10, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Tier 1 (unpaid)</div>
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Tier 1 (not yet in a payout)</div>
                     <div style={{ fontSize: 15, fontWeight: 700 }}>{money(Number(detail.lifetime?.tier1_earned ?? 0))}</div>
                   </div>
                   <div style={{ padding: 10, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Tier 2 (unpaid)</div>
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Tier 2 (not yet in a payout)</div>
                     <div style={{ fontSize: 15, fontWeight: 700 }}>{money(Number(detail.lifetime?.tier2_earned ?? 0))}</div>
                   </div>
                   <div style={{ padding: 10, background: 'var(--success-light)', borderRadius: 'var(--radius-sm)' }}>
@@ -164,7 +164,15 @@ const CommissionsPage: React.FC = () => {
                     <div style={{ fontSize: 15, fontWeight: 700 }}>{money(owedSplit(detail.lifetime?.total_earned).unpaid)}</div>
                   </div>
                 </div>
+                {/* The tier boxes are the commission rows not yet in a payout, take-backs
+                    included; Unpaid total nets the affiliate's months, so a deduction owed
+                    back (never a negative Unpaid) and a settlement make them differ (414). */}
+                {Math.round((Number(detail.lifetime?.tier1_earned ?? 0) + Number(detail.lifetime?.tier2_earned ?? 0)) * 100)
+                  !== Math.round(owedSplit(detail.lifetime?.total_earned).unpaid * 100)
+                  && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>Deductions and settlements are netted in Unpaid total.</div>}
                 {owedSplit(detail.lifetime?.total_earned).deduction > 0 && <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 4 }}>Deduction to be recovered: {money(owedSplit(detail.lifetime?.total_earned).deduction)}. Commission already paid out was taken back (a refund, a cancellation or a change of affiliate); it comes off this affiliate's later commission before anything more is paid.</div>}
+                {/* 414: a deduction marked as settled (paid back, written off, or paid off outside the app) counts as recovered. */}
+                {Number(detail.lifetime?.settled ?? 0) > 0 && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>Deduction settled: {money(Number(detail.lifetime.settled))} (paid back, written off, or paid off outside the app; listed under Payout History). Counted as recovered. In the months below it is shown against the oldest months still owed back; the months it covers can change when later corrections arrive.</div>}
                 {Number(detail.lifetime?.reversed ?? 0) > 0 && <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 4 }}>Reversed: {money(Number(detail.lifetime.reversed))}</div>}
               </div>
 
@@ -180,7 +188,7 @@ const CommissionsPage: React.FC = () => {
                           <td style={{ fontFamily: 'var(--font-display)' }}>{m.month}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(m.tier1))}</td>
                           <td style={{ textAlign: 'right' }}>{money(Number(m.tier2))}</td>
-                          <td style={{ textAlign: 'right', color: 'var(--primary)' }}>{money(owedSplit(m.unpaid).unpaid)}{owedSplit(m.unpaid).deduction > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>owed back {money(owedSplit(m.unpaid).deduction)}</div>}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--primary)' }}>{money(owedSplit(m.unpaid).unpaid)}{owedSplit(m.unpaid).deduction > 0 && <div style={{ fontSize: 11, color: 'var(--danger)' }}>owed back {money(owedSplit(m.unpaid).deduction)}</div>}{Number(m.settled ?? 0) > 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>settled {money(Number(m.settled))}</div>}</td>
                           <td style={{ textAlign: 'right', color: 'var(--success)' }}>{money(Number(m.paid))}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(m.total))}</td>
                         </tr>

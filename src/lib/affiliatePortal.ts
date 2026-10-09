@@ -5,7 +5,7 @@ export const dateStr = (s?: string | null) => s ? new Date(s).toLocaleDateString
 
 // The wording and figures the portal shows (410: blocked, partly paid, and a
 // deduction rather than a negative Unpaid).
-export { statusLabel, earningsFigures, DEDUCTION_NOTE } from './affiliatePortalFigures';
+export { statusLabel, earningsFigures, settledFigure, DEDUCTION_NOTE } from './affiliatePortalFigures';
 
 // All portal reads go through SECURITY DEFINER RPCs that derive identity from
 // auth.uid(); the browser never supplies an affiliate id.

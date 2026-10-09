@@ -557,11 +557,11 @@ test('B4: Sales by Referrer commission is the tier-1 commission on the invoices 
 test('B5 and B11: Commission shows Outstanding = Earned − Paid Out, and a deleted referrer by that name', async () => {
   await mount();
   await selectTab('Commission');
-  assert.deepEqual(tables()[0].headers, ['Referrer', 'Earned (lifetime)', 'Paid Out', 'Reversed', 'Outstanding', 'Deduction to recover']);
+  assert.deepEqual(tables()[0].headers, ['Referrer', 'Earned (lifetime)', 'Paid Out', 'Reversed', 'Deduction settled', 'Outstanding', 'Deduction to recover']);
   assert.deepEqual(dataRows(0), [
-    ['Customer 06', 'S$67.00', 'S$12.00', '−S$15.00', 'S$55.00', '—'],
-    ['Customer 05', 'S$10.00', '—', '—', 'S$10.00', '—'],
-    ['Deleted customer', 'S$0.00', '—', '−S$12.00', 'S$0.00', '—'],
+    ['Customer 06', 'S$67.00', 'S$12.00', '−S$15.00', '—', 'S$55.00', '—'],
+    ['Customer 05', 'S$10.00', '—', '—', '—', 'S$10.00', '—'],
+    ['Deleted customer', 'S$0.00', '—', '−S$12.00', '—', 'S$0.00', '—'],
   ]);
 });
 
@@ -572,11 +572,69 @@ test('B5 (410): an affiliate paid out more than their commission now comes to sh
   fixture.affiliates.find(a => a.customer_id === 'c-05').paid = 25;
   await mount({ fixture });
   await selectTab('Commission');
-  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 05'), ['Customer 05', 'S$10.00', 'S$25.00', '—', 'S$0.00', 'S$15.00'],
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 05'), ['Customer 05', 'S$10.00', 'S$25.00', '—', '—', 'S$0.00', 'S$15.00'],
     'never a negative Outstanding: the 15.00 shows as a deduction to recover');
   const exported = await exportWith(pageExport());
   const row = exported.sheet.ws.body.find(r => r['Referrer'] === 'Customer 05');
   assert.deepEqual([row['Outstanding'], row['Deduction to recover']], [0, 15], 'the export carries the same two figures');
+});
+
+test('B5 (414): a deduction marked as settled counts as recovered, in the table and the export', async () => {
+  // Customer 05 was paid 25.00 against 10.00 of commission (15.00 owed back);
+  // an Owner marked 12.00 of it as settled, so 3.00 is still to recover; then
+  // the rest, so nothing is.
+  const fixture = makeFixture();
+  Object.assign(fixture.affiliates.find(a => a.customer_id === 'c-05'), { paid: 25, settled: 12 });
+  await mount({ fixture });
+  await selectTab('Commission');
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 05'), ['Customer 05', 'S$10.00', 'S$25.00', '—', 'S$12.00', 'S$0.00', 'S$3.00'],
+    'Earned − Paid Out + Deduction settled = −3.00: still S$3.00 to recover');
+  let exported = await exportWith(pageExport());
+  let row = exported.sheet.ws.body.find(r => r['Referrer'] === 'Customer 05');
+  assert.deepEqual([row['Deduction settled'], row['Outstanding'], row['Deduction to recover']], [12, 0, 3], 'the export carries the same figures');
+
+  const all = makeFixture();
+  Object.assign(all.affiliates.find(a => a.customer_id === 'c-05'), { paid: 25, settled: '15.00' });
+  await mount({ fixture: all });
+  await selectTab('Commission');
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 05'), ['Customer 05', 'S$10.00', 'S$25.00', '—', 'S$15.00', 'S$0.00', '—'],
+    'all of it settled: nothing outstanding, nothing to recover');
+  exported = await exportWith(pageExport());
+  row = exported.sheet.ws.body.find(r => r['Referrer'] === 'Customer 05');
+  assert.deepEqual([row['Deduction settled'], row['Outstanding'], row['Deduction to recover']], [15, 0, ''], 'an empty cell where nothing is to recover');
+});
+
+test('B5 (414): an affiliate whose commission was all paid out and then taken back is still listed, as the Dashboard counts them', async () => {
+  // Customer 04: 100.00 paid out, all of it taken back (Earned 0.00, 100.00 to
+  // recover). Customer 03: 30.00 paid out and no commission rows left.
+  const affiliate = (id, name, over) => ({ customer_id: id, customer_name: name, member_id: null, affiliate_state: 'active', block_reason: null,
+    store_name: null, direct_referrals: 1, downline: 0, earned: 0, paid: 0, reversed: 0, blocked: 0, tier1_earned: 0, tier2_earned: 0, settled: 0, ...over });
+  const build = settled04 => {
+    const fixture = makeFixture();
+    fixture.commissions.push(
+      { id: 'cm-7', referrer_customer_id: 'c-04', invoice_id: 'inv-01', tier: 'tier1', status: 'paid', commission_amount: 100 },
+      { id: 'cm-8', referrer_customer_id: 'c-04', invoice_id: 'inv-01', tier: 'tier1', status: 'earned', commission_amount: -100 });
+    fixture.affiliates.push(affiliate('c-04', 'Customer 04', { paid: 100, settled: settled04 }), affiliate('c-03', 'Customer 03', { paid: 30 }));
+    return fixture;
+  };
+  await mount({ fixture: build(0) });
+  await selectTab('Commission');
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 04'), ['Customer 04', 'S$0.00', 'S$100.00', '—', '—', 'S$0.00', 'S$100.00'],
+    'Earned 0.00, 100.00 to recover');
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 03'), ['Customer 03', 'S$0.00', 'S$30.00', '—', '—', 'S$0.00', 'S$30.00'],
+    'payouts with no commission rows left are listed too');
+  assert.equal(dataRows(0).find(r => r[0] === 'Customer 00'), undefined, 'an affiliate with nothing earned, paid or settled is not');
+  let exported = await exportWith(pageExport());
+  let row = exported.sheet.ws.body.find(r => r['Referrer'] === 'Customer 04');
+  assert.deepEqual([row['Earned (lifetime)'], row['Paid Out'], row['Deduction settled'], row['Outstanding'], row['Deduction to recover']], [0, 100, '', 0, 100]);
+
+  await mount({ fixture: build(100) });
+  await selectTab('Commission');
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 04'), ['Customer 04', 'S$0.00', 'S$100.00', '—', 'S$100.00', 'S$0.00', '—'],
+    'settled: still listed, with the settlement, nothing outstanding and nothing to recover');
+  exported = await exportWith(pageExport());
+  row = exported.sheet.ws.body.find(r => r['Referrer'] === 'Customer 04');
+  assert.deepEqual([row['Deduction settled'], row['Outstanding'], row['Deduction to recover']], [100, 0, '']);
 });
 
 test('B11: the Affiliate tab lists affiliates by name', async () => {

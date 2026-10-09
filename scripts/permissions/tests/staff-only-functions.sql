@@ -579,6 +579,11 @@ begin
     ('special availability',   'om',     true,  false, 'select count(*)::text from public.special_product_availability(null)'),
     ('wallet payment (S$0)',   'om',     true,  false, 'select public.pay_special_with_credit(''special_sale'', null, @c1@, 0, @store_a@)::text'),
     ('physical return',        'all',    false, false, 'select public.resolve_tiktok_physical_return(gen_random_uuid(), false, null, null)::text'),
+    -- Commissions (414): Mark as settled and its Void, Owners and Managers (no
+    -- deduction and no settlement in the fixture, so each answers its own
+    -- refusal, never 42501, to those who may)
+    ('mark as settled',        'om',     false, false, 'select public.record_affiliate_deduction_settlement(@c1@, 1, current_date, ''written_off'', ''SOFX'', gen_random_uuid())::text'),
+    ('void a settlement',      'om',     false, false, 'select public.void_affiliate_deduction_settlement(gen_random_uuid(), ''SOFX'', gen_random_uuid())::text'),
     -- Transfers and stock loans (the person's own records, X-5)
     ('cancel a transfer',      'all',    false, false, 'select public.cancel_transfer_request(gen_random_uuid())::text'),
     ('take back a loan',       'all',    false, false, 'select public.return_stock_loan(gen_random_uuid(), ''[]'', null, null)::text'),

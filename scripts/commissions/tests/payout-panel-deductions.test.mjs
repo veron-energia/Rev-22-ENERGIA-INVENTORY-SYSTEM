@@ -82,8 +82,10 @@ async function render(with410) {
   const root = createRoot(host);
   await act(async () => { root.render(React.createElement(AffiliatePayoutPanel, { mode: 'earned', canPay: true, userId: 'owner', onSaved: () => {} })); });
   for (let i = 0; i < 10 && !host.textContent.includes('Bravo Affiliate'); i++) await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+  // The row's Record payout button (414 puts Mark as settled beside the
+  // deduction, in the same row).
   const rows = [...host.querySelectorAll('tbody tr')].map(tr => ({
-    text: tr.textContent, button: tr.querySelector('button'),
+    text: tr.textContent, button: [...tr.querySelectorAll('button')].find(b => b.textContent === 'Record payout'),
   }));
   return { host, root, rows };
 }

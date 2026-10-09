@@ -5,6 +5,9 @@
 export type Balance = {
   referrer: string; month: string | null; earned: number; adjustments: number; paid: number; balance: number; review_reason: string | null;
   payable?: number; referrer_owed?: number; referrer_payable?: number; referrer_deduction?: number;
+  /** 414: what of the affiliate's settled deductions this month takes (its
+   *  balance already counts it). Missing before 414. */
+  settled?: number;
 };
 /** An affiliate's months netted (410's affiliate_referrer_balances). */
 export type ReferrerBalance = { referrer: string; owed: number; unpaid: number; deduction: number; payable: number };
@@ -97,3 +100,103 @@ export const deductionsOutstanding = (referrers: Map<string, ReferrerBalance>) =
 };
 
 export const monthKey = key;
+
+// ── 414: a deduction marked as settled ────────────────────────────────────
+// Commission paid out and then taken back is recovered from the affiliate's
+// later commission (410). The Owner decided on 9 Oct 2026 that an Owner or
+// Manager may also record that it was settled some other way. The settlement
+// is its own dated record: the take-backs and payouts stay as they are, and a
+// mistaken one is voided with a reason, never deleted.
+
+export type SettlementMethod = 'paid_back' | 'written_off' | 'paid_outside_app';
+export const SETTLEMENT_METHODS: { value: SettlementMethod; label: string }[] = [
+  { value: 'paid_back', label: 'Paid back to us' },
+  { value: 'written_off', label: 'Written off' },
+  { value: 'paid_outside_app', label: 'Paid off outside the app' },
+];
+export const settlementMethodLabel = (m: string | null | undefined) =>
+  SETTLEMENT_METHODS.find(x => x.value === m)?.label ?? (m || 'Unknown');
+
+/** A settlement as affiliate_payout_overview sends it (414). */
+export type Settlement = {
+  id: string; referrer_customer_id: string; amount: number | string; settled_on: string; method: string; note: string;
+  created_by: string | null; created_by_name?: string | null; created_at: string;
+  voided_at: string | null; voided_by: string | null; voided_by_name?: string | null; void_reason: string | null;
+};
+export type SettlementForm = { method: string; amount: string; date: string; note: string };
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const isoDay = (iso: string | null | undefined) => /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso ?? '').slice(0, 10));
+/** A calendar date (YYYY-MM-DD) as the page's other dates show (en-SG,
+ *  DD/MM/YYYY); anything else as it came. */
+export const sgDate = (iso: string | null | undefined) => {
+  const m = isoDay(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso ?? '');
+};
+/** A calendar date as the server words it in a refusal: 2 Oct 2026. */
+export const longDate = (iso: string | null | undefined) => {
+  const m = isoDay(iso);
+  return m ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : String(iso ?? '');
+};
+/** The earliest settlement date the server accepts. */
+export const SETTLEMENT_EARLIEST = '2020-01-01';
+/** The day of an affiliate's first payout still paid: a deduction exists only
+ *  after one, so it cannot have been settled before it (414). null when none
+ *  is listed (the server then decides). */
+export function firstPaidPayoutDate(payouts: Pick<Payout, 'referrer_customer_id' | 'status' | 'payment_date'>[], referrer: string): string | null {
+  let first: string | null = null;
+  for (const p of payouts) {
+    if (p.referrer_customer_id !== referrer || p.status !== 'paid' || !isoDay(p.payment_date)) continue;
+    const d = p.payment_date.slice(0, 10);
+    if (first === null || d < first) first = d;
+  }
+  return first;
+}
+
+/** What the server refuses in Mark as settled, said the same way; '' when it
+ *  would be accepted. The amount is at most what the affiliate owes back; the
+ *  date is not in the future, not before 1 Jan 2020 and not before the
+ *  affiliate's first payout (`firstPayout`, when known). */
+export function settlementFormError(f: SettlementForm, deduction: number, today: string, firstPayout?: string | null): string {
+  if (!SETTLEMENT_METHODS.some(m => m.value === f.method)) return 'Choose how it was settled.';
+  const amount = f.amount.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(amount) || cents(amount) <= 0) return 'Enter an amount above S$0.00 with at most two decimal places.';
+  if (cents(amount) > cents(deduction)) return `Enter at most ${payoutMoney(deduction)}, what this affiliate owes back.`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date) || f.date > today) return 'Enter the date it was settled. It cannot be after today in Singapore.';
+  if (f.date < SETTLEMENT_EARLIEST) return 'Enter the date it was settled. It cannot be before 1 Jan 2020.';
+  if (firstPayout && f.date < firstPayout) return `The date it was settled cannot be before the first payout to this affiliate, on ${longDate(firstPayout)}.`;
+  if (!f.note.trim()) return 'A note is required: say how and why it was settled.';
+  if (f.note.trim().length > 2000) return 'The note is too long (2,000 characters at most).';
+  return '';
+}
+
+/** The settlements still counting (not voided), of one affiliate or all. */
+export const settlementsInForce = (list: Settlement[], referrer?: string) =>
+  list.filter(s => !s.voided_at && (!referrer || s.referrer_customer_id === referrer));
+/** What the settlements still counting come to. */
+export const settledTotal = (list: Settlement[], referrer?: string) =>
+  fromCents(settlementsInForce(list, referrer).reduce((sum, s) => sum + cents(s.amount), 0));
+export const settlementInRange = (s: Settlement, from: string, to: string) =>
+  (!from || s.settled_on >= from) && (!to || s.settled_on <= to);
+/** The Dashboard's "Unpaid commission" (414): what affiliates are still owed,
+ *  each one's months netted and never below 0, as the Commissions page shows
+ *  it (dashboard_summary's unpaid_commission), and what is still to be
+ *  recovered from them. A database without 414 sends neither; the page then
+ *  shows what it worked out itself (`fallback`), as before. */
+export function dashboardCommissionFigures(summary: any, fallback: number): { unpaid: number; deductions: number; fromServer: boolean } {
+  const unpaid = summary?.unpaid_commission, deductions = summary?.commission_deductions;
+  if (unpaid === undefined || unpaid === null || !Number.isFinite(Number(unpaid))) return { unpaid: fromCents(cents(fallback)), deductions: 0, fromServer: false };
+  return { unpaid: fromCents(cents(unpaid)), deductions: fromCents(Math.max(cents(deductions), 0)), fromServer: true };
+}
+
+export const settlementExportColumns = (name: (id: string) => string) => [
+  { header: 'Settlement ID', value: (s: Settlement) => s.id }, { header: 'Date settled', value: (s: Settlement) => s.settled_on },
+  { header: 'Affiliate', value: (s: Settlement) => name(s.referrer_customer_id) },
+  { header: 'Affiliate ID', value: (s: Settlement) => s.referrer_customer_id },
+  { header: 'Amount', value: (s: Settlement) => Number(s.amount) },
+  { header: 'How', value: (s: Settlement) => settlementMethodLabel(s.method) },
+  { header: 'Note', value: (s: Settlement) => s.note },
+  { header: 'Recorded by', value: (s: Settlement) => s.created_by_name || s.created_by || '' },
+  { header: 'Status', value: (s: Settlement) => (s.voided_at ? 'Voided' : 'In force') },
+  { header: 'Void reason', value: (s: Settlement) => s.void_reason || '' },
+];

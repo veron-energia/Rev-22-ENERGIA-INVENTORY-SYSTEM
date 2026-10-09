@@ -63,6 +63,7 @@
     "test:commission-totals": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/commissions/tests/partial-payout-totals.sql",
     "test:commissions": "node --test scripts/commissions/tests/*.test.mjs",
     "test:commissions:clawbacks:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/commissions/tests/clawbacks-carried-forward.sql",
+    "test:commissions:settlements:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/commissions/tests/deduction-settlement.sql -f scripts/commissions/tests/settle-repair-414.sql",
     "test:commission-reinstall": "sh scripts/commissions/tests/reinstall-reearn.sh",
     "test:credit-policy": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/credit-policy/tests/spending-rules.sql -f scripts/credit-policy/tests/snapshot-does-not-gate.sql -f scripts/credit-policy/tests/releases-as-it-is-paid.sql",
     "test:invoice-payments:concurrency": "node scripts/invoice-payments/tests/concurrency.mjs",

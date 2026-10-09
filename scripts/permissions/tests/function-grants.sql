@@ -135,7 +135,14 @@ declare
                              -- 412: a staff login follows its profile (signed out and banned when
                              -- the profile is closed, unbanned when it opens again), and the
                              -- profiles trigger that calls it
-                             'staff_login_sync','trg_staff_login_follows_profile'];
+                             'staff_login_sync','trg_staff_login_follows_profile',
+                             -- 414: a deduction marked as settled and its void, for a named Owner
+                             -- or Manager (the page's record_ and void_affiliate_deduction_settlement
+                             -- reach them as the signed-in caller), the trigger that keeps a
+                             -- settlement from being deleted or rewritten, and an affiliate's
+                             -- months (internal since 339; 414 rebuilt it)
+                             'affiliate_deduction_settlement_record','affiliate_deduction_settlement_void',
+                             'trg_affiliate_deduction_settlement_guard','affiliate_month_balances'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

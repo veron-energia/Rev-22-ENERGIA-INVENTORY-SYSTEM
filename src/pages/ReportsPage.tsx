@@ -409,18 +409,37 @@ const ReportsPage: React.FC = () => {
   // comes to (a sale refunded or given to another affiliate after its payout),
   // the difference is a "Deduction to recover" from their later commission,
   // as the Commissions, Affiliates and portal pages show it.
+  //
+  // "Deduction settled" (414, the Owner, 9 Oct 2026): a deduction an Owner or
+  // Manager marked as settled (paid back, written off, or paid off outside
+  // the app) counts as recovered, so Outstanding − Deduction to recover =
+  // Earned − Paid Out + Deduction settled. report_affiliates sends it; a
+  // database without 414 sends none (0).
+  //
+  // Every affiliate with commission rows, payouts or settlements is listed,
+  // so one whose commission was all paid out and then taken back (Earned 0,
+  // a deduction to recover) is not left out, as the Dashboard counts it.
   const commissionRows = useMemo(() => {
     const paidByCustomer = new Map<string, number>(
       (repAffiliate ?? []).map((a: any) => [String(a.customer_id), Number(a.paid ?? 0)]),
     );
-    return referrerIds.map(rid => {
-      const rc = commissions.filter(c => c.referrer_customer_id === rid);
+    const settledByCustomer = new Map<string, number>(
+      (repAffiliate ?? []).map((a: any) => [String(a.customer_id), Number(a.settled ?? 0)]),
+    );
+    const ids = new Set(referrerIds.map(String));
+    for (const a of repAffiliate ?? []) {
+      if (Number((a as any).paid ?? 0) > 0 || Number((a as any).settled ?? 0) > 0) ids.add(String((a as any).customer_id));
+    }
+    return [...ids].map(rid => {
+      const rc = commissions.filter(c => String(c.referrer_customer_id) === rid);
       const earned = rc.filter(c => c.status === 'earned' || c.status === 'paid').reduce((s, c) => s + Number(c.commission_amount), 0);
       const paidOut = paidByCustomer.get(String(rid)) ?? 0;
+      const settled = settledByCustomer.get(String(rid)) ?? 0;
       const reversed = rc.filter(c => c.status === 'reversed').reduce((s, c) => s + Number(c.commission_amount), 0);
-      const { unpaid, deduction } = owedSplit(earned - paidOut);
-      return { name: cName(rid), earned, paidOut, reversed, outstanding: unpaid, deduction };
-    }).filter(r => r.earned > 0 || r.reversed > 0).sort((a, b) => b.earned - a.earned);
+      const { unpaid, deduction } = owedSplit(earned - paidOut + settled);
+      return { name: cName(rid), earned, paidOut, reversed, settled, outstanding: unpaid, deduction };
+    }).filter(r => cents(r.earned) !== 0 || cents(r.reversed) !== 0 || cents(r.paidOut) > 0 || cents(r.settled) > 0 || cents(r.deduction) > 0)
+      .sort((a, b) => b.earned - a.earned);
   }, [referrerIds, commissions, repAffiliate, customerById]);
 
   // Top products (by qty sold across paid invoices)
@@ -660,8 +679,8 @@ const ReportsPage: React.FC = () => {
         col('Commission on these invoices', r => cents(r.commission))] };
       case 'commission': return { rows: commissionRows, sheet: 'Commission', columns: [
         col('Referrer', r => r.name), col('Earned (lifetime)', r => cents(r.earned)), col('Paid Out', r => orDash(r.paidOut, cents)),
-        col('Reversed', r => orDash(r.reversed, n => -cents(n))), col('Outstanding', r => cents(r.outstanding)),
-        col('Deduction to recover', r => orDash(r.deduction, cents))] };
+        col('Reversed', r => orDash(r.reversed, n => -cents(n))), col('Deduction settled', r => orDash(r.settled, cents)),
+        col('Outstanding', r => cents(r.outstanding)), col('Deduction to recover', r => orDash(r.deduction, cents))] };
       case 'vouchers': return { rows: voucherRows, sheet: 'Vouchers', columns: [
         col('Voucher', r => r.name), col('Type', r => r.kind), col('Invoiced qty', r => r.sold_qty), col('Sales Value', r => cents(r.sales_value)),
         col('Uses', r => r.redemptions), col('Discount Given', r => orDash(r.discount_given, n => -cents(n)))] };
@@ -933,9 +952,9 @@ const ReportsPage: React.FC = () => {
               )}
               {tab === 'commission' && (
                 <table>
-                  <thead><tr><th>Referrer</th><th style={{ textAlign: 'right' }}>Earned (lifetime)</th><th style={{ textAlign: 'right' }}>Paid Out</th><th style={{ textAlign: 'right' }}>Reversed</th><th style={{ textAlign: 'right' }}>Outstanding</th><th style={{ textAlign: 'right' }}>Deduction to recover</th></tr></thead>
-                  <tbody>{commissionRows.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No commissions yet</td></tr>
-                    : commissionRows.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right', color: 'var(--success)' }}>{money(r.earned)}</td><td style={{ textAlign: 'right' }}>{r.paidOut > 0 ? money(r.paidOut) : '—'}</td><td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.reversed > 0 ? `−${money(r.reversed)}` : '—'}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.outstanding)}</td><td style={{ textAlign: 'right', color: 'var(--danger)' }} title="Paid out and then taken back: recovered from this affiliate's later commission">{r.deduction > 0 ? money(r.deduction) : '—'}</td></tr>)}</tbody>
+                  <thead><tr><th>Referrer</th><th style={{ textAlign: 'right' }}>Earned (lifetime)</th><th style={{ textAlign: 'right' }}>Paid Out</th><th style={{ textAlign: 'right' }}>Reversed</th><th style={{ textAlign: 'right' }}>Deduction settled</th><th style={{ textAlign: 'right' }}>Outstanding</th><th style={{ textAlign: 'right' }}>Deduction to recover</th></tr></thead>
+                  <tbody>{commissionRows.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No commissions yet</td></tr>
+                    : commissionRows.map((r, i) => <tr key={i}><td><strong>{r.name}</strong></td><td style={{ textAlign: 'right', color: 'var(--success)' }}>{money(r.earned)}</td><td style={{ textAlign: 'right' }}>{r.paidOut > 0 ? money(r.paidOut) : '—'}</td><td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.reversed > 0 ? `−${money(r.reversed)}` : '—'}</td><td style={{ textAlign: 'right' }} title="Paid out and then taken back, then settled another way: paid back, written off, or paid off outside the app">{r.settled > 0 ? money(r.settled) : '—'}</td><td style={{ textAlign: 'right', fontWeight: 700 }}>{money(r.outstanding)}</td><td style={{ textAlign: 'right', color: 'var(--danger)' }} title="Paid out and then taken back: recovered from this affiliate's later commission">{r.deduction > 0 ? money(r.deduction) : '—'}</td></tr>)}</tbody>
                 </table>
               )}
               {tab === 'vouchers' && (

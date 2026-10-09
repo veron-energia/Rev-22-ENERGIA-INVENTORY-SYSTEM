@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { ROLE_LABELS, isManagerOrAbove } from '../types';
 import { singaporeToday } from '../lib/invoices/business';
 import { focSnapshot, focWindowStart, type FocSnapshot } from '../lib/dashboard/focSnapshot.mjs';
+import { dashboardCommissionFigures } from '../lib/affiliatePayoutPresentation';
 import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, TrendingUp, Clock, Ban, Sparkles, Users } from 'lucide-react';
 
 interface Counts {
@@ -118,9 +119,11 @@ const DashboardPage: React.FC = () => {
 
       // Phase 8: the summary cards, for the roles that see them (406 answers
       // Owners, Admins and Managers only).
+      let summaryNow: any = null;
       if (isManagerOrAbove(profile?.role)) {
         const { data: sum } = await supabase.rpc('dashboard_summary');
-        setSummary(sum ?? null);
+        summaryNow = sum ?? null;
+        setSummary(summaryNow);
       } else {
         setSummary(null);
       }
@@ -154,8 +157,12 @@ const DashboardPage: React.FC = () => {
       if (isManagerOrAbove(profile?.role)) {
         // Summed, so a truncated read under-reports money owed rather than
         // failing — page all of it.
+        // 414: the server sends what affiliates are still owed (their months
+        // netted, as the Commissions page shows it); only a database without
+        // 414 leaves the page to add up the earned rows itself.
         const [comm, redemp, rent] = await Promise.all([
-          fetchAllFrom<any>('commissions', 'id,commission_amount', q => q.eq('status', 'earned')),
+          dashboardCommissionFigures(summaryNow, 0).fromServer ? Promise.resolve([] as any[])
+            : fetchAllFrom<any>('commissions', 'id,commission_amount', q => q.eq('status', 'earned')),
           supabase.from('voucher_redemptions').select('id', { count: 'exact', head: true }),
           fetchAllFrom<any>('rentals', 'id,status,expected_return_date', q => q.in('status', ['paid', 'active'])),
         ]);
@@ -215,6 +222,10 @@ const DashboardPage: React.FC = () => {
       setLoading(false);
     })();
   }, []);
+
+  // "Unpaid commission": what affiliates are still owed, as the Commissions
+  // page nets it (414); what is still to be recovered from them beside it.
+  const unpaidTile = dashboardCommissionFigures(summary, unpaidCommission);
 
   return (
     <div>
@@ -436,7 +447,7 @@ const DashboardPage: React.FC = () => {
 
       {isManagerOrAbove(profile?.role) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 28 }}>
-          <StatCard icon={<Star size={22} color="var(--primary)" />} label="Unpaid commission" value={loading ? '—' : `S$${unpaidCommission.toFixed(2)}`} tint="var(--primary-light)" />
+          <StatCard icon={<Star size={22} color="var(--primary)" />} label={unpaidTile.deductions > 0 ? `Unpaid commission · S$${unpaidTile.deductions.toFixed(2)} owed back` : 'Unpaid commission'} value={loading ? '—' : `S$${unpaidTile.unpaid.toFixed(2)}`} tint="var(--primary-light)" />
           <StatCard icon={<Ticket size={22} color="var(--success)" />} label="Voucher redemptions" value={loading ? '—' : redemptionCount} tint="var(--success-light)" />
           <StatCard icon={<KeyRound size={22} color="#b45309" />} label="Rentals out (paid/active)" value={loading ? '—' : activeRentals} tint="var(--accent-light)" />
           <StatCard icon={<CalendarClock size={22} color="var(--danger)" />} label="Overdue rentals" value={loading ? '—' : overdueRentals} tint="var(--danger-light)" />

@@ -210,6 +210,12 @@ rollback to savepoint before410;
 release savepoint before410;
 
 -- ===== 2. Apply 410; a re-run changes nothing =====
+-- 414 changes functions 410 checks (affiliate_month_balances, the overview,
+-- the portal's earnings), so on a database that has 414, 410 is in already
+-- and running it again refuses by design: this section is skipped there, and
+-- the sections after it check 410's rules with 414 in place.
+select to_regclass('public.affiliate_deduction_settlements') is null as t410_applies \gset
+\if :t410_applies
 \ir ../../../supabase/410_clawbacks_carried_forward_and_therapy_status_refresh.sql
 create temp table t410_after as
   select p.oid::regprocedure::text as fn, md5(pg_get_functiondef(p.oid)) as md5,
@@ -259,6 +265,9 @@ begin
   perform pg_temp.check(current_setting('t410.refused_relied') like '%commission_unpaid_amount(uuid) is missing or not the version%',
     '2: a relied-on function at another version refuses: ' || current_setting('t410.refused_relied'));
 end $$;
+\else
+\echo 'SKIP  section 2: this database has 414 (410 is in; its re-run refuses there by design)'
+\endif
 
 -- ===== 3. The production case: nothing paid while a deduction is owed =====
 do $$
