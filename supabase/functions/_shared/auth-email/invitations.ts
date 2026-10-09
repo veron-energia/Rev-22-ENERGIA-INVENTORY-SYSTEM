@@ -226,6 +226,17 @@ export async function createInvitation(
              + 'The invitation is saved and no access has been granted — use Resend to try again.',
     };
   }
+  // 413: an invitation cancelled while its login was being made answers
+  // 'cancelled', not an error. The database has tied that login to the
+  // cancelled invitation and closed it (412 blocks it), so nothing is sent.
+  if (provisioned.data?.outcome !== 'provisioned') {
+    return {
+      kind: 'provisioning_failed', invitationId,
+      message: provisioned.data?.outcome === 'cancelled'
+        ? 'The invitation was cancelled while it was being set up. No email was sent.'
+        : 'This invitation is no longer pending. No email was sent.',
+    };
+  }
 
   const delivery = await sendInvitation(deps, config, {
     requestId: input.requestId, link: generated.link.actionLink,
@@ -286,6 +297,17 @@ export async function resendInvitation(
       p_detail: 'link generation failed', p_is_resend: true,
     });
     return { kind: 'provisioning_failed', invitationId, message: 'A new invitation link could not be created.' };
+  }
+
+  // 413: cancelled while the new link was being made? Ask again, as the
+  // caller, just before sending. It changes nothing (the counters move when
+  // the delivery is recorded), and a cancelled invitation's email never goes.
+  const still = await deps.callerRpc('invite_user_prepare_resend', { p_invitation_id: invitationId });
+  if (still.error || still.data?.outcome !== 'ok') {
+    return {
+      kind: 'provisioning_failed', invitationId,
+      message: `${still.data?.message ?? still.error?.message ?? 'This invitation can no longer be resent.'} No email was sent.`,
+    };
   }
 
   const delivery = await sendInvitation(deps, config, {

@@ -179,6 +179,68 @@ Deno.test('a profile that cannot be written leaves no usable account', async () 
   assertEquals(d.delivered.length, 0);
 });
 
+// 413: cancelled between invite_user_begin and invite_user_provisioned.
+Deno.test('an invitation cancelled while its login is being made sends no email', async () => {
+  const d = deps({
+    adminRpc: (fn) => {
+      d.calls.push(`admin:${fn}`);
+      return Promise.resolve(fn === 'invite_user_provisioned'
+        ? { data: { outcome: 'cancelled', message: 'This invitation is no longer pending.' }, error: null }
+        : { data: null, error: null });
+    },
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT, 'Olivia Owner');
+  assertEquals(result.kind, 'provisioning_failed');
+  assertEquals((result as { invitationId?: string }).invitationId, 'inv-1');
+  assertStringIncludes((result as { message: string }).message, 'cancelled while it was being set up');
+  assertStringIncludes((result as { message: string }).message, 'No email was sent');
+  assertEquals(d.delivered.length, 0, 'the email went out for a cancelled invitation');
+  assert(!d.calls.includes('admin:invite_user_record_delivery'), 'a delivery was recorded for an email never sent');
+});
+
+Deno.test('any answer but "provisioned" sends no email', async () => {
+  for (const data of [{ outcome: 'accepted' }, {}, null]) {
+    const d = deps({
+      adminRpc: (fn) => Promise.resolve(fn === 'invite_user_provisioned' ? { data, error: null } : { data: null, error: null }),
+    });
+    const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);
+    assertEquals(result.kind, 'provisioning_failed', JSON.stringify(data));
+    assertEquals(d.delivered.length, 0, JSON.stringify(data));
+  }
+});
+
+Deno.test('a resend cancelled while its new link is being made sends no email', async () => {
+  let asked = 0;
+  const d = deps({
+    callerRpc: (fn) => {
+      d.calls.push(`caller:${fn}`);
+      if (fn !== 'invite_user_prepare_resend') return Promise.resolve({ data: null, error: null });
+      asked++;
+      return Promise.resolve({
+        data: asked === 1
+          ? { outcome: 'ok', invitation_id: 'inv-1', email: INPUT.email, full_name: INPUT.fullName }
+          : { outcome: 'not_pending', status: 'cancelled', message: 'This invitation was cancelled. Create a new one if they still need access.' },
+        error: null,
+      });
+    },
+  });
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-2');
+  assertEquals(result.kind, 'provisioning_failed');
+  assertStringIncludes((result as { message: string }).message, 'was cancelled');
+  assertStringIncludes((result as { message: string }).message, 'No email was sent');
+  assertEquals(asked, 2, 'the invitation was not asked about again just before sending');
+  assertEquals(d.delivered.length, 0, 'the email went out for a cancelled invitation');
+});
+
+Deno.test('a resend asks again as the caller just before sending, and still sends when nothing changed', async () => {
+  const d = deps();
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-2');
+  assertEquals(result.kind, 'created');
+  assertEquals(d.calls.filter(c => c === 'caller:invite_user_prepare_resend').length, 2);
+  assert(!d.calls.includes('admin:invite_user_prepare_resend'), 'the second look bypassed the caller');
+  assertEquals(d.delivered.length, 1);
+});
+
 Deno.test('a rejected email is reported as not sent, and the account still exists', async () => {
   const d = deps({ delivery: rejected });
   const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);

@@ -14,6 +14,9 @@ export interface Profile {
   role: UserRole;
   is_active: boolean;
   deleted_at: string | null;
+  // 'pending' or 'cancelled' for an invited person who has not accepted; null
+  // or 'accepted' otherwise. Present on rows read with select('*').
+  invitation_status?: string | null;
   created_at: string;
   updated_at: string;
 }

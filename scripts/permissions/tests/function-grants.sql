@@ -131,7 +131,11 @@ declare
                              -- 409: the retired staff request, which moved the invoice itself
                              -- to refund_requested (staff raise guided requests now), and what a
                              -- cancelled invoice's customer already had (refund_invoice_recorded's)
-                             'request_invoice_action','cancelled_invoice_used_value'];
+                             'request_invoice_action','cancelled_invoice_used_value',
+                             -- 412: a staff login follows its profile (signed out and banned when
+                             -- the profile is closed, unbanned when it opens again), and the
+                             -- profiles trigger that calls it
+                             'staff_login_sync','trg_staff_login_follows_profile'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

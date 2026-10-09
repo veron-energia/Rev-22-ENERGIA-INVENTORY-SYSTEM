@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { Profile, UserStoreAssignment } from '../types';
+import { signInErrorMessage } from '../lib/staffLogin';
 
 // A logged-in Supabase Auth user resolves to EITHER a Staff member (has a
 // profiles row) OR an Affiliate (has an affiliate_accounts row) — never both.
@@ -123,7 +124,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signIn = useCallback(async (email: string, password: string) => {
     setError(null);
     const { error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
-    if (signInErr) return { error: signInErr.message };
+    // 412: a login whose staff profile is switched off is banned in Supabase
+    // Auth; say so in plain words rather than "User is banned".
+    if (signInErr) return { error: signInErrorMessage(signInErr) };
     return { error: null };
   }, []);
 

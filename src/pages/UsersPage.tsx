@@ -7,6 +7,7 @@ import { Modal, NoAccess } from '../components/ui';
 import { Pencil, Users2, RefreshCw, UserPlus, Info, Search, Send, XCircle } from 'lucide-react';
 import { InviteUserForm } from '../components/users/InviteUserForm';
 import { cancelInvitation, resendInvitation } from '../lib/userInvitations';
+import { activeSaveRefused, isInvitee, loginChangeHint, loginChangeNote } from '../lib/staffLogin';
 import '../components/users/users.css';
 
 /** One row of user_admin_list(): the account state and the invitation state, side by side. */
@@ -97,23 +98,43 @@ const UsersPage: React.FC = () => {
       if (!/^\S+@\S+\.\S+$/.test(form.personal_email.trim())) { setErr('Personal email looks invalid.'); return; }
     }
     setSaving(true);
+    // 412: switching Active signs a login out everywhere and blocks it, or
+    // lifts that block. So Active is sent only when this dialog changed it,
+    // and only onto the state the dialog was opened with: a save never puts
+    // back a value someone else has changed since.
+    const activeChanged = form.is_active !== editUser.is_active;
+    let update = supabase.from('profiles').update({
+      full_name: form.full_name.trim(), role: form.role,
+      ...(activeChanged ? { is_active: form.is_active } : {}),
+      work_phone: form.work_phone.trim() || null, personal_phone: form.personal_phone.trim() || null,
+      personal_email: form.personal_email.trim() || null, updated_at: new Date().toISOString(),
+    }).eq('id', editUser.id);
+    if (activeChanged) update = update.eq('is_active', editUser.is_active);
     // Ask for the saved row back. The database's rules decide whose profile
     // this login may edit, and a rule that does not allow it answers with no
     // error and no row (ADMIN-AUTH-2: a Manager's edits used to vanish that
     // way, deactivation included). No row back means nothing was saved.
-    const { data: saved, error } = await supabase.from('profiles').update({
-      full_name: form.full_name.trim(), role: form.role, is_active: form.is_active,
-      work_phone: form.work_phone.trim() || null, personal_phone: form.personal_phone.trim() || null,
-      personal_email: form.personal_email.trim() || null, updated_at: new Date().toISOString(),
-    }).eq('id', editUser.id).select('id');
+    const { data: saved, error } = await update.select('id, is_active');
     setSaving(false);
     if (error) { setErr(error.message); return; }
     if (!saved || saved.length === 0) {
-      setErr(`Nothing was saved: your role cannot change ${editUser.full_name}'s profile. Ask an Owner.`);
+      // Refused by the rules, or Active changed by someone else meanwhile.
+      let changedElsewhere = false;
+      if (activeChanged) {
+        const { data: current } = await supabase.from('profiles').select('is_active').eq('id', editUser.id).maybeSingle();
+        changedElsewhere = !!current && (current as { is_active: boolean }).is_active !== editUser.is_active;
+      }
+      setErr(activeSaveRefused(editUser.full_name, changedElsewhere));
+      if (changedElsewhere) load();
       return;
     }
+    // Say what this save did to the login, from the row the database saved.
+    const name = form.full_name.trim();
+    const note = activeChanged
+      ? loginChangeNote(name, editUser.is_active, (saved[0] as { is_active: boolean }).is_active)
+      : '';
     setEditUser(null);
-    setNotice(`${form.full_name.trim()}'s profile was saved.`);
+    setNotice(note ? `${name}'s profile was saved. ${note}` : `${name}'s profile was saved.`);
     load();
   };
 
@@ -185,6 +206,10 @@ const UsersPage: React.FC = () => {
   };
 
   if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage users and roles." />;
+
+  // An invited person becomes active by accepting their invitation; the box
+  // is locked for them and the hint says why.
+  const activeHint = editUser ? loginChangeHint(editUser.is_active, form.is_active, editUser.invitation_status) : '';
 
 
   return (
@@ -367,9 +392,15 @@ const UsersPage: React.FC = () => {
             </div>
             <div className="form-group"><label>Personal Email {contactRequired(form.role) && '*'}</label><input type="email" value={form.personal_email} onChange={e => setForm(f => ({ ...f, personal_email: e.target.value }))} placeholder="Not used for login" /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} />
+              <input type="checkbox" checked={form.is_active} disabled={isInvitee(editUser.invitation_status)}
+                     onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} />
               <span style={{ fontSize: 13 }}>Active (can sign in and use the system)</span>
             </label>
+            {activeHint && (
+              <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: -6, display: 'block' }} role="note">
+                {activeHint}
+              </span>
+            )}
             {contactRequired(form.role) && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Work phone, personal phone, and personal email are required for Staff, Owner, and Manager. Work phone appears on printed invoices under "Authorised by."</div></div>}
           </div>
         </Modal>
