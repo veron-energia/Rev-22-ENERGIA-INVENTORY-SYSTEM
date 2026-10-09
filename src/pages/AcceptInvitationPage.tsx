@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Leaf } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { acceptInvitation } from '../lib/userInvitations';
+import { useAuth } from '../context/AuthContext';
 import '../components/users/users.css';
 
 /**
@@ -19,6 +20,7 @@ import '../components/users/users.css';
  */
 const AcceptInvitationPage: React.FC = () => {
   const nav = useNavigate();
+  const { refreshProfile } = useAuth();
   const [state, setState] = useState<'checking' | 'ready' | 'no_session' | 'done'>('checking');
   const [account, setAccount] = useState<{ email: string; name: string } | null>(null);
   const [signedInAs, setSignedInAs] = useState<string | null>(null);
@@ -69,6 +71,11 @@ const AcceptInvitationPage: React.FC = () => {
     switch (result.kind) {
       case 'activated':
         setState('done');
+        // The app read this account when the link opened, while it was still a
+        // pending invitation, and holds it as not active. Read it again now the
+        // server has switched it on, or the first screen says "Your account has
+        // been deactivated" until a reload (ADMIN-AUTH-5).
+        await refreshProfile();
         setTimeout(() => nav('/', { replace: true }), 1200);
         return;
       case 'invalid_link':

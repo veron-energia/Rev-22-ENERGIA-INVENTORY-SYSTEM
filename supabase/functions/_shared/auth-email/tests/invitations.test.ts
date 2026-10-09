@@ -6,7 +6,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
-  cancelInvitation, createInvitation, resendInvitation, validateInvite,
+  cancelInvitation, closedInvitation, createInvitation, resendInvitation, validateInvite,
   type InvitationDeps, type InviteInput,
 } from '../invitations.ts';
 import type { AuthEmailConfig } from '../config.ts';
@@ -262,4 +262,35 @@ Deno.test('the login email is normalized and never copied from the personal one'
   const blank = validateInvite({ ...INPUT, personalEmail: '' });
   assert(blank.ok);
   assertEquals(blank.value.personalEmail, null, 'a blank personal email became the login email');
+});
+
+// Accepting (406): a link whose invitation is already closed sets no password.
+const account = () => Promise.resolve({ status: 'ok' as const, userId: 'auth-1' });
+
+Deno.test('a cancelled, used or expired invitation stops before any password is set', async () => {
+  const asked: string[] = [];
+  const statusOf = (s: string) => (id: string) => { asked.push(id); return Promise.resolve(s); };
+  const cancelled = await closedInvitation({ readAccount: account, latestInvitationStatus: statusOf('cancelled') });
+  assertEquals(cancelled?.reason, 'cancelled');
+  assertStringIncludes(cancelled?.message ?? '', 'cancelled');
+  assertEquals((await closedInvitation({ readAccount: account, latestInvitationStatus: statusOf('accepted') }))?.reason,
+    'already_accepted');
+  assertEquals((await closedInvitation({ readAccount: account, latestInvitationStatus: statusOf('expired') }))?.reason,
+    'expired');
+  assertEquals(asked, ['auth-1', 'auth-1', 'auth-1'], 'looked up by the account the token belongs to');
+});
+
+Deno.test('a pending invitation, or none found, goes on to set the password as before', async () => {
+  assertEquals(await closedInvitation({ readAccount: account, latestInvitationStatus: () => Promise.resolve('pending') }), null);
+  assertEquals(await closedInvitation({ readAccount: account, latestInvitationStatus: () => Promise.resolve(null) }), null);
+});
+
+Deno.test('only a definite answer refuses: an unreadable account or invitation goes on as before', async () => {
+  // invite_user_accept still refuses a closed invitation after the password
+  // step, so failing open costs nothing that was not already the case.
+  const never = () => { throw new Error('must not be asked'); };
+  assertEquals(await closedInvitation({ readAccount: () => Promise.resolve({ status: 'unauthorized' as const }), latestInvitationStatus: never }), null);
+  assertEquals(await closedInvitation({ readAccount: () => Promise.resolve({ status: 'error' as const, message: 'down' }), latestInvitationStatus: never }), null);
+  assertEquals(await closedInvitation({ readAccount: account, latestInvitationStatus: () => Promise.reject(new Error('db down')) }), null);
+  assertEquals(await closedInvitation({ readAccount: () => Promise.reject(new Error('auth down')), latestInvitationStatus: never }), null);
 });

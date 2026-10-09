@@ -73,6 +73,38 @@ export async function changeOwnPassword(
   };
 }
 
+/**
+ * Who the caller's own token belongs to, read from the ordinary user-scoped
+ * Auth endpoint (nothing is changed). Used to look an invitation up before a
+ * password is set from its link.
+ */
+export type OwnAccount =
+  | { status: 'ok'; userId: string; email: string }
+  | { status: 'unauthorized' }
+  | { status: 'error'; message: string };
+
+export async function readOwnAccount(
+  args: { supabaseUrl: string; apiKey: string; accessToken: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<OwnAccount> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${args.supabaseUrl}/auth/v1/user`, {
+      method: 'GET',
+      headers: { apikey: args.apiKey, Authorization: `Bearer ${args.accessToken}` },
+    });
+  } catch (error) {
+    return { status: 'error', message: `auth request failed: ${String(error)}` };
+  }
+  if (response.status === 401 || response.status === 403) return { status: 'unauthorized' };
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { status: 'error', message: `auth answered ${response.status}` };
+  const id = typeof body?.id === 'string' ? body.id : '';
+  const email = typeof body?.email === 'string' ? body.email : '';
+  if (!id) return { status: 'error', message: 'the account could not be read' };
+  return { status: 'ok', userId: id, email };
+}
+
 /** The bearer token, or null. Never logged. */
 export function bearerToken(req: Request): string | null {
   const header = req.headers.get('authorization') ?? '';

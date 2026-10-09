@@ -49,6 +49,26 @@ $$begin execute sql; return '';
 exception when others then return sqlstate || ' ' || sqlerrm; end$$;
 grant execute on function pg_temp.outcome(text) to authenticated;
 
+-- 406 made record_document_send refuse anyone but active staff, as its first
+-- statement. This file tests 389, so it runs against the body 389 met
+-- (production's from 389 to 406), put back here inside the transaction; on a
+-- database before 406 this changes nothing.
+CREATE OR REPLACE FUNCTION public.record_document_send(p_doc_kind text, p_doc_no text, p_channel text, p_doc_id uuid DEFAULT NULL::uuid, p_customer_id uuid DEFAULT NULL::uuid, p_sent_to text DEFAULT NULL::text, p_pdf_path text DEFAULT NULL::text, p_status text DEFAULT 'sent'::text, p_error text DEFAULT NULL::text)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare v_id uuid;
+begin
+  insert into public.document_sends (doc_kind, doc_id, doc_no, customer_id, channel,
+    sent_to, pdf_path, status, error_text, sent_by)
+  values (p_doc_kind, p_doc_id, p_doc_no, p_customer_id, p_channel,
+    p_sent_to, p_pdf_path, coalesce(p_status,'sent'), p_error, auth.uid())
+  returning id into v_id;
+  return v_id;
+end $function$;
+
 -- ── C1: on 93's table, 389 is a no-op ──────────────────────────────────────
 create temp table shape93 as select pg_temp.shape() s;
 create temp table fns93 as select * from pg_temp.fns();

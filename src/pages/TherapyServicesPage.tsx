@@ -87,6 +87,9 @@ const TherapyServicesPage: React.FC = () => {
   const [storeFilter, setStoreFilter] = useState<string>('');
 
   const load = useCallback(async () => {
+    // The catalogue is for the roles this page is for (Owners, Admins and
+    // Managers, 406); the rest see the notice below and ask for nothing.
+    if (!canManage) { setLoading(false); return; }
     setLoading(true);
     const [cat, st, vc] = await Promise.all([
       supabase.rpc('therapy_service_catalogue', {
@@ -140,7 +143,7 @@ const TherapyServicesPage: React.FC = () => {
     setUsedIn(Object.fromEntries(Object.entries(map).map(([k, v]) =>
       [k, { packages: [...v.packages].sort(), vouchers: [...v.vouchers].sort(), viaVoucher: [...v.viaVoucher].sort() }])));
     setLoading(false);
-  }, [storeFilter]);
+  }, [storeFilter, canManage]);
 
   useEffect(() => { load(); }, [load]);
 

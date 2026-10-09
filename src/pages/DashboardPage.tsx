@@ -116,9 +116,14 @@ const DashboardPage: React.FC = () => {
       ]);
       setPendingApprovals((transferPending.count ?? 0) + (otherPending.count ?? 0));
 
-      // Phase 8: role-scoped dashboard summary (Owner/Manager get the full set).
-      const { data: sum } = await supabase.rpc('dashboard_summary');
-      setSummary(sum ?? null);
+      // Phase 8: the summary cards, for the roles that see them (406 answers
+      // Owners, Admins and Managers only).
+      if (isManagerOrAbove(profile?.role)) {
+        const { data: sum } = await supabase.rpc('dashboard_summary');
+        setSummary(sum ?? null);
+      } else {
+        setSummary(null);
+      }
 
       // Phase 11: transfer receipt / overdue / discrepancy alerts.
       const { data: ta } = await supabase.rpc('transfer_receipt_alerts');

@@ -106,7 +106,17 @@ declare
                              'ads_resolve_all_attendance','ads_row_j_value','ads_row_p_value',
                              'ads_row_r_value','ads_rpc_alert_email','ads_rpc_calendar_bulk',
                              'ads_rpc_mark_all_written','ads_rpc_row_state_column','ads_rpc_sheet_blocks',
-                             'ads_rpc_sheet_columns','ads_rpc_sheet_write','ads_rpc_sheet_written'];
+                             'ads_rpc_sheet_columns','ads_rpc_sheet_write','ads_rpc_sheet_written',
+                             -- 406: the staff checks themselves (called inside the functions
+                             -- they guard, which run as the owner); write_audit, which wrote any
+                             -- audit entry a browser sent (X-7: pages call record_document_printed);
+                             -- the sign-in email helpers the auth Edge Functions call with the
+                             -- service key (X-8, which 339 had re-opened); and four with no caller
+                             -- but other server functions (X-3)
+                             'require_active_staff','require_store_access','write_audit',
+                             'auth_email_user_state','auth_email_reserve','auth_email_record_outcome',
+                             'commission_outside_rebase_scope','commission_totals_reconciliation',
+                             'preview_commission_rebase_effect','validate_bundle_voucher_selection'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

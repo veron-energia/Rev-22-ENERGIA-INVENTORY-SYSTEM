@@ -355,8 +355,8 @@ select pg_temp.check((select r->>'problem' is null and not (r->>'customer_previo
 
 -- ═════ P5 Only the rejection's own audit row counts ═════
 -- Rows shaped like an Owner's rejection of a claim suggesting cF and cFA:
--- through write_audit by staff and by an Owner (signed-in users may call it;
--- it leaves module empty), and through write_audit_ex for staff and for an
+-- through write_audit by staff and by an Owner (signed-in users could call it
+-- until 406; it leaves module empty), and through write_audit_ex for staff and for an
 -- Admin, for an Owner under another action, and for an Owner with the right
 -- action on another table (no signed-in user can call write_audit_ex; this
 -- runs as the database owner).
@@ -395,10 +395,13 @@ select pg_temp.check((select count(*) filter (where actor_role = 'staff' and mod
             and actor_role = 'owner' and module = 'affiliate'
             and new_data->>'candidate_customer_id' in (pg_temp.fx('cF')::text, pg_temp.fx('cFA')::text)),
   'P5 (setup) twelve rows shaped like a rejection: staff and an Owner through write_audit, staff and an Admin through write_audit_ex, an Owner''s under another action, and an Owner''s rejection row on another table');
-select pg_temp.check(has_function_privilege('authenticated', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
+-- 406 took write_audit from signed-in users (X-7); the rows above stand for
+-- ones written before that, and for any a server function writes.
+select pg_temp.check(not has_function_privilege('authenticated', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
+    and not has_function_privilege('anon', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
     and not has_function_privilege('authenticated', 'public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'execute')
     and not has_function_privilege('anon', 'public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'execute'),
-  'P5 (as relied on) signed-in users may call write_audit, which leaves module empty, but not write_audit_ex');
+  'P5 (as relied on) no signed-in user may call write_audit (since 406) or write_audit_ex');
 -- Nor can anyone signed in write such a row into audit_logs directly, or
 -- change or delete the row the Owner's rejection of kO1 wrote (RLS: read only).
 do $$

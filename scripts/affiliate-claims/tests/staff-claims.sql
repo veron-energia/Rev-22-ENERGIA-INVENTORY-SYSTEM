@@ -852,8 +852,8 @@ select pg_temp.check(exists (select 1 from audit_logs where table_name = 'affili
   'S12 and now an audit row says who closed it, the customer the login is linked to and the one chosen');
 
 -- ═════ F Only an Owner's unlink counts ═════
--- write_audit is open to every signed-in user and takes the role from their
--- profile. Rows shaped like an unlink, for cFk (with kfk's login) and for
+-- write_audit was open to every signed-in user until 406 and takes the role
+-- from their profile. Rows shaped like an unlink, for cFk (with kfk's login) and for
 -- cFa: one written by staff and one by an Owner through write_audit, and
 -- one written through write_audit_ex for a Manager (no signed-in user can
 -- call that; this runs as the database owner).
@@ -879,11 +879,14 @@ select pg_temp.check((select count(*) filter (where actor_role = 'staff' and mod
                          and count(*) filter (where actor_role = 'manager' and module = 'affiliate') = 2 and count(*) = 6
                         from audit_logs where action = 'affiliate_login_unlinked'
                          and old_data->>'customer_id' in (pg_temp.fx('cFk')::text, pg_temp.fx('cFa')::text)),
-  'F (setup) six rows shaped like an unlink: staff and an Owner through write_audit (signed-in users may call it), a Manager through write_audit_ex');
-select pg_temp.check(has_function_privilege('authenticated', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
+  'F (setup) six rows shaped like an unlink: staff and an Owner through write_audit (signed-in users could call it until 406), a Manager through write_audit_ex');
+-- 406 took write_audit from signed-in users (X-7); the rows above stand for
+-- ones written before that, and for any a server function writes.
+select pg_temp.check(not has_function_privilege('authenticated', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
+    and not has_function_privilege('anon', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
     and not has_function_privilege('authenticated', 'public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'execute')
     and not has_function_privilege('anon', 'public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'execute'),
-  'F (as relied on) signed-in users may call write_audit, which leaves module empty, but not write_audit_ex');
+  'F (as relied on) no signed-in user may call write_audit (since 406) or write_audit_ex');
 select pg_temp.as_user('s');
 select pg_temp.check((select r->>'problem' is null and not (r->>'previously_unlinked')::boolean and not (r->>'customer_previously_unlinked')::boolean
                         from pg_temp.link_check('kfk', 'cFk') r),

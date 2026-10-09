@@ -14,6 +14,11 @@
 // turns the send into a failure; that a failed upload is logged as 'failed'
 // with its reason; and that the email link fallback logs itself too.
 //
+// 407: each send is filed under a name of its own and never replaces a file
+// (upsert off), so a link a customer holds cannot be pointed at another PDF.
+// The path logged is the one uploaded and signed, and two sends of the same
+// invoice use two names.
+//
 // Run: node --test scripts/invoices/tests/send-log.test.mjs
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,7 +58,10 @@ const DOC = {
   customerId: '00000000-0000-4000-8000-000000000002', customerName: 'Ana Test',
   phone: '+65 9123 4567', email: 'ana.test@tests.invalid',
 };
-const PATH = 'store-test/invoice/INV-TEST-0001.pdf';
+// store / kind / document number, then a name no earlier send used.
+const PATH_SHAPE = /^store-test\/invoice\/INV-TEST-0001-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/;
+const UPLOAD = 'https://db.invalid/storage/v1/object/invoice-pdfs/';
+const SIGN = 'https://db.invalid/storage/v1/object/sign/invoice-pdfs/';
 const RPC = 'https://db.invalid/rest/v1/rpc/record_document_send';
 const NINE = ['p_doc_kind', 'p_doc_no', 'p_channel', 'p_doc_id', 'p_customer_id', 'p_sent_to', 'p_pdf_path', 'p_status', 'p_error'];
 
@@ -66,15 +74,16 @@ const consoleWarn = console.warn;
 beforeEach(() => {
   requests = []; events = []; warnings = []; unhandled = [];
   rpcReply = () => json(200, '00000000-0000-4000-8000-0000000000aa');
-  uploadReply = () => json(200, { Id: 'obj-test', Key: `invoice-pdfs/${PATH}` });
+  uploadReply = path => json(200, { Id: 'obj-test', Key: `invoice-pdfs/${path}` });
   globalThis.__fetch = async (input, init = {}) => {
     const url = String(input instanceof Request ? input.url : input);
     const body = typeof init.body === 'string' ? init.body : null;
-    requests.push({ method: init.method ?? 'GET', url, body });
+    const headers = new Headers(init.headers ?? {});
+    requests.push({ method: init.method ?? 'GET', url, body, upsert: headers.get('x-upsert') });
     if (url === RPC) { events.push('log requested'); return rpcReply(); }
-    if (url.startsWith('https://db.invalid/storage/v1/object/sign/invoice-pdfs/')) {
-      return json(200, { signedURL: `/object/sign/invoice-pdfs/${PATH}?token=t` }); }
-    if (url.startsWith('https://db.invalid/storage/v1/object/invoice-pdfs/')) return uploadReply();
+    if (url.startsWith(SIGN)) {
+      return json(200, { signedURL: `/object/sign/invoice-pdfs/${decodeURIComponent(url.slice(SIGN.length))}?token=t` }); }
+    if (url.startsWith(UPLOAD)) return uploadReply(decodeURIComponent(url.slice(UPLOAD.length)));
     return json(404, { message: `unexpected request ${url}` });
   };
   globalThis.window = {
@@ -92,6 +101,17 @@ afterEach(() => {
 /** The client resolves the session before it fetches, so give it a few turns. */
 async function settle() { for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 0)); }
 const logRequests = () => requests.filter(r => r.url === RPC);
+const uploads = () => requests.filter(r => r.url.startsWith(UPLOAD));
+/** The one path uploaded: a new file, never a replacement, filed under its store. */
+function uploadedPath() {
+  const up = uploads();
+  assert.equal(up.length, 1, 'one upload');
+  assert.equal(up[0].method, 'POST', 'a new file, not a replacement');
+  assert.equal(up[0].upsert, 'false', 'never replaces a file');
+  const path = decodeURIComponent(up[0].url.slice(UPLOAD.length));
+  assert.match(path, PATH_SHAPE);
+  return path;
+}
 
 // ── checks ─────────────────────────────────────────────────────────────────
 test('a WhatsApp send logs itself, after the chat opens, with the nine arguments record_document_send takes', async () => {
@@ -106,7 +126,7 @@ test('a WhatsApp send logs itself, after the chat opens, with the nine arguments
   assert.deepEqual(body, {
     p_doc_kind: 'invoice', p_doc_no: 'INV-TEST-0001', p_channel: 'whatsapp',
     p_doc_id: DOC.docId, p_customer_id: DOC.customerId,
-    p_sent_to: '6591234567', p_pdf_path: PATH, p_status: 'sent', p_error: null,
+    p_sent_to: '6591234567', p_pdf_path: uploadedPath(), p_status: 'sent', p_error: null,
   });
   assert.deepEqual(events, ['chat opened', 'log requested']);
   assert.deepEqual(warnings, []);
@@ -173,8 +193,21 @@ test('the email link fallback logs itself too', async () => {
   assert.deepEqual(JSON.parse(logs[0].body), {
     p_doc_kind: 'invoice', p_doc_no: 'INV-TEST-0001', p_channel: 'email',
     p_doc_id: DOC.docId, p_customer_id: DOC.customerId,
-    p_sent_to: 'ana.test@tests.invalid', p_pdf_path: PATH, p_status: 'sent',
+    p_sent_to: 'ana.test@tests.invalid', p_pdf_path: uploadedPath(), p_status: 'sent',
     p_error: 'link fallback — no server-side sender',
   });
   assert.deepEqual(events, ['mail opened', 'log requested']);
+});
+
+test('two sends of one invoice are filed under two names, each linked to its own file', async () => {
+  await sendViaWhatsAppLink(DOC);
+  await sendViaWhatsAppLink(DOC);
+  await settle();
+  const paths = uploads().map(r => decodeURIComponent(r.url.slice(UPLOAD.length)));
+  assert.equal(paths.length, 2);
+  for (const p of paths) assert.match(p, PATH_SHAPE);
+  assert.notEqual(paths[0], paths[1], 'the second send neither reuses nor replaces the first file');
+  const signed = requests.filter(r => r.url.startsWith(SIGN)).map(r => decodeURIComponent(r.url.slice(SIGN.length)));
+  assert.deepEqual(signed, paths, 'each link is signed for the file that send uploaded');
+  assert.deepEqual(logRequests().map(r => JSON.parse(r.body).p_pdf_path), paths);
 });

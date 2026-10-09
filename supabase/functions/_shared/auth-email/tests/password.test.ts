@@ -1,7 +1,7 @@
 // Changing a password as the user, and the notification that follows it.
 
 import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@std/assert@1';
-import { bearerToken, changeOwnPassword } from '../password.ts';
+import { bearerToken, changeOwnPassword, readOwnAccount } from '../password.ts';
 import { SUPABASE_URL } from './support.ts';
 
 const withAuth = (value: string) => new Request('https://x', { headers: { Authorization: value } });
@@ -89,4 +89,30 @@ Deno.test('the request body never carries anything but the password', async () =
   const body = JSON.parse(seen[0]);
   assertEquals(Object.keys(body), ['password']);
   assert(!('email' in body) && !('role' in body) && !('data' in body));
+});
+
+Deno.test('reading the caller\'s own account is a GET as the caller, and changes nothing', async () => {
+  const seen: { url: string; init: RequestInit }[] = [];
+  const fake: typeof fetch = (url, init) => {
+    seen.push({ url: String(url), init: init as RequestInit });
+    return Promise.resolve(new Response(JSON.stringify({ id: 'user-uuid', email: 'ada@example.com' }), { status: 200 }));
+  };
+  const result = await readOwnAccount({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT }, fake);
+  assertEquals(result, { status: 'ok', userId: 'user-uuid', email: 'ada@example.com' });
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0].url, `${SUPABASE_URL}/auth/v1/user`);
+  assertEquals(seen[0].init.method, 'GET');
+  assertEquals(seen[0].init.body, undefined, 'nothing is sent');
+  assertEquals((seen[0].init.headers as Record<string, string>).Authorization, `Bearer ${JWT}`);
+});
+
+Deno.test('reading the account: an expired link is unauthorized; a failure is an error, never an account', async () => {
+  for (const status of [401, 403]) {
+    const fake: typeof fetch = () => Promise.resolve(new Response('{}', { status }));
+    assertEquals((await readOwnAccount({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT }, fake)).status, 'unauthorized');
+  }
+  const down: typeof fetch = () => Promise.reject(new TypeError('network down'));
+  assertEquals((await readOwnAccount({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT }, down)).status, 'error');
+  const blank: typeof fetch = () => Promise.resolve(new Response('{}', { status: 200 }));
+  assertEquals((await readOwnAccount({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT }, blank)).status, 'error');
 });

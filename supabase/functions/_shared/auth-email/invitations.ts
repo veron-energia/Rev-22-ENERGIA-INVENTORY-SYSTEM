@@ -323,3 +323,47 @@ export async function cancelInvitation(
   if (row.outcome === 'forbidden') return { kind: 'forbidden', message: row.message };
   return { kind: 'error', message: row.message ?? 'The invitation could not be cancelled.' };
 }
+
+/**
+ * Accepting: is this account's invitation already closed?
+ *
+ * auth-accept-invitation sets the password with the invitee's own token and
+ * only then asks invite_user_accept to switch the account on, which refuses a
+ * cancelled, used or expired invitation. That order keeps a refused link from
+ * being switched on, but a link opened after its invitation was cancelled still
+ * had its password set first. This looks first, so it does not.
+ *
+ * Only a definite answer refuses. If the account or the invitation cannot be
+ * read, the answer is null and the function goes on as before: the database
+ * still refuses a closed invitation, and since 406 a profile that is not active
+ * and accepted is not staff anywhere.
+ */
+export interface AcceptPrecheckDeps {
+  readAccount: () => Promise<{ status: 'ok'; userId: string } | { status: 'unauthorized' } | { status: 'error'; message: string }>;
+  /** The status of the newest invitation made for this Auth account, or null. */
+  latestInvitationStatus: (userId: string) => Promise<string | null>;
+}
+
+export async function closedInvitation(
+  deps: AcceptPrecheckDeps,
+): Promise<{ reason: string; message: string } | null> {
+  let status: string | null;
+  try {
+    const account = await deps.readAccount();
+    if (account.status !== 'ok') return null;
+    status = await deps.latestInvitationStatus(account.userId);
+  } catch {
+    return null;
+  }
+  // The same words invite_user_accept answers with.
+  if (status === 'cancelled') {
+    return { reason: 'cancelled', message: 'This invitation was cancelled and can no longer be used.' };
+  }
+  if (status === 'accepted') {
+    return { reason: 'already_accepted', message: 'This invitation has already been used. Sign in with your password.' };
+  }
+  if (status !== null && status !== 'pending') {
+    return { reason: status, message: 'This invitation is no longer valid.' };
+  }
+  return null;
+}

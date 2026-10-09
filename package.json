@@ -42,6 +42,7 @@
     "test:invoice-list-refresh": "node --test scripts/invoices/tests/list-refresh.test.mjs && node scripts/invoices/tests/list-refresh-browser.mjs",
     "test:invoice-credit-print": "node --test scripts/invoices/tests/credit-balance-line.test.mjs scripts/invoices/tests/credit-balance-pdf-layout.test.mjs && node scripts/invoices/tests/credit-balance-print-browser.mjs",
     "test:permissions": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/permissions/tests/function-grants.sql -f scripts/permissions/tests/role-guards.sql -f scripts/permissions/tests/rls-policies.sql -f scripts/permissions/tests/warehouse-stock-use.sql",
+    "test:permissions:staff-only": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/permissions/tests/staff-only-functions.sql",
     "check:permissions": "ENERGIA_INVOICE_DB=energia_integration_test node scripts/permissions/client-rpcs-are-granted.mjs",
     "test:invoice-live": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-live/tests/publication.sql",
     "test:invoice-pagination": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-pagination/tests/list-page.sql -f scripts/invoice-pagination/tests/date-range.sql",

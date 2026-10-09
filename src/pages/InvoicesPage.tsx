@@ -2822,11 +2822,10 @@ const InvoicesPage: React.FC = () => {
     w.document.write(html); w.document.close();
     // Written: now say if it went without the credit balance.
     copyWentWithoutCredit(detail.id, 'Printed', credit.unreadable ? 'unreadable' : null);
-    // Audit: record that this invoice was printed.
-    supabase.rpc('write_audit', {
-      p_table: 'invoices', p_record: detail.id, p_action: 'invoice_printed',
-      p_old: null, p_new: { invoice_no: detail.invoice_no },
-    }).then(() => {}, () => {});
+    // Audit: record that this invoice was printed. The server writes the row
+    // for an invoice of the person's stores (406); the print never waits on it.
+    supabase.rpc('record_document_printed', { p_kind: 'invoice', p_record_id: detail.id })
+      .then(() => {}, () => {});
   };
 
   const statusOptions: ('all' | InvoiceStatus)[] = ['all', 'unpaid', 'partially_paid', 'paid', 'cancelled', 'refunded'];

@@ -18,6 +18,10 @@ const randomToken = () => {
 const SurveysPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
+  // Health declarations and the consultant's survey are not an Inventory
+  // Manager's (health_survey_detail and, since 406, upsert_consultant_survey
+  // refuse them), so they are not offered Start survey / Open.
+  const canOpenSurvey = profile?.role !== 'inventory_manager';
   const [tab, setTab] = useState<'submissions' | 'links'>('submissions');
   // Every customer, with their single survey and remark count, so a consultant
   // can record findings for people who never used the public QR form.
@@ -240,11 +244,11 @@ const SurveysPage: React.FC = () => {
                         </td>
                         <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                           <button className="btn btn-secondary btn-sm" onClick={() => openRemarks(r)}>Remarks</button>
-                          <button className="btn btn-primary btn-sm"
+                          {canOpenSurvey && <button className="btn btn-primary btn-sm"
                             disabled={startingFor === r.customer_id}
                             onClick={() => openCustomerSurvey(r)}>
                             <Eye size={12} /> {startingFor === r.customer_id ? 'Opening…' : r.survey_id ? 'Open' : 'Start survey'}
-                          </button>
+                          </button>}
                         </div></td>
                       </tr>
                     ))}</tbody>

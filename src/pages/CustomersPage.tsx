@@ -175,12 +175,13 @@ const CustomersPage: React.FC = () => {
   };
   const openProfile = async (c: Customer) => {
     setProfileFor(c); setProfileStats(null); setTimeline(null); setExpandedInv({});
+    // The figures are for Owners and Managers (406); the others see the
+    // limited view and ask for nothing.
+    if (!canComplete) { setProfileStats({}); return; }
     const { data } = await supabase.rpc('customer_profile_stats', { p_customer_id: c.id });
     setProfileStats(data ?? {});
-    if (canComplete) {
-      const { data: tl } = await supabase.rpc('customer_purchase_timeline', { p_customer_id: c.id });
-      setTimeline((tl as any[]) ?? []);
-    }
+    const { data: tl } = await supabase.rpc('customer_purchase_timeline', { p_customer_id: c.id });
+    setTimeline((tl as any[]) ?? []);
   };
 
   const openAdd = () => { setForm(blank()); setOriginalPhone(''); setEditId(null); setOrigReferrer(''); setErr(null); setModalOpen(true); };

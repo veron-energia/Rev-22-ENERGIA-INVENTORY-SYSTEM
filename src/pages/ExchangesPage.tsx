@@ -434,11 +434,10 @@ const ExchangesPage: React.FC = () => {
     const w = window.open('', '_blank');
     if (!w) { alert('Please allow pop-ups to print.'); return; }
     w.document.write(html); w.document.close();
-    // Audit: record that this exchange was printed.
-    supabase.rpc('write_audit', {
-      p_table: 'product_exchanges', p_record: detail.id, p_action: 'exchange_printed',
-      p_old: null, p_new: { exchange_no: detail.exchange_no },
-    }).then(() => {}, () => {});
+    // Audit: record that this exchange was printed. The server writes the row
+    // for an exchange the person can see (406); the print never waits on it.
+    supabase.rpc('record_document_printed', { p_kind: 'exchange', p_record_id: detail.id })
+      .then(() => {}, () => {});
   };
 
   return (

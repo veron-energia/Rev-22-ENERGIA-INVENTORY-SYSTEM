@@ -171,16 +171,28 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
+/**
+ * A name no earlier send used. Each send is filed under its own name and never
+ * replaces a file, so the link a customer already holds keeps showing the copy
+ * they were sent: nobody can point an old link at a different PDF (407).
+ */
+export function documentPdfPath(storeId: string | null | undefined, docKind: string, docNo: string): string {
+  const unique = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  // The first folder is the store: the folder's rules let only that store's
+  // staff (and Managers and up) read or upload the file.
+  return `${storeId ?? 'no-store'}/${docKind}/${safeName(docNo)}-${unique}.pdf`;
+}
+
 /** Upload the customer copy and return a link the customer can open. */
 export async function uploadDocumentPdf(
   storeId: string | null | undefined, docKind: string, docNo: string, pdf: PdfDoc,
 ): Promise<{ url: string; path: string }> {
   const blob = documentPdfBlob(pdf);
-  // A stable path means re-sending replaces the file rather than accumulating
-  // near-identical copies.
-  const path = `${storeId ?? 'no-store'}/${docKind}/${safeName(docNo)}.pdf`;
+  const path = documentPdfPath(storeId, docKind, docNo);
   const { error: upErr } = await supabase.storage.from(BUCKET)
-    .upload(path, blob, { contentType: 'application/pdf', upsert: true });
+    .upload(path, blob, { contentType: 'application/pdf', upsert: false });
   if (upErr) throw new Error(`Could not upload the PDF: ${upErr.message}`);
 
   const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, LINK_SECONDS);

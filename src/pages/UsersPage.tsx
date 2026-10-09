@@ -97,14 +97,23 @@ const UsersPage: React.FC = () => {
       if (!/^\S+@\S+\.\S+$/.test(form.personal_email.trim())) { setErr('Personal email looks invalid.'); return; }
     }
     setSaving(true);
-    const { error } = await supabase.from('profiles').update({
+    // Ask for the saved row back. The database's rules decide whose profile
+    // this login may edit, and a rule that does not allow it answers with no
+    // error and no row (ADMIN-AUTH-2: a Manager's edits used to vanish that
+    // way, deactivation included). No row back means nothing was saved.
+    const { data: saved, error } = await supabase.from('profiles').update({
       full_name: form.full_name.trim(), role: form.role, is_active: form.is_active,
       work_phone: form.work_phone.trim() || null, personal_phone: form.personal_phone.trim() || null,
       personal_email: form.personal_email.trim() || null, updated_at: new Date().toISOString(),
-    }).eq('id', editUser.id);
+    }).eq('id', editUser.id).select('id');
     setSaving(false);
     if (error) { setErr(error.message); return; }
+    if (!saved || saved.length === 0) {
+      setErr(`Nothing was saved: your role cannot change ${editUser.full_name}'s profile. Ask an Owner.`);
+      return;
+    }
     setEditUser(null);
+    setNotice(`${form.full_name.trim()}'s profile was saved.`);
     load();
   };
 

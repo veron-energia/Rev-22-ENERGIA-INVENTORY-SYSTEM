@@ -731,7 +731,9 @@ begin
   perform pg_temp.check(e = 'No access to this invoice' and pg_temp.untouched(inv), 'S7 a deactivated staff member has no access, got ' || coalesce(e, 'saved'));
   perform pg_temp.as_user('sd');
   e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('notes', 'x'));
-  perform pg_temp.check(e like 'Only an Owner or Manager can correct this invoice. Staff can correct%' and pg_temp.untouched(inv),
+  -- Since 406 a deleted profile has no staff role at all (current_user_role()
+  -- is null), so it gets the plain refusal rather than the staff one.
+  perform pg_temp.check(e like 'Only an Owner or Manager can correct this invoice%' and pg_temp.untouched(inv),
     'S7 a deleted staff profile that still has store access may not correct a paid invoice, got ' || coalesce(e, 'saved'));
   perform pg_temp.as_user('s2');
   e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('notes', 'x'));

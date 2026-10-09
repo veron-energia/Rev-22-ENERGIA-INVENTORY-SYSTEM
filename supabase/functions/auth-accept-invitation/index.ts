@@ -9,6 +9,9 @@
 //
 // The order matters and is the whole security argument:
 //
+//   0. A link whose invitation is already closed (cancelled, used, expired)
+//      stops here, before any password is set (406). Only a definite answer
+//      stops it; step 2 refuses a closed invitation either way.
 //   1. Supabase changes the password, using the invited user's own token. If
 //      that fails, nothing else happens.
 //   2. Only once Supabase has confirmed it does the database activate the
@@ -24,7 +27,8 @@ import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/a
 import { adminClient } from '../_shared/auth-email/admin.ts';
 import { guardRequest, json } from '../_shared/auth-email/http.ts';
 import { validatePasswordChange } from '../_shared/auth-email/validate.ts';
-import { bearerToken, changeOwnPassword } from '../_shared/auth-email/password.ts';
+import { bearerToken, changeOwnPassword, readOwnAccount } from '../_shared/auth-email/password.ts';
+import { closedInvitation } from '../_shared/auth-email/invitations.ts';
 import { renderPasswordChanged } from '../_shared/auth-email/templates.ts';
 import { deliver } from '../_shared/auth-email/pabbly.ts';
 import { logEvent, newRequestId } from '../_shared/auth-email/diagnostics.ts';
@@ -61,6 +65,24 @@ Deno.serve(async (req) => {
                 400, origin, allowed);
   }
 
+  // Step 0: a link whose invitation is already closed (cancelled, used,
+  // expired) sets no password. Only a definite answer refuses; if either read
+  // fails, step 2 still refuses a closed invitation as before.
+  const admin = adminClient(config);
+  const closed = await closedInvitation({
+    readAccount: () => readOwnAccount({ supabaseUrl: config.supabaseUrl, apiKey: config.publicApiKey, accessToken: token }),
+    latestInvitationStatus: async (userId) => {
+      const { data, error } = await admin.from('user_invitations').select('status')
+        .eq('auth_user_id', userId).order('invited_at', { ascending: false }).limit(1).maybeSingle();
+      if (error) throw new Error(error.message);
+      return typeof data?.status === 'string' ? data.status : null;
+    },
+  });
+  if (closed) {
+    logEvent('user_invitation.accept_refused', { request_id: requestId, reason: closed.reason });
+    return json({ error: 'not_activated', reason: closed.reason, message: closed.message }, 403, origin, allowed);
+  }
+
   // Step 1: Supabase sets the password with the invited user's own token.
   const change = await changeOwnPassword({
     supabaseUrl: config.supabaseUrl,
@@ -91,7 +113,6 @@ Deno.serve(async (req) => {
   }
 
   // Step 2: activation, on the strength of a confirmed password change.
-  const admin = adminClient(config);
   const { data, error } = await admin.rpc('invite_user_accept', {
     p_auth_user_id: change.userId,
     p_email: change.email,
