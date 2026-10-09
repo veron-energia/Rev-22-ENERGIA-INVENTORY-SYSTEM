@@ -1,5 +1,22 @@
 -- Exclusive disposable database. Every fixture and simulated historical date rolls back.
+-- Run from the repository with: psql -X -v ON_ERROR_STOP=1 -f scripts/stock-history/tests/database.sql
 begin;
+-- 421 (the transfer warning and the integrity report's legacy lines) is
+-- applied here only while one of the functions it changes is still at its
+-- BEFORE md5. A database that has 421 (or a later version of these, or 430's
+-- is_owner_or_manager(), which 421 would refuse) runs the checks as it is.
+select md5(pg_get_functiondef('public.resolve_transfer_discrepancy(uuid,jsonb,text)'::regprocedure)) = '8b387cbec43f41fc64406ed3a901c7cb'
+    or md5(pg_get_functiondef('public.edit_transfer_request(uuid,integer,text,location_type,uuid,location_type,uuid,jsonb,text)'::regprocedure)) = 'b150a0ce6de9584ef344e6ee1730a66b'
+    or md5(pg_get_functiondef('public.create_staff_transfer_request(jsonb,text,uuid)'::regprocedure)) = '1dd8c2ee3e45c340c0378d4f61338b07'
+    or md5(pg_get_functiondef('public.stock_history_table(jsonb,integer,integer,timestamp with time zone)'::regprocedure)) = '52c71fac2ccaa5b6e580476871555fae'
+    or md5(pg_get_functiondef('public.stock_private_report_transfer_stock_integrity()'::regprocedure)) = 'b9980473a9722b64094ddfd5413fea23'
+    as t421_needed \gset
+\if :t421_needed
+\ir ../../../supabase/421_transfer_discrepancies_and_stock_history.sql
+\endif
+-- A copy of production made with no rows has no observation start; production
+-- has one (271 writes it once).
+insert into public.stock_history_observation(id,started_at) values(true,clock_timestamp()) on conflict(id) do nothing;
 grant usage on schema public,auth to authenticated;
 grant select on public.stock_movements,public.warehouse_inventory,public.store_inventory,public.transfer_requests,public.transfer_request_lines,public.transfer_line_sources,public.transfer_request_revisions to authenticated;
 create temp table stock_test_ids(key text primary key,id uuid);grant select on stock_test_ids to authenticated;
@@ -68,7 +85,10 @@ begin
  select id into a from stock_test_ids where key='a'; select id into b from stock_test_ids where key='b';select id into p from stock_test_ids where key='p';
  if exists(select 1 from stock_movements where notes='PRIVATE COUNTERPART ONLY') or exists(select 1 from warehouse_inventory) or exists(select 1 from store_inventory where store_id=b) then raise exception 'Direct table API leaked unauthorized balances/history';end if;
  if not exists(select 1 from stock_movements where notes='Unique historical needle') then raise exception 'Another actor assigned-store movement hidden';end if;
- if exists(select 1 from location_available_qty('store',b,p)) then raise exception 'Availability RPC leaked counterpart balance';end if;
+ -- 339: no longer callable by a signed-in login at all, which leaks nothing either.
+ begin
+  if exists(select 1 from location_available_qty('store',b,p)) then raise exception 'Availability RPC leaked counterpart balance';end if;
+ exception when insufficient_privilege then null;end;
  x:=stock_history_options('locations');
  if (x->>'total')::int<>2 or (x->'rows')::text like '%Counterpart%' then raise exception 'Filter options leaked counterpart';end if;
  x:=stock_history_page(f||'{"search":"Unique historical needle"}');
@@ -91,7 +111,10 @@ begin
  if cardinality(ids)<>count_rows or (select count(distinct v) from unnest(ids) v)<>count_rows or count_rows<5105 then raise exception 'Full permission-scoped export paging omitted or duplicated records';end if;
  if (stock_history_page(f||'{"search":"Other assigned store"}')->>'total')::int<>1 then raise exception 'Multiple assignments missing';end if;
  begin perform stock_history_table(f||jsonb_build_object('locations',jsonb_build_array('store:'||b)));raise exception 'Unauthorized location accepted';exception when others then if sqlerrm not like '%no longer available%' then raise;end if;end;
- if (select count(*) from search_stock_movements('PRIVATE COUNTERPART ONLY'))<>0 then raise exception 'Legacy search leaked unauthorized record';end if;
+ -- 339: the legacy search is no longer callable by a signed-in login.
+ begin
+  if (select count(*) from search_stock_movements('PRIVATE COUNTERPART ONLY'))<>0 then raise exception 'Legacy search leaked unauthorized record';end if;
+ exception when insufficient_privilege then null;end;
  if (select count(*) from transfer_request_revisions)<>0 then raise exception 'Raw revision leaked other source legs';end if;
  if (stock_transfer_details((select id from stock_test_ids where key='request'))->'notes')::text not like '%One remained at source%' then raise exception 'Staff cannot see resolution';end if;
  raise notice 'PASS: actual authenticated role, all actors, multiple assignments, counterpart names without balances, old search, direct APIs, counts, filter scope and stable paging';
@@ -116,5 +139,58 @@ do $$ declare own uuid; role_name text; role_user uuid;begin
    or stock_history_options('locations')->>'total' is distinct from '4' then raise exception 'Established management read scope lost for %',role_name;end if;
  end loop;
  raise notice 'PASS: Owner, Admin, Manager and Inventory Manager retain global report and filter access';
+end $$;
+-- 421: old transfer dispatches warn only for periods that hold them, and the
+-- integrity report lists lines sent before stock history began as info.
+do $$ declare own uuid; a uuid; wh uuid; p uuid; obs timestamptz; f jsonb; x jsonb; r uuid; r2 uuid; l uuid; l2 uuid;begin
+ select id into own from stock_test_ids where key='owner';select id into a from stock_test_ids where key='a';
+ select id into wh from stock_test_ids where key='wh';select id into p from stock_test_ids where key='p';
+ perform set_config('request.jwt.claim.sub',own::text,true);
+ update stock_history_observation set started_at=(sg_today()-2)::timestamp at time zone 'Asia/Singapore';
+ select started_at into obs from stock_history_observation;
+ -- a dispatch with no transfer link, from before stock history began
+ insert into stock_movements(product_id,movement_type,from_warehouse_id,to_store_id,quantity,notes,created_by,created_at,stock_history_recorded_at)
+ values(p,'transfer_dispatch',wh,a,2,'Legacy unlinked dispatch',own,obs-interval '5 days',obs-interval '5 days');
+ f:=jsonb_build_object('from',sg_today(),'to',sg_today(),'products',jsonb_build_array(p),'locations',jsonb_build_array('store:'||a));
+ x:=stock_history_table(f)->'rows'->0;
+ if coalesce(x->>'warning','') like '%no exact transfer link%' then raise exception 'An old unlinked dispatch still warns on a later period: %',x;end if;
+ x:=stock_history_table(f||jsonb_build_object('from',sg_today()-8))->'rows'->0;
+ if x->>'warning' not like '%no exact transfer link%' or x->>'warning' not like '%Opening balance unknown%' then raise exception 'A period holding the old dispatch lost its warnings: %',x;end if;
+ x:=stock_history_table(f||jsonb_build_object('from',sg_today()-3,'to',sg_today()-3))->'rows'->0;
+ if coalesce(x->>'warning','') like '%no exact transfer link%' then raise exception 'A period after the old dispatch still warns: %',x;end if;
+ -- a new dispatch with no link (none should exist) still warns in its own period
+ insert into stock_movements(product_id,movement_type,from_warehouse_id,to_store_id,quantity,notes,created_by)
+ values(p,'transfer_dispatch',wh,a,1,'New unlinked dispatch',own);
+ x:=stock_history_table(f)->'rows'->0;
+ if x->>'warning' not like '%no exact transfer link%' then raise exception 'A new unlinked dispatch is not flagged: %',x;end if;
+ -- the integrity report: sent before stock history began, no allocation: info
+ insert into transfer_requests(transfer_type,source_type,source_id,dest_type,dest_id,status,requested_by,dispatched_at,received_at)
+ values('warehouse_to_store','warehouse',wh,'store',a,'completed',own,obs-interval '5 days',obs-interval '4 days') returning id into r;
+ insert into transfer_request_lines(transfer_request_id,line_kind,product_id,quantity,approved_quantity,in_transit_quantity,received_quantity,discrepancy_quantity)
+ values(r,'product',p,4,4,4,4,0) returning id into l;
+ insert into transfer_requests(transfer_type,source_type,source_id,dest_type,dest_id,status,requested_by,dispatched_at,received_at)
+ values('warehouse_to_store','warehouse',wh,'store',a,'received',own,now(),now()) returning id into r2;
+ insert into transfer_request_lines(transfer_request_id,line_kind,product_id,quantity,approved_quantity,in_transit_quantity,received_quantity,discrepancy_quantity)
+ values(r2,'product',p,4,4,4,4,0) returning id into l2;
+ if (select array_agg(issue_type||'/'||severity||'/'||expected_qty||'/'||actual_qty) from report_transfer_stock_integrity() where line_id=l)
+    is distinct from array['legacy_unallocated_dispatch/info/4/0'] then
+  raise exception 'Legacy line not reported as info: %',(select jsonb_agg(to_jsonb(q)) from report_transfer_stock_integrity() q where q.line_id=l);end if;
+ if (select array_agg(issue_type||'/'||severity) from report_transfer_stock_integrity() where line_id=l2)
+    is distinct from array['allocation_vs_in_transit_mismatch/error'] then
+  raise exception 'A line sent after stock history began with no allocation is no longer an error';end if;
+ -- with no dispatch time, or no observation start, a line is not taken for a
+ -- legacy one: it stays an error rather than dropping out of the report
+ update transfer_requests set dispatched_at=null where id=r2;
+ if (select array_agg(issue_type||'/'||severity) from report_transfer_stock_integrity() where line_id=l2)
+    is distinct from array['allocation_vs_in_transit_mismatch/error'] then
+  raise exception 'A line with no dispatch time dropped out of the report';end if;
+ delete from stock_history_observation;
+ if (select array_agg(issue_type||'/'||severity) from report_transfer_stock_integrity() where line_id=l)
+    is distinct from array['allocation_vs_in_transit_mismatch/error'] then
+  raise exception 'With no observation start, a line dropped out of the report';end if;
+ insert into stock_history_observation(id,started_at) values(true,obs);
+ if exists(select 1 from report_transfer_stock_integrity() where request_id=(select id from stock_test_ids where key='request')) then
+  raise exception 'The real transfer of this fixture is reported';end if;
+ raise notice 'PASS: old unlinked dispatches warn only for periods holding them, a new one still warns, legacy unallocated lines are info, and no line drops out of the report';
 end $$;
 rollback;

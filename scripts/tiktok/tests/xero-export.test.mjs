@@ -98,6 +98,8 @@ function createBackend() {
   };
   const rpcs = {
     my_assigned_store_id: () => null,
+    // Staff read every store they work at (X-9): here the one my_assigned_store_id gives.
+    my_assigned_stores: () => { const id = rpcs.my_assigned_store_id(); return id ? [{ store_id: id, store_name: 'North Store', is_default: true }] : []; },
     report_tiktok_imports: () => [],
     report_tiktok_settlement: () => [],
     tiktok_settlement_totals: a => ({ year: a.p_year, month: a.p_month, period_start: '', period_end: '', timezone: 'Asia/Singapore', row_count: 0,
@@ -117,6 +119,7 @@ function createBackend() {
     select() { return this; }
     is(col, v) { this.filters.push(r => (r[col] ?? null) === v); return this; }
     eq(col, v) { this.filters.push(r => r[col] === v); return this; }
+    in(col, vs) { this.filters.push(r => vs.includes(r[col])); return this; }
     order(col) { this.orders.push(col); return this; }
     range(a, z) { this.rangeV = [a, z]; return this; }
     single() { this.one = true; return this; }

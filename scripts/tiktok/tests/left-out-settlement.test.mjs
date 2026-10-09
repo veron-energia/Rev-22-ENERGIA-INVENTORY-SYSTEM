@@ -115,6 +115,8 @@ function createBackend({ database = 'new' } = {}) {
   const sum = rows => Number(rows.reduce((s, r) => s + (r.net_change ?? r.settlement_amount), 0).toFixed(2));
   const rpcs = {
     my_assigned_store_id: () => globalThis.__assigned ?? null,
+    // Staff read every store they work at (X-9); here the one they are given.
+    my_assigned_stores: () => (globalThis.__assigned ? [{ store_id: globalThis.__assigned, store_name: 'North Store', is_default: true }] : []),
     report_tiktok_imports: () => [{ batch_id: BATCH, file_name: 'income_sample_b.xlsx', file_kind: 'settlement', status: tables.tiktok_import_batches[0].status,
       store_name: 'North Store', uploaded_at: '2026-09-01T02:00:00Z', row_count: 4, units_deducted: 0, units_returned: 0 }],
     report_tiktok_settlement: () => [],
@@ -144,6 +146,7 @@ function createBackend({ database = 'new' } = {}) {
     select() { return this; }
     is(col, v) { this.filters.push(r => (r[col] ?? null) === v); return this; }
     eq(col, v) { this.filters.push(r => r[col] === v); return this; }
+    in(col, vs) { this.filters.push(r => vs.includes(r[col])); return this; }
     order(col) { this.orders.push(col); return this; }
     range(a, z) { this.rangeV = [a, z]; return this; }
     single() { this.one = true; return this; }

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
-import { fetchAllFrom } from '../lib/supabasePaging';
+import { fetchAllFrom, fetchAllRows } from '../lib/supabasePaging';
 import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
 import { TikTokXeroExportButton } from '../components/tiktok/TikTokXeroExport';
 import { describeBalanceCounts, describeWithdrawals, readWithdrawalRecords } from '../lib/tiktok/withdrawals.mjs';
@@ -138,6 +138,14 @@ const leftOutDay = (r: any): string | null => settledDateSgt(r.settled_date ?? r
 // line that is already counted, so only the difference; net_change says so.
 const leftOutNet = (r: any): number => Number(r.net_change ?? r.settlement_amount ?? 0);
 const isRestatement = (r: any) => r.replaces_settlement != null;
+// The Settlements tab is read a page at a time by row_id (so nothing past the
+// first 1,000 rows is lost), then sorted newest day first, with a row with no
+// settled date first. report_tiktok_settlement returns only the day, not the
+// time, so within a day rows are in order/adjustment id order, not by time.
+const newestSettledFirst = (a: any, b: any) =>
+  (a.financial_date ? 1 : 0) - (b.financial_date ? 1 : 0)
+  || String(b.financial_date ?? '').localeCompare(String(a.financial_date ?? ''))
+  || String(a.order_adjustment_id ?? '').localeCompare(String(b.order_adjustment_id ?? ''));
 // What leaving a staged row unticked keeps out of the totals, or null when the
 // page cannot tell. An 'Updated' row restates a line that is already counted:
 // only the difference is missing. Staging records the replaced line's figures
@@ -158,13 +166,19 @@ const TikTokImportPage: React.FC = () => {
 
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState('');
-  const [assignedStore, setAssignedStore] = useState<string | null>(null);
+  // Staff: every store they are assigned to (my_assigned_stores). A member of
+  // staff at two stores imports into either and sees both. null until loaded.
+  const [myStores, setMyStores] = useState<{ id: string; name: string }[] | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [promotions, setPromotions] = useState<any[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  // What the page itself could not load. A failed read is never shown as
+  // "nothing there".
+  const [loadErrors, setLoadErrors] = useState<string[]>([]);
+  const [batchesError, setBatchesError] = useState<string | null>(null);
   // What else a settlement file carried: its Withdrawal records (375).
   const [importNote, setImportNote] = useState<string | null>(null);
   const [settleBalance, setSettleBalance] = useState<{ payouts: number; others: number } | null>(null);
@@ -173,7 +187,10 @@ const TikTokImportPage: React.FC = () => {
   const [activeBatch, setActiveBatch] = useState<any>(null);
   const [rows, setRows] = useState<any[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [mapSku, setMapSku] = useState<{ sku: string } | null>(null);
+  // The SKU being mapped, and the store whose mapping it is (the open file's,
+  // or the Unmatched SKUs row's); none means the store chosen above.
+  const [mapSku, setMapSku] = useState<{ sku: string; storeId?: string | null } | null>(null);
+  const [mapErr, setMapErr] = useState<string | null>(null);
   const [mapKind, setMapKind] = useState<'product' | 'voucher' | 'promotion'>('product');
   const [mapTarget, setMapTarget] = useState('');
   const [correctRow, setCorrectRow] = useState<any>(null);
@@ -188,8 +205,17 @@ const TikTokImportPage: React.FC = () => {
   // Phase 18 — page tabs.
   type PageTab = 'staged' | 'orders' | 'items' | 'settlements' | 'unmatched' | 'recon' | 'history' | 'returns' | 'corrections';
   const [pageTab, setPageTab] = useState<PageTab>('staged');
-  const [tabRows, setTabRows] = useState<any[]>([]);
-  const [tabLoading, setTabLoading] = useState(false);
+  // What the open tab read, kept with the tab it belongs to: the first render
+  // of a newly opened tab shows its spinner, never the previous tab's rows or
+  // error (rows of another tab have other fields, and no key).
+  const [tabState, setTabState] = useState<{ tab: PageTab | null; rows: any[]; error: string | null; loading: boolean }>(
+    { tab: null, rows: [], error: null, loading: false });
+  const tabCurrent = tabState.tab === pageTab;
+  const tabRows = tabCurrent ? tabState.rows : [];
+  const tabError = tabCurrent ? tabState.error : null;
+  const tabLoading = !tabCurrent || tabState.loading;
+  // Bumped to read the open tab again (after a SKU is mapped, say).
+  const [tabReload, setTabReload] = useState(0);
   // Phase 17 — settlement staging view.
   // Reporting month for the settlement figures. Defaulted from Singapore time,
   // not the browser's clock, so a laptop in another timezone still opens on the
@@ -220,42 +246,94 @@ const TikTokImportPage: React.FC = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [st, mine, pr, vc, pm, rep, sm, phr] = await Promise.all([
-      supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.rpc('my_assigned_store_id'),
-      supabase.from('products').select('id,name,sku,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('vouchers').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('promotions').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.rpc('report_tiktok_imports', { p_store_id: null, p_from: null, p_to: null }),
-      supabase.from('tiktok_status_mappings').select('*').order('sort_order'),
-      supabase.from('tiktok_physical_returns').select('*').eq('status', 'awaiting').order('created_at'),
-    ]);
-    setStores((st.data as Store[]) ?? []);
-    setProducts((pr.data as Product[]) ?? []);
-    setVouchers((vc.data as any[]) ?? []);
-    setPromotions((pm.data as any[]) ?? []);
-    setBatches((rep.data as any[]) ?? []);
-    setStatusMaps((sm.data as any[]) ?? []);
-    setPhysReturns((phr.data as any[]) ?? []);
-    const assigned = (mine.data as string | null) ?? null;
-    setAssignedStore(assigned);
-    setStoreId(prev => prev || assigned || '');
-    setLoading(false);
-  }, []);
+    try {
+      const [st, mine, pr, vc, pm, rep, sm, phr] = await Promise.all([
+        supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
+        // Staff: every store they work at. Others: the store they were first
+        // assigned to, chosen for them to start with.
+        isStaff ? supabase.rpc('my_assigned_stores') : supabase.rpc('my_assigned_store_id'),
+        supabase.from('products').select('id,name,sku,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
+        supabase.from('vouchers').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
+        supabase.from('promotions').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
+        supabase.rpc('report_tiktok_imports', { p_store_id: null, p_from: null, p_to: null }),
+        supabase.from('tiktok_status_mappings').select('*').order('sort_order'),
+        supabase.from('tiktok_physical_returns').select('*').eq('status', 'awaiting').order('created_at'),
+      ]);
+      const failed: string[] = [];
+      const read = <T,>(res: { data: unknown; error: { message: string } | null }, what: string, fallback: T): T => {
+        if (res.error) { failed.push(`${what}: ${res.error.message}`); return fallback; }
+        return ((res.data as T) ?? fallback);
+      };
+      setStores(read<Store[]>(st, 'Stores', []));
+      setProducts(read<Product[]>(pr, 'Products', []));
+      setVouchers(read<any[]>(vc, 'Vouchers', []));
+      setPromotions(read<any[]>(pm, 'Promotions', []));
+      setBatches(read<any[]>(rep, 'Imports', []));
+      setBatchesError(rep.error ? rep.error.message : null);
+      setStatusMaps(read<any[]>(sm, 'Status mappings', []));
+      setPhysReturns(read<any[]>(phr, 'Physical returns', []));
+      if (isStaff) {
+        if (mine.error) {
+          // Said in the banner. The stores and the choice already on screen
+          // stay as they were: a failed read is not "no stores".
+          failed.push(`Your stores: ${mine.error.message}`);
+        } else {
+          const list = ((mine.data as any[]) ?? [])
+            .map(x => ({ id: String(x.store_id), name: String(x.store_name ?? '') }));
+          setMyStores(list);
+          // One store: chosen for them. Two or more: they choose.
+          setStoreId(prev => (prev && list.some(x => x.id === prev) ? prev : list.length === 1 ? list[0].id : ''));
+        }
+      } else {
+        const assigned = read<string | null>(mine, 'Your store', null);
+        setStoreId(prev => prev || assigned || '');
+      }
+      setLoadErrors(failed);
+    } catch (e: any) {
+      setLoadErrors([e?.message ?? String(e)]);
+      setBatchesError(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [isStaff]);
   useEffect(() => { load(); }, [load]);
 
-  // Staff: store auto-selected + locked to the assigned store.
-  const effectiveStore = isStaff ? (assignedStore ?? '') : storeId;
+  // Staff: only a store they are assigned to. Others: any store, or none for
+  // every store.
+  const myStoreIds = useMemo(() => (myStores ?? []).map(x => x.id), [myStores]);
+  const effectiveStore = isStaff ? (myStoreIds.includes(storeId) ? storeId : '') : storeId;
+  // What the tabs read when no store is chosen. Staff: their own stores (the
+  // tables themselves are readable by any member of staff, so the page keeps
+  // to them; the report functions already do). Others: every store.
+  const storeScope = (q: any) => effectiveStore ? q.eq('store_id', effectiveStore)
+    : isStaff ? q.in('store_id', myStoreIds) : q;
+  // Staff whose stores have never loaded: nothing is read for them, and the
+  // tabs say the list failed. That is not the same as having no store.
+  const storesUnknown = isStaff && myStores === null;
+  const noStoreToRead = isStaff && myStores !== null && !effectiveStore && myStoreIds.length === 0;
+  // The Unmatched SKUs list names its store; its id, when the name is one store's.
+  const storeIdByName = (name: unknown): string | null => {
+    const ids = new Set(stores.filter(x => x.name === name).map(x => x.id));
+    return ids.size === 1 ? [...ids][0] : null;
+  };
+  const storeOptions = isStaff ? (myStores ?? []) : stores.map(x => ({ id: x.id, name: x.name }));
 
   const loadBatchRows = async (batchId: string) => {
-    const [{ data: b }, { data: r }] = await Promise.all([
-      supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
-      // Every row of the batch, not the first thousand: these ids are what the
-      // confirm sends, so a truncated read silently leaves the rest of the
-      // file unconfirmed with no error anywhere.
-      fetchAllFrom('tiktok_order_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id'])
-        .then(rows => ({ data: rows })),
-    ]);
+    let b: any; let r: any[];
+    try {
+      const [batch, rows] = await Promise.all([
+        supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
+        // Every row of the batch, not the first thousand: these ids are what the
+        // confirm sends, so a truncated read silently leaves the rest of the
+        // file unconfirmed with no error anywhere.
+        fetchAllFrom('tiktok_order_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id']),
+      ]);
+      if (batch.error) throw new Error(batch.error.message);
+      b = batch.data; r = rows;
+    } catch (e: any) {
+      setErr(`The file could not be opened: ${e?.message ?? e}`);
+      return;
+    }
     setActiveBatch(b ?? null);
     const rr = (r as any[]) ?? [];
     setRows(rr);
@@ -305,15 +383,22 @@ const TikTokImportPage: React.FC = () => {
   const SETTLE_CONFIRMABLE = new Set(['New — Matched', 'New — Pending Order', 'New — No Match Needed', 'Updated — Requires Confirmation']);
 
   const loadSettleRows = async (batchId: string) => {
-    const [{ data: b }, { data: r }, balance] = await Promise.all([
-      supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
-      // As above, and this one is money: the ids of the rows ticked here are
-      // what confirm_tiktok_settlement_batch is given.
-      fetchAllFrom('tiktok_settlement_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id'])
-        .then(rows => ({ data: rows })),
-      // The Withdrawal records the file brought (375); none if it cannot say.
-      supabase.rpc('tiktok_batch_balance_counts', { p_batch_id: batchId }),
-    ]);
+    let b: any; let r: any[]; let balance: { data: unknown; error: unknown };
+    try {
+      const [batch, rows, counts] = await Promise.all([
+        supabase.from('tiktok_import_batches').select('*').eq('id', batchId).single(),
+        // As above, and this one is money: the ids of the rows ticked here are
+        // what confirm_tiktok_settlement_batch is given.
+        fetchAllFrom('tiktok_settlement_rows', '*', q => q.eq('batch_id', batchId), ['row_no', 'id']),
+        // The Withdrawal records the file brought (375); none if it cannot say.
+        supabase.rpc('tiktok_batch_balance_counts', { p_batch_id: batchId }),
+      ]);
+      if (batch.error) throw new Error(batch.error.message);
+      b = batch.data; r = rows; balance = counts;
+    } catch (e: any) {
+      setErr(`The settlement file could not be opened: ${e?.message ?? e}`);
+      return;
+    }
     setSettleBatch(b ?? null);
     const counts = balance.error ? null : balance.data as { payouts?: number; others?: number } | null;
     setSettleBalance({ payouts: Number(counts?.payouts ?? 0), others: Number(counts?.others ?? 0) });
@@ -417,64 +502,86 @@ const TikTokImportPage: React.FC = () => {
     setSettleReload(n => n + 1);
   };
 
-  // Per-tab data (fetched on demand).
+  // Per-tab data (fetched on demand). Every read's error is shown on the tab,
+  // and the spinner always stops: a failed read never spins forever, and is
+  // never shown as an empty list or as "Fully reconciled".
+  // Staff: also whether their stores are known, so the tab reads once they load.
+  const storeScopeKey = isStaff ? `${storesUnknown ? 'unknown' : 'known'}|${effectiveStore}|${myStoreIds.join(',')}` : effectiveStore;
   useEffect(() => {
+    let cancelled = false;
+    const rpcRows = async (name: string, args: Record<string, unknown>) => {
+      const { data, error } = await supabase.rpc(name, args);
+      if (error) throw new Error(error.message);
+      return (data as any[]) ?? [];
+    };
     const fetchTab = async () => {
-      if (pageTab === 'staged' || pageTab === 'history') { setTabRows([]); return; }
-      // Clear FIRST. tabRows is shared by every tab, so without this the new tab
-      // renders the previous tab's rows for a moment — and those have different
+      if (pageTab === 'staged' || pageTab === 'history') {
+        setTabState({ tab: pageTab, rows: [], error: null, loading: false }); return;
+      }
+      // Clear FIRST. The rows are shared by every tab, so without this the new
+      // tab would render the previous tab's rows — and those have different
       // fields. Switching to Reconciliation showed rows with no `kind`, and
       // `r.kind.replace(...)` threw "Cannot read properties of undefined".
-      setTabRows([]);
-      setTabLoading(true);
-      let rows: any[] = [];
-      if (pageTab === 'orders') {
-        // tiktok_order_state has no id; its key is (store_id, order_id,
-        // seller_sku), and paging needs a total order or rows repeat and vanish.
-        rows = await fetchAllFrom('tiktok_order_state', '*',
-          q => effectiveStore ? q.eq('store_id', effectiveStore) : q,
-          ['store_id', 'order_id', 'seller_sku']);
-      } else if (pageTab === 'items') {
-        rows = await fetchAllFrom('tiktok_order_rows', '*',
-          q => { q = q.eq('confirmed', true); return effectiveStore ? q.eq('store_id', effectiveStore) : q; }, ['confirmed_at', 'id']);
-      } else if (pageTab === 'settlements') {
-        const { data } = await supabase.rpc('report_tiktok_settlement', { p_store_id: effectiveStore || null, p_from: null, p_to: null });
-        rows = (data as any[]) ?? [];
-      } else if (pageTab === 'unmatched') {
-        const { data } = await supabase.rpc('report_tiktok_unmatched_skus', { p_store_id: effectiveStore || null });
-        rows = (data as any[]) ?? [];
-      } else if (pageTab === 'recon') {
-        const { data } = await supabase.rpc('report_tiktok_recon_exceptions', { p_store_id: effectiveStore || null });
-        rows = (data as any[]) ?? [];
-      } else if (pageTab === 'returns') {
-        rows = await fetchAllFrom('tiktok_physical_returns', '*',
-          q => effectiveStore ? q.eq('store_id', effectiveStore) : q, ['created_at', 'id']);
-      } else if (pageTab === 'corrections') {
-        rows = await fetchAllFrom('tiktok_corrections', '*',
-          q => effectiveStore ? q.eq('store_id', effectiveStore) : q, ['created_at', 'id']);
+      setTabState({ tab: pageTab, rows: [], error: null, loading: true });
+      try {
+        let rows: any[] = [];
+        if (noStoreToRead || storesUnknown) {
+          rows = [];
+        } else if (pageTab === 'orders') {
+          // tiktok_order_state has no id; its key is (store_id, order_id,
+          // seller_sku), and paging needs a total order or rows repeat and vanish.
+          rows = await fetchAllFrom('tiktok_order_state', '*', storeScope, ['store_id', 'order_id', 'seller_sku']);
+        } else if (pageTab === 'items') {
+          rows = await fetchAllFrom('tiktok_order_rows', '*',
+            q => storeScope(q.eq('confirmed', true)), ['confirmed_at', 'id']);
+        } else if (pageTab === 'settlements') {
+          // Paged like every other list here: one request stops at 1,000 rows.
+          rows = await fetchAllRows(() => supabase.rpc('report_tiktok_settlement',
+            { p_store_id: effectiveStore || null, p_from: null, p_to: null }), ['row_id']);
+          rows.sort(newestSettledFirst);
+        } else if (pageTab === 'unmatched') {
+          rows = await rpcRows('report_tiktok_unmatched_skus', { p_store_id: effectiveStore || null });
+        } else if (pageTab === 'recon') {
+          rows = await rpcRows('report_tiktok_recon_exceptions', { p_store_id: effectiveStore || null });
+        } else if (pageTab === 'returns') {
+          rows = await fetchAllFrom('tiktok_physical_returns', '*', storeScope, ['created_at', 'id']);
+        } else if (pageTab === 'corrections') {
+          rows = await fetchAllFrom('tiktok_corrections', '*', storeScope, ['created_at', 'id']);
+        }
+        // The store filter is applied in the query above, not here. Filtering
+        // after a row limit was how a store's rows could disappear completely:
+        // the limit took the newest 300 rows of every store, and the filter then
+        // kept whichever of those happened to belong to this one.
+        //
+        // Paging has to read in a stable ascending order to be correct, so the
+        // newest-first order these tabs are read in is restored here.
+        const newestFirst: Record<string, string> = {
+          orders: 'updated_at', items: 'confirmed_at', returns: 'created_at', corrections: 'created_at',
+        };
+        const by = newestFirst[pageTab];
+        const ordered = by
+          ? [...rows].sort((a, b) => String(b?.[by] ?? '').localeCompare(String(a?.[by] ?? '')))
+          : rows;
+        if (cancelled) return;   // a slower earlier tab must not overwrite this one
+        setTabState({ tab: pageTab, rows: ordered, error: null, loading: false });
+      } catch (e: any) {
+        if (cancelled) return;
+        setTabState({ tab: pageTab, rows: [], error: e?.message ?? String(e), loading: false });
       }
-      // The store filter is applied in the query above, not here. Filtering
-      // after a row limit was how a store's rows could disappear completely:
-      // the limit took the newest 300 rows of every store, and the filter then
-      // kept whichever of those happened to belong to this one.
-      //
-      // Paging has to read in a stable ascending order to be correct, so the
-      // newest-first order these tabs are read in is restored here.
-      const newestFirst: Record<string, string> = {
-        orders: 'updated_at', items: 'confirmed_at', returns: 'created_at', corrections: 'created_at',
-      };
-      const by = newestFirst[pageTab];
-      const filtered = by
-        ? [...rows].sort((a, b) => String(b?.[by] ?? '').localeCompare(String(a?.[by] ?? '')))
-        : rows;
-      if (cancelled) return;   // a slower earlier tab must not overwrite this one
-      setTabRows(filtered);
-      setTabLoading(false);
     };
-    let cancelled = false;
     fetchTab();
     return () => { cancelled = true; };
-  }, [pageTab, effectiveStore, settleReload]);
+    // storeScope, noStoreToRead and storesUnknown follow storeScopeKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageTab, storeScopeKey, settleReload, tabReload]);
+
+  // A tab's list, or why it could not be read.
+  const tabBody = (what: string, content: () => React.ReactNode) =>
+    tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
+    : tabError ? <div className="alert alert-danger" role="alert" data-testid="tab-error">{what} could not be loaded: {tabError}</div>
+    : storesUnknown ? <div className="alert alert-danger" role="alert" data-testid="stores-unknown">Your stores could not be loaded, so nothing is shown. Press Refresh to try again.</div>
+    : noStoreToRead ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Nothing to show: you are not assigned to a store.</div>
+    : content();
 
   // ── Worksheet range repair ────────────────────────────────────────────────
   //
@@ -587,17 +694,53 @@ const TikTokImportPage: React.FC = () => {
   };
 
   // ── Actions ───────────────────────────────────────────────────────────────
+  // Open the mapping window for a SKU of a store (none: the store chosen above).
+  const openMapping = (sku: string, mapStore?: string | null) => {
+    setMapSku({ sku, storeId: mapStore ?? null }); setMapKind('product'); setMapTarget(''); setMapErr(null);
+  };
+
+  // The window stays open, with the reason, until the mapping is saved and the
+  // open file has been checked against it.
   const saveMapping = async () => {
-    if (!mapSku || !mapTarget || !effectiveStore) return;
-    setBusy('map'); setErr(null);
-    const { error } = await supabase.rpc('upsert_tiktok_sku_alias', {
-      p_store_id: effectiveStore, p_seller_sku: mapSku.sku, p_target_kind: mapKind, p_target_id: mapTarget,
-    });
-    if (!error && activeBatch) await supabase.rpc('refresh_tiktok_staging', { p_batch_id: activeBatch.id });
-    setBusy(null);
+    if (!mapSku || !mapTarget) return;
+    const mapStore = mapSku.storeId || effectiveStore;
+    if (!mapStore) { setMapErr('Choose the store this SKU is for first (Staged Imports → Store).'); return; }
+    setBusy('map'); setMapErr(null);
+    try {
+      const { error } = await supabase.rpc('upsert_tiktok_sku_alias', {
+        p_store_id: mapStore, p_seller_sku: mapSku.sku, p_target_kind: mapKind, p_target_id: mapTarget,
+      });
+      if (error) { setMapErr(error.message); return; }
+      // The open file is checked again only while it is staged (a confirmed
+      // file is locked) and only if it is this store's.
+      const recheck = activeBatch && activeBatch.status === 'staged' && activeBatch.store_id === mapStore ? activeBatch : null;
+      if (recheck) {
+        const { error: refreshError } = await supabase.rpc('refresh_tiktok_staging', { p_batch_id: recheck.id });
+        if (refreshError) {
+          setMapErr(`The mapping is saved, but the open file could not be checked again: ${refreshError.message}. Press Save Mapping to try again.`);
+          return;
+        }
+      }
+      setMapSku(null); setMapTarget('');
+      if (activeBatch) await loadBatchRows(activeBatch.id);
+      setTabReload(n => n + 1);
+    } catch (e: any) {
+      setMapErr(e?.message ?? String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Delete an unconfirmed file, and close whichever preview shows it: its
+  // Confirm button would only answer "Batch not found".
+  const deleteBatch = async (batchId: string) => {
+    if (!confirm('Delete this staged batch? No stock has moved.')) return;
+    setErr(null);
+    const { error } = await supabase.rpc('delete_tiktok_batch', { p_batch_id: batchId });
     if (error) { setErr(error.message); return; }
-    setMapSku(null); setMapTarget('');
-    if (activeBatch) await loadBatchRows(activeBatch.id);
+    if (activeBatch?.id === batchId) { setActiveBatch(null); setRows([]); setSelected({}); }
+    if (settleBatch?.id === batchId) { setSettleBatch(null); setSettleRows([]); setSettleSel({}); setSettleBalance(null); }
+    await load();
   };
 
   const confirmBatch = async (allowNegative = false, negativeReason: string | null = null) => {
@@ -645,6 +788,14 @@ const TikTokImportPage: React.FC = () => {
       </div>
 
       {err && <div className="alert alert-danger" style={{ marginBottom: 14 }}>{err}</div>}
+      {loadErrors.length > 0 && (
+        <div className="alert alert-danger" role="alert" data-testid="load-errors" style={{ marginBottom: 14 }}>
+          <div>
+            Part of this page could not be loaded. Press Refresh to try again.
+            <ul style={{ margin: '4px 0 0 18px' }}>{loadErrors.map(m => <li key={m}>{m}</li>)}</ul>
+          </div>
+        </div>
+      )}
       {importNote && <div className="alert alert-info" role="status" data-testid="import-note" style={{ marginBottom: 14 }}>{importNote}</div>}
 
       {loading ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
@@ -663,11 +814,19 @@ const TikTokImportPage: React.FC = () => {
           <div className="card" style={{ padding: 16, marginBottom: 14 }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div style={{ minWidth: 220 }}>
-                <label>Store {isStaff && <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(your assigned store)</span>}</label>
-                <select value={effectiveStore} disabled={isStaff} onChange={e => setStoreId(e.target.value)}>
-                  {!isStaff && <option value="">— Select store —</option>}
-                  {stores.filter(s => !isStaff || s.id === assignedStore).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                <label>Store {isStaff && <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
+                  {storeOptions.length === 1 ? '(your assigned store)' : '(a store you are assigned to)'}</span>}</label>
+                <select aria-label="Store" value={effectiveStore} disabled={isStaff && storeOptions.length === 1}
+                  onChange={e => setStoreId(e.target.value)}>
+                  {!(isStaff && storeOptions.length === 1) && <option value="">{isStaff ? '— Choose your store —' : '— Select store —'}</option>}
+                  {storeOptions.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
                 </select>
+                {isStaff && myStores !== null && storeOptions.length === 0 && (
+                  <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 4 }}>You are not assigned to a store yet. Ask an Owner or Manager.</div>
+                )}
+                {isStaff && storeOptions.length > 1 && !effectiveStore && (
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>Choose a store to upload. The tabs show all your stores until then.</div>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ border: '1px dashed var(--border)', borderRadius: 'var(--radius-sm)', padding: '12px 16px' }}>
@@ -697,48 +856,53 @@ const TikTokImportPage: React.FC = () => {
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
                 Cancelled after shipment — stock is NOT returned automatically. Confirm each parcel when it arrives (or record why it never will).
               </p>
-              <table>
-                <thead><tr><th>Order ID</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Expected Qty</th><th>Since</th><th></th></tr></thead>
-                <tbody>{physReturns.map(pr => (
-                  <tr key={pr.id}>
-                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{pr.order_id}</td>
-                    <td style={{ fontSize: 12 }}>{pr.seller_sku}</td>
-                    <td style={{ textAlign: 'right' }}>{pr.expected_qty}</td>
-                    <td style={{ fontSize: 12 }}>{new Date(pr.created_at).toLocaleDateString()}</td>
-                    <td><button className="btn btn-secondary btn-sm" onClick={() => { setResolvePr(pr); setPrRestock(true); setPrReason('damaged'); setPrNote(''); }}>Resolve</button></td>
-                  </tr>
-                ))}</tbody>
-              </table>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Order ID</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Expected Qty</th><th>Since</th><th></th></tr></thead>
+                  <tbody>{physReturns.map(pr => (
+                    <tr key={pr.id}>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{pr.order_id}</td>
+                      <td style={{ fontSize: 12 }}>{pr.seller_sku}</td>
+                      <td style={{ textAlign: 'right' }}>{pr.expected_qty}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(pr.created_at).toLocaleDateString()}</td>
+                      <td><button className="btn btn-secondary btn-sm" onClick={() => { setResolvePr(pr); setPrRestock(true); setPrReason('damaged'); setPrNote(''); }}>Resolve</button></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
             </div>
           )}
 
           {/* Batches (staged view shows staged only; Import History shows all) */}
           <div className="card" style={{ padding: 16, marginBottom: 14 }}>
             <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Staged Import Batches</h3>
-            {batches.filter(b => b.status === 'staged').length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No imports yet.</div> : (
-              <table>
-                <thead><tr><th>File</th><th>Kind</th><th>Store</th><th>Uploaded</th><th style={{ textAlign: 'right' }}>Rows</th><th style={{ textAlign: 'right' }}>Deducted</th><th style={{ textAlign: 'right' }}>Returned</th><th>Status</th><th></th></tr></thead>
-                <tbody>{batches.filter(b => b.status === 'staged').map(b => (
-                  <tr key={b.batch_id}>
-                    <td style={{ fontSize: 12.5 }}><strong>{b.file_name}</strong>{b.uploaded_by_name && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{b.uploaded_by_name}</div>}</td>
-                    <td style={{ fontSize: 12 }}>{b.file_kind}</td>
-                    <td style={{ fontSize: 12 }}>{b.store_name}</td>
-                    <td style={{ fontSize: 12 }}>{new Date(b.uploaded_at).toLocaleString()}</td>
-                    <td style={{ textAlign: 'right' }}>{b.row_count}</td>
-                    <td style={{ textAlign: 'right' }}>{b.units_deducted}</td>
-                    <td style={{ textAlign: 'right' }}>{b.units_returned}</td>
-                    <td>{b.status === 'confirmed' ? <span className="badge badge-success">Confirmed</span> : <span className="badge badge-warning">Staged</span>}</td>
-                    <td><div style={{ display: 'flex', gap: 4 }}>
-                      {b.file_kind !== 'correction' && <button className="btn btn-secondary btn-sm" onClick={() => b.file_kind === 'settlement' ? loadSettleRows(b.batch_id) : loadBatchRows(b.batch_id)}><Eye size={12} /> Open</button>}
-                      {canManage && b.status === 'staged' && (
-                        <button className="btn btn-danger btn-sm btn-icon" title="Delete unconfirmed batch"
-                          onClick={async () => { if (!confirm('Delete this staged batch? No stock has moved.')) return; const { error } = await supabase.rpc('delete_tiktok_batch', { p_batch_id: b.batch_id }); if (error) setErr(error.message); else { if (activeBatch?.id === b.batch_id) { setActiveBatch(null); setRows([]); } load(); } }}>
-                          <Trash2 size={12} /></button>
-                      )}
-                    </div></td>
-                  </tr>
-                ))}</tbody>
-              </table>
+            {batchesError ? <div className="alert alert-danger" role="alert" data-testid="imports-error">Could not load imports: {batchesError}</div>
+            : batches.filter(b => b.status === 'staged').length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No staged imports.</div> : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>File</th><th>Kind</th><th>Store</th><th>Uploaded</th><th style={{ textAlign: 'right' }}>Rows</th><th style={{ textAlign: 'right' }}>Deducted</th><th style={{ textAlign: 'right' }}>Returned</th><th>Status</th><th></th></tr></thead>
+                  <tbody>{batches.filter(b => b.status === 'staged').map(b => (
+                    <tr key={b.batch_id}>
+                      <td style={{ fontSize: 12.5 }}><strong>{b.file_name}</strong>{b.uploaded_by_name && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{b.uploaded_by_name}</div>}</td>
+                      <td style={{ fontSize: 12 }}>{b.file_kind}</td>
+                      <td style={{ fontSize: 12 }}>{b.store_name}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(b.uploaded_at).toLocaleString()}</td>
+                      <td style={{ textAlign: 'right' }}>{b.row_count}</td>
+                      <td style={{ textAlign: 'right' }}>{b.units_deducted}</td>
+                      <td style={{ textAlign: 'right' }}>{b.units_returned}</td>
+                      <td>{b.status === 'confirmed' ? <span className="badge badge-success">Confirmed</span> : <span className="badge badge-warning">Staged</span>}</td>
+                      <td><div style={{ display: 'flex', gap: 4 }}>
+                        {b.file_kind !== 'correction' && <button className="btn btn-secondary btn-sm" onClick={() => b.file_kind === 'settlement' ? loadSettleRows(b.batch_id) : loadBatchRows(b.batch_id)}><Eye size={12} /> Open</button>}
+                        {canManage && b.status === 'staged' && (
+                          <button className="btn btn-danger btn-sm btn-icon" title="Delete unconfirmed batch"
+                            onClick={() => void deleteBatch(b.batch_id)}>
+                            <Trash2 size={12} /></button>
+                        )}
+                      </div></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
             )}
           </div>
 
@@ -746,7 +910,7 @@ const TikTokImportPage: React.FC = () => {
           {activeBatch && (
             <div className="card" style={{ padding: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-                <h3 style={{ fontSize: 14.5, flex: 1 }}>{activeBatch.file_name} — {staged ? 'Preview (no stock moved yet)' : 'Confirmed (locked)'}</h3>
+                <h3 style={{ fontSize: 14.5, flex: '1 1 240px', minWidth: 0, overflowWrap: 'anywhere' }}>{activeBatch.file_name} — {staged ? 'Preview (no stock moved yet)' : 'Confirmed (locked)'}</h3>
                 {staged && <>
                   <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{selCount} selected</span>
                   <button className="btn btn-primary btn-sm" disabled={busy !== null || selCount === 0} onClick={() => confirmBatch()}>
@@ -754,53 +918,55 @@ const TikTokImportPage: React.FC = () => {
                   </button>
                 </>}
               </div>
-              <table>
-                <thead><tr>
-                  {staged && <th></th>}
-                  <th>#</th><th>Order ID</th><th>Seller SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>TikTok Status</th><th>Mapping</th><th>Staging Status</th><th>Prev → New</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th style={{ textAlign: 'right' }}>Δ $</th><th></th>
-                </tr></thead>
-                <tbody>{rows.map(r => (
-                  <tr key={r.id} style={{ opacity: r.excluded && !r.confirmed ? 0.45 : 1 }}>
-                    {staged && <td><input type="checkbox" checked={!!selected[r.id]} disabled={r.excluded || !CONFIRMABLE.has(r.staging_status)}
-                      onChange={e => setSelected(s => ({ ...s, [r.id]: e.target.checked }))} style={{ width: 'auto' }} /></td>}
-                    <td style={{ fontSize: 12 }}>{r.row_no}</td>
-                    {/* Order IDs render as text — they were never numbers anywhere. */}
-                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}</td>
-                    <td style={{ fontSize: 12 }}>{r.seller_sku ?? '—'}</td>
-                    <td style={{ fontSize: 12 }}>{r.product_name ?? '—'}</td>
-                    <td style={{ textAlign: 'right' }}>{r.quantity ?? '—'}</td>
-                    <td style={{ fontSize: 12 }}>{r.order_status ?? '—'}</td>
-                    <td style={{ fontSize: 12 }}>
-                      {r.matched_kind ? <>{r.matched_kind}: {targetName(r) ?? '?'}</> : <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                      {staged && r.seller_sku && (
-                        <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6, padding: '1px 7px', fontSize: 10.5 }}
-                          onClick={() => { setMapSku({ sku: r.seller_sku }); setMapKind('product'); setMapTarget(''); }}>Map</button>
-                      )}
-                    </td>
-                    <td><span className={`badge ${STATUS_BADGE[r.staging_status] ?? 'badge-muted'}`}>{r.staging_status}</span>
-                      {r.confirmed && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>applied</div>}</td>
-                    <td style={{ fontSize: 11.5 }}>
-                      {r.previous_row_id
-                        ? <>v{r.version_no}: {r.prev_quantity}×{r.prev_order_status ?? '?'} → {r.quantity}×{r.order_status ?? '?'}</>
-                        : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600, color: r.stock_delta > 0 ? 'var(--danger)' : r.stock_delta < 0 ? 'var(--success)' : 'inherit' }}>
-                      {r.stock_delta > 0 ? `−${r.stock_delta}` : r.stock_delta < 0 ? `+${-r.stock_delta}` : '0'}</td>
-                    <td style={{ textAlign: 'right', fontSize: 12 }}>{r.financial_delta != null ? Number(r.financial_delta).toFixed(2) : '—'}</td>
-                    <td><div style={{ display: 'flex', gap: 4 }}>
-                      {staged && !r.confirmed && (
-                        <button className="btn btn-danger btn-sm btn-icon" title="Remove staged row"
-                          onClick={async () => { const { error } = await supabase.rpc('delete_tiktok_row', { p_row_id: r.id }); if (error) setErr(error.message); else loadBatchRows(activeBatch.id); }}>
-                          <Trash2 size={12} /></button>
-                      )}
-                      {canManage && r.confirmed && r.matched_kind && r.staging_status !== 'Already Imported' && (
-                        <button className="btn btn-secondary btn-sm btn-icon" title="Correction (Owner/Manager)"
-                          onClick={() => { setCorrectRow(r); setCorrDelta(-1); setCorrReason(''); }}>
-                          <Wrench size={12} /></button>
-                      )}
-                    </div></td>
-                  </tr>
-                ))}</tbody>
-              </table>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    {staged && <th></th>}
+                    <th>#</th><th>Order ID</th><th>Seller SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>TikTok Status</th><th>Mapping</th><th>Staging Status</th><th>Prev → New</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th style={{ textAlign: 'right' }}>Δ $</th><th></th>
+                  </tr></thead>
+                  <tbody>{rows.map(r => (
+                    <tr key={r.id} style={{ opacity: r.excluded && !r.confirmed ? 0.45 : 1 }}>
+                      {staged && <td><input type="checkbox" checked={!!selected[r.id]} disabled={r.excluded || !CONFIRMABLE.has(r.staging_status)}
+                        onChange={e => setSelected(s => ({ ...s, [r.id]: e.target.checked }))} style={{ width: 'auto' }} /></td>}
+                      <td style={{ fontSize: 12 }}>{r.row_no}</td>
+                      {/* Order IDs render as text — they were never numbers anywhere. */}
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}</td>
+                      <td style={{ fontSize: 12 }}>{r.seller_sku ?? '—'}</td>
+                      <td style={{ fontSize: 12 }}>{r.product_name ?? '—'}</td>
+                      <td style={{ textAlign: 'right' }}>{r.quantity ?? '—'}</td>
+                      <td style={{ fontSize: 12 }}>{r.order_status ?? '—'}</td>
+                      <td style={{ fontSize: 12 }}>
+                        {r.matched_kind ? <>{r.matched_kind}: {targetName(r) ?? '?'}</> : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        {staged && r.seller_sku && (
+                          <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6, padding: '1px 7px', fontSize: 10.5 }}
+                            onClick={() => openMapping(r.seller_sku, activeBatch?.store_id ?? r.store_id ?? null)}>Map</button>
+                        )}
+                      </td>
+                      <td><span className={`badge ${STATUS_BADGE[r.staging_status] ?? 'badge-muted'}`}>{r.staging_status}</span>
+                        {r.confirmed && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>applied</div>}</td>
+                      <td style={{ fontSize: 11.5 }}>
+                        {r.previous_row_id
+                          ? <>v{r.version_no}: {r.prev_quantity}×{r.prev_order_status ?? '?'} → {r.quantity}×{r.order_status ?? '?'}</>
+                          : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600, color: r.stock_delta > 0 ? 'var(--danger)' : r.stock_delta < 0 ? 'var(--success)' : 'inherit' }}>
+                        {r.stock_delta > 0 ? `−${r.stock_delta}` : r.stock_delta < 0 ? `+${-r.stock_delta}` : '0'}</td>
+                      <td style={{ textAlign: 'right', fontSize: 12 }}>{r.financial_delta != null ? Number(r.financial_delta).toFixed(2) : '—'}</td>
+                      <td><div style={{ display: 'flex', gap: 4 }}>
+                        {staged && !r.confirmed && (
+                          <button className="btn btn-danger btn-sm btn-icon" title="Remove staged row"
+                            onClick={async () => { const { error } = await supabase.rpc('delete_tiktok_row', { p_row_id: r.id }); if (error) setErr(error.message); else loadBatchRows(activeBatch.id); }}>
+                            <Trash2 size={12} /></button>
+                        )}
+                        {canManage && r.confirmed && r.matched_kind && r.staging_status !== 'Already Imported' && (
+                          <button className="btn btn-secondary btn-sm btn-icon" title="Correction (Owner/Manager)"
+                            onClick={() => { setCorrectRow(r); setCorrDelta(-1); setCorrReason(''); }}>
+                            <Wrench size={12} /></button>
+                        )}
+                      </div></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -808,7 +974,7 @@ const TikTokImportPage: React.FC = () => {
           {settleBatch && (
             <div className="card" style={{ padding: 16, marginTop: 14 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
-                <h3 style={{ fontSize: 14.5, flex: 1 }}>{settleBatch.file_name} — {settleBatch.status === 'staged' ? 'Settlement Preview' : 'Settlement Confirmed (locked)'}</h3>
+                <h3 style={{ fontSize: 14.5, flex: '1 1 240px', minWidth: 0, overflowWrap: 'anywhere' }}>{settleBatch.file_name} — {settleBatch.status === 'staged' ? 'Settlement Preview' : 'Settlement Confirmed (locked)'}</h3>
                 {settleBatch.status === 'staged' && (
                   <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={confirmSettleBatch}>
                     <CheckCircle2 size={13} /> {busy === 'sconfirm' ? 'Confirming…'
@@ -846,44 +1012,46 @@ const TikTokImportPage: React.FC = () => {
                   </div>
                 </div>
               )}
-              <table>
-                <thead><tr>
-                  {settleBatch.status === 'staged' && <th></th>}
-                  <th>Order/Adj ID</th><th>Type</th><th>Related</th><th>Order Created</th>
-                  <th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th>
-                  <th>Match</th><th>Status</th><th>Reconciled</th>
-                </tr></thead>
-                <tbody>{settleRows.map(r => (
-                  <tr key={r.id} style={{ opacity: r.excluded && !r.confirmed ? 0.45 : 1 }}>
-                    {settleBatch.status === 'staged' && <td><input type="checkbox" checked={!!settleSel[r.id]}
-                      disabled={r.excluded || !SETTLE_CONFIRMABLE.has(r.staging_status)}
-                      onChange={e => setSettleSel(x => ({ ...x, [r.id]: e.target.checked }))} style={{ width: 'auto' }} /></td>}
-                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}
-                      {r.version_no > 1 && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>v{r.version_no}</div>}</td>
-                    <td style={{ fontSize: 12 }}>{r.transaction_type ?? '—'}<div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{r.txn_class}</div></td>
-                    <td style={{ fontFamily: 'var(--font-display)', fontSize: 11.5 }}>{r.related_order_id ?? '—'}</td>
-                    <td style={{ fontSize: 12 }}>{r.order_created_time ? new Date(r.order_created_time).toLocaleDateString() : '—'}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.settlement_amount != null ? Number(r.settlement_amount).toFixed(2) : '—'}</td>
-                    <td style={{ textAlign: 'right', fontSize: 12 }}>{r.revenue_amount != null ? Number(r.revenue_amount).toFixed(2) : '—'}</td>
-                    <td style={{ textAlign: 'right', fontSize: 12 }}>{r.fee_amount != null ? Number(r.fee_amount).toFixed(2) : '—'}</td>
-                    <td>{matchBadge(r.match_status)}</td>
-                    <td>
-                      <span className={`badge ${r.staging_status?.startsWith('Updated') ? 'badge-warning' : r.staging_status === 'Invalid Row' ? 'badge-danger' : 'badge-muted'}`}>{r.staging_status}</span>
-                      {r.value_diff && Object.keys(r.value_diff).length > 0 && (
-                        <div style={{ fontSize: 10.5, color: 'var(--text-muted)', maxWidth: 220 }}>
-                          {Object.entries(r.value_diff as Record<string, any>).map(([f, d]) => (
-                            <div key={f}>{f}: {String(d.old ?? '—')} → {String(d.new ?? '—')}</div>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td>{r.reconciled === false
-                      ? <span className="badge badge-danger" title="Total Settlement ≠ Revenue + Fees (±$0.01)">⚠ Off</span>
-                      : r.reconciled === true ? <span className="badge badge-success">OK</span>
-                      : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    {settleBatch.status === 'staged' && <th></th>}
+                    <th>Order/Adj ID</th><th>Type</th><th>Related</th><th>Order Created</th>
+                    <th style={{ textAlign: 'right' }}>Settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th>
+                    <th>Match</th><th>Status</th><th>Reconciled</th>
+                  </tr></thead>
+                  <tbody>{settleRows.map(r => (
+                    <tr key={r.id} style={{ opacity: r.excluded && !r.confirmed ? 0.45 : 1 }}>
+                      {settleBatch.status === 'staged' && <td><input type="checkbox" checked={!!settleSel[r.id]}
+                        disabled={r.excluded || !SETTLE_CONFIRMABLE.has(r.staging_status)}
+                        onChange={e => setSettleSel(x => ({ ...x, [r.id]: e.target.checked }))} style={{ width: 'auto' }} /></td>}
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}
+                        {r.version_no > 1 && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>v{r.version_no}</div>}</td>
+                      <td style={{ fontSize: 12 }}>{r.transaction_type ?? '—'}<div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{r.txn_class}</div></td>
+                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 11.5 }}>{r.related_order_id ?? '—'}</td>
+                      <td style={{ fontSize: 12 }}>{r.order_created_time ? new Date(r.order_created_time).toLocaleDateString() : '—'}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.settlement_amount != null ? Number(r.settlement_amount).toFixed(2) : '—'}</td>
+                      <td style={{ textAlign: 'right', fontSize: 12 }}>{r.revenue_amount != null ? Number(r.revenue_amount).toFixed(2) : '—'}</td>
+                      <td style={{ textAlign: 'right', fontSize: 12 }}>{r.fee_amount != null ? Number(r.fee_amount).toFixed(2) : '—'}</td>
+                      <td>{matchBadge(r.match_status)}</td>
+                      <td>
+                        <span className={`badge ${r.staging_status?.startsWith('Updated') ? 'badge-warning' : r.staging_status === 'Invalid Row' ? 'badge-danger' : 'badge-muted'}`}>{r.staging_status}</span>
+                        {r.value_diff && Object.keys(r.value_diff).length > 0 && (
+                          <div style={{ fontSize: 10.5, color: 'var(--text-muted)', maxWidth: 220 }}>
+                            {Object.entries(r.value_diff as Record<string, any>).map(([f, d]) => (
+                              <div key={f}>{f}: {String(d.old ?? '—')} → {String(d.new ?? '—')}</div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td>{r.reconciled === false
+                        ? <span className="badge badge-danger" title="Total Settlement ≠ Revenue + Fees (±$0.01)">⚠ Off</span>
+                        : r.reconciled === true ? <span className="badge badge-success">OK</span>
+                        : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
             </div>
           )}
           </>}
@@ -892,22 +1060,27 @@ const TikTokImportPage: React.FC = () => {
           {pageTab === 'history' && (
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Import History</h3>
-              <table>
-                <thead><tr><th>File</th><th>Kind</th><th>Store</th><th>Uploaded</th><th style={{ textAlign: 'right' }}>Rows</th><th style={{ textAlign: 'right' }}>Deducted</th><th style={{ textAlign: 'right' }}>Returned</th><th>Status</th><th></th></tr></thead>
-                <tbody>{batches.map(b => (
-                  <tr key={b.batch_id}>
-                    <td style={{ fontSize: 12.5 }}><strong>{b.file_name}</strong>{b.uploaded_by_name && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{b.uploaded_by_name}</div>}</td>
-                    <td style={{ fontSize: 12 }}>{b.file_kind}</td>
-                    <td style={{ fontSize: 12 }}>{b.store_name}</td>
-                    <td style={{ fontSize: 12 }}>{new Date(b.uploaded_at).toLocaleString()}</td>
-                    <td style={{ textAlign: 'right' }}>{b.row_count}</td>
-                    <td style={{ textAlign: 'right' }}>{b.units_deducted}</td>
-                    <td style={{ textAlign: 'right' }}>{b.units_returned}</td>
-                    <td>{b.status === 'confirmed' ? <span className="badge badge-success">Confirmed</span> : <span className="badge badge-warning">Staged</span>}</td>
-                    <td>{b.file_kind !== 'correction' && <button className="btn btn-secondary btn-sm" onClick={() => { setPageTab('staged'); b.file_kind === 'settlement' ? loadSettleRows(b.batch_id) : loadBatchRows(b.batch_id); }}><Eye size={12} /> Open</button>}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
+              {batchesError ? <div className="alert alert-danger" role="alert">Could not load imports: {batchesError}</div>
+              : batches.length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No imports yet.</div> : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>File</th><th>Kind</th><th>Store</th><th>Uploaded</th><th style={{ textAlign: 'right' }}>Rows</th><th style={{ textAlign: 'right' }}>Deducted</th><th style={{ textAlign: 'right' }}>Returned</th><th>Status</th><th></th></tr></thead>
+                  <tbody>{batches.map(b => (
+                    <tr key={b.batch_id}>
+                      <td style={{ fontSize: 12.5 }}><strong>{b.file_name}</strong>{b.uploaded_by_name && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{b.uploaded_by_name}</div>}</td>
+                      <td style={{ fontSize: 12 }}>{b.file_kind}</td>
+                      <td style={{ fontSize: 12 }}>{b.store_name}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(b.uploaded_at).toLocaleString()}</td>
+                      <td style={{ textAlign: 'right' }}>{b.row_count}</td>
+                      <td style={{ textAlign: 'right' }}>{b.units_deducted}</td>
+                      <td style={{ textAlign: 'right' }}>{b.units_returned}</td>
+                      <td>{b.status === 'confirmed' ? <span className="badge badge-success">Confirmed</span> : <span className="badge badge-warning">Staged</span>}</td>
+                      <td>{b.file_kind !== 'correction' && <button className="btn btn-secondary btn-sm" onClick={() => { setPageTab('staged'); b.file_kind === 'settlement' ? loadSettleRows(b.batch_id) : loadBatchRows(b.batch_id); }}><Eye size={12} /> Open</button>}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+              )}
             </div>
           )}
 
@@ -915,45 +1088,49 @@ const TikTokImportPage: React.FC = () => {
           {pageTab === 'orders' && (
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Imported Orders</h3>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>Order ID</th><th>Seller SKU</th><th>Last Status</th><th style={{ textAlign: 'right' }}>Net Deducted</th><th>Shipped</th><th>Updated</th></tr></thead>
-                  <tbody>{tabRows.map((r, i) => (
-                    <tr key={i}>
-                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
-                      <td style={{ fontSize: 12 }}>{r.seller_sku}</td>
-                      <td style={{ fontSize: 12 }}>{r.last_status ?? '—'}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.deducted_qty}</td>
-                      <td>{r.was_shipped ? <span className="badge badge-muted">Shipped</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
-                      <td style={{ fontSize: 12 }}>{new Date(r.updated_at).toLocaleString()}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              {tabBody('Imported orders', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Order ID</th><th>Seller SKU</th><th>Last Status</th><th style={{ textAlign: 'right' }}>Net Deducted</th><th>Shipped</th><th>Updated</th></tr></thead>
+                    <tbody>{tabRows.map((r, i) => (
+                      <tr key={i}>
+                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
+                        <td style={{ fontSize: 12 }}>{r.seller_sku}</td>
+                        <td style={{ fontSize: 12 }}>{r.last_status ?? '—'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.deducted_qty}</td>
+                        <td>{r.was_shipped ? <span className="badge badge-muted">Shipped</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}</td>
+                        <td style={{ fontSize: 12 }}>{new Date(r.updated_at).toLocaleString()}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
 
           {/* Order Items */}
           {pageTab === 'items' && (
             <div className="card" style={{ padding: 16 }}>
-              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Confirmed Order Items (latest 300)</h3>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>Order ID</th><th>SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>Status</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th>Version</th><th>Confirmed</th></tr></thead>
-                  <tbody>{tabRows.map(r => (
-                    <tr key={r.id}>
-                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
-                      <td style={{ fontSize: 12 }}>{r.seller_sku}</td>
-                      <td style={{ fontSize: 12 }}>{r.product_name ?? '—'}</td>
-                      <td style={{ textAlign: 'right' }}>{r.quantity}</td>
-                      <td style={{ fontSize: 12 }}>{r.order_status}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.stock_delta}</td>
-                      <td style={{ fontSize: 11.5 }}>v{r.version_no}{r.previous_row_id ? ' (linked)' : ''}</td>
-                      <td style={{ fontSize: 12 }}>{r.confirmed_at ? new Date(r.confirmed_at).toLocaleString() : '—'}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Confirmed Order Items</h3>
+              {tabBody('Confirmed order items', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Order ID</th><th>SKU</th><th>Product</th><th style={{ textAlign: 'right' }}>Qty</th><th>Status</th><th style={{ textAlign: 'right' }}>Δ Stock</th><th>Version</th><th>Confirmed</th></tr></thead>
+                    <tbody>{tabRows.map(r => (
+                      <tr key={r.id}>
+                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
+                        <td style={{ fontSize: 12 }}>{r.seller_sku}</td>
+                        <td style={{ fontSize: 12 }}>{r.product_name ?? '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{r.quantity}</td>
+                        <td style={{ fontSize: 12 }}>{r.order_status}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.stock_delta}</td>
+                        <td style={{ fontSize: 11.5 }}>v{r.version_no}{r.previous_row_id ? ' (linked)' : ''}</td>
+                        <td style={{ fontSize: 12 }}>{r.confirmed_at ? new Date(r.confirmed_at).toLocaleString() : '—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
 
@@ -990,32 +1167,34 @@ const TikTokImportPage: React.FC = () => {
                     confirmation are in none of the figures above.</div>
                 : leftOut.rows.length === 0 ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Nothing was left out for this period.</div>
                 : <>
-                  <table>
-                    <thead><tr>
-                      {canManage && <th><input type="checkbox" aria-label="Select all left-out lines" style={{ width: 'auto' }}
-                        checked={leftOutPicked.length === leftOut.rows.length}
-                        onChange={e => setLeftOutSel(Object.fromEntries(leftOut.rows.map(r => [leftOutId(r), e.target.checked])))} /></th>}
-                      <th>Settled (SGT)</th><th>Order/Adj ID</th><th>Type</th><th>Match</th>
-                      <th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>File</th>
-                    </tr></thead>
-                    <tbody>{leftOut.rows.map(r => (
-                      <tr key={leftOutId(r)}>
-                        {canManage && <td><input type="checkbox" checked={!!leftOutSel[leftOutId(r)]} style={{ width: 'auto' }}
-                          onChange={e => setLeftOutSel(x => ({ ...x, [leftOutId(r)]: e.target.checked }))} /></td>}
-                        <td style={{ fontSize: 12 }}>{leftOutDay(r) ?? '—'}</td>
-                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}</td>
-                        <td style={{ fontSize: 12 }}>{r.transaction_type ?? '—'}</td>
-                        <td>{matchBadge(r.match_status)}</td>
-                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}
-                          {isRestatement(r) && <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)' }}
-                            title="Including it replaces the counted line, so the totals change by the difference">
-                            restates S${Number(r.replaces_settlement).toFixed(2)}</div>}</td>
-                        <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
-                        <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
-                        <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.file_name ?? '—'}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr>
+                        {canManage && <th><input type="checkbox" aria-label="Select all left-out lines" style={{ width: 'auto' }}
+                          checked={leftOutPicked.length === leftOut.rows.length}
+                          onChange={e => setLeftOutSel(Object.fromEntries(leftOut.rows.map(r => [leftOutId(r), e.target.checked])))} /></th>}
+                        <th>Settled (SGT)</th><th>Order/Adj ID</th><th>Type</th><th>Match</th>
+                        <th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>File</th>
+                      </tr></thead>
+                      <tbody>{leftOut.rows.map(r => (
+                        <tr key={leftOutId(r)}>
+                          {canManage && <td><input type="checkbox" checked={!!leftOutSel[leftOutId(r)]} style={{ width: 'auto' }}
+                            onChange={e => setLeftOutSel(x => ({ ...x, [leftOutId(r)]: e.target.checked }))} /></td>}
+                          <td style={{ fontSize: 12 }}>{leftOutDay(r) ?? '—'}</td>
+                          <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id ?? '—'}</td>
+                          <td style={{ fontSize: 12 }}>{r.transaction_type ?? '—'}</td>
+                          <td>{matchBadge(r.match_status)}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}
+                            {isRestatement(r) && <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)' }}
+                              title="Including it replaces the counted line, so the totals change by the difference">
+                              restates S${Number(r.replaces_settlement).toFixed(2)}</div>}</td>
+                          <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
+                          <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
+                          <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.file_name ?? '—'}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
                   {canManage && (
                     <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 10 }}>
                       <div style={{ flex: '1 1 280px' }}>
@@ -1043,25 +1222,27 @@ const TikTokImportPage: React.FC = () => {
                 selected reporting month. Amounts here are <strong>as imported from TikTok</strong>; the
                 figures above are calculated from them.
               </p>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>Settled (SGT)</th><th>Period</th><th>Order/Adj ID</th><th>Type</th><th>Category</th><th>Match</th><th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>Reconciled</th></tr></thead>
-                  <tbody>{tabRows.map(r => (
-                    <tr key={r.row_id}>
-                      <td style={{ fontSize: 12 }}>{settledDateSgt(r.financial_date) ?? <span className="badge badge-danger">No settled date</span>}</td>
-                      <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{periodOf(r.financial_date)}</td>
-                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_adjustment_id}{r.version_no > 1 ? ` (v${r.version_no})` : ''}</td>
-                      <td style={{ fontSize: 12 }}>{r.transaction_type ?? r.txn_class}</td>
-                      <td>{categoryBadge(r.transaction_type, r.adjustment_amount)}</td>
-                      <td>{matchBadge(r.match_status)}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}</td>
-                      <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
-                      <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
-                      <td>{r.reconciled === false ? <span className="badge badge-danger">⚠ Off</span> : r.reconciled === true ? <span className="badge badge-success">OK</span> : '—'}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              {tabBody('Settlement transactions', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Settled (SGT)</th><th>Period</th><th>Order/Adj ID</th><th>Type</th><th>Category</th><th>Match</th><th style={{ textAlign: 'right' }}>TikTok settlement</th><th style={{ textAlign: 'right' }}>Revenue</th><th style={{ textAlign: 'right' }}>Fees</th><th>Reconciled</th></tr></thead>
+                    <tbody>{tabRows.map(r => (
+                      <tr key={r.row_id}>
+                        <td style={{ fontSize: 12 }}>{settledDateSgt(r.financial_date) ?? <span className="badge badge-danger">No settled date</span>}</td>
+                        <td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{periodOf(r.financial_date)}</td>
+                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_adjustment_id}{r.version_no > 1 ? ` (v${r.version_no})` : ''}</td>
+                        <td style={{ fontSize: 12 }}>{r.transaction_type ?? r.txn_class}</td>
+                        <td>{categoryBadge(r.transaction_type, r.adjustment_amount)}</td>
+                        <td>{matchBadge(r.match_status)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.settlement_amount ?? 0).toFixed(2)}</td>
+                        <td style={{ textAlign: 'right' }}>{Number(r.revenue_amount ?? 0).toFixed(2)}</td>
+                        <td style={{ textAlign: 'right' }}>{Number(r.fee_amount ?? 0).toFixed(2)}</td>
+                        <td>{r.reconciled === false ? <span className="badge badge-danger">⚠ Off</span> : r.reconciled === true ? <span className="badge badge-success">OK</span> : '—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1069,21 +1250,23 @@ const TikTokImportPage: React.FC = () => {
           {pageTab === 'unmatched' && (
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Unmatched Seller SKUs</h3>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>Store</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Occurrences</th><th>Last Seen</th><th>Status</th><th></th></tr></thead>
-                  <tbody>{tabRows.map((r, i) => (
-                    <tr key={i}>
-                      <td style={{ fontSize: 12 }}>{r.store_name}</td>
-                      <td style={{ fontSize: 12, fontWeight: 600 }}>{r.seller_sku}</td>
-                      <td style={{ textAlign: 'right' }}>{r.occurrences}</td>
-                      <td style={{ fontSize: 12 }}>{new Date(r.last_seen).toLocaleDateString()}</td>
-                      <td>{r.still_unmapped ? <span className="badge badge-warning">Unmapped</span> : <span className="badge badge-success">Now Mapped</span>}</td>
-                      <td>{r.still_unmapped && <button className="btn btn-secondary btn-sm" onClick={() => { setMapSku({ sku: r.seller_sku }); setMapKind('product'); setMapTarget(''); }}>Map</button>}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              {tabBody('Unmatched SKUs', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Store</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Occurrences</th><th>Last Seen</th><th>Status</th><th></th></tr></thead>
+                    <tbody>{tabRows.map((r, i) => (
+                      <tr key={i}>
+                        <td style={{ fontSize: 12 }}>{r.store_name}</td>
+                        <td style={{ fontSize: 12, fontWeight: 600 }}>{r.seller_sku}</td>
+                        <td style={{ textAlign: 'right' }}>{r.occurrences}</td>
+                        <td style={{ fontSize: 12 }}>{new Date(r.last_seen).toLocaleDateString()}</td>
+                        <td>{r.still_unmapped ? <span className="badge badge-warning">Unmapped</span> : <span className="badge badge-success">Now Mapped</span>}</td>
+                        <td>{r.still_unmapped && <button className="btn btn-secondary btn-sm" onClick={() => openMapping(r.seller_sku, storeIdByName(r.store_name))}>Map</button>}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1092,21 +1275,24 @@ const TikTokImportPage: React.FC = () => {
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 4 }}>Reconciliation</h3>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Orders without settlement, settlements without order, and Settlement ≠ Revenue + Fees differences (±$0.01).</p>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>Kind</th><th>Store</th><th>Order ID</th><th>Detail</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
-                  <tbody>{tabRows.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>Fully reconciled — no exceptions</td></tr>
-                    : tabRows.map((r, i) => (
-                    <tr key={i}>
-                      <td><span className={`badge ${r.kind === 'reconciliation_difference' ? 'badge-danger' : 'badge-warning'}`}>{String(r.kind ?? '—').replace(/_/g, ' ')}</span></td>
-                      <td style={{ fontSize: 12 }}>{r.store_name}</td>
-                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
-                      <td style={{ fontSize: 12 }}>{r.detail}</td>
-                      <td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.amount != null ? Number(r.amount).toFixed(2) : '—'}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              {/* "Fully reconciled" only when the check ran and found nothing. */}
+              {tabBody('The reconciliation check', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Kind</th><th>Store</th><th>Order ID</th><th>Detail</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+                    <tbody>{tabRows.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>Fully reconciled — no exceptions</td></tr>
+                      : tabRows.map((r, i) => (
+                      <tr key={i}>
+                        <td><span className={`badge ${r.kind === 'reconciliation_difference' ? 'badge-danger' : 'badge-warning'}`}>{String(r.kind ?? '—').replace(/_/g, ' ')}</span></td>
+                        <td style={{ fontSize: 12 }}>{r.store_name}</td>
+                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
+                        <td style={{ fontSize: 12 }}>{r.detail}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--danger)' }}>{r.amount != null ? Number(r.amount).toFixed(2) : '—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1114,24 +1300,26 @@ const TikTokImportPage: React.FC = () => {
           {pageTab === 'returns' && (
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Physical Returns</h3>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>Order ID</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Expected</th><th>Status</th><th>Reason</th><th>Created</th><th></th></tr></thead>
-                  <tbody>{tabRows.map(pr => (
-                    <tr key={pr.id}>
-                      <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{pr.order_id}</td>
-                      <td style={{ fontSize: 12 }}>{pr.seller_sku}</td>
-                      <td style={{ textAlign: 'right' }}>{pr.expected_qty}</td>
-                      <td>{pr.status === 'awaiting' ? <span className="badge badge-warning">Awaiting</span>
-                        : pr.status === 'restocked' ? <span className="badge badge-success">Restocked</span>
-                        : <span className="badge badge-muted">No Restock</span>}</td>
-                      <td style={{ fontSize: 12 }}>{pr.resolution_reason ?? '—'}{pr.resolution_note && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{pr.resolution_note}</div>}</td>
-                      <td style={{ fontSize: 12 }}>{new Date(pr.created_at).toLocaleDateString()}</td>
-                      <td>{pr.status === 'awaiting' && <button className="btn btn-secondary btn-sm" onClick={() => { setResolvePr(pr); setPrRestock(true); setPrReason('damaged'); setPrNote(''); }}>Resolve</button>}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              {tabBody('Physical returns', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Order ID</th><th>Seller SKU</th><th style={{ textAlign: 'right' }}>Expected</th><th>Status</th><th>Reason</th><th>Created</th><th></th></tr></thead>
+                    <tbody>{tabRows.map(pr => (
+                      <tr key={pr.id}>
+                        <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{pr.order_id}</td>
+                        <td style={{ fontSize: 12 }}>{pr.seller_sku}</td>
+                        <td style={{ textAlign: 'right' }}>{pr.expected_qty}</td>
+                        <td>{pr.status === 'awaiting' ? <span className="badge badge-warning">Awaiting</span>
+                          : pr.status === 'restocked' ? <span className="badge badge-success">Restocked</span>
+                          : <span className="badge badge-muted">No Restock</span>}</td>
+                        <td style={{ fontSize: 12 }}>{pr.resolution_reason ?? '—'}{pr.resolution_note && <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{pr.resolution_note}</div>}</td>
+                        <td style={{ fontSize: 12 }}>{new Date(pr.created_at).toLocaleDateString()}</td>
+                        <td>{pr.status === 'awaiting' && <button className="btn btn-secondary btn-sm" onClick={() => { setResolvePr(pr); setPrRestock(true); setPrReason('damaged'); setPrNote(''); }}>Resolve</button>}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1139,19 +1327,21 @@ const TikTokImportPage: React.FC = () => {
           {pageTab === 'corrections' && (
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 8 }}>Correction History</h3>
-              {tabLoading ? <div className="empty-state"><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div> : (
-                <table>
-                  <thead><tr><th>When</th><th>Kind</th><th style={{ textAlign: 'right' }}>Qty Δ</th><th>Reason</th></tr></thead>
-                  <tbody>{tabRows.map(c => (
-                    <tr key={c.id}>
-                      <td style={{ fontSize: 12 }}>{new Date(c.created_at).toLocaleString()}</td>
-                      <td style={{ fontSize: 12 }}>{c.matched_kind ?? '—'}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, color: c.qty_delta > 0 ? 'var(--danger)' : 'var(--success)' }}>{c.qty_delta > 0 ? `+${c.qty_delta}` : c.qty_delta}</td>
-                      <td style={{ fontSize: 12 }}>{c.reason ?? '—'}</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
+              {tabBody('Corrections', () => (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>When</th><th>Kind</th><th style={{ textAlign: 'right' }}>Qty Δ</th><th>Reason</th></tr></thead>
+                    <tbody>{tabRows.map(c => (
+                      <tr key={c.id}>
+                        <td style={{ fontSize: 12 }}>{new Date(c.created_at).toLocaleString()}</td>
+                        <td style={{ fontSize: 12 }}>{c.matched_kind ?? '—'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600, color: c.qty_delta > 0 ? 'var(--danger)' : 'var(--success)' }}>{c.qty_delta > 0 ? `+${c.qty_delta}` : c.qty_delta}</td>
+                        <td style={{ fontSize: 12 }}>{c.reason ?? '—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
         </>
@@ -1286,8 +1476,11 @@ const TikTokImportPage: React.FC = () => {
             <button className="btn btn-primary" disabled={busy !== null || !mapTarget} onClick={saveMapping}>{busy === 'map' ? 'Saving…' : 'Save Mapping'}</button>
           </>}>
           <div className="form-grid">
+            {mapErr && <div className="alert alert-danger" role="alert" data-testid="map-error">{mapErr}</div>}
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               Matching is exact and case-sensitive. The mapping is remembered for this store — future files with this SKU match automatically. Inactive records cannot be mapped.
+              {(() => { const id = mapSku.storeId || effectiveStore; const name = storeOptions.find(x => x.id === id)?.name ?? stores.find(x => x.id === id)?.name;
+                return name ? <> Store: <strong>{name}</strong>.</> : null; })()}
             </div>
             <div><label>Map to</label>
               <select value={mapKind} onChange={e => { setMapKind(e.target.value as any); setMapTarget(''); }}>

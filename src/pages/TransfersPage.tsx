@@ -1,6 +1,6 @@
 import { TransferNoteHistory } from '../components/stock-history/TransferNoteHistory';
 import '../components/stock-history/stock-history.css';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -60,6 +60,42 @@ const StatusBadge: React.FC<{ s: ApprovalStatus }> = ({ s }) => {
 
 type StaffStore = { store_id: string; store_name: string; is_default: boolean };
 type ResolutionValue = { resolution: string; reason: string };
+/** Where a line's stock was sent from, as stock_transfer_details names it. */
+type LineSource = { name: string; quantity: number };
+type LineSources = Record<string, LineSource[]>;
+
+/** 421: "Correct source" and "Return excess" act where the line came from.
+ *  The server refuses them for a line sent from several places, or with no
+ *  source at all, so the page leaves them out for those lines. */
+function lineSourcePlace(sources: LineSource[] | undefined, headerName: string | null): string | null | undefined {
+  if (!sources) return undefined;               // still loading: the server decides
+  const places = [...new Set(sources.map(s => s.name))];
+  if (places.length === 1) return places[0];
+  if (places.length === 0) return headerName;   // a line from before allocations
+  return null;                                  // several places
+}
+function resolutionOptionsFor(diff: number, manual: boolean, place: string | null | undefined) {
+  if (manual) return RESOLUTION_OPTIONS.filter(o => o.value === 'accept_loss' || o.value === 'accept_surplus' || o.value === 'other');
+  return RESOLUTION_OPTIONS
+    // A linked adjustment only adds missing units (421).
+    .filter(o => diff > 0 ? o.value !== 'accept_loss' && o.value !== 'inventory_adjustment'
+      : o.value !== 'accept_surplus' && o.value !== 'return_excess')
+    .filter(o => place !== null || (o.value !== 'correct_source' && o.value !== 'return_excess'))
+    .map(o => !place ? o
+      : o.value === 'correct_source' ? { ...o, label: `Correct source stock at ${place}` }
+        : o.value === 'return_excess' ? { ...o, label: `Return excess to ${place}` } : o);
+}
+/** The line under a transfer's details: who rejected or dispatched it, and when. */
+function transferDecisionLine(r: Pick<TransferRequest, 'status' | 'approved_at' | 'approved_by' | 'dispatched_at' | 'rejection_reason'>,
+  userName: (id: string | null | undefined) => string): string | null {
+  if (r.status === 'rejected') {
+    // reject_transfer records the person and time in approved_by / approved_at.
+    const reason = r.rejection_reason?.trim();
+    return `Rejected by ${userName(r.approved_by)}${r.approved_at ? ` on ${new Date(r.approved_at).toLocaleString()}` : ''}${reason ? `: ${reason}` : ''}`;
+  }
+  if (r.status === 'cancelled' || r.status === 'pending' || !r.approved_at) return null;
+  return `${r.dispatched_at ? 'Dispatched' : 'Approved'} by ${userName(r.approved_by)} on ${new Date(r.approved_at).toLocaleString()}`;
+}
 
 interface ReviewLineDraft {
   key: string;
@@ -84,7 +120,6 @@ const TransfersPage: React.FC = () => {
   const canApprove = isOwnerOrManager(profile?.role);
   const isStaff = profile?.role === 'staff';
 
-  const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
   const [myStores, setMyStores] = useState<StaffStore[]>([]);
   const [storePrices, setStorePrices] = useState<{ store_id: string; product_id: string }[]>([]);
   const [requests, setRequests] = useState<TransferRequest[]>([]);
@@ -137,6 +172,10 @@ const TransfersPage: React.FC = () => {
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({});
   const [receiveReason, setReceiveReason] = useState<Record<string, string>>({});
   const [receiveNote, setReceiveNote] = useState('');
+  // Where each line of the open Receive or Resolve window was sent from.
+  const [lineSources, setLineSources] = useState<{ requestId: string; byLine: LineSources } | null>(null);
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const sourcesFor = useRef<string | null>(null);   // the window whose sources are wanted
   const [receiveBusy, setReceiveBusy] = useState(false);
   const [receiveErr, setReceiveErr] = useState<string | null>(null);
 
@@ -149,14 +188,13 @@ const TransfersPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [req, lns, wh, st, prod, prof, myStore, myStoreList, prc] = await Promise.all([
+    const [req, lns, wh, st, prod, prof, myStoreList, prc] = await Promise.all([
       supabase.from('transfer_requests').select('*').order('created_at', { ascending: false }),
       supabase.from('transfer_request_lines').select('*'),
       supabase.from('warehouses').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('id,full_name'),
-      supabase.rpc('my_assigned_store_id'),
       supabase.rpc('my_assigned_stores'),
       supabase.from('store_product_prices').select('store_id,product_id').is('deleted_at', null).eq('is_active', true),
     ]);
@@ -168,7 +206,6 @@ const TransfersPage: React.FC = () => {
     setStores((st.data as Store[]) ?? []);
     setProducts((prod.data as Product[]) ?? []);
     setProfiles((prof.data as Profile[]) ?? []);
-    setAssignedStoreId((myStore.data as string | null) ?? null);
     setMyStores((myStoreList.data as StaffStore[]) ?? []);
     setStorePrices((prc.data as { store_id: string; product_id: string }[]) ?? []);
     setLoading(false);
@@ -213,7 +250,8 @@ const TransfersPage: React.FC = () => {
     return list.find(l => l.id === id)?.name ?? '—';
   };
 
-  const selectedStaffDestId = destId || (myStores.length === 1 ? myStores[0]?.store_id : assignedStoreId) || '';
+  // Staff at one store request into it; staff at two or more choose (STOCK-1).
+  const selectedStaffDestId = destId || (myStores.length === 1 ? myStores[0].store_id : '');
   const productHasStorePrice = (storeId: string | null | undefined, productId: string) =>
     !storeId || storePrices.some(sp => sp.store_id === storeId && sp.product_id === productId);
   const productOptionsForStore = (storeId?: string | null) => products
@@ -240,7 +278,7 @@ const TransfersPage: React.FC = () => {
 
   const resetCreate = () => {
     setTType('warehouse_to_store'); setSourceId('');
-    setDestId(isStaff && myStores.length === 1 ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : '');
+    setDestId(isStaff && myStores.length === 1 ? myStores[0].store_id : '');
     setLines([newProductLine()]); setNote(''); setCreateErr(null);
   };
 
@@ -252,7 +290,13 @@ const TransfersPage: React.FC = () => {
     }
     setSaving(true); setCreateErr(null);
     if (isStaff) {
-      if (!selectedStaffDestId) { setSaving(false); setCreateErr('Choose which assigned store this request is for.'); return; }
+      if (!selectedStaffDestId) {
+        setSaving(false);
+        setCreateErr(myStores.length === 0
+          ? 'You are not assigned to a store yet. Ask an Owner or Manager to assign you.'
+          : 'Choose which store this request is for.');
+        return;
+      }
       const { error } = await supabase.rpc('create_staff_transfer_request', {
         p_lines: validLines, p_note: note.trim() || null, p_store_id: selectedStaffDestId,
       });
@@ -309,7 +353,8 @@ const TransfersPage: React.FC = () => {
       p_dest_type: canApprove && destChanged ? editDestType : null,
       p_dest_id: canApprove && destChanged ? editDestId : null,
       p_lines: payload,
-      p_note: editNote || null,
+      // Sent as typed: an empty note clears it (421).
+      p_note: editNote,
     });
     setEditBusy(false);
     if (error) { setEditErr(error.message); return; }
@@ -437,22 +482,46 @@ const TransfersPage: React.FC = () => {
   };
 
   const canReceive = (req: TransferRequest) => req.status === 'in_transit' && (
-    canApprove || (req.dest_type === 'store' && myStores.some(s => s.store_id === req.dest_id)) ||
-    (req.dest_type === 'store' && req.dest_id === assignedStoreId)
+    canApprove || (req.dest_type === 'store' && myStores.some(s => s.store_id === req.dest_id))
   );
 
+  const loadLineSources = async (req: TransferRequest) => {
+    sourcesFor.current = req.id; setLineSources(null); setSourcesLoading(true);
+    const { data, error } = await supabase.rpc('stock_transfer_details', { p_request_id: req.id });
+    // A late answer for a window since closed is dropped. Without sources the
+    // page offers every option and the server still checks each resolution.
+    if (sourcesFor.current !== req.id) return;
+    setSourcesLoading(false);
+    if (error || !data) return;
+    const byLine: LineSources = {};
+    ((data as { lines?: { id: string; sources?: LineSource[] }[] }).lines ?? [])
+      .forEach(l => { byLine[l.id] = l.sources ?? []; });
+    setLineSources({ requestId: req.id, byLine });
+  };
+  const sourcesOf = (req: TransferRequest, lineId: string) =>
+    lineSources?.requestId === req.id ? (lineSources.byLine[lineId] ?? []) : undefined;
+  const sourceText = (req: TransferRequest, lineId: string) => {
+    const src = sourcesOf(req, lineId);
+    if (!src) return null;
+    if (!src.length) return req.source_id ? `From ${locName(req.source_type, req.source_id)}` : null;
+    return `From ${src.map(x => `${x.name} (${x.quantity})`).join(', ')}`;
+  };
+
   const openReceive = (req: TransferRequest) => {
-    setReceiveReq(req);
+    setReceiveReq(req); void loadLineSources(req);
     const shipped = (linesByReq[req.id] ?? []).filter(l => (l.in_transit_quantity ?? 0) > 0);
     const q: Record<string, number> = {}; const r: Record<string, string> = {};
-    shipped.forEach(l => { q[l.id] = l.in_transit_quantity ?? 0; r[l.id] = ''; });
+    // Start each line at the approved quantity, the figure the mismatch check uses.
+    shipped.forEach(l => { q[l.id] = l.approved_quantity ?? l.in_transit_quantity ?? 0; r[l.id] = ''; });
     setReceiveQty(q); setReceiveReason(r); setReceiveNote(''); setReceiveErr(null);
   };
 
   const confirmAllReceived = () => {
     if (!receiveReq) return;
     const q: Record<string, number> = {};
-    (linesByReq[receiveReq.id] ?? []).forEach(l => { if ((l.in_transit_quantity ?? 0) > 0) q[l.id] = l.in_transit_quantity ?? 0; });
+    (linesByReq[receiveReq.id] ?? []).forEach(l => {
+      if ((l.in_transit_quantity ?? 0) > 0) q[l.id] = l.approved_quantity ?? l.in_transit_quantity ?? 0;
+    });
     setReceiveQty(q);
   };
 
@@ -472,7 +541,10 @@ const TransfersPage: React.FC = () => {
     setReceiveBusy(true); setReceiveErr(null);
     const { error } = await supabase.rpc('receive_transfer', {
       p_request_id: receiveReq.id,
-      p_lines: shipped.map(l => ({ line_id: l.id, received_quantity: receiveQty[l.id] ?? 0, reason: receiveReason[l.id] || null })),
+      p_lines: shipped.map(l => {
+        const differs = (receiveQty[l.id] ?? 0) !== (l.approved_quantity ?? l.in_transit_quantity ?? 0);
+        return { line_id: l.id, received_quantity: receiveQty[l.id] ?? 0, reason: differs ? (receiveReason[l.id]?.trim() || null) : null };
+      }),
       p_note: receiveNote.trim() || null, p_confirm_all: false,
     });
     setReceiveBusy(false);
@@ -481,23 +553,45 @@ const TransfersPage: React.FC = () => {
   };
 
   const openResolve = (req: TransferRequest) => {
-    setResolveReq(req);
+    setResolveReq(req); void loadLineSources(req);
     const init: Record<string, ResolutionValue> = {};
     (linesByReq[req.id] ?? []).filter(l => (l.discrepancy_quantity ?? 0) !== 0 && !l.discrepancy_resolved_at)
       .forEach(l => { init[l.id] = { resolution: (l.discrepancy_quantity ?? 0) > 0 ? 'accept_surplus' : 'accept_loss', reason: '' }; });
     setResolutions(init); setResolveNote(''); setResolveErr(null);
   };
 
+  /** What a line with a discrepancy may be resolved as, where it came from,
+   *  and the choice that will be sent. A choice the line no longer offers (its
+   *  sources arrived after it was picked) is dropped, not swapped for another:
+   *  resolution is null and the person must choose again. */
+  const resolveChoices = (req: TransferRequest, l: TransferRequestLine) => {
+    const diff = l.discrepancy_quantity ?? 0;
+    const manual = l.line_kind === 'manual' || !l.product_id;
+    const place = manual ? undefined
+      : lineSourcePlace(sourcesOf(req, l.id), req.source_id ? locName(req.source_type, req.source_id) : null);
+    const opts = resolutionOptionsFor(diff, manual, place);
+    const picked = resolutions[l.id]?.resolution;
+    const resolution = !picked ? (diff > 0 ? 'accept_surplus' : 'accept_loss')
+      : opts.some(o => o.value === picked) ? picked : null;
+    return { diff, manual, place, opts, resolution, reason: resolutions[l.id]?.reason ?? '' };
+  };
+
   const saveResolve = async () => {
     if (!resolveReq) return;
-    const entries = Object.entries(resolutions);
-    if (entries.some(([, v]) => v.resolution === 'other' && !v.reason.trim())) {
+    if (sourcesLoading) return;
+    const chosen = (linesByReq[resolveReq.id] ?? []).filter(l => resolutions[l.id])
+      .map(l => ({ line_id: l.id, label: productName(l.product_id, l.manual_item_name), ...resolveChoices(resolveReq, l) }));
+    const dropped = chosen.find(c => !c.resolution);
+    if (dropped) {
+      setResolveErr(`Choose again for ${dropped.label}: that option is not available for this line.`); return;
+    }
+    if (chosen.some(c => c.resolution === 'other' && !c.reason.trim())) {
       setResolveErr('A reason is required for any "Other / acknowledge" resolution.'); return;
     }
     setResolveBusy(true); setResolveErr(null);
     const { error } = await supabase.rpc('resolve_transfer_discrepancy', {
       p_request_id: resolveReq.id,
-      p_resolutions: entries.map(([line_id, v]) => ({ line_id, resolution: v.resolution, reason: v.reason || null })),
+      p_resolutions: chosen.map(c => ({ line_id: c.line_id, resolution: c.resolution, reason: c.reason || null })),
       p_note: resolveNote.trim() || null,
     });
     setResolveBusy(false);
@@ -505,8 +599,12 @@ const TransfersPage: React.FC = () => {
     setResolveReq(null); void loadAll();
   };
 
+  // Owners and Managers may cancel anyone's pending request (the server allows it).
+  const canCancelReq = (req: TransferRequest) => req.status === 'pending' && (req.requested_by === profile?.id || canApprove);
   const handleCancel = async (req: TransferRequest) => {
-    if (!confirm('Cancel this pending transfer request?')) return;
+    const mine = req.requested_by === profile?.id;
+    if (!confirm(mine ? 'Cancel this pending transfer request?'
+      : `Cancel ${userName(req.requested_by)}'s pending transfer request? It cannot be reopened.`)) return;
     const { error } = await supabase.rpc('cancel_transfer_request', { p_request_id: req.id });
     if (error) { alert(error.message); return; }
     void loadAll();
@@ -567,7 +665,7 @@ const TransfersPage: React.FC = () => {
                           {req.status === 'received_with_discrepancy' && canApprove && <button className="btn btn-danger btn-sm" onClick={() => openResolve(req)}><AlertTriangle size={13} /> Resolve</button>}
                           {canEditReq(req) && <button className="btn btn-secondary btn-sm" onClick={() => openEdit(req)}><Pencil size={13} /> Edit</button>}
                           {(req.edit_count ?? 0) > 0 && <button className="btn btn-secondary btn-sm btn-icon" title="Edit history" onClick={() => void openHistory(req)}><History size={13} /></button>}
-                          {req.status === 'pending' && req.requested_by === profile?.id && <button className="btn btn-secondary btn-sm btn-icon" onClick={() => void handleCancel(req)}><Trash2 size={13} /></button>}
+                          {canCancelReq(req) && <button className="btn btn-secondary btn-sm btn-icon" title="Cancel request" aria-label="Cancel request" onClick={() => void handleCancel(req)}><Trash2 size={13} /></button>}
                         </div></td>
                       </tr>
                       {isOpen && <tr><td></td><td colSpan={7} style={{ background: 'var(--surface-2)' }}>
@@ -598,7 +696,7 @@ const TransfersPage: React.FC = () => {
                             })}</tbody>
                           </table>}
                           <TransferNoteHistory requestId={req.id} showLines={!reqLines.length} />
-                          {req.approved_at && <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>{req.dispatched_at ? 'Dispatched' : 'Approved'} by {userName(req.approved_by)} on {new Date(req.approved_at).toLocaleString()}</p>}
+                          {transferDecisionLine(req, userName) && <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>{transferDecisionLine(req, userName)}</p>}
                         </div>
                       </td></tr>}
                     </React.Fragment>;
@@ -613,8 +711,8 @@ const TransfersPage: React.FC = () => {
         <div className="form-grid">
           {createErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{createErr}</div></div>}
           {isStaff ? <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
-            Requesting into {myStores.length > 1 ? <select value={destId} onChange={e => setDestId(e.target.value)} style={{ width: 'auto', display: 'inline-block', margin: '0 4px' }}><option value="">— choose a store —</option>{myStores.map(m => <option key={m.store_id} value={m.store_id}>{m.store_name}</option>)}</select>
-              : <strong>{stores.find(s => s.id === selectedStaffDestId)?.name ?? 'No store assigned'}</strong>}.
+            Requesting into {myStores.length > 1 ? <select aria-label="Store this request is for" value={destId} onChange={e => setDestId(e.target.value)} style={{ width: 'auto', display: 'inline-block', margin: '0 4px' }}><option value="">— choose a store —</option>{myStores.map(m => <option key={m.store_id} value={m.store_id}>{m.store_name}</option>)}</select>
+              : <strong>{myStores[0]?.store_name ?? 'No store assigned'}</strong>}.
             An Owner or Manager chooses the product source location(s) during Review.
           </div></div> : <>
             <div className="form-group"><label>Transfer Type</label><select value={tType} onChange={e => { setTType(e.target.value as TransferType); setSourceId(''); setDestId(''); }}>{createTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}</select></div>
@@ -776,7 +874,7 @@ const TransfersPage: React.FC = () => {
         </div>}
       </Modal>}
 
-      {receiveReq && <Modal title="Confirm Receipt" maxWidth={620} onClose={() => setReceiveReq(null)} footer={<><button className="btn btn-secondary" onClick={confirmAllReceived} disabled={receiveBusy}><Check size={14} /> Confirm All Received</button><button className="btn btn-primary" onClick={() => void saveReceive()} disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Confirm Receipt'}</button></>}>
+      {receiveReq && <Modal title="Confirm Receipt" maxWidth={620} onClose={() => setReceiveReq(null)} footer={<><button className="btn btn-secondary" onClick={confirmAllReceived} disabled={receiveBusy} title="Sets every line to the approved quantity. Nothing is saved until Confirm Receipt."><Check size={14} /> Fill approved</button><button className="btn btn-primary" onClick={() => void saveReceive()} disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Confirm Receipt'}</button></>}>
         <div className="form-grid">
           <TransferNoteHistory requestId={receiveReq.id} />
           {receiveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{receiveErr}</div></div>}
@@ -788,10 +886,17 @@ const TransfersPage: React.FC = () => {
               const actual = receiveQty[l.id] ?? 0;
               const mismatch = actual !== approved;
               const manual = l.line_kind === 'manual' || !l.product_id;
-              return <div key={l.id} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <div style={{ flex: 1 }}><strong>{productName(l.product_id, l.manual_item_name)}</strong>{manual && <span className="badge badge-muted" style={{ marginLeft: 5, fontSize: 10 }}>Manual / Non-inventory</span>} <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>approved {approved}{manual && l.manual_uom ? ` ${l.manual_uom}` : ''}</span></div>
-                <input type="number" min={0} value={actual} style={{ width: 90 }} onChange={e => setReceiveQty(q => ({ ...q, [l.id]: Math.max(0, +e.target.value) }))} />
-                {mismatch && <span className="badge badge-danger" style={{ fontSize: 10 }}>{actual > approved ? `+${actual - approved}` : actual - approved}</span>}
+              const from = manual ? null : sourceText(receiveReq, l.id);
+              const label = productName(l.product_id, l.manual_item_name);
+              return <div key={l.id} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <div style={{ flex: 1 }}><strong>{label}</strong>{manual && <span className="badge badge-muted" style={{ marginLeft: 5, fontSize: 10 }}>Manual / Non-inventory</span>} <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>approved {approved}{manual && l.manual_uom ? ` ${l.manual_uom}` : ''}</span>
+                    {from && <div style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>{from}</div>}</div>
+                  <input type="number" min={0} value={actual} aria-label={`${label}: received`} style={{ width: 90 }} onChange={e => setReceiveQty(q => ({ ...q, [l.id]: Math.max(0, +e.target.value) }))} />
+                  {mismatch && <span className="badge badge-danger" style={{ fontSize: 10 }}>{actual > approved ? `+${actual - approved}` : actual - approved}</span>}
+                </div>
+                {mismatch && <input value={receiveReason[l.id] ?? ''} aria-label={`${label}: reason`}
+                  placeholder="Reason for this line (optional)" onChange={e => setReceiveReason(r => ({ ...r, [l.id]: e.target.value }))} />}
               </div>;
             })}
           </div>
@@ -800,21 +905,26 @@ const TransfersPage: React.FC = () => {
         </div>
       </Modal>}
 
-      {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy}>{resolveBusy ? 'Saving…' : 'Resolve & Complete'}</button></>}>
+      {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy || sourcesLoading}
+          title={sourcesLoading ? 'Loading where each line was sent from…' : undefined}>{resolveBusy ? 'Saving…' : 'Resolve & Complete'}</button></>}>
         <div className="form-grid">
           <TransferNoteHistory requestId={resolveReq.id} />
           {resolveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{resolveErr}</div></div>}
           <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Manual-item discrepancies are acknowledgement-only. Inventory correction options are available only for real Product lines.</div></div>
           {(linesByReq[resolveReq.id] ?? []).filter(l => (l.discrepancy_quantity ?? 0) !== 0 && !l.discrepancy_resolved_at).map(l => {
-            const diff = l.discrepancy_quantity ?? 0;
-            const manual = l.line_kind === 'manual' || !l.product_id;
-            const r = resolutions[l.id] ?? { resolution: diff > 0 ? 'accept_surplus' : 'accept_loss', reason: '' };
-            const opts = manual
-              ? RESOLUTION_OPTIONS.filter(o => o.value === 'accept_loss' || o.value === 'accept_surplus' || o.value === 'other')
-              : RESOLUTION_OPTIONS.filter(o => diff > 0 ? o.value !== 'accept_loss' : o.value !== 'accept_surplus' && o.value !== 'return_excess');
+            const { diff, manual, place, opts, resolution } = resolveChoices(resolveReq, l);
+            const r = { resolution: resolution ?? '', reason: resolutions[l.id]?.reason ?? '' };
+            const from = manual ? null : sourceText(resolveReq, l.id);
             return <div key={l.id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10 }}>
-              <div style={{ fontSize: 13, marginBottom: 6 }}><strong>{productName(l.product_id, l.manual_item_name)}</strong>{manual && <span className="badge badge-muted" style={{ marginLeft: 5, fontSize: 10 }}>Manual / Non-inventory</span>} <span className="badge badge-danger" style={{ fontSize: 10 }}>{diff > 0 ? `+${diff} extra` : `${Math.abs(diff)} missing`}</span><span style={{ color: 'var(--text-muted)', fontSize: 11.5, marginLeft: 6 }}>approved {l.approved_quantity ?? 0} · received {l.received_quantity ?? 0}</span></div>
-              <div style={{ display: 'flex', gap: 8 }}><select value={r.resolution} style={{ flex: 1 }} onChange={e => setResolutions(s => ({ ...s, [l.id]: { ...r, resolution: e.target.value } }))}>{opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select><input placeholder="Reason (optional)" value={r.reason} style={{ flex: 1 }} onChange={e => setResolutions(s => ({ ...s, [l.id]: { ...r, reason: e.target.value } }))} /></div>
+              <div style={{ fontSize: 13, marginBottom: 6 }}><strong>{productName(l.product_id, l.manual_item_name)}</strong>{manual && <span className="badge badge-muted" style={{ marginLeft: 5, fontSize: 10 }}>Manual / Non-inventory</span>} <span className="badge badge-danger" style={{ fontSize: 10 }}>{diff > 0 ? `+${diff} extra` : `${Math.abs(diff)} missing`}</span><span style={{ color: 'var(--text-muted)', fontSize: 11.5, marginLeft: 6 }}>approved {l.approved_quantity ?? 0} · received {l.received_quantity ?? 0}</span>
+                {from && <div style={{ color: 'var(--text-muted)', fontSize: 11.5, marginTop: 2 }}>{from}</div>}
+                {place === null && <div style={{ color: 'var(--text-muted)', fontSize: 11.5, marginTop: 2 }}>{(sourcesOf(resolveReq, l.id)?.length ?? 0) > 1
+                  ? 'Sent from several places: accept it, or record a stock adjustment at the right place.'
+                  : 'No source is recorded for this line: accept it, or record a stock adjustment at the right place.'}</div>}</div>
+              {resolution === null && <div style={{ color: 'var(--danger)', fontSize: 11.5, marginBottom: 6 }}>That option is not available for this line. Choose again.</div>}
+              <div style={{ display: 'flex', gap: 8 }}><select value={r.resolution} style={{ flex: 1 }} onChange={e => setResolutions(s => ({ ...s, [l.id]: { ...r, resolution: e.target.value } }))}>{resolution === null && <option value="" disabled>— choose again —</option>}{opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select><input placeholder="Reason (optional)" value={r.reason} style={{ flex: 1 }}
+                // Keeps the choice as picked: a dropped choice must be chosen again.
+                onChange={e => setResolutions(s => ({ ...s, [l.id]: { resolution: s[l.id]?.resolution ?? r.resolution, reason: e.target.value } }))} /></div>
             </div>;
           })}
           <div className="form-group" style={{ marginBottom: 0 }}><label>Overall note (optional)</label><input value={resolveNote} onChange={e => setResolveNote(e.target.value)} /></div>

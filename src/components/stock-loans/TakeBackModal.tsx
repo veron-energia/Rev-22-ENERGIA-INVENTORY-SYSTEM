@@ -85,7 +85,7 @@ const TakeBackModal: React.FC<{
           </select>
           <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
             Items back in different places? Save one take-back per place.
-            {!canWarehouse && ' Only an Owner or Manager can take stock back into a warehouse.'}
+            {!canWarehouse && ' Only an Owner, Manager or Inventory Manager can take stock back into a warehouse.'}
           </span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
