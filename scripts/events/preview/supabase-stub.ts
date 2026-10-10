@@ -177,6 +177,8 @@ type WebOrder = {
   invoice_id: string | null; customer_id: string | null; review_reason: string | null; candidate_ids: string[];
   // 403: the name parts the buyer registered with, and a phone taken from the registration.
   buyer_first_name?: string | null; buyer_last_name?: string | null; phone_from_registration?: boolean;
+  // 415: what a close as refunded changed (the server reads it from the close's audit row).
+  closedFrom?: { status: WebOrder['status']; review_reason: string | null };
 };
 // ?allow_test=0 previews the channel once it no longer accepts Stripe test
 // orders: the test order recorded before then cannot be invoiced.
@@ -288,7 +290,11 @@ function handInvoices(o: WebOrder) {
 }
 function linkTarget(orderId: string, invoiceNo: string) {
   const o = webOrders.find(x => x.id === orderId) ?? refuse('Website order not found');
-  if (o.status !== 'recorded' && o.status !== 'needs_review') refuse('Only an order waiting for an invoice can be linked');
+  // 415: an order refused while the channel was off can be linked too, from the website or the staff link.
+  if (o.status !== 'recorded' && o.status !== 'needs_review'
+      && !(o.status === 'refused' && o.review_reason === 'The website channel is off')) {
+    refuse('Only an order waiting for an invoice can be linked');
+  }
   if (!o.livemode) refuse('A test payment is not linked to an invoice');
   const inv = invoices.find(i => i.invoice_no.toLowerCase() === String(invoiceNo ?? '').trim().toLowerCase())
     ?? refuse(`No invoice ${String(invoiceNo ?? '').trim()}`);
@@ -318,7 +324,11 @@ function dayLoad(e: Ev) {
   return [...e.days].sort((a, b) => a.day.localeCompare(b.day)).map(d => {
     const on = guests.filter(g => g.event_id === e.id && g.status === 'registered')
       .map(g => g.days.find(x => x.day === d.day)).filter(Boolean) as GDay[];
-    return { day: d.day, capacity: d.capacity, registered: on.length, attended: on.filter(x => x.attended_at).length };
+    // 415: the ticket lines covering the day (this stub has no deleted invoices).
+    const ticketLines = invoices.flatMap(i => i.lines)
+      .filter(l => e.options.some(o => o.id === l.option_id) && l.days.includes(d.day)).length;
+    return { day: d.day, capacity: d.capacity, registered: on.length, attended: on.filter(x => x.attended_at).length,
+      ticket_lines: ticketLines };
   });
 }
 
@@ -335,20 +345,23 @@ function summary(e: Ev) {
       ...o, price: o.price.toFixed(2),   // numeric arrives as a string, as PostgREST sends it
       early_bird_price: e.early_bird_until && e.early_bird_percent != null
         ? (Math.round(o.price * (100 - e.early_bird_percent)) / 100).toFixed(2) : null,
-      sold: optionSold(o.id),
+      sold: optionSold(o.id), on_any_invoice: optionSold(o.id),
     })),
     guests: reg.length, ticket_guests: reg.filter(g => g.source === 'ticket').length,
     free_guests: reg.filter(g => g.source === 'free').length,
     can_manage: isManager, can_run: canRun(e),
+    web_channel_mode: webChannels.find(c => c.event_id === e.id)?.mode ?? null,
   };
 }
 
+// 415 (EVENTS-4): the ticket's event first, then the event on that day at that store.
 function membership(inv: Inv): { event_id: string; source: 'staff' | 'event_day' | 'ticket' } | null {
   if (inv.marked_event_id) return { event_id: inv.marked_event_id, source: 'staff' };
   const onDay = events.find(e => !e.deleted && e.store_ids.includes(inv.store_id) && e.days.some(d => d.day === inv.business_date));
-  if (onDay) return { event_id: onDay.id, source: 'event_day' };
   const byTicket = events.find(e => !e.deleted && inv.lines.some(l => e.options.some(o => o.id === l.option_id)));
-  return byTicket ? { event_id: byTicket.id, source: 'ticket' } : null;
+  const chosen = byTicket ?? onDay;
+  if (!chosen) return null;
+  return { event_id: chosen.id, source: onDay && onDay.id === chosen.id ? 'event_day' : 'ticket' };
 }
 
 const rpcs: Record<string, (a: any) => unknown> = {
@@ -474,28 +487,57 @@ const rpcs: Record<string, (a: any) => unknown> = {
     };
   },
 
+  // 415: a guest who has checked in is not cancelled; a restore drops the days
+  // the event no longer has and answers the days now over capacity.
   event_set_guest_cancelled: ({ p_guest_id, p_cancelled, p_reason }) => {
     const g = guests.find(x => x.id === p_guest_id) ?? refuse('Guest not found');
-    mustRun(findEvent(g.event_id));
+    const e = findEvent(g.event_id);
+    mustRun(e);
     if (g.source !== 'free') refuse('A ticket guest comes from an invoice. Cancel or correct the invoice to remove them.');
+    if (p_cancelled && g.status === 'registered' && g.days.some(d => d.attended_at)) {
+      refuse(`${g.name} has already checked in. Undo the check-in first if they did not come.`);
+    }
+    let dropped: string[] = [];
+    if (!p_cancelled && g.status === 'cancelled') {
+      dropped = g.days.filter(d => !e.days.some(x => x.day === d.day)).map(d => d.day);
+      if (dropped.length === g.days.length) refuse(`None of ${g.name}'s days are still days of this event. Add them again with the right day.`);
+      g.days = g.days.filter(d => !dropped.includes(d.day));
+    }
     g.status = p_cancelled ? 'cancelled' : 'registered';
     g.cancelled_reason = p_cancelled ? (String(p_reason ?? '').trim() || null) : null;
-    return null;
+    return {
+      guest_id: g.id, status: g.status, days_dropped: dropped,
+      over_capacity: p_cancelled ? [] : dayLoad(e)
+        .filter(l => l.capacity != null && l.registered > l.capacity && g.days.some(d => d.day === l.day))
+        .map(l => ({ day: l.day, capacity: l.capacity, registered: l.registered })),
+    };
   },
 
-  event_check_in: ({ p_guest_id, p_day, p_attended, p_code }) => {
+  // 415: a check-in never changes one already made (already_in); only Save
+  // code (p_save_code) changes a code; Undo clears the check-in.
+  event_check_in: ({ p_guest_id, p_day, p_attended, p_code, p_save_code }) => {
     const g = guests.find(x => x.id === p_guest_id) ?? refuse('Guest not found');
     mustRun(findEvent(g.event_id));
     if (g.status !== 'registered') refuse(`${g.name} is not registered (cancelled)`);
     const d = g.days.find(x => x.day === p_day) ?? refuse(`${g.name} is not registered for ${fmt(p_day)}`);
-    if (p_attended) {
-      d.attended_at = d.attended_at ?? new Date().toISOString();
-      d.checked_in_by = d.checked_in_by ?? me.id;
-      d.check_in_code = String(p_code ?? '').trim() || null;
-    } else {
-      d.attended_at = null; d.checked_in_by = null; d.check_in_code = null;
+    const wasIn = !!d.attended_at;
+    const code = String(p_code ?? '').trim() || null;
+    let changed = false;
+    if (p_save_code) {
+      if (!p_attended) refuse('A code is saved with a check-in, not with an undo');
+      if (!wasIn) refuse(`${g.name} is not checked in for ${fmt(p_day)} yet. Check them in first.`);
+      changed = d.check_in_code !== code;
+      d.check_in_code = code;
+    } else if (p_attended) {
+      if (!wasIn) { d.attended_at = new Date().toISOString(); d.checked_in_by = me.id; d.check_in_code = code; changed = true; }
+    } else if (wasIn || d.check_in_code) {
+      d.attended_at = null; d.checked_in_by = null; d.check_in_code = null; changed = true;
     }
-    return { guest_id: g.id, day: d.day, attended_at: d.attended_at, check_in_code: d.check_in_code };
+    return {
+      guest_id: g.id, day: d.day, attended_at: d.attended_at, check_in_code: d.check_in_code,
+      checked_in_by: d.checked_in_by, checked_in_by_name: nameOf(d.checked_in_by),
+      already_in: !!p_attended && !p_save_code && wasIn, changed,
+    };
   },
 
   event_invoices: ({ p_event_id }) => {
@@ -574,11 +616,39 @@ const rpcs: Record<string, (a: any) => unknown> = {
     if (o.provider !== 'door') refuse('Only a staff-link registration can be dismissed');
     if (p_dismiss === false) {
       if (o.status !== 'dismissed') refuse('This registration is not dismissed');
+      // 415: one closed as refunded is reopened with Reopen, not restored.
+      if (o.closedFrom) refuse('This order was closed as refunded. Use Reopen instead.');
       Object.assign(o, { status: 'recorded', review_reason: null });
     } else {
       if (o.status !== 'recorded' && o.status !== 'needs_review') refuse('Only a registration waiting for an invoice can be dismissed');
       if (String(p_reason ?? '').trim().length < 3) refuse('Say why it is dismissed');
+      if (String(p_reason).trim().startsWith('Refunded outside the app:'))
+        refuse('Start the reason another way. "Refunded outside the app:" marks an order closed as refunded.');
       Object.assign(o, { status: 'dismissed', review_reason: String(p_reason).trim() });
+    }
+    return { status: o.status, invoice_no: null, review_reason: o.review_reason };
+  },
+  // 415: an Owner or Manager closes an order refunded outside the app, or reopens it.
+  web_order_close_refunded: ({ p_order_id, p_reason, p_close }) => {
+    if (!isManager) refuse('Your role cannot do this.');
+    const reason = String(p_reason ?? '').trim();
+    if (reason.length < 3) refuse('Give the reason (at least 3 characters)');
+    const o = webOrders.find(x => x.id === p_order_id) ?? refuse('Website order not found');
+    if (p_close === false) {
+      const before = o.closedFrom;
+      if (o.status !== 'dismissed' || !String(o.review_reason ?? '').startsWith('Refunded outside the app: ') || !before)
+        return refuse('Only an order closed as refunded can be reopened');
+      // 415: put back as it was before the close: refused again, or waiting in Needs review.
+      if (before.status === 'refused') Object.assign(o, { status: 'refused', review_reason: before.review_reason });
+      else Object.assign(o, { status: 'needs_review',
+        review_reason: 'Reopened after it was closed as refunded. Check the payment, then create or link its invoice.' });
+      o.closedFrom = undefined;
+    } else {
+      const waits = o.status === 'recorded' || o.status === 'needs_review'
+        || (o.status === 'refused' && o.livemode && o.review_reason === 'The website channel is off');
+      if (!waits) refuse('Only an order waiting for its invoice, or a payment refused while the channel was off, can be closed');
+      o.closedFrom = { status: o.status, review_reason: o.review_reason };
+      Object.assign(o, { status: 'dismissed', review_reason: `Refunded outside the app: ${reason}` });
     }
     return { status: o.status, invoice_no: null, review_reason: o.review_reason };
   },

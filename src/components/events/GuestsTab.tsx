@@ -6,7 +6,7 @@ import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import { GuestModal, GuestSaved } from './GuestModal';
 import {
   DayLoad, EventRow, Guest, StaffOption, fmtDayMonth, fmtTime, fmtWeekday, guestDay,
-  invoiceStatusLabel, paymentLabel, paymentTone, slug,
+  invoiceStatusLabel, normalizeGuestRestored, paymentLabel, paymentTone, slug,
 } from './model';
 
 type TypeFilter = 'all' | 'ticket' | 'free';
@@ -90,14 +90,24 @@ export const GuestsTab: React.FC<{
     cancelled: guests.length - registered.length,
   };
 
-  const setCancelled = async (g: Guest, cancelled: boolean, reason: string | null) => {
+  // Cancelling answers an error to keep the reason window open on; restoring
+  // shows what the server answers, as adding a guest does (415): days the
+  // event no longer has are taken off, and a day now over capacity warns.
+  const setCancelled = async (g: Guest, cancelled: boolean, reason: string | null): Promise<string | null> => {
     setErr(null); setBusyId(g.guest_id);
-    const { error } = await supabase.rpc('event_set_guest_cancelled', {
+    const { data, error } = await supabase.rpc('event_set_guest_cancelled', {
       p_guest_id: g.guest_id, p_cancelled: cancelled, p_reason: reason,
     });
     setBusyId(null);
-    if (error) { setErr(error.message); return; }
-    await onReload();
+    if (error) return error.message;
+    if (cancelled) { await onReload(); return null; }
+    const r = normalizeGuestRestored(data);
+    onSaved({ guest_id: g.guest_id, name: g.name, action: 'restored', ...r });
+    return null;
+  };
+  const restore = async (g: Guest) => {
+    const failure = await setCancelled(g, false, null);
+    if (failure) setErr(failure);
   };
 
   return (
@@ -201,13 +211,19 @@ export const GuestsTab: React.FC<{
                         <div className="events-actions">
                           <button className="btn btn-secondary btn-sm btn-icon" title="Edit guest" aria-label={`Edit ${g.name}`}
                             onClick={() => setEditing({ guest: g })}><Pencil size={13} /></button>
-                          {g.source === 'free' && g.status === 'registered' && (
-                            <button className="btn btn-secondary btn-sm" disabled={busyId === g.guest_id}
-                              onClick={() => setCancelling(g)}><UserX size={13} /> Cancel</button>
-                          )}
+                          {g.source === 'free' && g.status === 'registered' && (() => {
+                            // 415: a day someone attended stays, so a guest who
+                            // has checked in is not cancelled.
+                            const checkedIn = g.days.some(d => d.attended_at);
+                            return (
+                              <button className="btn btn-secondary btn-sm" disabled={busyId === g.guest_id || checkedIn}
+                                title={checkedIn ? 'Checked in. Undo the check-in first if they did not come.' : undefined}
+                                onClick={() => setCancelling(g)}><UserX size={13} /> Cancel</button>
+                            );
+                          })()}
                           {g.source === 'free' && g.status === 'cancelled' && (
                             <button className="btn btn-secondary btn-sm" disabled={busyId === g.guest_id}
-                              onClick={() => void setCancelled(g, false, null)}><RotateCcw size={13} /> Restore</button>
+                              onClick={() => void restore(g)}><RotateCcw size={13} /> Restore</button>
                           )}
                         </div>
                       )}
@@ -233,7 +249,7 @@ export const GuestsTab: React.FC<{
         <ReasonModal title={`Cancel ${cancelling.name}`} label="Reason (optional)" required={false}
           placeholder="e.g. Cannot come after all" confirmLabel="Cancel guest"
           onClose={() => setCancelling(null)}
-          onSubmit={reason => { const g = cancelling; setCancelling(null); void setCancelled(g, true, reason || null); }} />
+          onSubmitAsync={reason => setCancelled(cancelling, true, reason || null)} />
       )}
     </div>
   );

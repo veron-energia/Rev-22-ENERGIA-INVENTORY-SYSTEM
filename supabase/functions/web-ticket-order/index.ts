@@ -11,6 +11,9 @@
 // orders with their invoices, the tickets sold at the counter and (382) the
 // event's free guests (web_order_sync, at most once a minute); `staff` asks
 // for the staff the form may offer as Registered by (web_order_staff).
+// 415: `tickets` asks which of the website's passes the app has on sale
+// (web_order_tickets), before each checkout and when the ticket page is built,
+// so a ticket taken off sale in the app stops selling on the website.
 //
 // Deploy without gateway JWT verification — the caller is a web server, not a
 // signed-in user:
@@ -24,7 +27,7 @@
 //
 // Headers: x-energia-timestamp (unix seconds), x-energia-signature (v1=<hex>).
 // Body: { type: 'paid' | 'names' | 'door', order: {...} } or
-// { type: 'sync' | 'staff', channel }. Any other field is a rejected request,
+// { type: 'sync' | 'staff' | 'tickets', channel }. Any other field is a rejected request,
 // not an ignored one. See validate.ts for the exact shape.
 //
 // Nothing from the body is logged: only the type, the Stripe session id (or

@@ -279,8 +279,20 @@ Deno.test('a staff-link registration goes to web_order_door, and dismissed is an
     assertEquals(await response.json(), { ok: true, status, invoice_no: null, review_reason: null });
     assertEquals(calls, [{ fn: 'web_order_door', args: { p_order: doorOrder() } }]);
   }
-  // Only a staff-link registration can be dismissed: from web_order_paid it is unexpected.
-  const odd = fakeClient(() => ({ data: { status: 'dismissed', invoice_no: null, review_reason: null }, error: null }));
+  // 415: a website order an Owner or Manager closed as refunded answers
+  // dismissed when its payment or names are sent again: passed back, not a retry.
+  for (const message of [{ type: 'paid', order: paidOrder() }, { type: 'names', order: namesOrder() }]) {
+    const closed = fakeClient(() => ({
+      data: { status: 'dismissed', invoice_no: null, review_reason: 'Refunded outside the app: Refunded in Stripe' },
+      error: null,
+    }));
+    const response = await run(await signed(message), closed.client);
+    assertEquals(response.status, 200, message.type);
+    assertEquals(await response.json(),
+      { ok: true, status: 'dismissed', invoice_no: null, review_reason: 'Refunded outside the app: Refunded in Stripe' });
+  }
+  // Any other status is still unexpected.
+  const odd = fakeClient(() => ({ data: { status: 'closed', invoice_no: null, review_reason: null }, error: null }));
   assertEquals((await run(await signed({ type: 'paid', order: paidOrder() }), odd.client)).status, 503);
 });
 
@@ -377,8 +389,36 @@ Deno.test('the staff list goes to web_order_staff, and comes back as ids and nam
   }
 });
 
-Deno.test('sync and staff are signed requests too', async () => {
-  for (const type of ['sync', 'staff']) {
+// 415: which passes the app has on sale.
+Deno.test('tickets go to web_order_tickets with the channel, and the passes on sale come back', async () => {
+  const { calls, client } = fakeClient(() => ({
+    data: { status: 'ok', tickets: { both: true, day1: false, day2: true } },
+    error: null,
+  }));
+  let response: Response | undefined;
+  const logs = await logsOf(async () => {
+    response = await run(await signed({ type: 'tickets', channel: 'alaric-birthday-2026' }), client);
+  });
+  assertEquals(response!.status, 200);
+  assertEquals(await response!.json(), { ok: true, status: 'ok', tickets: { both: true, day1: false, day2: true } });
+  assertEquals(calls, [{ fn: 'web_order_tickets', args: { p_channel: 'alaric-birthday-2026' } }]);
+  assert(logs.includes('"type":"tickets"') && logs.includes('"on_sale":2') && logs.includes('"off_sale":1'));
+
+  const refused = fakeClient(() => ({ data: { status: 'refused', tickets: {} }, error: null }));
+  const answer = await run(await signed({ type: 'tickets', channel: 'no-such-channel' }), refused.client);
+  assertEquals(answer.status, 200);
+  assertEquals(await answer.json(), { ok: true, status: 'refused', tickets: {} });
+
+  for (const data of [{ status: 'ok' }, { status: 'ok', tickets: [] }, { status: 'ok', tickets: { both: 'yes' } },
+                      { status: 'ok', tickets: { 'not a pass': true } }, { status: 'maybe', tickets: {} }, null]) {
+    const bad = fakeClient(() => ({ data, error: null }));
+    assertEquals((await run(await signed({ type: 'tickets', channel: 'alaric-birthday-2026' }), bad.client)).status, 503,
+      JSON.stringify(data));
+  }
+});
+
+Deno.test('sync, staff and tickets are signed requests too', async () => {
+  for (const type of ['sync', 'staff', 'tickets']) {
     const { calls, client } = fakeClient();
     const response = await run(await signed({ type, channel: 'alaric-birthday-2026' }, { secret: 'another-secret' }), client);
     assertEquals(response.status, 401, type);

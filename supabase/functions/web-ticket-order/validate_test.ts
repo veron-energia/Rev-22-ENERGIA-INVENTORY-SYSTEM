@@ -342,8 +342,8 @@ Deno.test('text the database cannot store is refused in a staff-link registratio
   }
 });
 
-Deno.test('sync and staff carry the channel and nothing else', () => {
-  for (const type of ['sync', 'staff'] as const) {
+Deno.test('sync, staff and (415) tickets carry the channel and nothing else', () => {
+  for (const type of ['sync', 'staff', 'tickets'] as const) {
     const r = validateOrderRequest({ type, channel: ' alaric-birthday-2026 ' });
     assert(r.ok);
     assertEquals(r.value, { type, channel: 'alaric-birthday-2026' });

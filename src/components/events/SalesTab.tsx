@@ -11,6 +11,13 @@ import {
  * The event's sales: invoices dated on an event day at an event store,
  * invoices holding one of its tickets, and invoices staff marked by hand.
  * The server returns only those at stores the person can see.
+ *
+ * 415 (EVENTS-4, the Owner 9 Oct 2026): an invoice holding a ticket counts
+ * under the event the ticket is for, even when it is dated on another
+ * event's day at its store. An invoice counts under one event, whole: its
+ * other lines go with its ticket. One holding tickets for two events counts
+ * under the one running that day there. Staff marking an invoice by hand
+ * still decides.
  */
 
 const STATUS_BADGE: Record<string, string> = {
@@ -125,7 +132,9 @@ export const SalesTab: React.FC<{ event: EventRow }> = ({ event }) => {
       </div>
       <div className="events-sub" style={{ marginTop: 8 }}>
         Totals leave out cancelled and refunded invoices{leftOut ? ` (${leftOut} here, shown faded)` : ''}.
-        Only invoices at stores you can see are listed.
+        Only invoices at stores you can see are listed. A ticket counts under the event it is for, even when sold on
+        another event's day, and the rest of its invoice goes with it. An invoice with tickets for two events counts
+        under the one running that day.
       </div>
     </div>
   );

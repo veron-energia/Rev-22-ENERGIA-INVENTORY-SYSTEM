@@ -80,7 +80,9 @@ export type OrderRequest =
   // 380: what the website asks for: its orders and the counter's tickets, and
   // the staff its form may offer.
   | { type: 'sync'; channel: string }
-  | { type: 'staff'; channel: string };
+  | { type: 'staff'; channel: string }
+  // 415: which of its passes the app has on sale.
+  | { type: 'tickets'; channel: string };
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; field: string };
 
@@ -327,7 +329,7 @@ export function validateOrderRequest(body: unknown): Checked<OrderRequest> {
       if (type === 'names') return { ok: true, value: { type, order: namesOrder(b.order) } };
       return { ok: true, value: { type, order: doorOrder(b.order) } };
     }
-    if (type === 'sync' || type === 'staff') {
+    if (type === 'sync' || type === 'staff' || type === 'tickets') {
       const b = object(body, '', CHANNEL_REQUEST_FIELDS);
       return { ok: true, value: { type, channel: text(b.channel, 'channel', 1, 64) } };
     }

@@ -28,6 +28,17 @@ export const NoAccess: React.FC<{ message?: string }> = ({ message }) => (
 );
 
 // ── Simple modal wrapper ─────────────────────────────────────────────────────
+/**
+ * Whether this overlay is the window on top: the last open window in the
+ * page. Windows share one z-index, so the last one in the page is the one
+ * drawn on top, whichever opened first or sits inside which.
+ */
+function isTopModal(overlay: HTMLElement | null): boolean {
+  if (!overlay || !overlay.isConnected) return false;
+  const open = overlay.ownerDocument.querySelectorAll('[data-modal-overlay]');
+  return open.length > 0 && open[open.length - 1] === overlay;
+}
+
 export const Modal: React.FC<{
   title: string;
   onClose: () => void;
@@ -46,16 +57,28 @@ export const Modal: React.FC<{
 }> = ({ title, onClose, children, footer, maxWidth = 480, wide = false, confirmClose = false }) => {
   const titleId = React.useId();
   const panelRef = React.useRef<HTMLDivElement | null>(null);
+  const overlayRef = React.useRef<HTMLDivElement | null>(null);
 
   const requestClose = React.useCallback(() => {
     if (confirmClose && !window.confirm('Discard what you have entered? It will not be saved.')) return;
     onClose();
   }, [confirmClose, onClose]);
 
-  // Escape closes, through the same confirmation. The component had no keyboard
-  // route out at all before this.
+  // Escape closes, through the same confirmation. Only the window on top
+  // answers it: every open window listens on the document, so with one window
+  // over another (Confirm Exchange over the exchange being entered) Escape
+  // used to close both, and asked to discard the one below first.
+  // The window that answers marks the key as used (preventDefault), and a
+  // window below skips a used key. Checking "on top" alone is not enough: a
+  // browser may finish closing the top window between two listeners, and the
+  // window below would then find itself on top and answer the same key.
   React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); requestClose(); } };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || !isTopModal(overlayRef.current)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      requestClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [requestClose]);
@@ -64,7 +87,7 @@ export const Modal: React.FC<{
   React.useEffect(() => { panelRef.current?.focus(); }, []);
 
   return (
-  <div className={`modal-overlay${wide ? ' wide' : ''}`}
+  <div className={`modal-overlay${wide ? ' wide' : ''}`} ref={overlayRef} data-modal-overlay=""
        onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
     <div className="modal" ref={panelRef} tabIndex={-1}
       role="dialog" aria-modal="true" aria-labelledby={titleId}
@@ -88,26 +111,63 @@ export const ReasonModal: React.FC<{
   label?: string;
   placeholder?: string;
   confirmLabel?: string;
-  onSubmit: (reason: string) => void;
+  /** Takes the reason; the caller closes the window. */
+  onSubmit?: (reason: string) => void;
+  /**
+   * Saves the reason instead, and answers an error to show, or null once
+   * saved. The window stays open, showing the error, until the save works;
+   * then it closes through onClose.
+   */
+  onSubmitAsync?: (reason: string) => Promise<string | null>;
   onClose: () => void;
   required?: boolean;
-}> = ({ title, label = 'Reason', placeholder = 'Enter a reason…', confirmLabel = 'Confirm', onSubmit, onClose, required = true }) => {
+  /** The fewest characters a reason may have, as the server checks it. */
+  minLength?: number;
+}> = ({ title, label = 'Reason', placeholder = 'Enter a reason…', confirmLabel = 'Confirm', onSubmit, onSubmitAsync,
+  onClose, required = true, minLength }) => {
   const [val, setVal] = React.useState('');
   const [err, setErr] = React.useState<string | null>(null);
-  const submit = () => {
-    if (required && !val.trim()) { setErr('This field is required.'); return; }
-    onSubmit(val.trim());
+  const [busy, setBusy] = React.useState(false);
+  // Set on every mount, not only at first: in development React mounts a
+  // window, unmounts it and mounts it again (StrictMode), and a flag left
+  // false kept the window on 'Saving…' for good.
+  const mounted = React.useRef(true);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const submit = async () => {
+    if (busy) return;
+    const reason = val.trim();
+    if (required && !reason) { setErr('This field is required.'); return; }
+    if (minLength && (required || reason) && reason.length < minLength) {
+      setErr(`Give at least ${minLength} characters.`); return;
+    }
+    if (!onSubmitAsync) { onSubmit?.(reason); return; }
+    setBusy(true); setErr(null);
+    let failure: string | null;
+    try { failure = await onSubmitAsync(reason); }
+    catch (e) { failure = e instanceof Error ? e.message : String(e); }
+    if (!mounted.current) return;
+    setBusy(false);
+    if (failure) { setErr(failure); return; }
+    onClose();
   };
   return (
     <Modal title={title} maxWidth={440} onClose={onClose}
       footer={<><button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={submit}>{confirmLabel}</button></>}>
+        <button className="btn btn-primary" onClick={() => void submit()} disabled={busy}>
+          {busy ? 'Saving…' : confirmLabel}
+        </button></>}>
       <div className="form-group" style={{ marginBottom: 0 }}>
         <label>{label}{required ? ' *' : ''}</label>
         <textarea rows={3} value={val} autoFocus placeholder={placeholder}
           onChange={e => { setVal(e.target.value); setErr(null); }}
-          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); }} />
-        {err && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
+          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit(); }} />
+        {minLength ? (
+          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>At least {minLength} characters.</div>
+        ) : null}
+        {err && <div role="alert" style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
       </div>
     </Modal>
   );

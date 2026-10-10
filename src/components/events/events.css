@@ -86,10 +86,23 @@
   display: grid; grid-template-columns: minmax(120px, 1.4fr) 110px 110px auto 70px auto; gap: 8px; align-items: center;
 }
 .events-option-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+/* EVENTS-10: each box of an option row carries a small label, shown only on a
+   phone, where the column heads are hidden. */
+.events-scope label.events-option-cell { display: flex; flex-direction: column; min-width: 0; margin-bottom: 0; font-weight: 500; }
+.events-mobile-label { display: none; }
+/* EVENTS-7: the website still sells a ticket taken off sale here. */
+.events-web-sells {
+  display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; font-size: 12px; color: #92400e;
+}
+.events-web-sells svg { flex: 0 0 auto; margin-top: 2px; }
 @media (max-width: 640px) {
   .events-day-row { grid-template-columns: 1fr 100px auto; }
   .events-option-row { grid-template-columns: 1fr 1fr; }
   .events-option-head { display: none; }
+  .events-mobile-label {
+    display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-muted); margin-bottom: 3px;
+  }
 }
 .events-store-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
 .events-preview {
@@ -130,6 +143,10 @@
 .events-checkin-status { font-size: 13px; color: var(--success); font-weight: 700; }
 .events-checkin-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .events-inline-error { grid-column: 1 / -1; font-size: 12.5px; color: var(--danger); }
+/* 415: a second door device answered "already checked in". */
+.events-inline-note { grid-column: 1 / -1; font-size: 12.5px; color: #92400e; font-weight: 600; }
+/* EVENTS-2: the list is for another day than today. */
+.events-checkin-today { align-items: center; margin-bottom: 12px; }
 @media (max-width: 640px) {
   .events-checkin-row { grid-template-columns: 1fr; }
   .events-checkin-actions { justify-content: stretch; }

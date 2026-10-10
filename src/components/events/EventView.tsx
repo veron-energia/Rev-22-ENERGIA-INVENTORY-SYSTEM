@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, CalendarDays, ClipboardCheck, Clock, Globe, Pencil, Receipt, RefreshCw, Store, Ticket, Trash2, Users,
 } from 'lucide-react';
@@ -17,6 +17,12 @@ import {
 } from './model';
 
 type Tab = 'guests' | 'checkin' | 'sales' | 'web';
+
+/**
+ * 415: while Check-in is open and the page is in sight, the guest list is read
+ * again this often, so a second door device sees who the first checked in.
+ */
+export const CHECK_IN_REFRESH_MS = 25_000;
 
 export const EventView: React.FC<{
   event: EventRow;
@@ -41,34 +47,72 @@ export const EventView: React.FC<{
   const [notice, setNotice] = useState<{ tone: 'warning' | 'info'; text: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const loadGuests = useCallback(async () => {
-    setLoading(true);
-    const { data, error } = await supabase.rpc('event_guest_list', { p_event_id: event.id });
-    setLoading(false);
-    if (error) { setErr(error.message); return; }
-    setErr(null);
-    setGuests((Array.isArray(data) ? data : []).map(normalizeGuest));
+  // Each load is numbered, so an older answer never replaces a newer one; and
+  // a load that was on its way while a row changed here (a check-in) is read
+  // again, so it cannot put back what the row showed before.
+  const loadSeq = useRef(0);
+  const changeSeq = useRef(0);
+  const loadGuests = useCallback(async (): Promise<void> => {
+    for (;;) {
+      const mine = ++loadSeq.current;
+      const changesBefore = changeSeq.current;
+      setLoading(true);
+      const { data, error } = await supabase.rpc('event_guest_list', { p_event_id: event.id });
+      if (mine !== loadSeq.current) return;
+      if (changeSeq.current !== changesBefore) continue;
+      setLoading(false);
+      if (error) { setErr(error.message); return; }
+      setErr(null);
+      setGuests((Array.isArray(data) ? data : []).map(normalizeGuest));
+      return;
+    }
   }, [event.id]);
   useEffect(() => { void loadGuests(); }, [loadGuests]);
+
+  // 415: the door list follows the other door devices while Check-in is open:
+  // every CHECK_IN_REFRESH_MS while the page is in sight, and when it comes back
+  // into sight. Codes being typed are kept (they are held apart from the list).
+  useEffect(() => {
+    if (tab !== 'checkin') return;
+    const visible = () => document.visibilityState !== 'hidden';
+    const timer = window.setInterval(() => { if (visible()) void loadGuests(); }, CHECK_IN_REFRESH_MS);
+    const onBack = () => { if (visible()) void loadGuests(); };
+    window.addEventListener('focus', onBack);
+    document.addEventListener('visibilitychange', onBack);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onBack);
+      document.removeEventListener('visibilitychange', onBack);
+    };
+  }, [tab, loadGuests]);
 
   const loads = useMemo(() => dayLoads(event, guests), [event, guests]);
   const status = eventStatus(event, today);
 
   const onGuestSaved = async (r: GuestSaved) => {
-    setNotice(r.over_capacity.length
-      ? { tone: 'warning', text: `${r.name} is saved. ${overCapacityText(r.over_capacity)}.` }
-      : { tone: 'info', text: `${r.name} is saved.` });
+    const done = `${r.name} is ${r.action ?? 'saved'}.`;
+    // 415: a restored guest loses the days the event no longer has.
+    const dropped = r.days_dropped?.length
+      ? ` ${fmtDayList(r.days_dropped)} ${r.days_dropped.length === 1 ? 'is' : 'are'} no longer an event day, so ${r.days_dropped.length === 1 ? 'it was' : 'they were'} taken off.`
+      : '';
+    setNotice(r.over_capacity.length || dropped
+      ? { tone: 'warning', text: `${done}${dropped}${r.over_capacity.length ? ` ${overCapacityText(r.over_capacity)}.` : ''}` }
+      : { tone: 'info', text: done });
     await loadGuests();
     onChanged();
   };
 
-  const onGuestChange = (g: Guest) => setGuests(list => (list ?? []).map(x => (x.guest_id === g.guest_id ? g : x)));
+  const onGuestChange = (g: Guest) => {
+    changeSeq.current += 1;
+    setGuests(list => (list ?? []).map(x => (x.guest_id === g.guest_id ? g : x)));
+  };
 
-  const remove = async (reason: string) => {
-    setDeleting(false);
+  // The window stays open until the event is deleted, showing why if it is not.
+  const remove = async (reason: string): Promise<string | null> => {
     const { error } = await supabase.rpc('event_delete', { p_event_id: event.id, p_reason: reason });
-    if (error) { setErr(error.message); return; }
+    if (error) return error.message;
     onDeleted();
+    return null;
   };
 
   return (
@@ -171,7 +215,7 @@ export const EventView: React.FC<{
       {deleting && (
         <ReasonModal title={`Delete ${event.name}`} label="Why is it being deleted?" confirmLabel="Delete event"
           placeholder="e.g. Set up by mistake"
-          onClose={() => setDeleting(false)} onSubmit={reason => { void remove(reason); }} />
+          onClose={() => setDeleting(false)} onSubmitAsync={remove} />
       )}
     </div>
   );

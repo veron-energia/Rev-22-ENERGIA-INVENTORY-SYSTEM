@@ -14,7 +14,13 @@ import {
  * refuses a ticket guest's days that differ from the invoice's.
  */
 
-export interface GuestSaved { guest_id: string; over_capacity: OverCapacity[]; name: string; }
+export interface GuestSaved {
+  guest_id: string; over_capacity: OverCapacity[]; name: string;
+  /** What happened, for the notice: saved (the default) or restored. */
+  action?: 'saved' | 'restored';
+  /** 415: days taken off a restored guest, because the event no longer has them. */
+  days_dropped?: string[];
+}
 
 export const GuestModal: React.FC<{
   event: EventRow;
@@ -30,7 +36,10 @@ export const GuestModal: React.FC<{
   const [name, setName] = useState(guest?.name ?? '');
   const [phone, setPhone] = useState(guest?.phone ?? '');
   const [customerId, setCustomerId] = useState(guest?.customer_id ?? '');
-  const [days, setDays] = useState<string[]>(() => guest ? guest.days.map(d => d.day)
+  // Only the event's own days: a day it no longer has is never sent back
+  // (the server refuses it, EVENTS-6).
+  const [days, setDays] = useState<string[]>(() => guest
+    ? guest.days.map(d => d.day).filter(d => event.days.some(x => x.day === d))
     : event.days.length === 1 ? [event.days[0].day] : []);
   const [registeredBy, setRegisteredBy] = useState(guest ? (guest.registered_by ?? '') : (currentUserId ?? ''));
   const [notes, setNotes] = useState(guest?.notes ?? '');

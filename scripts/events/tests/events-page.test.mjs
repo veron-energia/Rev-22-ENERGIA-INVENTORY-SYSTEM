@@ -30,6 +30,20 @@
 // Create invoice bills any customer a search finds; with no phone, a new
 // customer and a match say why they cannot be made.
 //
+// Since 415 (the audit of 9 Oct 2026, the door on 19-20 Oct): a device left
+// open overnight moves to the new day, and a day picked by hand offers to
+// switch; a check-in on another day than today is asked once; a second door
+// device never overwrites a check-in (the server says who made it, and Save
+// code alone changes a code); Undo asks first; the door list is read again
+// every 25 seconds while Check-in is in sight; a free guest who has checked in
+// is not cancelled, and a restore warns as adding does; the editor locks what
+// the server locks, wants whole numbers and cents, keeps the stores the person
+// does not work at, says the website stops selling a ticket taken off sale,
+// and labels each box on a phone; a website payment refused while the
+// channel was off can be linked; a reason window stays open until its save
+// works; and an Owner or Manager (not an Admin) closes an order refunded
+// outside the app with a reason, or reopens it.
+//
 // Run: node --test scripts/events/tests/events-page.test.mjs
 process.env.TZ = 'America/Los_Angeles'; // west of UTC, where a date-only value parsed as a Date shows a day early
 
@@ -247,8 +261,11 @@ function createBackend(fx, { canManage = true, canSwitch = false } = {}) {
     event_guest_list: () => fx.guests,
     event_invoices: () => fx.invoices,
     event_save_guest: () => ({ guest_id: 'g-new', over_capacity: [] }),
+    // 415: the server answers who checked the guest in, and whether they were in already.
     event_check_in: a => ({ guest_id: a.p_guest_id, day: a.p_day,
-      attended_at: a.p_attended ? '2026-09-20T02:15:00Z' : null, check_in_code: a.p_attended ? a.p_code : null }),
+      attended_at: a.p_attended ? '2026-09-20T02:15:00Z' : null, check_in_code: a.p_attended ? a.p_code : null,
+      checked_in_by: a.p_attended ? 'u-door' : null, checked_in_by_name: a.p_attended ? 'Door Staff' : null,
+      already_in: false, changed: true }),
     event_save: a => a.p_event.id ?? 'ev-new',
     event_set_guest_cancelled: () => null,
     event_delete: () => null,
@@ -258,6 +275,9 @@ function createBackend(fx, { canManage = true, canSwitch = false } = {}) {
       customer_name: 'Customer Door', total: '94.00', paid: '94.00', methods: 'PayNow', people: 2, warnings: [] }),
     web_order_link_invoice: a => ({ status: 'invoiced', invoice_no: a.p_invoice_no }),
     web_order_dismiss: a => ({ status: a.p_dismiss ? 'dismissed' : 'recorded' }),
+    // 415: closed as refunded, or reopened.
+    web_order_close_refunded: a => ({ status: a.p_close === false ? 'needs_review' : 'dismissed', invoice_no: null,
+      review_reason: a.p_close === false ? 'Reopened after it was closed as refunded.' : `Refunded outside the app: ${a.p_reason}` }),
     web_order_channel_set_mode: a => { fx.web.channel.mode = a.p_mode; return null; },
   };
   const tables = { profiles: fx.profiles, stores: fx.stores, customers: fx.customers };
@@ -456,16 +476,36 @@ test('the door sends the day\'s code, shows the check-in from the server\'s answ
   const row = () => document.querySelector('.events-checkin-row[data-guest="g-3"]');
   await setValue(row().querySelector('input[aria-label="Code for Guest Three"]'), 'CD 12');
   await click(button('Check in', row()));
-  assert.deepEqual(callsOf('event_check_in').map(c => c.args), [{ p_guest_id: 'g-3', p_day: D1, p_attended: true, p_code: 'CD 12' }]);
+  // 415: the day is not today, so it is asked first (once for that day).
+  assert.equal(modal()?.querySelector('h3').textContent, `Check in for ${wdDMon(D1)}?`);
+  assert.ok(modal().textContent.includes(`Guest Three will be checked in for ${wdDMon(D1)}.`), modal().textContent);
+  assert.equal(callsOf('event_check_in').length, 0, 'nothing is sent while it asks');
+  await click(button(`Check in for ${wdDMon(D1)}`, footer()));
+  assert.deepEqual(callsOf('event_check_in').map(c => c.args), [{ p_guest_id: 'g-3', p_day: D1, p_attended: true, p_code: 'CD 12' }],
+    'a check-in sends no p_save_code, so a page against a database without 415 still checks in');
   assert.ok(row().classList.contains('done'), 'the row shows as checked in');
   assert.ok(row().textContent.includes('In at 10:15 · CD 12'), `Singapore time and code: ${row().textContent}`);
+  assert.ok(row().textContent.includes('by Door Staff'), 'the checker is the one the server names');
   assert.ok(text().includes('Checked in 2 of 3 registered'), 'the counter follows');
   assert.equal(callsOf('event_guest_list').length, 1, 'no reload between two people at the door');
 
+  // Undo asks first, naming what it clears; Keep it changes nothing.
   await click(button('Undo', row()));
+  assert.equal(modal()?.querySelector('h3').textContent, 'Undo Guest Three\'s check-in?');
+  assert.ok(modal().textContent.includes(`Guest Three · ${wdDMon(D1)} · in at 10:15 · by Door Staff · code CD 12`), modal().textContent);
+  await click(button('Keep it', footer()));
+  assert.equal(modal(), null);
+  assert.equal(callsOf('event_check_in').length, 1, 'Keep it sends nothing');
+  assert.ok(row().classList.contains('done'));
+  await click(button('Undo', row()));
+  await click(button('Undo check-in', footer()));
   assert.deepEqual(callsOf('event_check_in').at(-1).args, { p_guest_id: 'g-3', p_day: D1, p_attended: false, p_code: null });
   assert.ok(!row().classList.contains('done'));
   assert.ok(button('Check in', row()), 'the row can be checked in again');
+  // Asked once for the day: the next check-in on it goes straight through.
+  await click(button('Check in', row()));
+  assert.equal(modal(), null, 'not asked again for that day');
+  assert.equal(callsOf('event_check_in').length, 3);
 
   // The other day, and a refusal shown on the row itself.
   await click(buttons().find(b => b.classList.contains('events-checkin-day') && b.textContent.startsWith(wdDMon(D2))));
@@ -473,6 +513,7 @@ test('the door sends the day\'s code, shows the check-in from the server\'s answ
   backend.failures.set('event_check_in', 'Guest Five is not registered (cancelled)');
   const five = document.querySelector('.events-checkin-row[data-guest="g-5"]');
   await click(button('Check in', five));
+  await click(button(`Check in for ${wdDMon(D2)}`, footer()));
   assert.ok(five.querySelector('[role="alert"]').textContent.includes('Guest Five is not registered'), 'the error is shown inline');
   await setValue(document.querySelector('input[aria-label="Find a guest"]'), 'four');
   assert.deepEqual([...document.querySelectorAll('.events-checkin-name')].map(n => n.textContent), ['Guest Four']);
@@ -738,7 +779,8 @@ test('a Stripe test order is not offered an invoice while the channel does not a
   const test5 = orderRow('wo-5');
   assert.equal(cells(test5)[6], 'Recorded', 'it was recorded while test orders were accepted');
   assert.ok(!button('Create invoice', test5), 'a test order the channel does not accept is not offered an invoice');
-  assert.equal(cells(test5)[7], 'Test payment — not invoiced', 'and it says why');
+  // 415: it still holds the event (event_delete), so this Manager can close it.
+  assert.equal(cells(test5)[7], ' Close as refundedTest payment — not invoiced', 'and it says why');
   assert.ok(test5.querySelector('[title*="no money was taken"]'), 'with the reason on hover');
 
   assert.ok(button('Create invoice', orderRow('wo-3')), 'a live recorded order is still offered one');
@@ -930,8 +972,8 @@ test('the mode switch is the Owner\'s, and Live and Off are confirmed first', as
   assert.ok(modal().textContent.includes('every order paid on the website, and every registration sent through its staff link, is refused'),
     modal().textContent);
   assert.ok(modal().textContent.includes('invoiced by hand on the Invoices page'));
-  assert.ok(modal().textContent.includes('A staff-link registration invoiced that way is then linked to its invoice here with Link invoice'),
-    'and a staff-link one is linked to that invoice afterwards (380)');
+  assert.ok(modal().textContent.includes('Each one invoiced that way, a website payment or a staff-link registration, is then '
+    + 'linked to its invoice here with Link invoice'), 'and linked to that invoice afterwards, from the website too (380, 415)');
   await click(button('Cancel', footer()));
   assert.equal(callsOf('web_order_channel_set_mode').length, 1, 'Cancel leaves it Live');
   await click(button('Off', modeSwitch()));
@@ -1062,8 +1104,10 @@ test('a staff-link registration shows its method, date paid, reference and who r
   assert.deepEqual(buttons(four), [], 'an invoiced registration is done');
 
   // A website order can be linked too, but only a staff-link one is dismissed; a test payment is neither.
-  assert.deepEqual(buttons(orderRow('wo-3')).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice']);
-  assert.deepEqual(buttons(orderRow('wo-5')).map(b => b.textContent.trim()), ['Create invoice'], 'no real invoice is a test payment\'s');
+  // 415: a website order waiting for its invoice can be closed as refunded (by this Manager).
+  assert.deepEqual(buttons(orderRow('wo-3')).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice', 'Close as refunded']);
+  assert.deepEqual(buttons(orderRow('wo-5')).map(b => b.textContent.trim()), ['Create invoice', 'Close as refunded'],
+    'no real invoice is a test payment\'s');
   assert.deepEqual(buttons(orderRow('wo-4')), [], 'a refused order has no action');
 
   await setValue(statusFilter(), 'dismissed');
@@ -1143,13 +1187,29 @@ test('Dismiss asks why and sends the reason; the server\'s refusal is shown', as
   assert.equal(modal(), null);
   assert.equal(callsOf('web_orders_list').length, 2, 'the orders are reloaded');
 
-  backend.failures.set('web_order_dismiss', 'Give a reason of at least 3 characters');
+  // EVENTS-11: the server wants at least 3 characters, and the window says so first.
   await click(button('Dismiss', orderRow('wo-d1')));
   m = modal();
-  await setValue(fieldIn(m, 'Why is it dismissed? *'), 'x');
+  assert.ok(m.textContent.includes('At least 3 characters.'), m.textContent);
+  await setValue(fieldIn(m, 'Why is it dismissed? *'), 'ok');
   await click(button('Dismiss', footer()));
-  assert.ok(document.querySelector('.alert-danger')?.textContent.includes('Give a reason of at least 3 characters'), text());
+  assert.ok(modal().textContent.includes('Give at least 3 characters.'), 'a short reason is caught here');
+  assert.equal(callsOf('web_order_dismiss').length, 1, 'and nothing is sent');
+
+  // A refusal keeps the window open with what was typed, until the save works.
+  backend.failures.set('web_order_dismiss', 'Only a recorded or waiting registration can be dismissed');
+  await setValue(fieldIn(modal(), 'Why is it dismissed? *'), 'Test again');
+  await click(button('Dismiss', footer()));
+  assert.ok(modal(), 'the window stays open');
+  assert.ok(modal().querySelector('[role="alert"]').textContent.includes('Only a recorded or waiting registration can be dismissed'));
+  assert.equal(fieldIn(modal(), 'Why is it dismissed? *').value, 'Test again', 'what was typed is kept');
+  assert.equal(document.querySelector('.alert-danger'), null, 'the refusal is in the window, not at the top of the tab');
   assert.equal(callsOf('web_orders_list').length, 2, 'nothing changed, so nothing is reloaded');
+  backend.failures.delete('web_order_dismiss');
+  await click(button('Dismiss', footer()));
+  assert.equal(modal(), null, 'saved, so it closes');
+  assert.deepEqual(callsOf('web_order_dismiss').at(-1).args, { p_order_id: 'wo-d1', p_reason: 'Test again', p_dismiss: true });
+  assert.equal(callsOf('web_orders_list').length, 3);
 });
 
 test('Link invoice looks the invoice up, shows what does not match, and links only what was shown', async () => {
@@ -1314,13 +1374,509 @@ test('a staff-link registration refused while the channel was off can be linked 
         ? { ...o, status: 'refused', review_reason: 'The website channel is off' } : o)) };
     };
   } });
-  assert.deepEqual(buttons(orderRow('wo-d2')).map(b => b.textContent.trim()), ['Link invoice'],
-    'refused while off: no Create invoice and no Dismiss, but it can be linked');
+  assert.deepEqual(buttons(orderRow('wo-d2')).map(b => b.textContent.trim()), ['Link invoice', 'Close as refunded'],
+    'refused while off: no Create invoice and no Dismiss, but it can be linked (or, 415, closed as refunded)');
   assert.deepEqual(buttons(orderRow('wo-4')), [], 'a refused website order still has no action');
   await click(button('Link invoice', orderRow('wo-d2')));
   await setValue(fieldIn(modal(), 'Invoice no *'), 'INV-TEST-0301');
   await click(button('Look up', modal()));
   await click(button('Link invoice', footer()));
   assert.deepEqual(callsOf('web_order_link_invoice').map(c => c.args), [{ p_order_id: 'wo-d2', p_invoice_no: 'INV-TEST-0301' }]);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+// ── 415: the door on two devices, overnight, and what the editor locks ─────
+const dayBtn = d => buttons().find(b => b.classList.contains('events-checkin-day') && b.textContent.startsWith(wdDMon(d)));
+const doorRow = id => document.querySelector(`.events-checkin-row[data-guest="${id}"]`);
+const fire = async (target, type) => { await act(async () => { target.dispatchEvent(new dom.window.Event(type)); }); await tick(); };
+
+// The clock, moved by whole days: every `new Date()` and Date.now() in the page.
+function shiftClock() {
+  const RealDate = Date;
+  const clock = { days: 0, restore: () => { globalThis.Date = RealDate; } };
+  class ShiftedDate extends RealDate {
+    constructor(...a) { if (a.length) super(...a); else super(RealDate.now() + clock.days * 86_400_000); }
+    static now() { return RealDate.now() + clock.days * 86_400_000; }
+  }
+  globalThis.Date = ShiftedDate;
+  return clock;
+}
+
+// An event on today and tomorrow, with guests on both days.
+function eventOnNow() {
+  const fx = makeFixture();
+  const T0 = TODAY, T1 = addDays(TODAY, 1);
+  const event = { ...fx.event, first_day: T0, last_day: T1, early_bird_until: null, early_bird_percent: null,
+    days: [{ day: T0, capacity: null, registered: 2, attended: 1 }, { day: T1, capacity: null, registered: 3, attended: 0 }] };
+  const day = (d, attended_at = null, check_in_code = null, checked_in_by_name = null) => ({ day: d, attended_at, check_in_code, checked_in_by_name });
+  const guests = fx.guests.filter(g => ['g-1', 'g-2', 'g-4'].includes(g.guest_id)).map(g => ({ ...g,
+    days: g.guest_id === 'g-1' ? [day(T0, '2026-09-20T02:04:00Z', 'CD 12', 'Staff One'), day(T1)]
+      : g.guest_id === 'g-2' ? [day(T0), day(T1)] : [day(T1)] }));
+  return { fx, event, guests, T0, T1 };
+}
+
+test('a door device left open overnight moves to the new day, and a day picked by hand offers to switch (EVENTS-2)', async () => {
+  const clock = shiftClock();
+  try {
+    const { event, guests, T0, T1 } = eventOnNow();
+    await mount({ setup: b => { b.handlers.events_list = () => [event]; b.handlers.event_guest_list = () => guests; } });
+    await openEvent();
+    await openTab('Check-in');
+    assert.ok(dayBtn(T0).classList.contains('active') && dayBtn(T0).textContent.includes('· today'), 'today is chosen');
+    assert.equal(document.querySelector('.events-checkin-today'), null, 'no banner');
+
+    // Midnight passes with the page open; the window gets focus back.
+    clock.days = 1;
+    await fire(dom.window, 'focus');
+    assert.ok(dayBtn(T1).classList.contains('active'), 'the list moved to the new day by itself');
+    assert.ok(dayBtn(T1).textContent.includes('· today') && !dayBtn(T0).textContent.includes('· today'), 'and it is marked today');
+    assert.equal(document.querySelector('.events-checkin-today'), null);
+    await click(button('Check in', doorRow('g-2')));
+    assert.equal(modal(), null, 'checking in today is not asked');
+    assert.deepEqual(callsOf('event_check_in').map(c => c.args.p_day), [T1], 'the check-in is for the new day');
+
+    // Yesterday, picked by hand to fill in a late arrival: the banner offers
+    // to go back, and a check-in there is asked first.
+    await click(dayBtn(T0));
+    const banner = document.querySelector('.events-checkin-today');
+    assert.ok(banner?.textContent.includes(`It is now ${wdDMon(T1)}. This list is for ${wdDMon(T0)}.`), banner?.textContent);
+    await click(button('Check in', doorRow('g-2')));
+    assert.ok(modal()?.textContent.includes(`Today is ${wdDMon(T1)}. Guest Two will be checked in for ${wdDMon(T0)}.`), modal()?.textContent);
+    await click(button('Cancel', footer()));
+    assert.equal(callsOf('event_check_in').length, 1, 'Cancel sends nothing');
+    await click(button(`Switch to ${wdDMon(T1)}`, banner));
+    assert.ok(dayBtn(T1).classList.contains('active'));
+    assert.equal(document.querySelector('.events-checkin-today'), null, 'the banner goes once the list is for today');
+
+    // A day picked by hand stays picked when the date moves on; with no event
+    // day today, nothing moves and nothing is offered.
+    clock.days = 2;
+    await act(async () => { document.dispatchEvent(new dom.window.Event('visibilitychange')); });
+    await tick();
+    assert.ok(dayBtn(T1).classList.contains('active'));
+    assert.ok(!document.querySelector('.events-checkin-days').textContent.includes('today'), 'no event day is today');
+    assert.equal(document.querySelector('.events-checkin-today'), null);
+    assert.deepEqual(globalThis.__renderErrors, []);
+  } finally {
+    clock.restore();
+  }
+});
+
+test('the date is read again every minute (EVENTS-2)', async () => {
+  const realSet = dom.window.setInterval;
+  const timers = [];
+  dom.window.setInterval = (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return realSet.call(dom.window, () => {}, 1e9); };
+  const clock = shiftClock();
+  try {
+    const { event, guests, T1 } = eventOnNow();
+    await mount({ setup: b => { b.handlers.events_list = () => [event]; b.handlers.event_guest_list = () => guests; } });
+    await openEvent();
+    await openTab('Check-in');
+    const minute = timers.filter(t => t.ms === 60_000);
+    assert.ok(minute.length >= 1, 'a one-minute timer reads the date');
+    clock.days = 1;
+    await act(async () => { minute.at(-1).fn(); });
+    await tick();
+    assert.ok(dayBtn(T1).classList.contains('active'), 'the minute timer moved the list to the new day');
+  } finally {
+    clock.restore();
+    dom.window.setInterval = realSet;
+  }
+});
+
+test('a second door device never overwrites a check-in, and only Save code changes a code (EVENTS-3)', async () => {
+  await mount({ setup: b => {
+    b.handlers.event_check_in = a => (a.p_save_code
+      ? { guest_id: a.p_guest_id, day: a.p_day, attended_at: '2026-09-20T02:02:00Z', check_in_code: a.p_code,
+          checked_in_by: 'u-two', checked_in_by_name: 'Staff Two', already_in: false, changed: true }
+      // The first device checked Guest Three in at 10:02 with W12.
+      : { guest_id: a.p_guest_id, day: a.p_day, attended_at: '2026-09-20T02:02:00Z', check_in_code: 'W12',
+          checked_in_by: 'u-two', checked_in_by_name: 'Staff Two', already_in: true, changed: false });
+  } });
+  await openEvent();
+  await openTab('Check-in');
+  await setValue(doorRow('g-3').querySelector('input'), 'W99');
+  await click(button('Check in', doorRow('g-3')));
+  await click(button(`Check in for ${wdDMon(D1)}`, footer()));
+  assert.deepEqual(callsOf('event_check_in').at(-1).args, { p_guest_id: 'g-3', p_day: D1, p_attended: true, p_code: 'W99' });
+  const r = doorRow('g-3');
+  assert.ok(r.classList.contains('done'));
+  assert.ok(r.querySelector('.events-checkin-status').textContent.includes('In at 10:02 · W12'), r.textContent);
+  assert.ok(r.textContent.includes('by Staff Two'), 'the first device\'s checker, not the person at this one');
+  assert.ok(!r.textContent.includes('by Manager One'));
+  assert.equal(r.querySelector('.events-inline-note')?.textContent,
+    'Already checked in at 10:02 by Staff Two (code W12). Nothing was changed.');
+  assert.equal(r.querySelector('input').value, 'W12', 'the code typed here is dropped for the one kept');
+  assert.ok(!button('Save code', r), 'nothing to save');
+
+  // Save code is the one way to change it.
+  await setValue(doorRow('g-3').querySelector('input'), 'W13');
+  await click(button('Save code', doorRow('g-3')));
+  assert.deepEqual(callsOf('event_check_in').at(-1).args,
+    { p_guest_id: 'g-3', p_day: D1, p_attended: true, p_code: 'W13', p_save_code: true });
+  assert.ok(doorRow('g-3').querySelector('.events-checkin-status').textContent.includes('In at 10:02 · W13'));
+  assert.equal(doorRow('g-3').querySelector('.events-inline-note'), null, 'the note goes with the next action');
+  // Enter in the code box of a guest who is in saves the code; it never checks in again.
+  await setValue(doorRow('g-3').querySelector('input'), 'W14');
+  await act(async () => {
+    doorRow('g-3').querySelector('input').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await tick();
+  assert.deepEqual(callsOf('event_check_in').at(-1).args,
+    { p_guest_id: 'g-3', p_day: D1, p_attended: true, p_code: 'W14', p_save_code: true });
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('a page against a database without 415 still checks in, and names the person here', async () => {
+  await mount({ setup: b => {
+    b.handlers.event_check_in = a => ({ guest_id: a.p_guest_id, day: a.p_day,
+      attended_at: a.p_attended ? '2026-09-20T02:15:00Z' : null, check_in_code: a.p_attended ? a.p_code : null });
+  } });
+  await openEvent();
+  await openTab('Check-in');
+  await click(button('Check in', doorRow('g-3')));
+  await click(button(`Check in for ${wdDMon(D1)}`, footer()));
+  assert.ok(doorRow('g-3').textContent.includes('by Manager One'), doorRow('g-3').textContent);
+  assert.equal(doorRow('g-3').querySelector('.events-inline-note'), null);
+});
+
+test('the door list is read again every 25 seconds while Check-in is in sight, and on focus (EVENTS-3)', async () => {
+  const realSet = dom.window.setInterval;
+  const realClear = dom.window.clearInterval;
+  const timers = new Map();
+  dom.window.setInterval = (fn, ms) => { const id = realSet.call(dom.window, () => {}, 1e9); timers.set(id, { fn, ms, live: true }); return id; };
+  dom.window.clearInterval = id => { if (timers.has(id)) timers.get(id).live = false; realClear.call(dom.window, id); };
+  const doorTimers = () => [...timers.values()].filter(t => t.ms === 25_000 && t.live);
+  try {
+    let list = makeFixture().guests;
+    await mount({ setup: b => { b.handlers.event_guest_list = () => list; } });
+    await openEvent();
+    assert.equal(doorTimers().length, 0, 'not on the guest list');
+    await openTab('Check-in');
+    assert.equal(doorTimers().length, 1, 'one 25-second timer while Check-in is open');
+    assert.equal(callsOf('event_guest_list').length, 1);
+    await setValue(doorRow('g-3').querySelector('input'), 'W77');
+
+    // The other device checks Guest Two in.
+    list = list.map(g => (g.guest_id !== 'g-2' ? g : { ...g,
+      days: g.days.map(d => (d.day === D1 ? { ...d, attended_at: '2026-09-20T02:30:00Z', check_in_code: 'W20', checked_in_by_name: 'Staff Two' } : d)) }));
+    await act(async () => { doorTimers()[0].fn(); });
+    await tick();
+    assert.equal(callsOf('event_guest_list').length, 2, 'read again');
+    assert.ok(doorRow('g-2').classList.contains('done') && doorRow('g-2').textContent.includes('by Staff Two'), doorRow('g-2').textContent);
+    assert.ok(text().includes('Checked in 2 of 3 registered'), 'the counter follows the other device');
+    assert.equal(doorRow('g-3').querySelector('input').value, 'W77', 'a code being typed is kept');
+
+    // Out of sight: not read. Back in sight, or focus: read at once.
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    await act(async () => { doorTimers()[0].fn(); });
+    await tick();
+    assert.equal(callsOf('event_guest_list').length, 2, 'a hidden page is not polled');
+    delete document.visibilityState;
+    await fire(document, 'visibilitychange');
+    assert.equal(callsOf('event_guest_list').length, 3, 'shown again: read at once');
+    await fire(dom.window, 'focus');
+    assert.equal(callsOf('event_guest_list').length, 4, 'focus: read at once');
+
+    await openTab('Guests');
+    assert.equal(doorTimers().length, 0, 'the timer stops when Check-in closes');
+    await fire(dom.window, 'focus');
+    assert.equal(callsOf('event_guest_list').length, 4, 'and focus no longer reads it');
+    assert.deepEqual(globalThis.__renderErrors, []);
+  } finally {
+    delete document.visibilityState;
+    dom.window.setInterval = realSet;
+    dom.window.clearInterval = realClear;
+  }
+});
+
+test('a free guest who has checked in is not cancelled, and a refused cancel keeps its window (EVENTS-M2)', async () => {
+  const fx = makeFixture();
+  fx.guests = fx.guests.map(g => (g.guest_id !== 'g-4' ? g : { ...g,
+    days: [{ day: D2, attended_at: '2026-09-21T02:00:00Z', check_in_code: null, checked_in_by_name: 'Staff One' }] }));
+  await mount({ setup: b => { b.handlers.event_guest_list = () => fx.guests; } });
+  await openEvent();
+  const cancelOf = name => button('Cancel', [...document.querySelectorAll('.events-table tbody tr')].find(r => r.textContent.startsWith(name)));
+  assert.equal(cancelOf('Guest Four').disabled, true, 'checked in: no cancel');
+  assert.equal(cancelOf('Guest Four').title, 'Checked in. Undo the check-in first if they did not come.');
+  assert.equal(cancelOf('Guest Five').disabled, false);
+
+  backend.failures.set('event_set_guest_cancelled', 'Guest Five has already checked in. Undo the check-in first if they did not come.');
+  await click(cancelOf('Guest Five'));
+  await setValue(modal().querySelector('textarea'), 'Not coming');
+  await click(button('Cancel guest', footer()));
+  assert.ok(modal(), 'the window stays open on a refusal');
+  assert.ok(modal().querySelector('[role="alert"]').textContent.includes('has already checked in'));
+  backend.failures.delete('event_set_guest_cancelled');
+  await click(button('Cancel guest', footer()));
+  assert.equal(modal(), null, 'cancelled, so it closes');
+  assert.deepEqual(callsOf('event_set_guest_cancelled').at(-1).args, { p_guest_id: 'g-5', p_cancelled: true, p_reason: 'Not coming' });
+  assert.equal(callsOf('event_guest_list').length, 2, 'the list is read again');
+});
+
+test('restoring a guest says which days were dropped and which day is over capacity (EVENTS-6)', async () => {
+  await mount({ setup: b => {
+    b.handlers.event_set_guest_cancelled = () => ({ guest_id: 'g-6', status: 'registered', days_dropped: [PAST],
+      over_capacity: [{ day: D2, capacity: 4, registered: 5 }] });
+  } });
+  await openEvent();
+  await setValue(document.querySelector('select[aria-label="Status"]'), 'cancelled');
+  await click(button('Restore'));
+  const warning = document.querySelector('.alert-warning');
+  assert.ok(warning, 'a warning, as adding a guest gives');
+  assert.ok(warning.textContent.includes(`Guest Six is restored. ${wdDMon(PAST)} ${PAST.slice(0, 4)} is no longer an event day, so it was taken off. `
+    + `${dMon(D2)} is over capacity: 5 of 4.`), warning.textContent);
+  assert.equal(callsOf('event_guest_list').length, 2);
+
+  // A database without 415 answers nothing: the restore still says so.
+  backend.handlers.event_set_guest_cancelled = () => null;
+  await click(button('Restore'));
+  assert.ok(document.querySelector('.alert-info')?.textContent.includes('Guest Six is restored.'));
+});
+
+test('editing a guest never sends a day the event no longer has (EVENTS-6)', async () => {
+  const fx = makeFixture();
+  fx.guests = fx.guests.map(g => (g.guest_id !== 'g-4' ? g : { ...g,
+    days: [{ day: PAST, attended_at: null, check_in_code: null, checked_in_by_name: null }, ...g.days] }));
+  await mount({ setup: b => { b.handlers.event_guest_list = () => fx.guests; } });
+  await openEvent();
+  await click(document.querySelector('button[aria-label="Edit Guest Four"]'));
+  await click(button('Save guest'));
+  assert.deepEqual(callsOf('event_save_guest')[0].args.p_guest.days, [D2]);
+});
+
+test('Delete event keeps its window open with the server\'s refusal (EVENTS-M1)', async () => {
+  await mount();
+  await openEvent();
+  backend.failures.set('event_delete', 'The website still takes orders for "Test Open Days". Switch its channel Off, then delete the event.');
+  await click(button('Delete'));
+  await setValue(modal().querySelector('textarea'), 'Set up by mistake');
+  await click(button('Delete event', footer()));
+  assert.ok(modal()?.querySelector('[role="alert"]').textContent.includes('Switch its channel Off'), 'the refusal is in the window');
+  backend.failures.delete('event_delete');
+  await click(button('Delete event', footer()));
+  assert.equal(modal(), null);
+  assert.ok(text().includes('Event deleted.'));
+});
+
+test('the editor locks what the server locks: days held by tickets, and options on any invoice (EVENTS-5)', async () => {
+  const fx = makeFixture();
+  const event = { ...fx.event,
+    days: [{ day: D1, capacity: null, registered: 0, attended: 0, ticket_lines: 2 }, { day: D2, capacity: 4, registered: 0, attended: 0, ticket_lines: 0 },
+      { day: addDays(D2, 1), capacity: null, registered: 1, attended: 0, ticket_lines: 0 }],
+    options: [
+      // 2 Days is sold on a live invoice; 1 Day is on a deleted invoice only:
+      // its days may change, but the option stays.
+      { ...fx.event.options.find(o => o.name === '2 Days'), sold: true, on_any_invoice: true },
+      { ...fx.event.options.find(o => o.name === '1 Day'), sold: false, on_any_invoice: true },
+    ] };
+  await mount({ setup: b => { b.handlers.events_list = () => [event]; } });
+  await openEvent();
+  await click(button('Edit'));
+  const m = modal();
+  const dayRows = [...m.querySelectorAll('.events-day-row')];
+  const removers = dayRows.map(r => r.querySelector('button[aria-label="Remove day"]'));
+  assert.deepEqual(removers.map(b => b.disabled), [true, false, true], 'a day a ticket covers stays, as one people are registered for');
+  assert.equal(removers[0].title, 'Tickets on invoices cover this day, so it cannot be removed');
+  assert.ok(dayRows[0].nextElementSibling.textContent.includes('2 ticket lines cover it, so this day stays'), dayRows[0].nextElementSibling.textContent);
+  assert.ok(dayRows[2].nextElementSibling.textContent.includes('1 registered, so this day stays'));
+
+  const rows = [...m.querySelectorAll('.events-option-row:not(.events-option-head)')];
+  const [oneDay, twoDays] = rows; // sorted by Order: 1 Day, then 2 Days
+  assert.equal(oneDay.querySelector('input[aria-label="Option name"]').value, '1 Day');
+  assert.equal(twoDays.querySelector('select[aria-label="Days covered"]').disabled, true, 'sold on a live invoice: its days stay');
+  assert.equal(twoDays.querySelector('button[aria-label="Remove option"]').disabled, true);
+  assert.equal(oneDay.querySelector('select[aria-label="Days covered"]').disabled, false, 'only on a deleted invoice: its days can change');
+  assert.equal(oneDay.querySelector('button[aria-label="Remove option"]').disabled, true, 'but it cannot be removed');
+  assert.ok(oneDay.parentElement.textContent.includes('On a deleted invoice: it cannot be removed, but its days can change.'));
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('the editor wants whole numbers and cents, and keeps the stores the person does not work at (EVENTS-9)', async () => {
+  const fx = makeFixture();
+  const event = { ...fx.event, stores: [{ id: 'st-1', name: 'North Store' }, { id: 'st-9', name: 'West Store' }] };
+  await mount({ setup: b => { b.handlers.events_list = () => [event]; } });
+  await openEvent();
+  await click(button('Edit'));
+  let m = modal();
+  const west = [...m.querySelectorAll('.events-store-grid label')].find(l => l.textContent.includes('West Store'));
+  assert.equal(west.querySelector('input').disabled, true, 'a Manager cannot take off a store they do not work at');
+  assert.equal(west.title, 'Only someone who works at this store can remove it');
+  assert.equal(west.querySelector('input').checked, true);
+  const north = [...m.querySelectorAll('.events-store-grid label')].find(l => l.textContent.startsWith('North Store'));
+  assert.equal(north.querySelector('input').disabled, false);
+
+  await setValue(m.querySelectorAll('input[aria-label="Order"]')[0], '1.5');
+  await setValue(m.querySelectorAll('input[aria-label="Price"]')[1], '10.555');
+  await setValue(m.querySelector('input[step="0.01"][max="100"]'), '12.345');
+  await click(button('Save changes'));
+  const errs = modal().querySelector('.alert-danger').textContent;
+  for (const e of ['The order of "1 Day" must be a whole number.', 'Prices are in dollars and cents: "2 Days" has more than 2 decimals.',
+    'The early-bird discount may have at most 2 decimals.']) assert.ok(errs.includes(e), `${e}: ${errs}`);
+  assert.equal(callsOf('event_save').length, 0, 'nothing is sent');
+  await setValue(m.querySelectorAll('input[aria-label="Order"]')[0], '3');
+  await setValue(m.querySelectorAll('input[aria-label="Price"]')[1], '10.55');
+  await setValue(m.querySelector('input[step="0.01"][max="100"]'), '12.5');
+  await click(button('Save changes'));
+  const sent = callsOf('event_save')[0].args.p_event;
+  assert.deepEqual(sent.store_ids, ['st-1', 'st-9'], 'the other store goes back as it came');
+  assert.equal(sent.options.find(o => o.name === '1 Day').sort_order, 3);
+  assert.equal(sent.options.find(o => o.name === '2 Days').price, 10.55);
+  assert.equal(sent.early_bird_percent, 12.5);
+
+  // An Owner changes any store.
+  await mount({ role: 'owner', setup: b => { b.handlers.events_list = () => [event]; } });
+  await openEvent();
+  await click(button('Edit'));
+  m = modal();
+  assert.equal([...m.querySelectorAll('.events-store-grid label')].find(l => l.textContent.includes('West Store')).querySelector('input').disabled, false);
+});
+
+test('taking a ticket off sale says the website stops selling it too (EVENTS-7), and each box is labelled on a phone (EVENTS-10)', async () => {
+  const fx = makeFixture();
+  let mode = 'live';
+  await mount({ setup: b => { b.handlers.events_list = () => [{ ...fx.event, web_channel_mode: mode }]; } });
+  await openEvent();
+  await click(button('Edit'));
+  let m = modal();
+  assert.equal(m.querySelector('.events-web-sells'), null, 'nothing while everything is on sale');
+  await click(m.querySelectorAll('input[aria-label="On sale"]')[0]);
+  const warns = () => [...modal().querySelectorAll('.events-web-sells')].map(w => w.textContent.trim());
+  assert.deepEqual(warns(), ['The website stops offering these within a minute. A checkout already open can still be paid for up to an hour, and is invoiced.']);
+  await click([...m.querySelectorAll('label.events-inline')].find(l => l.textContent.trim() === 'Tickets on sale').querySelector('input'));
+  assert.equal(warns().length, 2, 'beside both On sale boxes');
+
+  // The phone layout: every box has its own label, and the price and order a placeholder.
+  const labels = [...m.querySelectorAll('.events-option-row:not(.events-option-head)')][0]
+    .querySelectorAll('.events-mobile-label');
+  assert.deepEqual([...labels].map(l => l.textContent), ['Name', 'Days covered', 'Price (S$)', 'Order']);
+  assert.equal(m.querySelector('input[aria-label="Price"]').placeholder, 'Price S$');
+  assert.equal(m.querySelector('input[aria-label="Order"]').placeholder, 'Order');
+  await click(button('Cancel', footer()));
+
+  // With the channel off, nothing to warn about.
+  mode = 'off';
+  await mount({ setup: b => { b.handlers.events_list = () => [{ ...fx.event, web_channel_mode: mode }]; } });
+  await openEvent();
+  await click(button('Edit'));
+  m = modal();
+  await click(m.querySelectorAll('input[aria-label="On sale"]')[0]);
+  assert.equal(m.querySelector('.events-web-sells'), null);
+});
+
+test('a website payment refused while the channel was off can be linked; a test payment cannot (EVENTS-8)', async () => {
+  await openWithDoorOrders({ setup: b => {
+    const list = b.handlers.web_orders_list;
+    b.handlers.web_orders_list = a => {
+      const web = list(a);
+      return { ...web, orders: web.orders.map(o => (o.id === 'wo-3' ? { ...o, status: 'refused', review_reason: 'The website channel is off' }
+        : o.id === 'wo-5' ? { ...o, status: 'refused', review_reason: 'The website channel is off' } : o)) };
+    };
+  } });
+  assert.deepEqual(buttons(orderRow('wo-3')).map(b => b.textContent.trim()), ['Link invoice', 'Close as refunded'],
+    'a Stripe payment refused while off');
+  assert.deepEqual(buttons(orderRow('wo-5')), [], 'a test payment took no money, so nothing is linked to it');
+  assert.deepEqual(buttons(orderRow('wo-4')), [], 'refused for another reason: no action');
+});
+
+// ── 415: closing an order refunded outside the app (the Owner, 9 Oct 2026) ──
+const CLOSED_REASON = 'Refunded outside the app: Refunded in Stripe on 2 Oct';
+async function openWithClosedOrder(opts = {}) {
+  return openWithDoorOrders({ ...opts, setup: b => {
+    const list = b.handlers.web_orders_list;
+    b.handlers.web_orders_list = a => {
+      const web = list(a);
+      return { ...web, orders: web.orders.map(o => (o.id === 'wo-3' ? { ...o, status: 'dismissed', review_reason: CLOSED_REASON }
+        : o.id === 'wo-d2' ? { ...o, status: 'refused', review_reason: 'The website channel is off' } : o)) };
+    };
+    opts.setup?.(b);
+  } });
+}
+
+test('an Owner or Manager closes an order refunded outside the app, with a reason (415)', async () => {
+  await openWithDoorOrders();
+  // A staff-link registration still waiting is dismissed, not closed.
+  assert.deepEqual(buttons(orderRow('wo-d1')).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice', 'Dismiss']);
+  assert.deepEqual(buttons(orderRow('wo-1')).map(b => b.textContent.trim()), [], 'an invoiced order is done');
+  await click(button('Close as refunded', orderRow('wo-2')));
+  let m = modal();
+  assert.ok(m.textContent.includes('Close Guest Twenty-Two as refunded'), m.textContent);
+  await click(button('Close order', footer()));
+  assert.ok(modal().textContent.includes('This field is required.'), 'a reason is required');
+  await setValue(fieldIn(modal(), 'How was the payment refunded? *'), 'ok');
+  await click(button('Close order', footer()));
+  assert.ok(modal().textContent.includes('Give at least 3 characters.'), 'a short reason is caught here');
+  assert.equal(callsOf('web_order_close_refunded').length, 0, 'nothing is sent yet');
+
+  // A refusal keeps the window open with what was typed.
+  backend.failures.set('web_order_close_refunded', 'Only an order waiting for its invoice, or a payment refused while the channel was off, can be closed');
+  await setValue(fieldIn(modal(), 'How was the payment refunded? *'), ' Refunded in Stripe on 2 Oct ');
+  await click(button('Close order', footer()));
+  assert.ok(modal()?.querySelector('[role="alert"]')?.textContent.includes('Only an order waiting for its invoice'), 'the refusal is shown in the window');
+  assert.equal(callsOf('web_orders_list').length, 1, 'nothing changed, so nothing is reloaded');
+  backend.failures.delete('web_order_close_refunded');
+  await click(button('Close order', footer()));
+  assert.equal(modal(), null, 'saved, so it closes');
+  assert.deepEqual(callsOf('web_order_close_refunded').map(c => c.args),
+    [{ p_order_id: 'wo-2', p_reason: 'Refunded in Stripe on 2 Oct', p_close: true },
+     { p_order_id: 'wo-2', p_reason: 'Refunded in Stripe on 2 Oct', p_close: true }]);
+  assert.equal(callsOf('web_orders_list').length, 2, 'the orders are reloaded');
+  assert.ok(text().includes('An order whose payment was refunded before it had an invoice is closed by an Owner or Manager with Close as refunded'),
+    'the tab says how');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('an order closed as refunded says why and can be reopened; a payment refused while off can be closed (415)', async () => {
+  await openWithClosedOrder({ role: 'owner' });
+  await setValue(statusFilter(), 'all');
+  const closed = orderRow('wo-3');
+  assert.equal(cells(closed)[6], `Dismissed: ${CLOSED_REASON}`);
+  assert.ok(closed.classList.contains('events-row-cancelled'), 'it is shown set aside');
+  assert.deepEqual(buttons(closed).map(b => b.textContent.trim()), ['Reopen']);
+  assert.deepEqual(buttons(orderRow('wo-d3')).map(b => b.textContent.trim()), ['Restore'], 'a dismissed test registration is restored as before');
+  assert.deepEqual(buttons(orderRow('wo-d2')).map(b => b.textContent.trim()), ['Link invoice', 'Close as refunded'],
+    'a staff-link payment refused while off can be closed too');
+  await click(button('Reopen', closed));
+  assert.ok(modal().textContent.includes('Reopen Guest Twenty-One'), modal().textContent);
+  await setValue(fieldIn(modal(), 'Why is it reopened? *'), 'The refund did not go through');
+  await click(button('Reopen', footer()));
+  assert.equal(modal(), null);
+  assert.deepEqual(callsOf('web_order_close_refunded').map(c => c.args),
+    [{ p_order_id: 'wo-3', p_reason: 'The refund did not go through', p_close: false }]);
+  assert.equal(callsOf('web_order_dismiss').length, 0, 'a closed order is not restored as a staff-link registration');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('a staff-link registration closed as refunded offers Reopen, not Restore; a Dismiss reason the server refuses keeps the window open (415)', async () => {
+  await openWithClosedOrder({ role: 'owner', setup: b => {
+    const list = b.handlers.web_orders_list;
+    b.handlers.web_orders_list = a => {
+      const web = list(a);
+      return { ...web, orders: web.orders.map(o => (o.id === 'wo-d1' ? { ...o, status: 'dismissed', review_reason: 'Refunded outside the app: Refunded by PayNow' } : o)) };
+    };
+  } });
+  await setValue(statusFilter(), 'all');
+  assert.deepEqual(buttons(orderRow('wo-d1')).map(b => b.textContent.trim()), ['Reopen'],
+    'closed as refunded: only Reopen puts it back (the server refuses Restore for it)');
+  assert.deepEqual(buttons(orderRow('wo-d3')).map(b => b.textContent.trim()), ['Restore'], 'dismissed as usual: Restore, as before');
+
+  // The server refuses a Dismiss reason that starts like a close's; the window says why and stays open.
+  await openWithDoorOrders();
+  backend.failures.set('web_order_dismiss', 'Start the reason another way. "Refunded outside the app:" marks an order closed as refunded.');
+  await click(button('Dismiss', orderRow('wo-d2')));
+  await setValue(fieldIn(modal(), 'Why is it dismissed? *'), 'Refunded outside the app: paid twice');
+  await click(button('Dismiss', footer()));
+  assert.ok(modal()?.querySelector('[role="alert"]')?.textContent.includes('marks an order closed as refunded'), 'the refusal is shown in the window');
+  backend.failures.delete('web_order_dismiss');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('Admins see no Close as refunded or Reopen; the server checks the role too (415)', async () => {
+  await openWithClosedOrder({ role: 'admin' });
+  await setValue(statusFilter(), 'all');
+  for (const row of document.querySelectorAll('.events-table tbody tr'))
+    for (const label of ['Close as refunded', 'Reopen']) assert.ok(!button(label, row), `${row.dataset.order}: no ${label}`);
+  assert.deepEqual(buttons(orderRow('wo-d1')).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice', 'Dismiss'],
+    'the rest of the tab is as before');
   assert.deepEqual(globalThis.__renderErrors, []);
 });

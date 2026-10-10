@@ -27,15 +27,20 @@ export const MAX_BODY_BYTES = 16 * 1024;
 
 export const RESULT_STATUSES = ['invoiced', 'recorded', 'needs_review', 'refused'] as const;
 // 380: a staff-link registration a Manager dismissed says so when it is sent again.
-export const DOOR_RESULT_STATUSES = [...RESULT_STATUSES, 'dismissed'] as const;
-export type ResultStatus = (typeof DOOR_RESULT_STATUSES)[number];
+// 415: so does a website order an Owner or Manager closed because its payment
+// was refunded outside the app, when its `paid` or `names` is sent again.
+export const DISMISSED_RESULT_STATUSES = [...RESULT_STATUSES, 'dismissed'] as const;
+export type ResultStatus = (typeof DISMISSED_RESULT_STATUSES)[number];
 
 // 380: the database function behind each message.
 const RPC = {
   paid: 'web_order_paid', names: 'web_order_names', door: 'web_order_door', sync: 'web_order_sync', staff: 'web_order_staff',
+  // 415: which of the website's passes the app has on sale.
+  tickets: 'web_order_tickets',
 } as const;
 export const SYNC_STATUSES = ['ok', 'too_soon', 'refused'] as const;
 export const STAFF_STATUSES = ['ok', 'refused'] as const;
+export const TICKETS_STATUSES = ['ok', 'refused'] as const;
 
 export interface OrderResult {
   status: ResultStatus;
@@ -125,10 +130,11 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
   const fn = RPC[type];
   // What the logs say the request was about: the checkout id, the OFF id, or
   // (sync, staff) the channel. None of them is personal.
-  const about: Record<string, string> = request.type === 'sync' || request.type === 'staff'
+  const about: Record<string, string> = request.type === 'sync' || request.type === 'staff' || request.type === 'tickets'
     ? { channel: request.channel }
     : { session_id: request.type === 'door' ? request.order.order_id : request.order.stripe_session_id };
-  const args = request.type === 'sync' || request.type === 'staff' ? { p_channel: request.channel } : { p_order: request.order };
+  const args = request.type === 'sync' || request.type === 'staff' || request.type === 'tickets'
+    ? { p_channel: request.channel } : { p_order: request.order };
 
   let data: unknown;
   try {
@@ -154,14 +160,18 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
 
   // 380: the sync and the staff list are passed back as the database built
   // them, keeping only their own fields. They carry names and contacts, so
-  // only counts are logged.
-  if (type === 'sync' || type === 'staff') {
-    const answer = type === 'sync' ? readSync(data) : readStaff(data);
+  // only counts are logged. 415: so are the passes on sale (no one's data).
+  if (type === 'sync' || type === 'staff' || type === 'tickets') {
+    const answer = type === 'sync' ? readSync(data) : type === 'staff' ? readStaff(data) : readTickets(data);
     if (!answer) {
       logEvent('web_order.retry', { type, ...about, code: 'unexpected_result', ms: now() - started });
       return retry();
     }
     const counts: Record<string, number> = 'staff' in answer ? { staff: answer.staff.length }
+      : 'tickets' in answer ? {
+        on_sale: Object.values(answer.tickets).filter(Boolean).length,
+        off_sale: Object.values(answer.tickets).filter((v) => !v).length,
+      }
       : answer.status === 'ok' ? { orders: answer.orders.length, counter: answer.counter.length, free: answer.free.length } : {};
     logEvent('web_order.done', { type, ...about, status: answer.status, ...counts, ms: now() - started });
     return reply({ ok: true, ...answer }, 200);
@@ -177,7 +187,7 @@ export async function handleOrder(req: Request, deps: OrderDeps): Promise<Respon
     return reply({ ok: false, error: 'not_found' }, 409);
   }
 
-  const result = readResult(data, type === 'door' ? DOOR_RESULT_STATUSES : RESULT_STATUSES);
+  const result = readResult(data, DISMISSED_RESULT_STATUSES);
   if (!result) {
     logEvent('web_order.retry', { type, ...about, code: 'unexpected_result', ms: now() - started });
     return retry();
@@ -228,6 +238,23 @@ export function readStaff(data: unknown): StaffAnswer | null {
     staff.push({ id: s.id, name: s.name });
   }
   return { status: data.status as StaffAnswer['status'], staff };
+}
+
+/**
+ * 415: web_order_tickets' answer: `{status, tickets}`, where tickets says for
+ * each of the website's passes whether the app has it on sale. Null when it
+ * is anything else.
+ */
+export interface TicketsAnswer { status: (typeof TICKETS_STATUSES)[number]; tickets: Record<string, boolean> }
+export function readTickets(data: unknown): TicketsAnswer | null {
+  if (!isObject(data) || typeof data.status !== 'string' || !(TICKETS_STATUSES as readonly string[]).includes(data.status)) return null;
+  if (!isObject(data.tickets)) return null;
+  const tickets: Record<string, boolean> = {};
+  for (const [pass, onSale] of Object.entries(data.tickets)) {
+    if (typeof onSale !== 'boolean' || !/^[A-Za-z0-9_-]{1,40}$/.test(pass)) return null;
+    tickets[pass] = onSale;
+  }
+  return { status: data.status as TicketsAnswer['status'], tickets };
 }
 
 /** web_order_names' answer when no paid order has that session id yet. */

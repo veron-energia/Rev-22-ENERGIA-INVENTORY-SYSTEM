@@ -72,7 +72,7 @@
     "test:xero:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/xero/tests/sales-events.sql",
     "test:tiktok": "node --test scripts/tiktok/tests/*.test.mjs",
     "test:events": "node --test scripts/events/tests/*.test.mjs",
-    "test:events:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/events/tests/events.sql",
+    "test:events:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/events/tests/events.sql -f scripts/events/tests/door-check-in.sql",
     "test:web-orders:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/web-orders/tests/web-orders.sql",
     "test:tiktok:db": "node scripts/tiktok/tests/database.mjs",
     "test:tiktok:xero:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/tiktok/tests/xero-payouts.sql",

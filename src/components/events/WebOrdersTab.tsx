@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CreditCard, Globe, Link2, RefreshCw, RotateCcw, Store, UserRound, XCircle } from 'lucide-react';
+import { AlertTriangle, Ban, CreditCard, Globe, Link2, RefreshCw, RotateCcw, Store, UserRound, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
+import { isOwnerOrManager } from '../../types';
 import { Modal, ReasonModal } from '../ui';
 import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import { CustomerSearchSelect } from '../SearchSelect';
@@ -8,8 +10,9 @@ import {
   EventRow, WEB_ORDER_MODE_BADGE, WEB_ORDER_MODE_LABELS, WEB_ORDER_STATUS_BADGE, WEB_ORDER_STATUS_LABELS,
   WebOrder, WebOrderLinkPreview, WebOrderList, WebOrderMode, WebOrderOutcome, fmtDate, fmtDateTime, fmtSgDate, fmtTime, money,
   normalizeWebOrderLinkPreview, normalizeWebOrderList, normalizeWebOrderOutcome, sgStamp, slug,
-  webOrderAmountDiffers, webOrderBuyerName, webOrderCanDismiss, webOrderCanInvoice, webOrderCanLink, webOrderCanRestore,
-  webOrderDatePaid, webOrderIsOpen, webOrderNamedAtRegistration, webOrderPaidThrough, webOrderProviderName, webOrderSource,
+  webOrderAmountDiffers, webOrderBuyerName, webOrderCanClose, webOrderCanDismiss, webOrderCanInvoice, webOrderCanLink,
+  webOrderCanRestore, webOrderClosedRefunded, webOrderDatePaid, webOrderIsOpen, webOrderNamedAtRegistration,
+  webOrderPaidThrough, webOrderProviderName, webOrderSource,
   webOrderStatusText, webOrderTestPlace, webOrderTestRefused,
 } from './model';
 
@@ -30,8 +33,17 @@ import {
  * staff member the form names. One already invoiced by hand is linked to that
  * invoice instead (the list names any invoice made by hand for the event with
  * the buyer's phone), and so is one whose amount is not the price, which
- * Create invoice cannot make, or one refused while the channel was off. A test
- * registration is dismissed (and can be restored).
+ * Create invoice cannot make, or one refused while the channel was off (415:
+ * a website payment refused then too). A test registration is dismissed (and
+ * can be restored).
+ *
+ * 415 (the Owner, 9 Oct 2026): an Owner or Manager closes an order whose
+ * payment was refunded outside the app (Close as refunded), with a reason, so
+ * its event can be deleted; no invoice or payment changes. One closed by
+ * mistake is reopened the same way and is put back as it was: a payment
+ * refused while the channel was off is refused again (link it to an invoice
+ * made by hand), any other waits in Needs review. Admins and staff see
+ * neither button; the server checks the role and the store.
  * The website asks the inventory for the invoice numbers and fills its
  * workbook with them itself.
  *
@@ -46,7 +58,7 @@ import {
 const MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
 const MODE_BUTTONS: Record<WebOrderMode, string> = { off: 'Off', record_only: 'Record only', live: 'Live' };
 
-// Dismissed registrations are tests set aside, so they stay out of sight unless asked for.
+// Dismissed orders (tests set aside, or orders closed as refunded) stay out of sight unless asked for.
 type StatusFilter = 'current' | 'waiting' | 'invoiced' | 'refused' | 'dismissed' | 'all';
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: 'current', label: 'All but dismissed' },
@@ -100,6 +112,9 @@ export const WEB_ORDER_COLUMNS: ExcelColumn<WebOrder>[] = [
 ];
 
 export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }> = ({ event, onInvoiced }) => {
+  const { profile } = useAuth();
+  // 415: closing an order refunded outside the app is for Owners and Managers.
+  const canClose = isOwnerOrManager(profile?.role);
   const [list, setList] = useState<WebOrderList | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -108,6 +123,8 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
   const [resolving, setResolving] = useState<WebOrder | null>(null);
   const [linking, setLinking] = useState<WebOrder | null>(null);
   const [dismissing, setDismissing] = useState<WebOrder | null>(null);
+  const [closing, setClosing] = useState<WebOrder | null>(null);
+  const [reopening, setReopening] = useState<WebOrder | null>(null);
   const [applying, setApplying] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>('current');
@@ -163,14 +180,33 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
     if (r.status === 'invoiced') onInvoiced();
   };
 
-  // 380: a staff-link registration set aside (a test) with a reason, or brought back.
-  const setDismissed = async (o: WebOrder, dismiss: boolean, reason: string | null) => {
+  // 380: a staff-link registration set aside (a test) with a reason, or brought
+  // back. It answers the server's refusal, so the reason window stays open on
+  // it (EVENTS-11); a restore shows it at the top.
+  const setDismissed = async (o: WebOrder, dismiss: boolean, reason: string | null): Promise<string | null> => {
     setBusyId(o.id); setErr(null);
     const { error } = await supabase.rpc('web_order_dismiss', { p_order_id: o.id, p_reason: reason, p_dismiss: dismiss });
     setBusyId(null);
-    if (error) { setErr(error.message); return; }
+    if (error) return error.message;
     await load();
+    return null;
   };
+  const restore = async (o: WebOrder) => {
+    const failure = await setDismissed(o, false, null);
+    if (failure) setErr(failure);
+  };
+  // 415: an order refunded outside the app is closed, with a reason; one
+  // closed by mistake is reopened. The window shows the server's refusal.
+  const setClosed = async (o: WebOrder, close: boolean, reason: string): Promise<string | null> => {
+    setBusyId(o.id); setErr(null);
+    const { error } = await supabase.rpc('web_order_close_refunded', { p_order_id: o.id, p_reason: reason, p_close: close });
+    setBusyId(null);
+    if (error) return error.message;
+    await load();
+    return null;
+  };
+  const closable = (o: WebOrder) => canClose && webOrderCanClose(o);
+  const reopenable = (o: WebOrder) => canClose && webOrderClosedRefunded(o);
 
   return (
     <div>
@@ -336,7 +372,8 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                       )}
                     </td>
                     <td className="events-web-actions-cell">
-                      {(webOrderCanInvoice(o, channel) || webOrderCanLink(o) || webOrderCanDismiss(o) || webOrderCanRestore(o)) && (
+                      {(webOrderCanInvoice(o, channel) || webOrderCanLink(o) || webOrderCanDismiss(o) || webOrderCanRestore(o)
+                        || closable(o) || reopenable(o)) && (
                         <div className="events-actions events-web-actions">
                           {webOrderCanInvoice(o, channel) && (
                             <button className="btn btn-primary btn-sm" onClick={() => setResolving(o)}>Create invoice</button>
@@ -353,7 +390,17 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
                           )}
                           {webOrderCanRestore(o) && (
                             <button className="btn btn-secondary btn-sm" disabled={busyId === o.id}
-                              onClick={() => void setDismissed(o, false, null)}><RotateCcw size={13} /> Restore</button>
+                              onClick={() => void restore(o)}><RotateCcw size={13} /> Restore</button>
+                          )}
+                          {closable(o) && (
+                            <button className="btn btn-secondary btn-sm" disabled={busyId === o.id}
+                              title="Its payment was refunded outside the app: close it, with the reason, so it waits for nothing"
+                              onClick={() => setClosing(o)}><Ban size={13} /> Close as refunded</button>
+                          )}
+                          {reopenable(o) && (
+                            <button className="btn btn-secondary btn-sm" disabled={busyId === o.id}
+                              title="Closed by mistake: put it back as it was before the close"
+                              onClick={() => setReopening(o)}><RotateCcw size={13} /> Reopen</button>
                           )}
                         </div>
                       )}
@@ -372,7 +419,9 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
         </div>
       </div>
       <div className="events-sub" style={{ marginTop: 8 }}>
-        A Stripe or HitPay refund is not brought in: refund its invoice by hand.
+        A Stripe or HitPay refund is not brought in: refund its invoice by hand. An order whose payment was refunded
+        before it had an invoice is closed by an Owner or Manager with Close as refunded, giving the reason. No invoice
+        or payment changes, and the event can then be deleted. Reopen undoes it.
       </div>
       <div className="events-sub" style={{ marginTop: 4 }}>
         Staff-link registrations (paid in cash, by PayNow or by bank transfer) come here too, marked Staff link. They
@@ -427,8 +476,8 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
               invoiced by hand on the Invoices page.
             </div>
             <div className="events-sub">
-              A staff-link registration invoiced that way is then linked to its invoice here with Link invoice, so
-              the website's workbook lists it once.
+              Each one invoiced that way, a website payment or a staff-link registration, is then linked to its
+              invoice here with Link invoice, so the website's workbook lists it once.
             </div>
             <div className="events-sub">Orders already recorded stay, and their invoices can still be created here.</div>
           </div>
@@ -442,9 +491,21 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
       )}
       {dismissing && (
         <ReasonModal title={`Dismiss ${dismissing.buyer_name || 'this registration'}`} label="Why is it dismissed?"
-          placeholder="e.g. A test registration" confirmLabel="Dismiss"
+          placeholder="e.g. A test registration" confirmLabel="Dismiss" minLength={3}
           onClose={() => setDismissing(null)}
-          onSubmit={reason => { const o = dismissing; setDismissing(null); void setDismissed(o, true, reason); }} />
+          onSubmitAsync={reason => setDismissed(dismissing, true, reason)} />
+      )}
+      {closing && (
+        <ReasonModal title={`Close ${webOrderBuyerName(closing) || 'this order'} as refunded`}
+          label="How was the payment refunded?" placeholder="e.g. Refunded in Stripe on 12 Oct" confirmLabel="Close order"
+          minLength={3} onClose={() => setClosing(null)}
+          onSubmitAsync={reason => setClosed(closing, true, reason)} />
+      )}
+      {reopening && (
+        <ReasonModal title={`Reopen ${webOrderBuyerName(reopening) || 'this order'}`} label="Why is it reopened?"
+          placeholder="e.g. The refund did not go through" confirmLabel="Reopen" minLength={3}
+          onClose={() => setReopening(null)}
+          onSubmitAsync={reason => setClosed(reopening, false, reason)} />
       )}
     </div>
   );

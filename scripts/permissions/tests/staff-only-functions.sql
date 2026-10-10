@@ -292,9 +292,11 @@ declare
       'delete_customer(uuid,text,text)', 'delete_invoice(uuid)', 'delete_survey_attachment(uuid)',
       'delete_therapy_closure_date(uuid,text)', 'delete_tiktok_batch(uuid)', 'delete_tiktok_row(uuid)',
       'edit_transfer_request(uuid,integer,text,location_type,uuid,location_type,uuid,jsonb,text)',
-      'event_check_in(uuid,date,boolean,text)', 'event_delete(uuid,text)', 'event_guest_list(uuid)',
+      -- 415: event_check_in (now five arguments) and event_set_guest_cancelled
+      -- start with require_active_staff(), so they are in the strict group.
+      'event_delete(uuid,text)', 'event_guest_list(uuid)',
       'event_invoices(uuid)', 'event_save(jsonb)', 'event_save_guest(jsonb)',
-      'event_set_guest_cancelled(uuid,boolean,text)', 'event_ticket_options_for_sale(uuid,date)',
+      'event_ticket_options_for_sale(uuid,date)',
       'exchange_original_context(uuid)', 'exchange_payment_position(uuid)',
       'fulfil_special_doc(text,uuid,uuid,text)', 'include_tiktok_settlement_rows(uuid[],text)',
       'invoice_action_plan(uuid,text,jsonb)', 'invoice_action_request_detail(uuid)',

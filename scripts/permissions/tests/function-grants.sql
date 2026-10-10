@@ -142,7 +142,9 @@ declare
                              -- settlement from being deleted or rewritten, and an affiliate's
                              -- months (internal since 339; 414 rebuilt it)
                              'affiliate_deduction_settlement_record','affiliate_deduction_settlement_void',
-                             'trg_affiliate_deduction_settlement_guard','affiliate_month_balances'];
+                             'trg_affiliate_deduction_settlement_guard','affiliate_month_balances',
+                             -- 415: which passes the website may sell (the edge function asks it)
+                             'web_order_tickets'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

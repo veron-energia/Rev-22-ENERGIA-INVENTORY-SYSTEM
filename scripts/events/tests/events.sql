@@ -483,8 +483,8 @@ do $$ declare v uuid; begin
 end $$;
 select pg_temp.check(pg_temp.err(format('select public.event_save(%L::jsonb)', public.event_summary(pg_temp.fx('ev2'))
     || jsonb_build_object('store_ids', jsonb_build_array(pg_temp.fx('van')),
-         'days', jsonb_build_array(jsonb_build_object('day', pg_temp.d(-1)))))) ~ ('People are registered for ' || to_char(pg_temp.d(0), 'DD Mon YYYY')),
-  'V1 a day people are coming on cannot be removed');
+         'days', jsonb_build_array(jsonb_build_object('day', pg_temp.d(-1)))))) ~ (to_char(pg_temp.d(0), 'DD Mon YYYY') || ' cannot be removed: 1 free guest is registered for it'),
+  'V1 a day people are coming on cannot be removed (415: the refusal says how many)');
 select public.event_save(public.event_summary(pg_temp.fx('ev2'))
     || jsonb_build_object('store_ids', jsonb_build_array(pg_temp.fx('van')),
          'days', jsonb_build_array(jsonb_build_object('day', pg_temp.d(-1)), jsonb_build_object('day', pg_temp.d(0), 'capacity', 40)),
@@ -495,8 +495,8 @@ select pg_temp.check((select capacity from public.event_days where event_id = pg
   'V1 a day''s capacity and an option''s price can change');
 select pg_temp.check(pg_temp.err(format('select public.event_save(%L::jsonb)', public.event_summary(pg_temp.fx('ev'))
     || jsonb_build_object('store_ids', jsonb_build_array(pg_temp.fx('van')),
-         'options', jsonb_build_array((select o from jsonb_array_elements(public.event_summary(pg_temp.fx('ev'))->'options') o where o->>'name' = '2 Days'))))) ~ 'has been sold',
-  'V1 a sold option cannot be removed');
+         'options', jsonb_build_array((select o from jsonb_array_elements(public.event_summary(pg_temp.fx('ev'))->'options') o where o->>'name' = '2 Days'))))) ~ '"1 Day" is on .*so it cannot be removed',
+  'V1 a sold option cannot be removed (415: the refusal names its invoices)');
 select pg_temp.check(pg_temp.err(format('select public.event_delete(%L, ''E370'')', pg_temp.fx('ev'))) ~ 'on invoices',
   'V1 an event with tickets on invoices cannot be deleted');
 select public.event_delete(pg_temp.fx('closed'), 'E370 never held');

@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isManagerOrAbove, isOwnerOrAdmin } from '../types';
 import { NoAccess } from '../components/ui';
-import { singaporeToday } from '../lib/invoices/business';
+import { useSingaporeToday } from '../lib/useSingaporeToday';
 import { EventEditor } from '../components/events/EventEditor';
 import { EventView } from '../components/events/EventView';
 import {
@@ -34,7 +34,9 @@ const EventsPage: React.FC = () => {
   // a different number of hooks from one render to the next.
   const hasAccess = isManagerOrAbove(role) || role === 'staff';
   const isManager = isManagerOrAbove(role);
-  const today = useMemo(() => singaporeToday(), []);
+  // Read again every minute and when the window comes back, so a door device
+  // left open overnight moves to the new day (EVENTS-2).
+  const today = useSingaporeToday();
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -121,7 +123,7 @@ const EventsPage: React.FC = () => {
   }
 
   const editorModal = editor && (
-    <EventEditor event={editor.event} stores={stores} storesError={storesErr}
+    <EventEditor event={editor.event} stores={stores} storesError={storesErr} canChangeAnyStore={isOwnerOrAdmin(role)}
       onClose={() => setEditor(null)} onSaved={id => { void onSaved(id); }} />
   );
 

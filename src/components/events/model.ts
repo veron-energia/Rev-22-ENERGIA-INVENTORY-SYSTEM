@@ -7,11 +7,19 @@ import { calendarDate } from '../../lib/calendarDates';
  * every row passes through a normaliser before the page touches it.
  */
 
-export interface EventDay { day: string; capacity: number | null; registered: number; attended: number; }
+export interface EventDay {
+  day: string; capacity: number | null; registered: number; attended: number;
+  /** 415: ticket lines on invoices that are not deleted covering the day. They hold it, as people do. */
+  ticket_lines: number;
+}
 export interface EventStore { id: string; name: string; }
 export interface EventOption {
   id: string; name: string; days_count: number; price: number; is_active: boolean;
-  sort_order: number; early_bird_price: number | null; sold: boolean;
+  sort_order: number; early_bird_price: number | null;
+  /** 415: on an invoice that is not deleted, so the days it covers stay. */
+  sold: boolean;
+  /** 415: on any invoice, a deleted one too, so it cannot be removed (the invoice line keeps it). */
+  on_any_invoice: boolean;
 }
 export interface EventRow {
   id: string; name: string; description: string | null;
@@ -22,6 +30,8 @@ export interface EventRow {
   days: EventDay[]; stores: EventStore[]; options: EventOption[];
   guests: number; ticket_guests: number; free_guests: number;
   can_manage: boolean; can_run: boolean;
+  /** 415: the mode of the event's website channel, or null when it has none. */
+  web_channel_mode: WebOrderMode | null;
 }
 
 export type GuestSource = 'ticket' | 'free';
@@ -71,6 +81,7 @@ export const WEB_ORDER_DOOR_METHOD_LABELS: Record<WebOrderDoorMethod, string> = 
 /** Where a payment that took no money was made. */
 export const webOrderTestPlace = (p: WebOrderProvider) => (p === 'hitpay' ? 'HitPay\'s sandbox' : 'Stripe\'s test mode');
 // 380: 'dismissed' is a staff-link registration a Manager set aside, such as a test.
+// 415: or an order an Owner or Manager closed because its payment was refunded outside the app.
 export type WebOrderStatus = 'invoiced' | 'recorded' | 'needs_review' | 'refused' | 'dismissed';
 export interface WebOrderChannel {
   key: string; mode: WebOrderMode; allow_test: boolean;
@@ -129,10 +140,12 @@ const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
 const joined = (v: unknown): string | null =>
   (Array.isArray(v) ? str(v.filter(x => x !== null && x !== undefined && x !== '').join(', ')) : str(v));
 
+const WEB_ORDER_MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
+
 export function normalizeEvent(r: any): EventRow {
   const days: EventDay[] = arr(r?.days).map(d => ({
     day: dateOnly(d?.day) ?? '', capacity: numOrNull(d?.capacity),
-    registered: num(d?.registered), attended: num(d?.attended),
+    registered: num(d?.registered), attended: num(d?.attended), ticket_lines: num(d?.ticket_lines),
   })).filter(d => d.day).sort((a, b) => a.day.localeCompare(b.day));
   return {
     id: String(r?.id ?? ''), name: String(r?.name ?? ''), description: str(r?.description),
@@ -147,9 +160,12 @@ export function normalizeEvent(r: any): EventRow {
       id: String(o?.id ?? ''), name: String(o?.name ?? ''), days_count: num(o?.days_count), price: num(o?.price),
       is_active: !!o?.is_active, sort_order: num(o?.sort_order), early_bird_price: numOrNull(o?.early_bird_price),
       sold: !!o?.sold,
+      // Before 415, 'sold' meant on any invoice.
+      on_any_invoice: o?.on_any_invoice === undefined ? !!o?.sold : !!o.on_any_invoice,
     })).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)),
     guests: num(r?.guests), ticket_guests: num(r?.ticket_guests), free_guests: num(r?.free_guests),
     can_manage: !!r?.can_manage, can_run: r?.can_run === undefined ? true : !!r?.can_run,
+    web_channel_mode: WEB_ORDER_MODES.includes(r?.web_channel_mode) ? r.web_channel_mode : null,
   };
 }
 
@@ -157,6 +173,21 @@ export function normalizeGuestDay(d: any): GuestDay {
   return {
     day: dateOnly(d?.day) ?? '', attended_at: str(d?.attended_at),
     check_in_code: str(d?.check_in_code), checked_in_by_name: str(d?.checked_in_by_name),
+  };
+}
+
+/**
+ * 415: what event_check_in answers. A check-in never changes one already made:
+ * a second one answers already_in, with the time, who checked the guest in and
+ * the code. `changed` says whether anything was written.
+ */
+export interface CheckInResult extends GuestDay {
+  checked_in_by: string | null; already_in: boolean; changed: boolean;
+}
+export function normalizeCheckInResult(d: any, day: string): CheckInResult {
+  return {
+    ...normalizeGuestDay({ ...(d ?? {}), day: d?.day ?? day }),
+    checked_in_by: str(d?.checked_in_by), already_in: d?.already_in === true, changed: d?.changed !== false,
   };
 }
 
@@ -193,7 +224,15 @@ export function normalizeOverCapacity(v: unknown): OverCapacity[] {
     .filter(o => o.day);
 }
 
-const WEB_ORDER_MODES: WebOrderMode[] = ['off', 'record_only', 'live'];
+/** 415: what restoring a free guest answers: the days dropped (the event no longer has them) and any day now over capacity. */
+export interface GuestRestored { days_dropped: string[]; over_capacity: OverCapacity[]; }
+export function normalizeGuestRestored(v: any): GuestRestored {
+  return {
+    days_dropped: arr(v?.days_dropped).map(d => dateOnly(d) ?? '').filter(Boolean),
+    over_capacity: normalizeOverCapacity(v?.over_capacity),
+  };
+}
+
 const WEB_ORDER_STATUSES: WebOrderStatus[] = ['invoiced', 'recorded', 'needs_review', 'refused', 'dismissed'];
 const WEB_ORDER_DOOR_METHODS: WebOrderDoorMethod[] = ['cash', 'paynow', 'bank'];
 const webOrderMode = (v: unknown): WebOrderMode => (WEB_ORDER_MODES.includes(v as WebOrderMode) ? v as WebOrderMode : 'off');
@@ -370,7 +409,9 @@ export const SALE_SOURCE_LABELS: Record<SaleSource, string> = {
 /** Statuses left out of the Sales totals. */
 export const NOT_COUNTED_STATUSES = ['cancelled', 'refunded'];
 
-export interface DayLoad { day: string; capacity: number | null; registered: number; attended: number; }
+export interface DayLoad {
+  day: string; capacity: number | null; registered: number; attended: number; ticket_lines: number;
+}
 /**
  * People registered and checked in per day. Once the guest list is loaded it
  * is counted from the list, so the numbers follow every change on screen;
@@ -387,7 +428,7 @@ export function dayLoads(event: EventRow, guests: Guest[] | null): DayLoad[] {
       registered++;
       if (gd.attended_at) attended++;
     }
-    return { day: d.day, capacity: d.capacity, registered, attended };
+    return { day: d.day, capacity: d.capacity, registered, attended, ticket_lines: d.ticket_lines };
   });
 }
 export type LoadTone = 'open' | 'full' | 'over';
@@ -442,13 +483,16 @@ export const webOrderCanInvoice = (o: Pick<WebOrder, 'status' | 'livemode'>, cha
   webOrderIsOpen(o) && !webOrderTestRefused(o, channel);
 /** 380: why a staff-link registration sent while the channel was off is refused. */
 export const WEB_ORDER_OFF_REFUSAL = 'The website channel is off';
-/** 380: a staff-link registration refused while the channel was off: staff invoice it by hand, then link it. */
-export const webOrderOffRefused = (o: Pick<WebOrder, 'status' | 'provider' | 'review_reason'>) =>
-  o.provider === 'door' && o.status === 'refused' && o.review_reason === WEB_ORDER_OFF_REFUSAL;
+/**
+ * 380, 415: an order refused while the channel was off, from the website or
+ * the staff link alike: staff invoice it by hand, then link it.
+ */
+export const webOrderOffRefused = (o: Pick<WebOrder, 'status' | 'review_reason'>) =>
+  o.status === 'refused' && o.review_reason === WEB_ORDER_OFF_REFUSAL;
 /**
  * 380: an open order that was already invoiced by hand is linked to that
- * invoice instead of getting a second one, and so is a staff-link
- * registration refused while the channel was off. A test payment took no
+ * invoice instead of getting a second one, and so is an order refused while
+ * the channel was off (415: a website payment too). A test payment took no
  * money, so no real invoice is its.
  */
 export const webOrderCanLink = (o: Pick<WebOrder, 'status' | 'livemode' | 'provider' | 'review_reason'>) =>
@@ -462,7 +506,31 @@ export const webOrderAmountDiffers = (o: Pick<WebOrder, 'provider' | 'review_rea
   o.provider === 'door' && /\bS\$[\d,.]+ was paid\b/.test(o.review_reason ?? '');
 /** 380: only a staff-link registration is set aside (a test, say) or brought back. */
 export const webOrderCanDismiss = (o: Pick<WebOrder, 'status' | 'provider'>) => o.provider === 'door' && webOrderIsOpen(o);
-export const webOrderCanRestore = (o: Pick<WebOrder, 'status' | 'provider'>) => o.provider === 'door' && o.status === 'dismissed';
+export const webOrderCanRestore = (o: Pick<WebOrder, 'status' | 'provider' | 'review_reason'>) =>
+  o.provider === 'door' && o.status === 'dismissed' && !webOrderClosedRefunded(o);
+/**
+ * 415 (the Owner, 9 Oct 2026): an Owner or Manager closes an order whose
+ * payment was refunded outside the app, with a reason, so its event can be
+ * deleted. The server keeps the reason after this.
+ */
+export const WEB_ORDER_REFUNDED_PREFIX = 'Refunded outside the app: ';
+/**
+ * 415: closed because its payment was refunded outside the app. Reopen undoes
+ * it: the order is put back as it was before the close (a payment refused
+ * while the channel was off is refused again; any other waits in Needs
+ * review). The staff link's Restore does not bring it back, and a Dismiss
+ * reason may not start with this prefix, so the prefix marks a close.
+ */
+export const webOrderClosedRefunded = (o: Pick<WebOrder, 'status' | 'review_reason'>) =>
+  o.status === 'dismissed' && (o.review_reason ?? '').startsWith(WEB_ORDER_REFUNDED_PREFIX);
+/**
+ * 415: what holds its event (event_delete) can be closed: a website order
+ * waiting for its invoice, or a payment refused while the channel was off
+ * that took real money. A staff-link registration still waiting is set
+ * aside with Dismiss instead.
+ */
+export const webOrderCanClose = (o: Pick<WebOrder, 'status' | 'provider' | 'livemode' | 'review_reason'>) =>
+  (o.provider !== 'door' && webOrderIsOpen(o)) || (webOrderOffRefused(o) && o.livemode);
 
 /** 403: the name the website sends when the payment (Stripe or HitPay) gave none. */
 export const WEB_ORDER_PLACEHOLDER_BUYER = 'Website buyer';
