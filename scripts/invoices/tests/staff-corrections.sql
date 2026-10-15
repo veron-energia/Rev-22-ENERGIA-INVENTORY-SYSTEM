@@ -62,12 +62,20 @@
 --      correction's reversal, not a reversed receipt, not a refunded
 --      payment, not a payment of an invoice with an older refund that names
 --      no payment. The replacement may be changed; an Owner as before.
+--   S12 The invoice date (416, INVOICES-CREATE-11): a date once set cannot be
+--      cleared, and a new date is never after today in Singapore, for staff
+--      and Owners alike; an invoice saved with no date may stay undated or
+--      be given a past date, not a future one.
 --
 -- Every check runs, then the file fails if any did. Disposable database only;
--- everything is rolled back. Needs 377 (install it after "begin;" on a
--- database that does not have it yet). Fixtures are invented.
+-- everything is rolled back. Needs 377 and 416 (install them after "begin;"
+-- on a database that does not have them yet; psql -v mig=supabase/416_...sql
+-- installs 416). Fixtures are invented.
 \set ON_ERROR_STOP on
 begin;
+\if :{?mig}
+\i :mig
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '180s';
 create temp table failed(n serial, msg text);
@@ -207,6 +215,9 @@ begin
  insert into promotions(name,code,promo_type,fixed_price) values('S377 Promo 50','S377P50'||sfx,'bundle',50) returning id into pr50;
  insert into promotions(name,code,promo_type,fixed_price) values('S377 Promo 500','S377P500'||sfx,'bundle',500) returning id into pr500;
  insert into promotion_store_prices(promotion_id,store_id,selling_price,available_at_store) values(pr50,st_a,50,true),(pr500,st_a,500,true);
+ -- 416: a promotion with nothing in it is not sold, so each holds a treatment
+ -- (no stock, so the stock checks below are unchanged).
+ insert into promotion_items(promotion_id,item_type,treatment_name,quantity) values(pr50,'treatment','S377 Massage',1),(pr500,'treatment','S377 Massage',1);
  insert into therapy_services(service_code,name,standard_price,duration_minutes,is_active) values('S377S30'||sfx,'S377 Session 30',30,30,true) returning id into ts30;
  insert into therapy_services(service_code,name,standard_price,duration_minutes,is_active) values('S377S300'||sfx,'S377 Session 300',300,60,true) returning id into ts300;
  insert into therapy_service_stores(service_id,store_id) values(ts30,st_a),(ts300,st_a);
@@ -1405,6 +1416,43 @@ begin
   e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('payment_methods', jsonb_build_array(jsonb_build_object('payment_id', p2, 'payment_method_id', pg_temp.fx('card')))), 'Paid by card');
   perform pg_temp.check(e is null and (select payment_method_id from public.invoice_payments where id = p2) = pg_temp.fx('card'),
     'S11 and change the method of the other payment, which the refund does not name, got ' || coalesce(e, 'saved'));
+end $$;
+
+-- ═════ S12 The invoice date (416) ═════
+do $$
+declare inv uuid; e text; d date;
+  cleared text := 'Keep the invoice date; it cannot be cleared.'; future text := 'The invoice date cannot be after today.';
+begin
+  inv := pg_temp.sale('A', 1);
+  select business_date into d from public.invoices where id = inv;
+  perform pg_temp.as_user('s');
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', null, 'notes', 'Date taken off'));
+  perform pg_temp.check(e = cleared and (select business_date from public.invoices where id = inv) = d,
+    'S12 staff may not clear the invoice date, got ' || coalesce(e, 'saved'));
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', (public.sg_today() + 1)::text));
+  perform pg_temp.check(e = future and (select business_date from public.invoices where id = inv) = d,
+    'S12 nor date it tomorrow, got ' || coalesce(e, 'saved'));
+  perform pg_temp.as_user('o');
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', null));
+  perform pg_temp.check(e = cleared, 'S12 nor may an Owner clear it, got ' || coalesce(e, 'saved'));
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', (public.sg_today() + 1)::text));
+  perform pg_temp.check(e = future, 'S12 or date it tomorrow, got ' || coalesce(e, 'saved'));
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', (public.sg_today() - 1)::text));
+  perform pg_temp.check(e is null and (select business_date from public.invoices where id = inv) = public.sg_today() - 1,
+    'S12 a past date is accepted, got ' || coalesce(e, 'saved'));
+  -- An invoice saved with no date, from before dates were required.
+  inv := pg_temp.sale('A', 1);
+  update public.invoices set business_date = null where id = inv;
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', null, 'notes', 'Old sale, date unknown'));
+  perform pg_temp.check(e is null and (select (business_date is null, notes) = (true, 'Old sale, date unknown') from public.invoices where id = inv),
+    'S12 an undated invoice may stay undated, got ' || coalesce(e, 'saved'));
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', (public.sg_today() + 2)::text));
+  perform pg_temp.check(e = future and (select business_date from public.invoices where id = inv) is null,
+    'S12 but is not dated in the future, got ' || coalesce(e, 'saved'));
+  perform pg_temp.as_user('s');
+  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('business_date', (public.sg_today() - 30)::text));
+  perform pg_temp.check(e is null and (select business_date from public.invoices where id = inv) = public.sg_today() - 30,
+    'S12 it may be given a past date, got ' || coalesce(e, 'saved'));
 end $$;
 
 do $$ declare v_failed int; begin

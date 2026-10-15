@@ -155,7 +155,11 @@ begin
    values('HS Empty Promo','HSEP','bundle',25,true) returning id into gpromo;
   insert into promotion_store_prices(promotion_id,store_id,selling_price,available_at_store)
    values(gpromo,st,25,true),(gpromo,st2,25,true);
+  -- 416 refuses selling a promotion with nothing in it, so it held a
+  -- treatment when it was sold and was emptied afterwards, as an old sale.
+  insert into promotion_items(promotion_id,item_type,treatment_name,quantity) values(gpromo,'treatment','HS Treatment',1);
   ginv:=create_invoice(st,c,null,jsonb_build_array(jsonb_build_object('kind','promotion','promotion_id',gpromo,'quantity',1)));
+  delete from promotion_items where promotion_id=gpromo;
   perform pay_invoice(ginv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',25)));
   update invoices set stock_snapshot_version=null where id=ginv;
   delete from invoice_stock_components where invoice_item_id in (select id from invoice_items where invoice_id=ginv);

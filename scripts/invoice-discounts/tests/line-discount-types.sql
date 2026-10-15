@@ -203,6 +203,8 @@ begin
  perform set_product_prices(st,v,50,50,'available');
  insert into promotions(name,code,promo_type,fixed_price) values('L384 Promo','L384P'||sfx,'bundle',80) returning id into v; insert into fx values ('promo',v);
  insert into promotion_store_prices(promotion_id,store_id,selling_price,available_at_store) values(v,st,80,true);
+ -- 416: a promotion with nothing in it is not sold; a treatment holds no stock.
+ insert into promotion_items(promotion_id,item_type,treatment_name,quantity) values(v,'treatment','L384 Massage',1);
  insert into vouchers(name,code,voucher_kind,selling_price,qty_type) values('L384 Gift 40','L384G'||sfx,'normal',40,'limited') returning id into v; insert into fx values ('gift',v);
  insert into voucher_store_stock(voucher_id,store_id,current_qty) values(v,st,50);
  insert into voucher_store_prices(voucher_id,store_id,selling_price,available_at_store) values(v,st,40,true);

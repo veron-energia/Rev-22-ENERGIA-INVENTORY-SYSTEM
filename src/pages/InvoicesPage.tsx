@@ -72,6 +72,21 @@ const correctionTherapyNote = (t: { closed?: string[]; moved?: string[]; issued?
   ].filter(Boolean);
   return parts.length ? `This correction ${parts.join('; ')}.` : null;
 };
+/** 416: what taking the FOC off a completed FOC invoice did to the vouchers
+ *  it gave, in plain sentences, or null when it did nothing. kept_used holds
+ *  the used ones, and any moved to another customer (said in the entry).
+ *  Stock is not mentioned: most vouchers have none to return. */
+const correctionVoucherNote = (v: { taken_back?: string[]; kept_used?: string[] } | null | undefined): string | null => {
+  const back = v?.taken_back ?? [];
+  const kept = v?.kept_used ?? [];
+  if (!back.length && !kept.length) return null;
+  return [
+    back.length
+      ? `Removing the FOC took back the unused vouchers ${back.join(', ')}. They are given again as the corrected lines give them when the invoice is paid.`
+      : 'Removing the FOC took back no voucher.',
+    kept.length ? `Used or moved vouchers stay where they are: ${kept.join(', ')}.` : null,
+  ].filter(Boolean).join(' ');
+};
 
 const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
   const cls = s === 'completed_foc' ? 'badge-success' : s === 'paid' ? 'badge-success' : s === 'partially_paid' ? 'badge-primary'
@@ -1215,7 +1230,11 @@ const InvoicesPage: React.FC = () => {
       return;
     }
     const newInvoiceId = editingInvoiceId ? null : (typeof data === 'string' ? data : (data as any)?.id ?? null);
-    if (editingInvoiceId) setTherapyNote(correctionTherapyNote((data as any)?.therapy));
+    if (editingInvoiceId) {
+      const notes = [correctionTherapyNote((data as any)?.therapy), correctionVoucherNote((data as any)?.foc_vouchers)]
+        .filter(Boolean);
+      setTherapyNote(notes.length ? notes.join(' ') : null);
+    }
     noteLocalChangeRef.current([newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[]);
     setCorrectionPreview(null);
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);

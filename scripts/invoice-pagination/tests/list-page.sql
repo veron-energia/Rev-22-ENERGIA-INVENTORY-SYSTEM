@@ -7,8 +7,23 @@
 -- rather than the visible page, and an ordering total enough that no row can
 -- appear on two pages or on none.
 --
+-- The second block (416, INVOICES-CREATE-12): search finds the day the list
+-- shows, the business date or an undated invoice's Singapore creation day, as
+-- DD/MM/YYYY, YYYY-MM-DD and "5 Mar 2025", including an invoice made between
+-- midnight and 8 am in Singapore (still the day before in UTC); "5 Mar 2025"
+-- finds that day only, not 15 or 25 Mar, and "Mar 2025" finds the month; a
+-- month name counts as a date only with a number ("5 Mar" is that day in any
+-- year; "Jun" or "Mar" alone is a name search, the Owner, 9 Oct 2026); the
+-- Singapore creation day still finds a dated invoice, also one made before
+-- 8 am; and a page's rows come in the page's order. Needs 416 (psql -v
+-- mig=supabase/416_invoice_editing_foc_and_payment_guards.sql installs it
+-- after "begin;").
+--
 -- Disposable database only; everything is rolled back.
 begin;
+\if :{?mig}
+\i :mig
+\endif
 do $$
 declare own uuid:=gen_random_uuid(); st uuid; st2 uuid; c1 uuid; c2 uuid; pm uuid; pm2 uuid;
  prod uuid; r jsonb; n int; ids uuid[]; seen uuid[]; page jsonb; i int;
@@ -149,5 +164,95 @@ begin
   if sqlerrm not like '%Not a sortable field%' then raise; end if; end;
 
  raise notice 'PASS: a page is one page over 1205 invoices, every row appears exactly once across the pages, filters search and sorting run over the whole set including customer store and payment method, invoice numbers sort naturally, undated rows stay last, and the count and summary describe the filter rather than the page';
+end $$;
+
+-- ═════ 416: the day the list shows, and the order of a page ═════
+do $$
+declare own uuid; st uuid; c uuid; late uuid; early uuid; dated uuid; mid uuid; last uuid; dawn uuid; r jsonb; q text; n int;
+ june uuid; jun uuid; named uuid;
+begin
+ select id into own from profiles where email = 'ilp@t.invalid';
+ perform set_config('request.jwt.claim.sub', own::text, true);
+ insert into stores(name,code,country_code) values('ILP Dates','ILD','SG') returning id into st;
+ insert into customers(full_name,phone) values('Dates Buyer','+61491571804') returning id into c;
+ -- Undated, made at 23:30 on 4 Mar 2025 in Singapore (15:30 UTC that day).
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0001',st,c,own,'unpaid',10,0,10,0,null,timestamptz '2025-03-04 23:30:00+08') returning id into late;
+ -- Undated, made at 01:00 on 5 Mar 2025 in Singapore (still 4 Mar in UTC).
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0002',st,c,own,'unpaid',10,0,10,0,null,timestamptz '2025-03-05 01:00:00+08') returning id into early;
+ -- Dated 5 Mar 2025, made on 10 Mar 2025.
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0003',st,c,own,'unpaid',10,0,10,0,date '2025-03-05',timestamptz '2025-03-10 12:00:00+08') returning id into dated;
+ -- Dated 15 and 25 Mar 2025: "5 Mar 2025" is in their text, not their day.
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0004',st,c,own,'unpaid',10,0,10,0,date '2025-03-15',timestamptz '2025-03-15 12:00:00+08') returning id into mid;
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0005',st,c,own,'unpaid',10,0,10,0,date '2025-03-25',timestamptz '2025-03-25 12:00:00+08') returning id into last;
+ -- Dated 20 Feb 2025, made at 01:00 on 12 Mar 2025 in Singapore (11 Mar in UTC).
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0006',st,c,own,'unpaid',10,0,10,0,date '2025-02-20',timestamptz '2025-03-12 01:00:00+08') returning id into dawn;
+
+ foreach q in array array['05/03/2025', '2025-03-05', '5 Mar 2025', '05 Mar 2025', '5 mar 2025'] loop
+   r := invoice_list_page(q,null,'all',null,null,st,'invoice_no','asc',25,0);
+   if (r->>'total')::int <> 2 or r->'rows'->0->>'id' <> early::text or r->'rows'->1->>'id' <> dated::text then
+     raise exception '"%" should find the invoice made at 01:00 SGT and the one dated that day, found %', q, r->'rows'; end if;
+ end loop;
+ r := invoice_list_page('04/03/2025',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 1 or r->'rows'->0->>'id' <> late::text then
+   raise exception '04/03/2025 should find only the invoice made at 23:30 SGT that day, found %', r->'rows'; end if;
+ r := invoice_list_page('2025-03-10',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 1 or r->'rows'->0->>'id' <> dated::text then
+   raise exception 'The day a dated invoice was made should still find it, found %', r->'rows'; end if;
+ r := invoice_list_page('2025-03-12',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 1 or r->'rows'->0->>'id' <> dawn::text then
+   raise exception 'The Singapore day a dated invoice was made before 8 am should find it, found %', r->'rows'; end if;
+ r := invoice_list_page('2025-03-11',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 0 then
+   raise exception 'The UTC day an invoice was made should not find it, found %', r->'rows'; end if;
+ r := invoice_list_page('Mar 2025',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 5 then
+   raise exception '"Mar 2025" should find the five invoices of March 2025, found %', r->'rows'; end if;
+ r := invoice_list_page('15 Mar 2025',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 1 or r->'rows'->0->>'id' <> mid::text then
+   raise exception '"15 Mar 2025" should find the invoice of that day only, found %', r->'rows'; end if;
+
+ -- A month name counts as a date only with a number (the Owner, 9 Oct
+ -- 2026): "5 Mar" is that day in any year, "Jun 2025" the month; "Mar" or
+ -- "Jun" alone is a name search.
+ foreach q in array array['5 Mar', '05 Mar', '5 mar'] loop
+   r := invoice_list_page(q,null,'all',null,null,st,'invoice_no','asc',25,0);
+   if (r->>'total')::int <> 2 or r->'rows'->0->>'id' <> early::text or r->'rows'->1->>'id' <> dated::text then
+     raise exception '"%" should find the two invoices of 5 March only, not 15 or 25 March, found %', q, r->'rows'; end if;
+ end loop;
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0007',st,c,own,'unpaid',10,0,10,0,date '2025-06-03',timestamptz '2025-06-03 12:00:00+08') returning id into june;
+ insert into customers(full_name,phone) values('Jun Lim','+61491574118') returning id into jun;
+ insert into invoices(invoice_no,store_id,customer_id,created_by,status,subtotal,discount_total,total_amount,paid_amount,business_date,created_at)
+ values('ILD-0008',st,jun,own,'unpaid',10,0,10,0,date '2025-04-02',timestamptz '2025-04-02 12:00:00+08') returning id into named;
+ r := invoice_list_page('Jun',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 1 or r->'rows'->0->>'id' <> named::text then
+   raise exception '"Jun" alone should find Jun Lim''s invoice by name only, not the one dated in June, found %', r->'rows'; end if;
+ r := invoice_list_page('Mar',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 0 then
+   raise exception '"Mar" alone should find no invoice by its date, found %', r->'rows'; end if;
+ r := invoice_list_page('Jun 2025',null,'all',null,null,st,'invoice_no','asc',25,0);
+ if (r->>'total')::int <> 1 or r->'rows'->0->>'id' <> june::text then
+   raise exception '"Jun 2025" should find the invoice dated in June 2025, found %', r->'rows'; end if;
+
+ -- A page's rows come in the page's order (every row, both directions).
+ foreach q in array array['invoice_no', 'created_at', 'total', 'customer'] loop
+   r := invoice_list_page(null,null,'all',null,null,null,q,'asc',200,0);
+   select count(*) into n from jsonb_array_elements(r->'rows') with ordinality t(x, i)
+    where i > 1 and (case q when 'invoice_no' then public.invoice_no_sortkey(x->>'invoice_no') < public.invoice_no_sortkey((r->'rows'->((i - 2)::int))->>'invoice_no')
+                           when 'created_at' then (x->>'created_at')::timestamptz < ((r->'rows'->((i - 2)::int))->>'created_at')::timestamptz
+                           when 'total' then (x->>'total_amount')::numeric < ((r->'rows'->((i - 2)::int))->>'total_amount')::numeric
+                           else lower(x->>'customer_name') < lower((r->'rows'->((i - 2)::int))->>'customer_name') end);
+   if n > 0 then raise exception 'Rows sorted by % ascending came out of order (% times)', q, n; end if;
+   if exists (select 1 from jsonb_array_elements(r->'rows') x where x ? 'rn' or x ? 'sort_no') then
+     raise exception 'A row carries the page''s own numbering'; end if;
+ end loop;
+
+ raise notice 'PASS: search finds the day the list shows (DD/MM/YYYY, YYYY-MM-DD, 5 Mar 2025, that day only), the Singapore day for an undated invoice made before 8 am, the month from Mar 2025, the day from 5 Mar, and the Singapore creation day of a dated one; Jun or Mar alone is a name search; a page''s rows come in its order';
 end $$;
 rollback;

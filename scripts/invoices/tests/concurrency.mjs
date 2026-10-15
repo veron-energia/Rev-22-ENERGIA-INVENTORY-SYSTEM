@@ -59,4 +59,7 @@ const transferCheck=await sql(`select json_build_object('transfers',(select coun
  from invoice_benefit_values b join customer_credit_lots l on l.id=b.lot_id where b.invoice_id='${info.invoice}';`);
 assert.deepEqual(JSON.parse(transferCheck.out),{transfers:1,remaining:120,original:0});
 console.log('PASS: concurrent recipient corrections and four retries move unused value exactly once');
+// 416: New Invoice saves racing with one request id (needs 416 applied).
+const { createRequestRace } = await import('./create-request-race.mjs');
+await createRequestRace(sql, assert);
 console.log('Fixtures remain only in the disposable test database; rebuild it before another run.');
