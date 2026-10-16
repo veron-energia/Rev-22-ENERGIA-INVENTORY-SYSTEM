@@ -144,7 +144,9 @@ declare
                              'affiliate_deduction_settlement_record','affiliate_deduction_settlement_void',
                              'trg_affiliate_deduction_settlement_guard','affiliate_month_balances',
                              -- 415: which passes the website may sell (the edge function asks it)
-                             'web_order_tickets'];
+                             'web_order_tickets',
+                             -- 432: how affiliate sign-up compares names and emails
+                             'customer_name_words','customer_names_match','customer_email_match_key'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon
