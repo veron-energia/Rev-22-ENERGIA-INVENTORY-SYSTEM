@@ -159,6 +159,16 @@
         "vite.stock-loans-preview.config.mts"
       ],
       "port": 5211
+    },
+    {
+      "name": "survey-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.survey-preview.config.mts"
+      ],
+      "port": 5212
     }
   ]
 }

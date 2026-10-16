@@ -7,6 +7,7 @@ import { Store, SurveyLink, HealthSurvey, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import SurveyDetailModal from '../components/SurveyDetailModal';
 import SourceOptionsModal from '../components/SourceOptionsModal';
+import SurveyHoldsPanel, { HeldForm } from '../components/SurveyHoldsPanel';
 import { RefreshCw, Plus, QrCode, Copy, ClipboardList, Search, Link2, Check, Eye, FileText } from 'lucide-react';
 
 const randomToken = () => {
@@ -22,7 +23,27 @@ const SurveysPage: React.FC = () => {
   // Manager's (health_survey_detail and, since 406, upsert_consultant_survey
   // refuse them), so they are not offered Start survey / Open.
   const canOpenSurvey = profile?.role !== 'inventory_manager';
-  const [tab, setTab] = useState<'submissions' | 'links'>('submissions');
+  const [tab, setTab] = useState<'submissions' | 'to_match' | 'links'>('submissions');
+  // 433: QR forms the server held for staff instead of making a second
+  // customer. null until the server answers (and before 433 is applied, or
+  // for an Inventory Manager, who sees no health surveys): no To match tab.
+  const [holds, setHolds] = useState<HeldForm[] | null>(null);
+  const [holdsErr, setHoldsErr] = useState<string | null>(null);
+  const loadHolds = useCallback(async () => {
+    if (!canOpenSurvey) { setHolds(null); return; }
+    const { data, error } = await supabase.rpc('health_survey_holds_list');
+    // A server without 433 has no such function (PGRST202): no tab. Any other
+    // failure keeps the list already shown, and says so.
+    if (error) {
+      if (error.code === 'PGRST202' || /Could not find the function/i.test(error.message)) setHolds(null);
+      else setHoldsErr(error.message);
+      return;
+    }
+    setHoldsErr(null);
+    setHolds((data as HeldForm[]) ?? []);
+  }, [canOpenSurvey]);
+  useEffect(() => { void loadHolds(); }, [loadHolds]);
+  useEffect(() => { if (!holds && tab === 'to_match') setTab('submissions'); }, [holds, tab]);
   // Every customer, with their single survey and remark count, so a consultant
   // can record findings for people who never used the public QR form.
   const [custRows, setCustRows] = useState<any[]>([]);
@@ -183,20 +204,31 @@ const SurveysPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Health Surveys</h2><p>Every customer, with their health survey and consultation remarks. Public QR submissions appear here too.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="btn btn-secondary" onClick={() => { void load(); void loadHolds(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canManage && <button className="btn btn-secondary" onClick={() => setSourcesOpen(true)}>Customer Sources</button>}
           {canManage && tab === 'links' && <button className="btn btn-primary" onClick={() => { setAddOpen(true); setErr(null); }}><Plus size={16} /> New QR Link</button>}
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
-        {([['submissions', 'Submissions'], ['links', 'QR Links']] as const).map(([v, l]) => (
-          <button key={v} onClick={() => setTab(v)} style={{ padding: '8px 16px', background: 'none', border: 'none', borderBottom: tab === v ? '2px solid var(--primary)' : '2px solid transparent', color: tab === v ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: tab === v ? 700 : 500, cursor: 'pointer' }}>{l}</button>
+        {([['submissions', 'Submissions'],
+           ...(holds ? [['to_match', `To match (${holds.length})`] as const] : []),
+           ['links', 'QR Links']] as const).map(([v, l]) => (
+          <button key={v} data-tab={v} onClick={() => setTab(v)} style={{ padding: '8px 16px', background: 'none', border: 'none', borderBottom: tab === v ? '2px solid var(--primary)' : '2px solid transparent', color: tab === v ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: tab === v ? 700 : 500, cursor: 'pointer' }}>{l}</button>
         ))}
       </div>
 
       {tab === 'submissions' && (
         <>
+          {holds && holds.length > 0 && (
+            <div className="alert alert-warning" style={{ marginBottom: 12, alignItems: 'center' }}>
+              <span>⚠</span>
+              <div style={{ flex: 1 }}>
+                {holds.length === 1 ? '1 QR form is' : `${holds.length} QR forms are`} waiting to be matched to a customer.
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={() => setTab('to_match')}>Open To match</button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
             {([['all', 'All customers'], ['with_survey', 'With survey'], ['no_survey', 'No survey yet'], ['with_remarks', 'With remarks']] as const).map(([v, lbl]) => (
               <button key={v} className={`btn btn-sm ${custFilter === v ? 'btn-primary' : 'btn-secondary'}`}
@@ -314,6 +346,20 @@ const SurveysPage: React.FC = () => {
             </div>
           </div>
         </Modal>
+      )}
+
+      {tab === 'to_match' && holds && (
+        <>
+          {holdsErr && (
+            <div className="alert alert-warning" role="alert" style={{ marginBottom: 12 }}>
+              <span>⚠</span>
+              <div>The waiting forms could not be reloaded just now ({holdsErr}). The list below may be out of date;
+                press Refresh to try again.</div>
+            </div>
+          )}
+          <SurveyHoldsPanel forms={holds} canClose={canManage}
+            onChanged={() => { void loadHolds(); void loadCustomers(); }} />
+        </>
       )}
 
       {tab === 'links' && (
