@@ -1,4 +1,5 @@
 import React from 'react';
+import { isChunkLoadError } from '../lib/staleChunks';
 
 /**
  * Catches a render fault and shows what went wrong.
@@ -9,9 +10,11 @@ import React from 'react';
  * time on this project.
  *
  * The rest of the app keeps working: only the section that failed is replaced.
+ * The pages sit in one inside the menu layout, so the menu stays; moving to
+ * another page clears the error (resetKey, or a key on the page).
  */
 export class ErrorBoundary extends React.Component<
-  { children: React.ReactNode; label?: string },
+  { children: React.ReactNode; label?: string; resetKey?: string },
   { error: Error | null }
 > {
   state: { error: Error | null } = { error: null };
@@ -25,11 +28,34 @@ export class ErrorBoundary extends React.Component<
     console.error('Render error', this.props.label ?? '', error, info.componentStack);
   }
 
+  componentDidUpdate(prev: { resetKey?: string }) {
+    if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: null });
+  }
+
   render() {
     if (!this.state.error) return this.props.children;
 
+    // ADMIN-AUTH-8: a page file of an older build that is gone after a deploy.
+    // Trying again asks for the same missing file; only a reload helps.
+    if (isChunkLoadError(this.state.error)) {
+      return (
+        <div role="alert" style={{
+          margin: 16, padding: 16, borderRadius: 8,
+          background: 'var(--surface-2, #f3f4f6)', border: '1px solid var(--border, #e5e7eb)',
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>A newer version of the app is ready</div>
+          <div style={{ fontSize: 13, marginBottom: 10 }}>
+            Reload the page to carry on. Anything you saved before is kept.
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => window.location.reload()}>
+            Reload page
+          </button>
+        </div>
+      );
+    }
+
     return (
-      <div style={{
+      <div role="alert" style={{
         margin: 16, padding: 16, borderRadius: 8,
         background: 'var(--danger-light, #fdecec)',
         border: '1px solid var(--danger, #c0392b)',

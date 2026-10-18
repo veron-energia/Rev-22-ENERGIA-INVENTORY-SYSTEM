@@ -154,6 +154,29 @@ export function validateRecovery(body: Record<string, unknown>): Validated<{ ema
 // ---------------------------------------------------------------------------
 
 export const PASSWORD_CHANGE_FIELDS = ['password'] as const;
+export const OWN_PASSWORD_CHANGE_FIELDS = ['password', 'current_password'] as const;
+
+/**
+ * auth-change-password's body (429): the new password and, when the session
+ * did not just come from an email link, the current password. The current
+ * one is only checked for presence and size here; Supabase Auth decides
+ * whether it is right.
+ */
+export function validateOwnPasswordChange(body: Record<string, unknown>):
+  Validated<{ password: string; currentPassword: string | null }> {
+  const extra = unknownFields(body, OWN_PASSWORD_CHANGE_FIELDS);
+  if (extra.length) return { ok: false, errors: [{ field: extra[0], message: `Unexpected field: ${extra.slice(0, 5).join(', ')}` }] };
+  const problem = passwordProblem(body.password);
+  if (problem) return { ok: false, errors: [{ field: 'password', message: problem }] };
+  const current = body.current_password;
+  if (current !== undefined && current !== null && current !== '') {
+    if (typeof current !== 'string' || new TextEncoder().encode(current).length > PASSWORD_MAX_BYTES) {
+      return { ok: false, errors: [{ field: 'current_password', message: 'Enter your current password.' }] };
+    }
+    return { ok: true, value: { password: body.password as string, currentPassword: current } };
+  }
+  return { ok: true, value: { password: body.password as string, currentPassword: null } };
+}
 
 export function validatePasswordChange(body: Record<string, unknown>): Validated<{ password: string }> {
   const extra = unknownFields(body, PASSWORD_CHANGE_FIELDS);

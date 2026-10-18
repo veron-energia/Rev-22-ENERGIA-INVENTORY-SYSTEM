@@ -51,8 +51,12 @@ set local lock_timeout = '10s';
 \endif
 do $$
 begin
+  -- 412's version, or 429's (which also lifts a block from a pending
+  -- invitee invited again, and names a cancelled invitation as such when the
+  -- profile is removed too; nothing tested here changes).
   if to_regprocedure('public.staff_login_sync(uuid)') is null
-     or md5(pg_get_functiondef(to_regprocedure('public.staff_login_sync(uuid)'))) <> '7648388b0b41caee3696694ae172377e' then
+     or md5(pg_get_functiondef(to_regprocedure('public.staff_login_sync(uuid)')))
+        not in ('7648388b0b41caee3696694ae172377e', '9259111deccca8c66e95469acfdd250f') then
     raise exception '412 is not in this database: run with -v prelude=supabase/412_deactivated_staff_signed_out_and_blocked.sql (npm run test:permissions:login-blocked -- -v prelude=...; see the header)'; end if;
 end $$;
 
@@ -180,7 +184,7 @@ begin
                          ('invitee_cancel','staff',false,'pending'), ('invitee_accept','staff',false,'pending'))
                   x(k, role, active, inv) on x.k = fx.k;
   -- The affiliate: a login with an affiliate account and no profile.
-  insert into public.customers (full_name, phone) values ('412T Affiliate', '+6591412001') returning id into v_cust;
+  insert into public.customers (full_name, phone) values ('412T Affiliate', '+61491578148') returning id into v_cust;
   insert into public.affiliate_accounts (auth_user_id, customer_id) values (pg_temp.fx('affiliate'), v_cust);
   -- The invitations of the pending invitees.
   insert into public.user_invitations (request_id, email, email_normalized, full_name, role, status, auth_user_id, profile_id, invited_by)
@@ -242,11 +246,11 @@ select pg_temp.run('owner', $q$update public.profiles set is_active = false, upd
     where id = pg_temp.fx('staff_d') and is_active = true$q$, 'ok',
   'page now: an Owner switches someone off while a Manager has their dialog open');
 select pg_temp.run('manager', $q$update public.profiles set full_name = '412T staff_d', role = 'staff',
-    work_phone = '+6591412077', personal_phone = null, personal_email = null, updated_at = now()
+    work_phone = '+61491578888', personal_phone = null, personal_email = null, updated_at = now()
     where id = pg_temp.fx('staff_d')$q$, 'ok',
   'page now: the Manager saves a new phone with Active untouched, so Active is not sent');
 select pg_temp.check(pg_temp.active('staff_d') = false and pg_temp.blocked_100y('staff_d') and pg_temp.reason('staff_d') = 'deactivated'
-                     and (select work_phone from public.profiles where id = pg_temp.fx('staff_d')) = '+6591412077',
+                     and (select work_phone from public.profiles where id = pg_temp.fx('staff_d')) = '+61491578888',
   'page now: the phone is saved and they stay switched off and blocked (the whole-row save switched them back on)');
 select pg_temp.keep('state', pg_temp.state());
 select pg_temp.run('manager', $q$update public.profiles set is_active = false, updated_at = now()
@@ -267,7 +271,7 @@ select pg_temp.run('manager', $q$update public.profiles set is_active = true, up
   'page now: the Manager ticks Active in the old dialog (sent onto "off")');
 select pg_temp.check(pg_temp.kept('state') = pg_temp.state(), 'page now: that save changes no row either');
 select pg_temp.run('manager', $q$update public.profiles set full_name = '412T staff_e', role = 'staff',
-    work_phone = '+6591412078', updated_at = now() where id = pg_temp.fx('staff_e')$q$, 'ok',
+    work_phone = '+61491578957', updated_at = now() where id = pg_temp.fx('staff_e')$q$, 'ok',
   'page now: the Manager saves a new phone in the old dialog, Active untouched');
 select pg_temp.check(pg_temp.active('staff_e') and pg_temp.ban('staff_e') is null and pg_temp.reason('staff_e') is null
                      and pg_temp.audits('staff_e', 'staff_login_blocked') = 1 and pg_temp.audits('staff_e', 'staff_login_unblocked') = 1,
@@ -278,7 +282,7 @@ select pg_temp.keep('state', pg_temp.state());
 select pg_temp.sync('staff_a', 'already_blocked', 're-run: the helper again answers already_blocked');
 select pg_temp.sync('staff_a', 'already_blocked', 're-run: and again');
 select pg_temp.check(pg_temp.kept('state') = pg_temp.state(), 're-run: twice more changed no row');
-select pg_temp.run('owner', $q$update public.profiles set full_name = '412T staff_a renamed', work_phone = '+6591412099'
+select pg_temp.run('owner', $q$update public.profiles set full_name = '412T staff_a renamed', work_phone = '+61491579212'
     where id = pg_temp.fx('staff_a')$q$, 'ok', 're-run: an Owner edits a closed profile''s name and phone');
 select pg_temp.run('owner', $q$update public.profiles set is_active = false, updated_at = now()
     where id = pg_temp.fx('staff_a')$q$, 'ok', 're-run: and saves Active off again, unchanged');

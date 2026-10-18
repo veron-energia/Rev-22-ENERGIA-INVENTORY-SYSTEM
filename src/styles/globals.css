@@ -170,9 +170,11 @@ tbody tr:hover { background: var(--surface-2); }
 
 
 /* ── 5G-3: responsive (laptop + phone) ─────────────────────────────── */
-.app-shell { display: flex; min-height: 100vh; }
+.app-shell { display: flex; min-height: 100vh; min-height: 100dvh; }
+/* 100dvh (with 100vh for older browsers): the visible height, so Sign out at
+   the bottom of the menu is not hidden under a phone browser's toolbar. */
 .sidebar { width: 240px; background: var(--surface); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; flex-shrink: 0; }
+  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; height: 100dvh; flex-shrink: 0; }
 .app-main { padding: 32px 36px; }
 .mobile-topbar { display: none; }
 .sidebar-backdrop { display: none; }
@@ -181,7 +183,7 @@ tbody tr:hover { background: var(--surface-2); }
   .app-shell { flex-direction: column; }
   .mobile-topbar { display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 40;
     padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
-  .sidebar { position: fixed; left: 0; top: 0; bottom: 0; height: 100vh; z-index: 60;
+  .sidebar { position: fixed; left: 0; top: 0; bottom: 0; height: 100vh; height: 100dvh; z-index: 60;
     transform: translateX(-105%); transition: transform 0.2s ease; box-shadow: 0 8px 30px rgba(15,23,42,0.2); }
   .sidebar.open { transform: translateX(0); }
   .sidebar-backdrop { display: block; position: fixed; inset: 0; background: rgba(15,23,42,0.45); z-index: 50; }

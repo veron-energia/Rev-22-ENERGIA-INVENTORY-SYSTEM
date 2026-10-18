@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { Profile, UserStoreAssignment } from '../types';
@@ -24,6 +24,12 @@ interface AuthContextValue {
   affiliateAccount: AffiliateAccount | null;
   assignments: UserStoreAssignment[];
   loading: boolean;
+  /**
+   * A login has just signed in and its account is still being read. The
+   * guards show the loader meanwhile, not "Account setup needed"
+   * (ADMIN-AUTH-14). Never set for a re-read of an account already loaded.
+   */
+  resolving: boolean;
   error: string | null;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
@@ -32,6 +38,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+const UNREACHABLE = 'We could not reach the server to load your account. Check your connection and try again.';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [actorType, setActorType] = useState<ActorType>(null);
@@ -39,9 +47,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [affiliateAccount, setAffiliateAccount] = useState<AffiliateAccount | null>(null);
   const [assignments, setAssignments] = useState<UserStoreAssignment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [resolving, setResolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The login whose account (staff, affiliate or neither) is loaded now.
+  const loadedFor = useRef<string | null>(null);
+  // What that login was loaded as. Null when it is neither, or its profile is
+  // switched off: a failed re-read then shows the error, not the old page.
+  const loadedActor = useRef<'staff' | 'affiliate' | null>(null);
+
+  const clearActor = useCallback(() => {
+    setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
+  }, []);
 
   const resolveActor = useCallback(async (userId: string) => {
+    // ADMIN-AUTH-14: a re-read of an account already loaded that fails (a
+    // network blip) keeps what is there. Clearing it replaced the page staff
+    // were working on, an unsaved invoice included, with "Account setup
+    // needed" and only Sign out. Only a staff or affiliate account is kept.
+    // A login loaded as neither (onboarding not finished) or as switched off
+    // shows the connection error, so the guards do not send it elsewhere.
+    const known = loadedFor.current === userId && loadedActor.current !== null;
+
     // 1) Staff? A profiles row keyed by auth.uid().
     const { data: profileData, error: profileError } = await supabase
       .from('profiles').select('*').eq('id', userId).maybeSingle();
@@ -51,8 +77,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // whose only way out is Sign out, because a network blip looks exactly
     // like an absent row once the error is dropped.
     if (profileError) {
-      setError('We could not reach the server to load your account. Check your connection and try again.');
-      setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
+      if (known) return;
+      setError(UNREACHABLE);
+      clearActor();
+      loadedActor.current = null;
       return;
     }
 
@@ -60,15 +88,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!profileData.is_active) {
         setError('Your account has been deactivated. Contact an Owner or Manager.');
         setActorType(null); setProfile(null); setAffiliateAccount(null);
+        loadedFor.current = userId;
+        loadedActor.current = null;
         return;
       }
       setError(null);
       setActorType('staff');
       setProfile(profileData as Profile);
       setAffiliateAccount(null);
-      const { data: assignData } = await supabase
+      loadedFor.current = userId;
+      loadedActor.current = 'staff';
+      const { data: assignData, error: assignError } = await supabase
         .from('user_store_assignments').select('*').eq('user_id', userId);
-      setAssignments((assignData as UserStoreAssignment[]) ?? []);
+      if (!assignError || !known) setAssignments((assignData as UserStoreAssignment[]) ?? []);
       return;
     }
 
@@ -80,8 +112,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .eq('auth_user_id', userId).maybeSingle();
 
     if (acctError) {
-      setError('We could not reach the server to load your account. Check your connection and try again.');
-      setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
+      if (known) return;
+      setError(UNREACHABLE);
+      clearActor();
+      loadedActor.current = null;
       return;
     }
 
@@ -91,35 +125,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAffiliateAccount(acct as AffiliateAccount);
       setProfile(null);
       setAssignments([]);
+      loadedFor.current = userId;
+      loadedActor.current = 'affiliate';
       return;
     }
 
     // 3) Neither yet (e.g. verified email but onboarding not completed).
-    setActorType(null); setProfile(null); setAffiliateAccount(null);
-    setAssignments([]); setError(null);
-  }, []);
+    clearActor(); setError(null);
+    loadedFor.current = userId;
+    loadedActor.current = null;
+  }, [clearActor]);
 
   useEffect(() => {
+    let live = true;
     supabase.auth.getSession().then(({ data }) => {
+      if (!live) return;
       setSession(data.session);
       if (data.session?.user) {
-        resolveActor(data.session.user.id).finally(() => setLoading(false));
+        resolveActor(data.session.user.id).finally(() => { if (live) setLoading(false); });
       } else {
         setLoading(false);
       }
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
-      if (newSession?.user) {
-        resolveActor(newSession.user.id);
-      } else {
-        setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
+      const userId = newSession?.user?.id;
+      if (!userId) {
+        loadedFor.current = null;
+        loadedActor.current = null;
+        clearActor();
+        return;
       }
+      // The hourly token refresh does not change who this is, so the account
+      // is not read again. A login switched off is signed out by the
+      // database (412), which arrives here as a sign-out.
+      if (event === 'TOKEN_REFRESHED' && loadedFor.current === userId) return;
+      // Already loaded (a tab coming back into view, an account update): read
+      // it again in the background; the page stays as it is.
+      if (loadedFor.current === userId) {
+        void resolveActor(userId);
+        return;
+      }
+      // A new sign-in: the loader shows until the account is read.
+      setResolving(true);
+      resolveActor(userId).finally(() => { if (live) setResolving(false); });
     });
 
-    return () => sub.subscription.unsubscribe();
-  }, [resolveActor]);
+    return () => { live = false; sub.subscription.unsubscribe(); };
+  }, [resolveActor, clearActor]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     setError(null);
@@ -132,8 +186,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
-    setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
-  }, []);
+    loadedFor.current = null;
+    loadedActor.current = null;
+    clearActor();
+  }, [clearActor]);
 
   const refreshProfile = useCallback(async () => {
     if (session?.user) await resolveActor(session.user.id);
@@ -141,7 +197,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   return (
     <AuthContext.Provider
-      value={{ session, actorType, profile, affiliateAccount, assignments, loading, error, signIn, signOut, refreshProfile }}
+      value={{ session, actorType, profile, affiliateAccount, assignments, loading, resolving, error, signIn, signOut, refreshProfile }}
     >
       {children}
     </AuthContext.Provider>

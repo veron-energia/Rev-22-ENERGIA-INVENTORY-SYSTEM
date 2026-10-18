@@ -46,6 +46,12 @@ export interface InvitationDeps {
   adminRpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: any; error: { message: string } | null }>;
   generateInviteLink: (admin: Admin, args: { email: string; redirectTo: string; fullName: string }) => Promise<GenerateOutcome>;
   regenerateSignupLink: (admin: Admin, args: { email: string; redirectTo: string }) => Promise<GenerateOutcome>;
+  /**
+   * 429: a link for a login that already exists and whose address is
+   * confirmed, where an 'invite' link is refused. Only ever asked for a login
+   * the database said this invitation may use.
+   */
+  generateRecoveryLink: (admin: Admin, args: { email: string; redirectTo: string }) => Promise<GenerateOutcome>;
   deliver: (config: AuthEmailConfig, request: DeliveryRequest) => Promise<DeliveryResult>;
   admin: Admin;
 }
@@ -138,6 +144,108 @@ async function sendInvitation(
   });
 }
 
+/**
+ * 429: an address whose login is someone else's (a confirmed login with no
+ * invitation or staff profile behind it). Supabase Auth refuses an 'invite'
+ * link for it, and it is not ours to reuse. The invitation was already saved
+ * by invite_user_begin, so say so rather than "nothing was changed". A
+ * removed member of staff's login is reused (the Owner, 10 Oct 2026), so it
+ * does not end here.
+ */
+const LOGIN_NOT_REUSABLE =
+  'That address already has a login that cannot be invited, so no email was sent. '
+  + 'The invitation is saved: cancel it on Users & Roles.';
+
+const DELIVERY_DETAIL = (delivery: DeliveryResult, accepted: boolean) =>
+  accepted ? undefined
+    : definitelyNotSent(delivery.outcome)
+      ? 'The email was not sent. Use Resend to try again.'
+      : 'It is not certain whether the email went out. Check before resending.';
+
+async function recordFailure(deps: InvitationDeps, invitationId: string, detail: string, isResend: boolean) {
+  await deps.adminRpc('invite_user_record_delivery', {
+    p_invitation_id: invitationId, p_status: 'failed', p_detail: detail, p_is_resend: isResend,
+  });
+}
+
+/**
+ * 429: the login this invitation may use already, if any (asked of the
+ * database with the service role): the login tied to it, a cancelled
+ * invitee's, a removed member of staff's, or one an unfinished invitation
+ * made. Null when there is none; an answer that is not a login id counts as
+ * none.
+ */
+async function reusableLogin(deps: InvitationDeps, invitationId: string):
+  Promise<{ ok: true; loginId: string | null } | { ok: false }> {
+  const res = await deps.adminRpc('invite_user_reusable_login', { p_invitation_id: invitationId });
+  if (res.error) return { ok: false };
+  return { ok: true, loginId: typeof res.data === 'string' && res.data ? res.data : null };
+}
+
+/**
+ * Tie a login to the invitation and give it the invitation's pending
+ * profile (invite_user_provisioned). Anything but "provisioned" sends no
+ * email: a cancel during set-up (413), a login that is already someone's
+ * (429), an invitation no longer pending.
+ */
+async function provision(
+  deps: InvitationDeps, invitationId: string, loginId: string, isResend: boolean,
+): Promise<{ ok: true } | { ok: false; result: InviteResult }> {
+  const provisioned = await deps.adminRpc('invite_user_provisioned', {
+    p_invitation_id: invitationId,
+    p_auth_user_id: loginId,
+  });
+  if (provisioned.error) {
+    await recordFailure(deps, invitationId, 'profile setup failed', isResend);
+    return {
+      ok: false,
+      result: {
+        kind: 'provisioning_failed', invitationId,
+        message: 'The account was created but its profile could not be set up. '
+               + 'The invitation is saved and no access has been granted — use Resend to try again.',
+      },
+    };
+  }
+  const outcome = provisioned.data?.outcome;
+  if (outcome === 'provisioned') return { ok: true };
+  if (outcome === 'login_in_use') {
+    await recordFailure(deps, invitationId, 'the login belongs to someone else', isResend);
+    return { ok: false, result: { kind: 'provisioning_failed', invitationId, message: LOGIN_NOT_REUSABLE } };
+  }
+  // 413: an invitation cancelled while its login was being made answers
+  // 'cancelled', not an error. The database has tied that login to the
+  // cancelled invitation and closed it (412 blocks it), so nothing is sent.
+  return {
+    ok: false,
+    result: {
+      kind: 'provisioning_failed', invitationId,
+      message: outcome === 'cancelled'
+        ? 'The invitation was cancelled while it was being set up. No email was sent.'
+        : 'This invitation is no longer pending. No email was sent.',
+    },
+  };
+}
+
+/**
+ * The link for the email. 'invite' makes the login when there is none, and
+ * makes a new link for a login whose address is not confirmed yet. For a
+ * login this invitation may use whose address is confirmed (its first link
+ * was opened, perhaps by an email scanner) Supabase refuses 'invite', so a
+ * recovery link signs that same login in to choose a password (429).
+ */
+async function invitationLink(
+  deps: InvitationDeps,
+  args: { email: string; fullName: string; redirectTo: string; knownLogin: boolean },
+): Promise<GenerateOutcome> {
+  const generated = await deps.generateInviteLink(deps.admin, {
+    email: args.email, redirectTo: args.redirectTo, fullName: args.fullName,
+  });
+  if (generated.status === 'already_confirmed' && args.knownLogin) {
+    return await deps.generateRecoveryLink(deps.admin, { email: args.email, redirectTo: args.redirectTo });
+  }
+  return generated;
+}
+
 export async function createInvitation(
   deps: InvitationDeps,
   config: AuthEmailConfig,
@@ -172,70 +280,63 @@ export async function createInvitation(
 
   const invitationId: string = row.invitation_id;
 
-  const generated = await deps.generateInviteLink(deps.admin, {
-    email: input.email, redirectTo, fullName: input.fullName,
+  // 429: a login this address already has that the invitation may use (a
+  // cancelled invitee's or a removed member of staff's, invited again). It is
+  // set up first: its profile is put back as pending and the block placed
+  // when it was cancelled or removed is lifted, or the new link would be
+  // refused. A removed member of staff's address is confirmed, so their link
+  // is a recovery link (invitationLink).
+  const reusable = await reusableLogin(deps, invitationId);
+  if (!reusable.ok) {
+    await recordFailure(deps, invitationId, 'the login check failed', false);
+    return {
+      kind: 'provisioning_failed', invitationId,
+      message: 'The invitation is saved, but it could not be set up. No access has been granted — use Resend to try again.',
+    };
+  }
+  const knownLogin = reusable.loginId;
+  if (knownLogin) {
+    const ready = await provision(deps, invitationId, knownLogin, false);
+    if (!ready.ok) return ready.result;
+  }
+
+  const generated = await invitationLink(deps, {
+    email: input.email, fullName: input.fullName, redirectTo, knownLogin: !!knownLogin,
   });
   if (generated.status !== 'ok') {
     // The invitation row survives on purpose. A retry resends it rather than
     // creating a second person, and nothing is deleted to tidy up.
-    await deps.adminRpc('invite_user_record_delivery', {
-      p_invitation_id: invitationId, p_status: 'failed',
-      p_detail: `link generation returned ${generated.status}`, p_is_resend: false,
-    });
+    await recordFailure(deps, invitationId, `link generation returned ${generated.status}`, false);
     return {
       kind: 'provisioning_failed', invitationId,
-      message: generated.status === 'already_confirmed'
-        ? 'That address already has a confirmed account. Nothing was changed.'
+      message: generated.status === 'already_confirmed' && !knownLogin
+        ? LOGIN_NOT_REUSABLE
         : 'The account could not be created. The invitation is saved — use Resend to try again.',
     };
   }
 
   if (!isTrustedActionLink(generated.link.actionLink, config)) {
-    await deps.adminRpc('invite_user_record_delivery', {
-      p_invitation_id: invitationId, p_status: 'failed',
-      p_detail: 'generated link failed origin validation', p_is_resend: false,
-    });
+    await recordFailure(deps, invitationId, 'generated link failed origin validation', false);
     return { kind: 'provisioning_failed', invitationId, message: 'The invitation link could not be verified.' };
   }
 
   // The account exists; attach it and write the inaccessible profile. If this
   // fails the account is left with no profile at all, which grants nothing.
   if (!generated.link.userId) {
-    await deps.adminRpc('invite_user_record_delivery', {
-      p_invitation_id: invitationId, p_status: 'failed',
-      p_detail: 'no auth user id returned', p_is_resend: false,
-    });
+    await recordFailure(deps, invitationId, 'no auth user id returned', false);
     return {
       kind: 'provisioning_failed', invitationId,
       message: 'The account was created but could not be identified. The invitation is saved — use Resend.',
     };
   }
-
-  const provisioned = await deps.adminRpc('invite_user_provisioned', {
-    p_invitation_id: invitationId,
-    p_auth_user_id: generated.link.userId,
-  });
-  if (provisioned.error) {
-    await deps.adminRpc('invite_user_record_delivery', {
-      p_invitation_id: invitationId, p_status: 'failed',
-      p_detail: 'profile setup failed', p_is_resend: false,
-    });
-    return {
-      kind: 'provisioning_failed', invitationId,
-      message: 'The account was created but its profile could not be set up. '
-             + 'The invitation is saved and no access has been granted — use Resend to try again.',
-    };
-  }
-  // 413: an invitation cancelled while its login was being made answers
-  // 'cancelled', not an error. The database has tied that login to the
-  // cancelled invitation and closed it (412 blocks it), so nothing is sent.
-  if (provisioned.data?.outcome !== 'provisioned') {
-    return {
-      kind: 'provisioning_failed', invitationId,
-      message: provisioned.data?.outcome === 'cancelled'
-        ? 'The invitation was cancelled while it was being set up. No email was sent.'
-        : 'This invitation is no longer pending. No email was sent.',
-    };
+  if (knownLogin) {
+    if (generated.link.userId !== knownLogin) {
+      await recordFailure(deps, invitationId, 'the link was made for another login', false);
+      return { kind: 'provisioning_failed', invitationId, message: 'The invitation link could not be verified.' };
+    }
+  } else {
+    const ready = await provision(deps, invitationId, generated.link.userId, false);
+    if (!ready.ok) return ready.result;
   }
 
   const delivery = await sendInvitation(deps, config, {
@@ -256,10 +357,7 @@ export async function createInvitation(
     delivery: accepted ? 'accepted_by_provider' : 'failed',
     // definitelyNotSent distinguishes "the provider said no" from "we never
     // found out", which is the difference between resend and wait.
-    detail: accepted ? undefined
-          : definitelyNotSent(delivery.outcome)
-            ? 'The email was not sent. Use Resend to try again.'
-            : 'It is not certain whether the email went out. Check before resending.',
+    detail: DELIVERY_DETAIL(delivery, accepted),
   };
 }
 
@@ -281,22 +379,58 @@ export async function resendInvitation(
   }
   if (row.outcome !== 'ok') return { kind: 'provisioning_failed', invitationId, message: row.message };
 
-  // The account already exists, so a fresh 'invite' is refused. Regenerating a
-  // signup link is the path this codebase already uses for an unconfirmed
-  // account: it leaves the password untouched, because there is none.
-  let generated = await deps.generateInviteLink(deps.admin, {
-    email: row.email, redirectTo, fullName: row.full_name,
+  // 429: an invitation whose set-up never finished has no login tied to it.
+  // Its login (made by the earlier attempt, or a cancelled invitee's) is set
+  // up first; with none, the 'invite' link below makes one, which is then
+  // set up before anything is sent. Before 429 a resend sent the link without
+  // a profile behind it.
+  let knownLogin: string | null = typeof row.auth_user_id === 'string' && row.auth_user_id ? row.auth_user_id : null;
+  if (!knownLogin) {
+    const reusable = await reusableLogin(deps, invitationId);
+    if (!reusable.ok) {
+      await recordFailure(deps, invitationId, 'the login check failed', true);
+      return { kind: 'provisioning_failed', invitationId, message: 'A new invitation link could not be created.' };
+    }
+    knownLogin = reusable.loginId;
+    if (knownLogin) {
+      const ready = await provision(deps, invitationId, knownLogin, true);
+      if (!ready.ok) return ready.result;
+    }
+  }
+
+  // The login usually exists already, so 'invite' makes a new link for it
+  // while its address is unconfirmed, and a recovery link once it is
+  // confirmed (429: before, a signup link was tried there, which Supabase
+  // refuses for a confirmed address). Regenerating a signup link stays the
+  // fallback when 'invite' fails outright.
+  let generated = await invitationLink(deps, {
+    email: row.email, fullName: row.full_name, redirectTo, knownLogin: !!knownLogin,
   });
-  if (generated.status === 'already_confirmed' || generated.status === 'error') {
+  if (generated.status === 'error') {
     generated = await deps.regenerateSignupLink(deps.admin, { email: row.email, redirectTo });
   }
 
   if (generated.status !== 'ok' || !isTrustedActionLink(generated.link.actionLink, config)) {
-    await deps.adminRpc('invite_user_record_delivery', {
-      p_invitation_id: invitationId, p_status: 'failed',
-      p_detail: 'link generation failed', p_is_resend: true,
-    });
-    return { kind: 'provisioning_failed', invitationId, message: 'A new invitation link could not be created.' };
+    await recordFailure(deps, invitationId, 'link generation failed', true);
+    return {
+      kind: 'provisioning_failed', invitationId,
+      message: generated.status === 'already_confirmed' && !knownLogin
+        ? LOGIN_NOT_REUSABLE
+        : 'A new invitation link could not be created.',
+    };
+  }
+  if (knownLogin) {
+    if (generated.link.userId && generated.link.userId !== knownLogin) {
+      await recordFailure(deps, invitationId, 'the link was made for another login', true);
+      return { kind: 'provisioning_failed', invitationId, message: 'A new invitation link could not be created.' };
+    }
+  } else {
+    if (!generated.link.userId) {
+      await recordFailure(deps, invitationId, 'no auth user id returned', true);
+      return { kind: 'provisioning_failed', invitationId, message: 'A new invitation link could not be created.' };
+    }
+    const ready = await provision(deps, invitationId, generated.link.userId, true);
+    if (!ready.ok) return ready.result;
   }
 
   // 413: cancelled while the new link was being made? Ask again, as the
@@ -326,10 +460,7 @@ export async function resendInvitation(
   return {
     kind: 'created', invitationId, email: row.email,
     delivery: accepted ? 'accepted_by_provider' : 'failed',
-    detail: accepted ? undefined
-          : definitelyNotSent(delivery.outcome)
-            ? 'The email was not sent. Use Resend to try again.'
-            : 'It is not certain whether the email went out. Check before resending.',
+    detail: DELIVERY_DETAIL(delivery, accepted),
   };
 }
 
@@ -346,46 +477,4 @@ export async function cancelInvitation(
   return { kind: 'error', message: row.message ?? 'The invitation could not be cancelled.' };
 }
 
-/**
- * Accepting: is this account's invitation already closed?
- *
- * auth-accept-invitation sets the password with the invitee's own token and
- * only then asks invite_user_accept to switch the account on, which refuses a
- * cancelled, used or expired invitation. That order keeps a refused link from
- * being switched on, but a link opened after its invitation was cancelled still
- * had its password set first. This looks first, so it does not.
- *
- * Only a definite answer refuses. If the account or the invitation cannot be
- * read, the answer is null and the function goes on as before: the database
- * still refuses a closed invitation, and since 406 a profile that is not active
- * and accepted is not staff anywhere.
- */
-export interface AcceptPrecheckDeps {
-  readAccount: () => Promise<{ status: 'ok'; userId: string } | { status: 'unauthorized' } | { status: 'error'; message: string }>;
-  /** The status of the newest invitation made for this Auth account, or null. */
-  latestInvitationStatus: (userId: string) => Promise<string | null>;
-}
-
-export async function closedInvitation(
-  deps: AcceptPrecheckDeps,
-): Promise<{ reason: string; message: string } | null> {
-  let status: string | null;
-  try {
-    const account = await deps.readAccount();
-    if (account.status !== 'ok') return null;
-    status = await deps.latestInvitationStatus(account.userId);
-  } catch {
-    return null;
-  }
-  // The same words invite_user_accept answers with.
-  if (status === 'cancelled') {
-    return { reason: 'cancelled', message: 'This invitation was cancelled and can no longer be used.' };
-  }
-  if (status === 'accepted') {
-    return { reason: 'already_accepted', message: 'This invitation has already been used. Sign in with your password.' };
-  }
-  if (status !== null && status !== 'pending') {
-    return { reason: status, message: 'This invitation is no longer valid.' };
-  }
-  return null;
-}
+// Accepting an invitation lives in accept.ts (429).

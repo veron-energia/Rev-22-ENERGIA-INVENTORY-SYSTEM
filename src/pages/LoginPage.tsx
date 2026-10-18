@@ -47,17 +47,17 @@ const LoginPage: React.FC = () => {
 
           <form onSubmit={handleSubmit} className="form-grid">
             <div className="form-group">
-              <label>Email</label>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+              <label htmlFor="login-email">Email</label>
+              <input id="login-email" type="email" value={email} onChange={e => setEmail(e.target.value)}
                 placeholder="you@energia.sg" autoComplete="email" required autoFocus />
             </div>
             <div className="form-group">
-              <label>Password</label>
-              <PasswordInput value={password} onChange={e => setPassword(e.target.value)}
+              <label htmlFor="login-password">Password</label>
+              <PasswordInput id="login-password" value={password} onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••" autoComplete="current-password" required />
             </div>
 
-            {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+            {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
 
             <button type="submit" className="btn btn-primary" disabled={submitting || envMissing} style={{ width: '100%', marginTop: 4 }}>
               <LogIn size={16} /> {submitting ? 'Signing in…' : 'Sign in'}

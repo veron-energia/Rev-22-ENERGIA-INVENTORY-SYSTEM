@@ -10,22 +10,21 @@ const AffiliateForgotPasswordPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const submit = async () => {
     if (busy) return;
-    setBusy(true); setErr(null); setNotice(null);
+    setBusy(true); setErr(null);
     const result = await requestPasswordRecovery(email.trim(), 'affiliate');
     setBusy(false);
     if (!result.ok) { setErr(result.message ?? AUTH_EMAIL_COPY.unavailable); return; }
-    setNotice(result.kind === 'not_sent' ? result.message : null);
+    // ADMIN-AUTH-16: not handed over for sending: stay on the form to try again.
+    if (result.kind === 'not_sent') { setErr(result.message ?? AUTH_EMAIL_COPY.notSent); return; }
     setSent(true);
   };
 
   if (sent) return (
     <AffiliateAuthShell title="Check your email" subtitle="Password reset link sent">
-      {notice && <p role="alert" style={{ color: 'var(--warning, #b45309)', fontSize: 13, marginBottom: 12 }}>{notice}</p>}
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         {AUTH_EMAIL_COPY.recoverySubmitted} Please check your inbox and your spam folder.
       </p>

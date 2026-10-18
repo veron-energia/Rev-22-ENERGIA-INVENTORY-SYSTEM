@@ -28,23 +28,24 @@ const ForgotPasswordPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    setBusy(true); setErr(null); setNotice(null);
+    setBusy(true); setErr(null);
     const result = await requestPasswordRecovery(email.trim(), 'staff');
     setBusy(false);
     if (!result.ok) { setErr(result.message ?? AUTH_EMAIL_COPY.unavailable); return; }
-    setNotice(result.kind === 'not_sent' ? result.message : null);
+    // ADMIN-AUTH-16: the email could not be handed over for sending. Stay on
+    // the form with the reason and the Send button, instead of "Check your
+    // email" for an email that is not coming.
+    if (result.kind === 'not_sent') { setErr(result.message ?? AUTH_EMAIL_COPY.notSent); return; }
     setSent(true);
   };
 
   if (sent) return (
     <AuthShell title="Check your email" subtitle="Password reset instructions sent">
-      {notice && <div className="alert alert-danger" style={{ marginBottom: 14 }}><span>⚠</span><div>{notice}</div></div>}
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         {AUTH_EMAIL_COPY.recoverySubmitted} Please check your inbox and your spam folder.
       </p>
@@ -58,11 +59,11 @@ const ForgotPasswordPage: React.FC = () => {
     <AuthShell title="Forgot Password" subtitle="We'll email you a reset link">
       <form onSubmit={submit} className="form-grid">
         <div className="form-group">
-          <label>Email</label>
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+          <label htmlFor="forgot-email">Email</label>
+          <input id="forgot-email" type="email" value={email} onChange={e => setEmail(e.target.value)}
             placeholder="you@energia.sg" autoComplete="email" required autoFocus />
         </div>
-        {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+        {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
         <button type="submit" className="btn btn-primary" disabled={busy} style={{ width: '100%', marginTop: 4 }}>
           {busy ? 'Sending…' : 'Send reset link'}
         </button>

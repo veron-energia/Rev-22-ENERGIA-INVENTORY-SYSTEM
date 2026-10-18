@@ -12,6 +12,7 @@ const RPC: Record<string, unknown> = {
   assignable_roles: ['manager', 'inventory_manager', 'staff'],
   assignable_store_ids: STORES.map(s => s.id),
   user_admin_list: [],
+  user_admin_orphan_invitations: [],
 };
 
 export const supabase = {
@@ -28,7 +29,7 @@ export const supabase = {
   functions: { invoke: async () => ({ data: { ok: true }, error: null }) },
   auth: {
     getSession: async () => ({ data: { session: { access_token: 'x' } } }),
-    getUser: async () => ({ data: { user: { id: 'u1', email: 'new.person@energia.test',
+    getUser: async () => ({ data: { user: { id: 'u1', email: 'new.person@example.com',
       user_metadata: { full_name: 'New Person', invited_to: 'energia_internal' } } } }),
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     signOut: async () => ({}),

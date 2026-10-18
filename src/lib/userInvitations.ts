@@ -24,11 +24,12 @@ export interface InviteFields {
 export type InviteOutcome =
   | { kind: 'invited'; invitationId: string; email: string; delivery: 'accepted_by_provider' | 'failed'; detail?: string }
   | { kind: 'field_error'; field: string; message: string }
-  | { kind: 'forbidden'; message: string }
+  | { kind: 'forbidden'; message: string; field?: string }
   | { kind: 'email_in_use'; message: string }
   | { kind: 'already_invited'; invitationId: string; message: string }
   | { kind: 'rate_limited'; message: string; retryAfterSeconds?: number }
-  | { kind: 'failed'; message: string };
+  /** invitationId: the invitation was saved but not finished; it shows on the list with Resend and Cancel. */
+  | { kind: 'failed'; message: string; invitationId?: string };
 
 const UNREACHABLE =
   'We could not reach the server. Check your connection and try again — nothing was created.';
@@ -65,7 +66,10 @@ function interpret(status: number, payload: Record<string, unknown>): InviteOutc
   if (payload.error === 'invalid_request') {
     return { kind: 'field_error', field: String(payload.field ?? 'email'), message: message ?? 'Check this field.' };
   }
-  if (payload.error === 'forbidden') return { kind: 'forbidden', message: message ?? 'You are not permitted to do that.' };
+  if (payload.error === 'forbidden') {
+    return { kind: 'forbidden', message: message ?? 'You are not permitted to do that.',
+             field: typeof payload.field === 'string' ? payload.field : undefined };
+  }
   if (payload.error === 'email_in_use') return { kind: 'email_in_use', message: message ?? 'That address already has an account.' };
   if (payload.error === 'already_invited') {
     return { kind: 'already_invited', invitationId: String(payload.invitation_id ?? ''), message: message ?? 'Already invited.' };
@@ -78,6 +82,12 @@ function interpret(status: number, payload: Record<string, unknown>): InviteOutc
   }
   if (payload.error === 'not_configured') {
     return { kind: 'failed', message: 'Invitation email is not configured on the server yet.' };
+  }
+  // The server saved the invitation but could not finish it: its message
+  // says what happened, and nothing claims "nothing was changed" (ADMIN-AUTH-7).
+  if (typeof payload.invitation_id === 'string' && payload.invitation_id) {
+    return { kind: 'failed', message: message ?? 'The invitation is saved but was not sent. Use Resend on the list.',
+             invitationId: payload.invitation_id };
   }
   return { kind: 'failed', message: message ?? 'Something went wrong. Nothing was changed.' };
 }
@@ -137,11 +147,65 @@ export async function acceptInvitation(password: string): Promise<AcceptOutcome>
   return { kind: 'failed', message };
 }
 
+/**
+ * Does this login have a pending invitation (429)? The invitation page asks
+ * before it shows the password form. A login with none (a member of staff or
+ * an affiliate who opened a reset link) is sent to sign in or reset instead.
+ * The server sets nothing for this question, and refuses the same logins when
+ * a password is sent.
+ */
+export type InvitationCheck =
+  | { kind: 'pending' }
+  | { kind: 'invalid_link'; message: string }
+  | { kind: 'not_pending'; reason?: string; message: string }
+  | { kind: 'failed'; message: string };
+
+const CANNOT_CHECK = 'We could not check your invitation just now. Please try again.';
+
+export async function checkInvitation(): Promise<InvitationCheck> {
+  const { data, error } = await supabase.functions.invoke('auth-accept-invitation', { body: { check: true } });
+  if (!error) {
+    return (data as { pending?: unknown } | null)?.pending === true
+      ? { kind: 'pending' } : { kind: 'failed', message: CANNOT_CHECK };
+  }
+  const response = (error as { context?: unknown }).context;
+  if (!(response instanceof Response)) return { kind: 'failed', message: CANNOT_CHECK };
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  const message = typeof payload.message === 'string' ? payload.message : CANNOT_CHECK;
+  if (response.status === 401) return { kind: 'invalid_link', message };
+  if (payload.error === 'not_activated') {
+    return { kind: 'not_pending', reason: typeof payload.reason === 'string' ? payload.reason : undefined, message };
+  }
+  return { kind: 'failed', message };
+}
+
 /** Which roles this administrator may assign, answered by the database. */
 export async function loadAssignableRoles(): Promise<InviteRole[]> {
   const { data, error } = await supabase.rpc('assignable_roles');
   if (error || !Array.isArray(data)) return [];
   return data as InviteRole[];
+}
+
+/**
+ * Invitations whose login or profile was never made (ADMIN-AUTH-7). Users &
+ * Roles lists people from their profiles, so these were invisible; the page
+ * shows them with Resend and Cancel. The server lists only the ones this
+ * administrator may manage.
+ */
+export interface OrphanInvitation {
+  invitation_id: string;
+  email: string;
+  full_name: string;
+  role: InviteRole;
+  invited_at: string;
+  last_email_status: string | null;
+}
+
+export async function loadOrphanInvitations():
+  Promise<{ ok: true; rows: OrphanInvitation[] } | { ok: false; message: string }> {
+  const { data, error } = await supabase.rpc('user_admin_orphan_invitations');
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, rows: Array.isArray(data) ? (data as OrphanInvitation[]) : [] };
 }
 
 export async function loadAssignableStoreIds(): Promise<string[]> {

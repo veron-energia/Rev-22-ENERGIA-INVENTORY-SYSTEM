@@ -23,8 +23,12 @@ interface Store { id: string; name: string }
 
 const CONTACTS_REQUIRED: UserRole[] = ['staff', 'owner', 'manager'];
 
-export const InviteUserForm: React.FC<{ onInvited: () => void; onClose: () => void }> =
-  ({ onInvited, onClose }) => {
+export const InviteUserForm: React.FC<{
+  onInvited: () => void;
+  onClose: () => void;
+  /** An invitation was saved but not finished, or one already exists: the list should be read again. */
+  onSaved?: () => void;
+}> = ({ onInvited, onClose, onSaved }) => {
   const [roles, setRoles] = useState<InviteRole[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [storeSearch, setStoreSearch] = useState('');
@@ -44,9 +48,12 @@ export const InviteUserForm: React.FC<{ onInvited: () => void; onClose: () => vo
   const [result, setResult] = useState<InviteOutcome | null>(null);
 
   // One request id per attempt. It is kept across a failure so a retry of the
-  // SAME invitation cannot create a second person, and replaced only once an
-  // invitation has actually been made.
+  // SAME invitation cannot create a second person, and replaced once an
+  // invitation has actually been made. ADMIN-AUTH-7: it is also replaced when
+  // the email, role or name is corrected after a failure; kept, the server
+  // answered the old address's invitation ("already recorded") instead.
   const requestId = useRef(newRequestId());
+  const sentWith = useRef<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -88,6 +95,10 @@ export const InviteUserForm: React.FC<{ onInvited: () => void; onClose: () => vo
       if (!personalEmail.trim()) return setFieldError({ field: 'personal_email', message: 'Personal email is required for this role.' });
     }
 
+    const attempt = JSON.stringify([email.trim().toLowerCase(), role, fullName.trim()]);
+    if (sentWith.current !== null && sentWith.current !== attempt) requestId.current = newRequestId();
+    sentWith.current = attempt;
+
     setBusy(true);
     const outcome = await inviteUser({
       fullName: fullName.trim(), email: email.trim(), role: role as InviteRole,
@@ -98,13 +109,20 @@ export const InviteUserForm: React.FC<{ onInvited: () => void; onClose: () => vo
 
     // Nothing is cleared on failure: everything typed is still here to correct.
     if (outcome.kind === 'field_error') return setFieldError({ field: outcome.field, message: outcome.message });
+    if (outcome.kind === 'forbidden' && (outcome.field === 'role' || outcome.field === 'store_ids')) {
+      return setFieldError({ field: outcome.field, message: outcome.message });
+    }
     if (outcome.kind === 'forbidden' || outcome.kind === 'email_in_use'
         || outcome.kind === 'already_invited' || outcome.kind === 'failed'
         || outcome.kind === 'rate_limited') {
+      // A saved but unfinished invitation, or one already there, now shows
+      // on the list with Resend and Cancel.
+      if (outcome.kind === 'already_invited' || (outcome.kind === 'failed' && outcome.invitationId)) onSaved?.();
       return setError(outcome.message);
     }
 
     requestId.current = newRequestId();     // this invitation is made; a new one needs a new id
+    sentWith.current = null;
     setResult(outcome);
     onInvited();
   };
@@ -173,7 +191,7 @@ export const InviteUserForm: React.FC<{ onInvited: () => void; onClose: () => vo
             {roles.map(r => <option key={r} value={r}>{ROLE_LABELS[r as UserRole]}</option>)}
           </select>
           {errFor('role') && <p className="users-field-error">{errFor('role')}</p>}
-          {roles.length > 0 && roles.length < 5 && (
+          {roles.length > 0 && !roles.includes('owner') && (
             <p className="users-hint">These are the roles your own role can assign.</p>
           )}
         </div>

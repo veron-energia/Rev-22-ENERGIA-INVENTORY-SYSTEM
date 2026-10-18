@@ -39,16 +39,25 @@ set local lock_timeout = '10s';
 \if :{?prelude}
 \i :prelude
 \endif
+-- 429 changed these functions again (a cancelled invitee's profile is also
+-- removed, so the address can be invited again). The test runs against 413's
+-- versions or 429's; where 429 answers differently it says so, and
+-- scripts/permissions/tests/invitations-start-again.sql tests 429 itself.
 do $$
 begin
   if to_regprocedure('public.staff_login_sync(uuid)') is null
-     or md5(pg_get_functiondef(to_regprocedure('public.staff_login_sync(uuid)'))) <> '7648388b0b41caee3696694ae172377e' then
+     or md5(pg_get_functiondef(to_regprocedure('public.staff_login_sync(uuid)')))
+        not in ('7648388b0b41caee3696694ae172377e', '9259111deccca8c66e95469acfdd250f') then
     raise exception '412 is not in this database: run with -v prelude412=supabase/412_deactivated_staff_signed_out_and_blocked.sql (see the header)'; end if;
-  if md5(pg_get_functiondef(to_regprocedure('public.invite_user_provisioned(uuid,uuid)'))) is distinct from '506816a8545148a24e9814d0bf2d5062'
+  if md5(pg_get_functiondef(to_regprocedure('public.invite_user_provisioned(uuid,uuid)')))
+        not in ('506816a8545148a24e9814d0bf2d5062', '7219cae03a5a758402e79762baf46f42')
      or md5(pg_get_functiondef(to_regprocedure('public.invite_user_begin(text,text,text,user_role,text,text,text,uuid[])')))
-        is distinct from '8d2e1f3540a00dad9c1be25bd413e3c4' then
+        not in ('8d2e1f3540a00dad9c1be25bd413e3c4', 'eda7f730fd83891146265adb06eca132') then
     raise exception '413 is not in this database: run with -v prelude=supabase/413_invitations_begin_again_and_cancel_during_setup.sql (see the header)'; end if;
 end $$;
+create function pg_temp.v429() returns boolean language sql as $f$
+  select md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure)) = '7219cae03a5a758402e79762baf46f42'
+$f$;
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $$begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end$$;
@@ -150,9 +159,9 @@ begin
   -- The affiliate: a login with an affiliate account and no profile.
   -- Its login address as Supabase Auth might hold it, in other letters.
   update auth.users set email = '413T-Affiliate@sig.invalid' where id = pg_temp.fx('affiliate');
-  insert into public.customers (full_name, phone) values ('413T Affiliate', '+6591413001') returning id into v_cust;
+  insert into public.customers (full_name, phone) values ('413T Affiliate', '+61491576398') returning id into v_cust;
   insert into public.affiliate_accounts (auth_user_id, customer_id, status) values (pg_temp.fx('affiliate'), v_cust, 'claimed');
-  insert into public.customers (full_name, phone) values ('413T Affiliate 2', '+6591413002') returning id into v_cust;
+  insert into public.customers (full_name, phone) values ('413T Affiliate 2', '+61491576801') returning id into v_cust;
   insert into public.affiliate_accounts (auth_user_id, customer_id, status) values (pg_temp.fx('aff_race_login'), v_cust, 'claimed');
   insert into auth.sessions (id, user_id, created_at, updated_at)
   select gen_random_uuid(), pg_temp.fx(x.w), now(), now()
@@ -161,34 +170,34 @@ end $$;
 
 -- ── 1. invite_user_begin ─────────────────────────────────────────────────────
 select pg_temp.run('owner', $q$select public.invite_user_begin('413t-req-pending', '413t-pending_login@sig.invalid', '413T pending',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'begin: an Owner invites a new address (as admin-invite-user asks it)', 'pending');
 select pg_temp.check(pg_temp.out('pending')->>'outcome' = 'created'
                      and exists (select 1 from public.user_invitations i where i.id = pg_temp.inv('413t-req-pending')
                                   and i.status = 'pending' and i.auth_user_id is null and i.last_email_status = 'not_attempted'),
   'begin: it is answered "created" and recorded pending (it failed on production: no affiliate_accounts.email)');
 select pg_temp.run('owner', $q$select public.invite_user_begin('413t-req-aff', '413T-Affiliate@SIG.invalid', '413T aff',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'begin: an Owner invites an affiliate''s login address, in other letters', 'aff');
 select pg_temp.check(pg_temp.out('aff')->>'outcome' = 'email_in_use' and pg_temp.out('aff')->>'scope' = 'affiliate'
                      and pg_temp.inv('413t-req-aff') is null,
   'begin: an affiliate''s address is refused as before (read from their login), and nothing is recorded');
 select pg_temp.run('manager', $q$select public.invite_user_begin('413t-req-staff', '413t-staff@sig.invalid', '413T staff',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'begin: a Manager invites a member of staff''s address', 'staffmail');
 select pg_temp.check(pg_temp.out('staffmail')->>'outcome' = 'email_in_use' and pg_temp.out('staffmail')->>'scope' = 'staff',
   'begin: a member of staff''s address is refused as before');
 select pg_temp.run('owner', $q$select public.invite_user_begin('413t-req-pending', '413t-other@sig.invalid', '413T other',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'begin: a second click with the same request id', 'again');
 select pg_temp.run('owner', $q$select public.invite_user_begin('413t-req-dup', '413t-pending_login@sig.invalid', '413T dup',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'begin: a second invitation for a pending address', 'dup');
 select pg_temp.check(pg_temp.out('again')->>'outcome' = 'existing_request' and pg_temp.out('dup')->>'outcome' = 'existing_pending'
                      and (select count(*) from public.user_invitations where request_id like '413t-%') = 1,
   'begin: are answered as before, with one invitation recorded');
 select pg_temp.run('staff', $q$select public.invite_user_begin('413t-req-bystaff', '413t-x@sig.invalid', '413T x',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'begin: Staff try to invite', 'bystaff');
 select pg_temp.check(pg_temp.out('bystaff')->>'outcome' = 'forbidden' and pg_temp.inv('413t-req-bystaff') is null,
   'begin: Staff may not, as before');
@@ -207,7 +216,7 @@ select pg_temp.check(pg_temp.out('prov_pending')->>'outcome' = 'provisioned'
 
 -- ── 3. Cancelled during set-up ───────────────────────────────────────────────
 select pg_temp.run('owner', $q$select public.invite_user_begin('413t-req-race', '413t-race_login@sig.invalid', '413T race',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'race: an Owner invites a new address', 'race');
 -- A store on the invitation, as one the Owner chose: it must not be assigned.
 update public.user_invitations set store_ids = array[gen_random_uuid()] where id = pg_temp.inv('413t-req-race');
@@ -227,10 +236,11 @@ select pg_temp.check(exists (select 1 from public.user_invitations i where i.id 
                               and i.profile_id = pg_temp.fx('race_login')),
   'race: the login is tied to the cancelled invitation');
 select pg_temp.check(exists (select 1 from public.profiles p where p.id = pg_temp.fx('race_login') and not p.is_active
-                              and p.invitation_status = 'cancelled' and p.deleted_at is null and p.role = 'staff'
-                              and p.full_name = '413T race')
+                              and p.invitation_status = 'cancelled' and p.role = 'staff' and p.full_name = '413T race'
+                              -- 429: removed too (a deleted date), so the address can be invited again
+                              and (p.deleted_at is not null) = pg_temp.v429())
                      and not exists (select 1 from public.user_store_assignments s where s.user_id = pg_temp.fx('race_login')),
-  'race: it gets a cancelled profile, switched off, with no store');
+  'race: it gets a cancelled profile, switched off, with no store (429: and removed)');
 select pg_temp.check(pg_temp.sessions('race_login') = 0 and pg_temp.blocked_100y('race_login')
                      and (select reason from public.staff_login_blocks where user_id = pg_temp.fx('race_login')) = 'invitation_cancelled',
   'race: so 412 signs it out and blocks it (about a hundred years, a finite time)');
@@ -244,8 +254,9 @@ select pg_temp.check(pg_temp.out('race_accept')->>'reason' = 'cancelled' and (pg
   'race: it refuses: the invitation was cancelled (before 413: not_invited)');
 select pg_temp.run('owner', $q$select to_jsonb(x) from public.user_admin_list() x where x.user_id = pg_temp.fx('race_login')$q$, 'ok',
   'race: an Owner opens Users & Roles', 'race_list');
-select pg_temp.check(pg_temp.out('race_list')->>'state' = 'cancelled_invitation',
-  'race: the login is listed as a cancelled invitation');
+select pg_temp.check(case when pg_temp.v429() then pg_temp.out('race_list') is null
+                          else pg_temp.out('race_list')->>'state' = 'cancelled_invitation' end,
+  'race: the login is listed as a cancelled invitation (429: not listed, as any cancelled invitee)');
 select pg_temp.keep('state', pg_temp.state());
 select pg_temp.run('service', $q$select public.invite_user_provisioned(
     (select id from public.user_invitations where request_id = '413t-req-race'), pg_temp.fx('race_login'))$q$, 'ok',
@@ -254,10 +265,14 @@ select pg_temp.check(pg_temp.out('race_prov2')->>'outcome' = 'cancelled' and pg_
   'race: a second call changes nothing');
 
 -- ── 4. Cancelled during set-up, for a login that is already someone's ───────
--- A login with an old, removed profile (invite_user_begin only refuses a live one).
+-- A login with an old, removed profile (invite_user_begin only refuses a live
+-- one; 429 lets an Owner invite a removed member of staff again, the Owner's
+-- decision of 10 Oct 2026).
 select pg_temp.run('owner', $q$select public.invite_user_begin('413t-req-old', '413t-old_login@sig.invalid', '413T old again',
-    'manager', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'manager', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'existing: an Owner invites the address of a removed profile''s login', 'old');
+select pg_temp.check(pg_temp.out('old')->>'outcome' = 'created',
+  'existing: it is recorded (413 and 429 alike)');
 select pg_temp.run('owner', $q$select public.invite_user_cancel(
     (select id from public.user_invitations where request_id = '413t-req-old'), '413 test')$q$, 'ok',
   'existing: and cancels it during set-up');
@@ -305,15 +320,15 @@ select pg_temp.run(w, $q$select public.invite_user_provisioned(gen_random_uuid()
 select pg_temp.run('anon', $q$select public.invite_user_begin('413t-req-anon', '413t-anon@sig.invalid', 'x', 'staff')$q$, '42501',
   'grants: the anon key cannot call invite_user_begin');
 select pg_temp.run('affiliate', $q$select public.invite_user_begin('413t-req-affcall', '413t-y@sig.invalid', '413T y',
-    'staff', '+6591413100', '+6591413101', '413t-personal@sig.invalid', '{}')$q$, 'ok',
+    'staff', '+61491577426', '+61491577644', '413t-personal@sig.invalid', '{}')$q$, 'ok',
   'grants: an affiliate''s login calls invite_user_begin', 'affcall');
 select pg_temp.check(pg_temp.out('affcall')->>'outcome' = 'forbidden' and pg_temp.inv('413t-req-affcall') is null,
   'grants: and is refused, as before');
 select pg_temp.check(md5(pg_get_functiondef('public.invite_user_begin(text,text,text,user_role,text,text,text,uuid[])'::regprocedure))
-                       = '8d2e1f3540a00dad9c1be25bd413e3c4'
+                       = case when pg_temp.v429() then 'eda7f730fd83891146265adb06eca132' else '8d2e1f3540a00dad9c1be25bd413e3c4' end
                      and md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure))
-                       = '506816a8545148a24e9814d0bf2d5062',
-  'catalogue: both functions are at 413''s AFTER md5s');
+                       = case when pg_temp.v429() then '7219cae03a5a758402e79762baf46f42' else '506816a8545148a24e9814d0bf2d5062' end,
+  'catalogue: both functions are at 413''s AFTER md5s (or 429''s)');
 select pg_temp.check(not exists (select 1 from auth.users u join fx on fx.id = u.id
                                   where u.banned_until is not null and not isfinite(u.banned_until)),
   'no login was ever given an infinite ban');

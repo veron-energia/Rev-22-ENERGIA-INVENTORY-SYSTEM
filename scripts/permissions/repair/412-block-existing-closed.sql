@@ -30,12 +30,16 @@
 do $repair$
 declare
   c_sync_after constant text := '7648388b0b41caee3696694ae172377e';  -- staff_login_sync(uuid), 412's AFTER
+  -- 429's version closes the same profiles the same way (it changes only a
+  -- pending invitee's block and the name of a cancelled one's), so the test
+  -- suite that runs this keeps working after 429.
+  c_sync_429   constant text := '9259111deccca8c66e95469acfdd250f';
   v_path text := current_setting('search_path');
   r record; v text; n_closed int := 0; n_blocked int := 0; n_already int := 0; n_bad int;
 begin
   perform set_config('search_path', 'public', true);
   if to_regprocedure('public.staff_login_sync(uuid)') is null
-     or md5(pg_get_functiondef(to_regprocedure('public.staff_login_sync(uuid)'))) <> c_sync_after then
+     or md5(pg_get_functiondef(to_regprocedure('public.staff_login_sync(uuid)'))) not in (c_sync_after, c_sync_429) then
     raise exception '412 repair: 412 is not in (staff_login_sync is missing or not 412''s version); apply 412 first'; end if;
 
   -- Closed, as staff_login_sync reads it: removed; an invitation neither

@@ -4,31 +4,36 @@
 //
 //   supabase functions deploy auth-accept-invitation
 //
-// Body: { password }. The account is read from the caller's own session, never
-// from the body, so this cannot be pointed at somebody else's invitation.
+// Body: { password }, or { check: true } to ask whether this login has a
+// pending invitation (nothing is set). The account is read from the caller's
+// own session, never from the body, so this cannot be pointed at somebody
+// else's invitation.
 //
-// The order matters and is the whole security argument:
+// The decisions, and the order they run in, are in
+// ../_shared/auth-email/accept.ts, with their tests:
 //
-//   0. A link whose invitation is already closed (cancelled, used, expired)
-//      stops here, before any password is set (406). Only a definite answer
-//      stops it; step 2 refuses a closed invitation either way.
-//   1. Supabase changes the password, using the invited user's own token. If
-//      that fails, nothing else happens.
-//   2. Only once Supabase has confirmed it does the database activate the
-//      profile — and it activates the role and stores an ADMINISTRATOR chose,
-//      never anything this request carried.
+//   1. Only a session opened from the emailed link may go on.
+//   2. The login must have a pending invitation (429). A login with none (a
+//      member of staff or an affiliate who opened a reset link), or with a
+//      cancelled or used one, is refused before any password is set.
+//   3. The link must have been opened in the last 30 minutes, like a reset
+//      link (the Owner, 18 Oct 2026; the window of auth-change-password).
+//      Longer ago: "This invitation link has expired. Ask for a new
+//      invitation." An Owner or Manager presses Resend on Users & Roles.
+//   4. Supabase changes the password, using the invited user's own token.
+//   5. Only once Supabase has confirmed it does the database switch the
+//      profile on, with the role and stores an ADMINISTRATOR chose.
 //
 // A browser saying "the password was set" is not accepted as evidence, because
-// it is not evidence. Neither is a valid session on its own: a link issued
-// before an invitation was cancelled still produces one, and invite_user_accept
-// refuses it.
+// it is not evidence. Neither is a valid session on its own.
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/auth-email/config.ts';
 import { adminClient } from '../_shared/auth-email/admin.ts';
 import { guardRequest, json } from '../_shared/auth-email/http.ts';
-import { validatePasswordChange } from '../_shared/auth-email/validate.ts';
 import { bearerToken, changeOwnPassword, readOwnAccount } from '../_shared/auth-email/password.ts';
-import { closedInvitation } from '../_shared/auth-email/invitations.ts';
+import {
+  acceptInvitationRequest, invitationsOfLogin, LINK_NO_LONGER_VALID, profileStateOf, type TableReader,
+} from '../_shared/auth-email/accept.ts';
 import { renderPasswordChanged } from '../_shared/auth-email/templates.ts';
 import { deliver } from '../_shared/auth-email/pabbly.ts';
 import { logEvent, newRequestId } from '../_shared/auth-email/diagnostics.ts';
@@ -53,101 +58,34 @@ Deno.serve(async (req) => {
 
   const token = bearerToken(req);
   if (!token) {
-    return json({
-      error: 'unauthorized',
-      message: 'This invitation link is no longer valid. Ask for a new invitation.',
-    }, 401, origin, allowed);
+    return json({ error: 'unauthorized', message: LINK_NO_LONGER_VALID }, 401, origin, allowed);
   }
 
-  const parsed = validatePasswordChange(guard.body);
-  if (!parsed.ok) {
-    return json({ error: 'invalid_request', fields: { [parsed.errors[0].field]: parsed.errors[0].message } },
-                400, origin, allowed);
-  }
-
-  // Step 0: a link whose invitation is already closed (cancelled, used,
-  // expired) sets no password. Only a definite answer refuses; if either read
-  // fails, step 2 still refuses a closed invitation as before.
   const admin = adminClient(config);
-  const closed = await closedInvitation({
+  // The two reads take only the part of the client they use. The full
+  // client's types are too deep for TypeScript to compare with it.
+  const tables = admin as unknown as TableReader;
+  const answer = await acceptInvitationRequest(token, guard.body as Record<string, unknown>, {
     readAccount: () => readOwnAccount({ supabaseUrl: config.supabaseUrl, apiKey: config.publicApiKey, accessToken: token }),
-    latestInvitationStatus: async (userId) => {
-      const { data, error } = await admin.from('user_invitations').select('status')
-        .eq('auth_user_id', userId).order('invited_at', { ascending: false }).limit(1).maybeSingle();
-      if (error) throw new Error(error.message);
-      return typeof data?.status === 'string' ? data.status : null;
+    invitationsFor: (userId) => invitationsOfLogin(tables, userId),
+    profileOf: (userId) => profileStateOf(tables, userId),
+    changePassword: (password) => changeOwnPassword({
+      supabaseUrl: config.supabaseUrl, apiKey: config.publicApiKey, accessToken: token, password,
+    }),
+    acceptInDatabase: async (userId, email) => {
+      const { data, error } = await admin.rpc('invite_user_accept', { p_auth_user_id: userId, p_email: email });
+      if (error) console.error('invite_user_accept failed', { request_id: requestId, error: error.message });
+      return { data, error: error ? { message: error.message } : null };
     },
+    notifyPasswordChanged: async (change) => {
+      const notice = renderPasswordChanged(change.displayName || change.email, change.changedAt, config.replyTo);
+      await deliver(config, {
+        requestId, actionType: 'password_changed', to: change.email,
+        subject: notice.subject, html: notice.html, text: notice.text,
+        recipientRole: 'staff',
+      });
+    },
+    log: (event, fields) => logEvent(event, { request_id: requestId, ...fields }),
   });
-  if (closed) {
-    logEvent('user_invitation.accept_refused', { request_id: requestId, reason: closed.reason });
-    return json({ error: 'not_activated', reason: closed.reason, message: closed.message }, 403, origin, allowed);
-  }
-
-  // Step 1: Supabase sets the password with the invited user's own token.
-  const change = await changeOwnPassword({
-    supabaseUrl: config.supabaseUrl,
-    apiKey: config.publicApiKey,
-    accessToken: token,
-    password: (guard.body as { password: string }).password,
-  });
-
-  if (change.status === 'unauthorized') {
-    logEvent('user_invitation.accept_password_failed', { request_id: requestId, kind: 'unauthorized' });
-    return json({
-      error: 'unauthorized',
-      message: 'This invitation link has expired or has already been used. Ask for a new invitation.',
-    }, 401, origin, allowed);
-  }
-  if (change.status === 'rejected') {
-    // The invitation stays pending. Nothing has been activated, and they can
-    // try a different password on the same link.
-    logEvent('user_invitation.accept_password_failed', { request_id: requestId, kind: 'rejected' });
-    return json({ error: 'password_rejected', message: change.message }, 400, origin, allowed);
-  }
-  if (change.status === 'error') {
-    logEvent('user_invitation.accept_password_failed', { request_id: requestId, kind: 'error' });
-    return json({
-      error: 'temporarily_unavailable',
-      message: 'We could not set your password just now. Please try again shortly.',
-    }, 503, origin, allowed);
-  }
-
-  // Step 2: activation, on the strength of a confirmed password change.
-  const { data, error } = await admin.rpc('invite_user_accept', {
-    p_auth_user_id: change.userId,
-    p_email: change.email,
-  });
-
-  if (error) {
-    logEvent('user_invitation.accept_failed', { request_id: requestId });
-    console.error('invite_user_accept failed', { request_id: requestId, error: error.message });
-    return json({
-      error: 'activation_failed',
-      // The password IS set at this point, so say so rather than implying the
-      // whole thing failed and inviting them to try a used link again.
-      message: 'Your password was set, but your access could not be switched on. '
-             + 'Ask whoever invited you to check your account.',
-    }, 502, origin, allowed);
-  }
-
-  const result = (data ?? {}) as { activated?: boolean; reason?: string; message?: string; role?: string };
-  if (!result.activated) {
-    logEvent('user_invitation.accept_refused', { request_id: requestId, reason: result.reason ?? 'unknown' });
-    return json({
-      error: 'not_activated', reason: result.reason,
-      message: result.message ?? 'This invitation can no longer be used.',
-    }, 403, origin, allowed);
-  }
-
-  // The same notification every other password change sends. Failure here does
-  // not undo the activation — the account is legitimately set up either way.
-  const notice = renderPasswordChanged(change.displayName || change.email, change.changedAt, config.replyTo);
-  await deliver(config, {
-    requestId, actionType: 'password_changed', to: change.email,
-    subject: notice.subject, html: notice.html, text: notice.text,
-    recipientRole: 'staff',
-  }).catch(() => undefined);
-
-  logEvent('user_invitation.accepted', { request_id: requestId, role: result.role ?? '' });
-  return json({ ok: true, role: result.role }, 200, origin, allowed);
+  return json(answer.body, answer.status, origin, allowed);
 });

@@ -51,6 +51,53 @@ export function activeSaveRefused(name: string, changedElsewhere: boolean): stri
     : `Nothing was saved: your role cannot change ${name}'s profile. Ask an Owner.`;
 }
 
+// ── Users & Roles: saving a profile (ADMIN-AUTH-12) ──────────────────────────
+
+type Role = 'owner' | 'admin' | 'manager' | 'inventory_manager' | 'staff';
+type Contacts = { work_phone?: string | null; personal_phone?: string | null; personal_email?: string | null };
+
+/** Staff, Owners and Managers must have the three contact details on file. */
+export function contactRequired(role: Role): boolean {
+  return role === 'staff' || role === 'owner' || role === 'manager';
+}
+
+/**
+ * Did this save change any of the three contact details? The rule above is
+ * checked only then. Before, every save asked for all three, so an Owner
+ * could not switch off or edit either Manager (neither has them on file)
+ * without typing them first.
+ */
+export function contactsChanged(before: Contacts, after: Contacts): boolean {
+  const same = (a?: string | null, b?: string | null) => (a ?? '').trim() === (b ?? '').trim();
+  return !same(before.work_phone, after.work_phone)
+      || !same(before.personal_phone, after.personal_phone)
+      || !same(before.personal_email, after.personal_email);
+}
+
+/** Asked before a save that switches someone off (412 signs them out everywhere). */
+export function deactivateQuestion(name: string): string {
+  return `Switch ${name} off?\n\n`
+    + 'They will be signed out on every device at once, and cannot sign in until someone switches them on again.';
+}
+
+const RANK: Record<Role, number> = { staff: 1, inventory_manager: 1, manager: 2, admin: 3, owner: 4 };
+const ROLE_WORDS: Record<Role, string> = {
+  owner: 'an Owner', admin: 'an Admin', manager: 'a Manager', inventory_manager: 'an Inventory Manager', staff: 'Staff',
+};
+
+/**
+ * Asked before a save that gives someone more access: Manager, Admin or
+ * Owner, when that is a step up. Null when there is nothing to ask.
+ */
+export function promotionQuestion(name: string, from: Role, to: Role): string | null {
+  if (from === to || !(to === 'manager' || to === 'admin' || to === 'owner')) return null;
+  if (RANK[to] <= RANK[from]) return null;
+  const more = to === 'owner'
+    ? 'An Owner can see and change everything, including users, payment methods and every money screen.'
+    : 'A Manager can manage Staff, approve requests and see the reports and money screens.';
+  return `Make ${name} ${ROLE_WORDS[to]}?\n\n${to === 'admin' ? 'This gives them more access than they have now.' : more}`;
+}
+
 /**
  * The sign-in page's words for an error from Supabase Auth. A login whose
  * staff profile is switched off is banned there, and "User is banned" says

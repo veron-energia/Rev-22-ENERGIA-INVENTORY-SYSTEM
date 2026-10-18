@@ -95,11 +95,16 @@ export async function requestPasswordRecovery(email: string, flow: 'affiliate' |
  * applies every rule it would have applied — the function makes the same
  * user-scoped call with this session's own token.
  */
-export async function changePassword(password: string): Promise<PasswordChangeResult> {
-  const { status, payload } = await callFunction('auth-change-password', { password });
+export async function changePassword(password: string, currentPassword?: string):
+  Promise<PasswordChangeResult & { needsCurrentPassword: boolean }> {
+  // 429 (ADMIN-AUTH-9): unless the session came from an email link a few
+  // minutes ago, the server needs the current password too.
+  const body = currentPassword ? { password, current_password: currentPassword } : { password };
+  const { status, payload } = await callFunction('auth-change-password', body);
   const result = withDevHint(interpretPasswordChange(status, payload), 'auth-change-password');
   // The session's tokens are reissued by the password change; refresh the local
   // copy so the rest of the app keeps working without a re-login.
   if (result.ok) await supabase.auth.refreshSession().catch(() => undefined);
-  return result;
+  const needsCurrentPassword = (payload as { error?: unknown } | null)?.error === 'current_password_required';
+  return { ...result, needsCurrentPassword };
 }

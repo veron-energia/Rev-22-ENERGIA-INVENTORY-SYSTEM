@@ -1,18 +1,16 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Leaf, ArrowLeft } from 'lucide-react';
+import { Leaf, Home } from 'lucide-react';
 
 const NotFoundPage: React.FC = () => {
   const navigate = useNavigate();
   const { session } = useAuth();
 
-  const goBack = () => {
-    // Return to the previous page; if there's no history, go to the dashboard
-    // when signed in, otherwise the login page.
-    if (window.history.length > 1) navigate(-1);
-    else navigate(session ? '/' : '/login', { replace: true });
-  };
+  // ADMIN-AUTH-18: "Go Back" went one step back in the browser's history,
+  // which could leave the app altogether (a link opened in a new tab, a
+  // bookmark). The button now goes to the dashboard, or to sign in.
+  const goHome = () => navigate(session ? '/' : '/login', { replace: true });
 
   return (
     <div style={{
@@ -38,8 +36,8 @@ const NotFoundPage: React.FC = () => {
           The page you're looking for doesn't exist or may have been moved. Let's get you back on track.
         </p>
 
-        <button className="btn btn-primary" onClick={goBack} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <ArrowLeft size={16} /> Go Back
+        <button className="btn btn-primary" onClick={goHome} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <Home size={16} aria-hidden="true" /> {session ? 'Go to dashboard' : 'Go to sign in'}
         </button>
       </div>
     </div>

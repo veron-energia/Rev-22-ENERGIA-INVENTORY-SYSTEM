@@ -1,7 +1,7 @@
 -- Staff-link registrations become website orders (380, on 372, 373 and 376).
 --
 --   D0  380 fills each channel's door_methods once, from the one active
---       "Cash", "PayNow" and "Bank Transfer" (a name held by two methods is
+--       "Cash", "PayNow" and "Bank Transfer" (a name with no active method is
 --       left out), leaves a channel that has them alone, and running it again
 --       changes nothing; it stops when a price function it relies on is not
 --       production's.
@@ -59,7 +59,8 @@
 --
 -- Every check runs, then the file fails if any did. Disposable database only;
 -- everything is rolled back. Fixtures carry a random suffix; phones are made
--- up (+65 9380 ....), names and emails are fixtures.
+-- up (+61 2 5550 ...., an ACMA fictional range), names and emails are
+-- fixtures.
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -92,12 +93,12 @@ $$begin execute q; return null; exception when others then return sqlerrm; end$$
 create function pg_temp.d(n int) returns date language sql as $$ select public.sg_today() + n $$;
 -- A made-up phone no customer, order or earlier pick has.
 create function pg_temp.phone() returns text language sql volatile as $$
-  select '+659380' || lpad(n::text, 4, '0') from generate_series(0, 9999) n
+  select '+6125550' || lpad(n::text, 4, '0') from generate_series(0, 9999) n
    where not exists (select 1 from public.customers c
-                      where regexp_replace(coalesce(c.phone, ''), '\D', '', 'g') = '659380' || lpad(n::text, 4, '0'))
+                      where regexp_replace(coalesce(c.phone, ''), '\D', '', 'g') = '6125550' || lpad(n::text, 4, '0'))
      and not exists (select 1 from public.web_orders w
-                      where regexp_replace(coalesce(w.buyer_phone, ''), '\D', '', 'g') = '659380' || lpad(n::text, 4, '0'))
-     and not exists (select 1 from tx where regexp_replace(tx.v, '\D', '', 'g') = '659380' || lpad(n::text, 4, '0'))
+                      where regexp_replace(coalesce(w.buyer_phone, ''), '\D', '', 'g') = '6125550' || lpad(n::text, 4, '0'))
+     and not exists (select 1 from tx where regexp_replace(tx.v, '\D', '', 'g') = '6125550' || lpad(n::text, 4, '0'))
    order by random() limit 1
 $$;
 create function pg_temp.off(tag text) returns text language sql as
@@ -179,13 +180,27 @@ begin
   insert into customer_source_options(label, is_active, requires_details, sort_order)
   values ('D380 Event ' || sfx, true, true, 9999) returning id into src;
   insert into fx values ('src', src), ('stripe', (select id from public.payment_methods where name = 'Stripe (online)'));
-  -- Exactly one active "Cash" and "PayNow"; "Bank Transfer" under two
-  -- spellings, so it is left out.
-  update public.payment_methods set is_active = false where lower(btrim(name)) in ('cash', 'paynow', 'bank transfer');
-  foreach k in array array['Cash', 'PayNow', 'Bank Transfer', 'bank transfer'] loop
-    insert into public.payment_methods(name, is_active) values (k, true)
-    on conflict (name) do update set is_active = true, deleted_at = null returning id into pm;
-    insert into fx values (case k when 'Cash' then 'cash' when 'PayNow' then 'paynow' when 'Bank Transfer' then 'bank' else 'bank_lc' end, pm);
+  -- Exactly one active "Cash" and "PayNow"; no active "Bank Transfer", so it
+  -- is left out. (Two live methods may not share a name since 429, so a name
+  -- held twice can no longer be set up; none active is left out the same
+  -- way.) This works before and after 429.
+  update public.payment_methods set is_active = false
+   where lower(btrim(name)) in ('cash', 'paynow', 'bank transfer') and deleted_at is null;
+  foreach k in array array['Cash', 'PayNow', 'Bank Transfer'] loop
+    pm := null;
+    select id into pm from public.payment_methods
+     where lower(btrim(name)) = lower(k) and deleted_at is null order by created_at limit 1;
+    -- Else a deleted one of that name, put back (before 429 its name is
+    -- still taken).
+    if pm is null then
+      select id into pm from public.payment_methods where name = k order by created_at limit 1;
+    end if;
+    if pm is null then
+      insert into public.payment_methods(name, is_active) values (k, k <> 'Bank Transfer') returning id into pm;
+    else
+      update public.payment_methods set is_active = (k <> 'Bank Transfer'), deleted_at = null where id = pm;
+    end if;
+    insert into fx values (case k when 'Cash' then 'cash' when 'PayNow' then 'paynow' else 'bank' end, pm);
   end loop;
   insert into public.web_order_channels (key, event_id, ticket_map, store_id, acting_profile_id, payment_method_id,
                                          source_option_id, source_details, mode)
@@ -206,7 +221,7 @@ end $$;
 \ir ../../../supabase/380_seminar_staff_link_orders.sql
 select pg_temp.check((select door_methods from public.web_order_channels where key = pg_temp.tx('channel'))
                        = jsonb_build_object('cash', pg_temp.fx('cash'), 'paynow', pg_temp.fx('paynow')),
-  'D0 380 maps cash and PayNow to the one active method of that name, and leaves out Bank Transfer (two methods)');
+  'D0 380 maps cash and PayNow to the one active method of that name, and leaves out Bank Transfer (none active)');
 select pg_temp.check((select door_methods from public.web_order_channels where key = pg_temp.tx('channel2'))
                        = jsonb_build_object('cash', pg_temp.fx('paynow')),
   'D0 a channel whose methods were already chosen is left alone');
@@ -505,6 +520,9 @@ select pg_temp.check(pg_temp.tx('c_res') = 'needs_review'
     and not exists (select 1 from public.invoices where notes like '%' || pg_temp.off('C') || '%')
     and not exists (select 1 from public.customers where phone = pg_temp.tx('ph_c')),
   'D7 an amount that is not the price is never invoiced: nothing is left behind, and the order says why');
+-- Bank Transfer is switched on now (it was off when 380 ran, so the channel
+-- does not have it).
+update public.payment_methods set is_active = true where id = pg_temp.fx('bank');
 select pg_temp.as_service();
 do $$ declare r jsonb; begin
   r := pg_temp.arrive(pg_temp.door('K1', 'day1', 1, 6100, pg_temp.d(0), 'bank', pg_temp.phone(), null, null, 'Bank ref 7'));

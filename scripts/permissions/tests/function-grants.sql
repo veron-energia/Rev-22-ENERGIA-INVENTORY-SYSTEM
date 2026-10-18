@@ -128,6 +128,12 @@ declare
                              'auth_email_user_state','auth_email_reserve','auth_email_record_outcome',
                              'commission_outside_rebase_scope','commission_totals_reconciliation',
                              'preview_commission_rebase_effect','validate_bundle_voucher_selection',
+                             -- 429: the login an invitation may use again (a cancelled
+                             -- invitee's, a removed member of staff's, or one an
+                             -- unfinished invitation made), which admin-invite-user asks
+                             -- with the service key. (Kept away from the end of the
+                             -- list, so it merges cleanly with what later files add.)
+                             'invite_user_reusable_login',
                              -- 409: the retired staff request, which moved the invoice itself
                              -- to refund_requested (staff raise guided requests now), and what a
                              -- cancelled invoice's customer already had (refund_invoice_recorded's)

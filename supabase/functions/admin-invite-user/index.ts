@@ -17,7 +17,7 @@
 // it, paste it, or accidentally hand somebody else an account.
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/auth-email/config.ts';
-import { adminClient, generateInviteLink, regenerateSignupLink } from '../_shared/auth-email/admin.ts';
+import { adminClient, generateInviteLink, generateRecoveryLink, regenerateSignupLink } from '../_shared/auth-email/admin.ts';
 import { guardRequest, json } from '../_shared/auth-email/http.ts';
 import { bearerToken } from '../_shared/auth-email/password.ts';
 import { callbackUrl } from '../_shared/auth-email/redirects.ts';
@@ -78,7 +78,9 @@ Deno.serve(async (req) => {
   const deps: InvitationDeps = {
     callerRpc: (fn, args) => caller.rpc(fn, args) as never,
     adminRpc: (fn, args) => admin.rpc(fn, args) as never,
-    generateInviteLink, regenerateSignupLink, deliver, admin,
+    // 429: a recovery link only for a login the database says this
+    // invitation may use (a cancelled invitee invited again).
+    generateInviteLink, regenerateSignupLink, generateRecoveryLink, deliver, admin,
   };
 
   const redirectTo = callbackUrl(config, 'user_invitation', origin);

@@ -90,6 +90,9 @@ export interface PaymentMethod {
   deleted_at: string | null;
   created_at: string;
   is_wallet_credit?: boolean;
+  /** One of the five Wallet credit types: never deleted or renamed (429). */
+  is_system?: boolean;
+  wallet_category?: string | null;
 }
 
 // Role display helpers

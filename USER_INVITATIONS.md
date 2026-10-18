@@ -130,7 +130,47 @@ guessing.
   `ResetPasswordPage` already does, and waits for the session before calling a
   link stale.
 * Signed in as somebody else: the page says so and offers to sign out, rather
-  than quietly replacing the session.
+  than quietly replacing the session. Since 429 the page tells the two apart
+  by how the session signed in, not by the login's details: a session opened
+  from an emailed link (the invitation, or the recovery link a confirmed login
+  gets) may be the invitee's own; a password sign-in gets the warning. The
+  page then asks the server (`{ check: true }`, nothing is set) whether the
+  login has a pending invitation, and shows the form only if it has. A login
+  with none (a member of staff or an affiliate who opened a reset link,
+  however long ago), or with a used one, is told so and sent to sign in or
+  reset the password. A cancelled or unfinished invitation, or one sent to
+  another address, gets the server's words and "Go to sign in" only: that
+  login is closed, so a reset link would not help. A removed member of staff
+  invited again has an old, confirmed login that was never marked as
+  invited, so the old check showed them only the warning, and their
+  single-use link was then spent.
+* `auth-accept-invitation` (429) accepts only a session opened from an
+  emailed link. A removed member of staff invited again still has their old
+  password, and the block on their login is lifted when the invitation is set
+  up; that password alone must not switch them back on without the email. It
+  answers 401 "Open the invitation link from your email to finish setting
+  up." before anything is set.
+* It then refuses, before any password is set, a login with no pending
+  invitation (open, not cancelled, not used), sent to another address, or
+  whose profile is not the pending one the invitation made. Before this, a
+  login with no invitation went on to set a new password without the current
+  one, from any old reset session: all staff, and any affiliate who used a
+  reset link. That got round the 30-minute rule in `auth-change-password`.
+  If the invitation cannot be checked, nothing is set. The decisions are in
+  `_shared/auth-email/accept.ts`, with their tests in `tests/accept.test.ts`.
+* 30 minutes, like reset links (the Owner, 18 Oct 2026; before, an
+  invitation link worked at any age). With a pending invitation, the
+  password is set only in the 30 minutes after the link was opened: the
+  window of `auth-change-password`, from the same code (`invitationLinkState`
+  in `_shared/auth-email/password.ts`), by the server's clock. A link opened
+  longer ago is answered 403 `not_activated`, reason `link_expired`, "This
+  invitation link has expired. Ask for a new invitation.", both to the
+  page's `{ check: true }` and to a password, and nothing is set. The page
+  shows those words and "Go to sign in", on arrival or when the password is
+  sent. An Owner or Manager then presses **Resend** on Users & Roles, which
+  sends a new link (section 6). This is checked after the pending invitation,
+  so a login with no pending invitation, or a cancelled, used, expired,
+  wrong-address or unfinished one, is still told that first.
 * Invalid, expired, used, cancelled and wrong-account all have their own
   message.
 
@@ -144,13 +184,36 @@ minutes and ten in total. Resending for an **already-accepted** user is refused
 with a pointer to Forgot Password — an invitation is not a password-reset
 shortcut.
 
-For an account that already exists, a fresh `invite` link is refused by
-Supabase, so the resend falls back to regenerating a signup link — the path this
-codebase already uses for an unconfirmed account, which leaves the password
-untouched because there is none.
+For an account whose address is not confirmed yet, a fresh `invite` link is
+made for the same login. Once the address is confirmed (the first link was
+opened, perhaps by an email scanner) Supabase refuses `invite` and a signup
+link alike, so since 429 the resend sends a **recovery** link for that same
+login; it leaves the password untouched because there is none. An invitation
+whose login or profile was never made is set up first (429), so its link
+never reaches an account with no profile.
 
 **Cancel** requires confirmation, records who and when, and marks the profile
-`cancelled` and inactive.
+`cancelled`, inactive and removed (a deleted date, 429), so Users & Roles no
+longer lists it and the login stays blocked (412). The same address can be
+invited again: the old login is reused, its profile is put back as the new
+invitation's (pending, its stores only) and the block is lifted so the new
+link works (`invite_user_reusable_login`, `invite_user_provisioned`).
+
+A **removed member of staff** (a removed profile that is not a pending or
+cancelled invitee's) may be invited again with their old email (the Owner,
+10 Oct 2026). The invitation reuses their login, so everything they did before
+stays linked to them. When it is set up, what their profile was (name, role,
+state, removed date, stores) is kept in the audit log
+(`user_invitation_login_reused`), the profile becomes the new invitation's
+(pending, its role and stores only), and 412 lifts the block it placed, so the
+new link works. Accepting switches them on. It is still their profile, so only
+someone allowed to manage the role they had may invite them back: a Manager
+may invite back Inventory Managers and Staff, not a Manager or an Owner
+(`invite_user_begin` answers `forbidden`, scope `removed_staff`, and saves
+nothing). That holds whatever the removed profile's invitation state: after
+an Owner invites back a removed Manager and then cancels, a Manager still may
+not invite them; nor a cancelled invitee an Owner had invited as a Manager. A member of staff who is only switched off, not removed, is switched
+on again on Users & Roles; their address stays in use.
 
 ### The limitation, stated plainly
 
@@ -230,6 +293,73 @@ Order matters twice over: the page calls functions migration 230 creates, and
 the invitation form is useless until the Edge Functions exist. Deploying the
 frontend first shows errors where the form should be.
 
+### 429 (9 Oct 2026)
+
+1. `supabase/429_users_invitations_and_payment_methods.sql`
+2. `supabase functions deploy auth-accept-invitation` (it carries
+   `_shared/auth-email/accept.ts`, `password.ts` and `validate.ts`)
+3. `supabase functions deploy admin-invite-user` (it carries
+   `_shared/auth-email/invitations.ts`, `password.ts` and `validate.ts`)
+4. `supabase functions deploy auth-change-password` (it carries
+   `_shared/auth-email/change.ts`, `password.ts` and `validate.ts`)
+5. **Then** deploy the frontend.
+
+Deploy each function by its name, as above. Never run a bare
+`supabase functions deploy`: it would also deploy folders that are not part of
+429.
+
+The new `admin-invite-user` asks `invite_user_reusable_login`, which 429 makes,
+so the migration goes first.
+
+`auth-accept-invitation` now accepts only a session opened from an emailed
+link (§5). Deploy it no later than `admin-invite-user`: the new
+`admin-invite-user` invites removed staff again, which lifts the block on their
+login, and their old password must not be enough to accept. A new invitee has
+no password, so nothing changes for them. The new Accept page asks the new
+`auth-accept-invitation` first (`{ check: true }`; the old one refuses that
+body), so deploy the function before the front end. It shows the form only to
+a login with a pending invitation; the live one shows a removed member of staff
+invited again only "You are signed in as ...", so ship the front end soon after
+`admin-invite-user`. `auth-change-password` now asks for the current password
+unless the session came from an email link in the last 30 minutes (the Owner
+confirmed 30 minutes on 10 Oct 2026); a link opened longer ago is told so, and
+the reset pages offer "Request a new link" beside the Current Password field.
+The current password, when given, also goes to Supabase Auth with the change
+(`current_password`). Deploy it before, or with, the front end: the old one
+refuses the `current_password` field the new pages send.
+
+### What the 30-minute rule does not stop
+
+The 30-minute rule is in `auth-change-password`, and for invitation links in
+`auth-accept-invitation` (18 Oct 2026). Supabase Auth itself
+does not know it, and no Supabase setting enforces 30 minutes. Someone at a
+signed-in device who uses the browser's developer tools can still set a
+password through Supabase Auth directly from a session opened by an email link.
+The app keeps its session in the browser, so a shared device that is left
+signed in is still open to this. The rule makes the pages safe; it does not
+close the gap on its own.
+
+* **Supabase → Authentication → "Require current password when updating"**
+  (`GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_CURRENT_PASSWORD`) closes the
+  direct route for **password sign-ins**: Supabase then refuses their change
+  without the current password. Sessions opened by an email link are exempt,
+  at any age. Test it on a local Supabase Auth first, then switch it on in
+  production. `auth-change-password` sends the current password along, so it
+  keeps working with this on. Whether it is on in production was not checked
+  (it cannot be read with SQL).
+* Do **not** switch on **"Secure password change"** unless the pages are
+  changed first. It refuses a session over 24 hours old even with the current
+  password, and asks for a code the pages cannot ask for. It also does not
+  enforce 30 minutes.
+* What stays open: an email-link session, straight to Supabase Auth. With
+  neither setting on, at any age; with "Secure password change", up to 24
+  hours. Closing it needs a decision from the Owner, such as signing out
+  email-link sessions once the password is set, or a shorter session time or
+  an inactivity time-out in Supabase Auth.
+* Accepting an invitation cannot be done this way. Switching a login on is
+  `invite_user_accept`, which only the service role may call. Going straight
+  to Supabase Auth only sets a password, which is the same gap as above.
+
 Existing accounts and roles are untouched: `invitation_status` is added as a
 nullable column, and a null means "created before invitations existed", which
 every function treats as accepted.
@@ -271,7 +401,8 @@ select i.email, i.role, i.status, i.invited_at, i.last_email_status, p.full_name
 ```
 
 An invitation whose account was never created shows in
-`user_admin_orphan_invitations()` and can be resent.
+`user_admin_orphan_invitations()`, which Users & Roles lists (429) with Resend
+and Cancel.
 
 ---
 
@@ -281,6 +412,7 @@ An invitation whose account was never created shows in
 |---|---|
 | `npm run test:users:db` | 60 checks passed |
 | `npm run test:auth-email:edge` | 103 passed (18 new for invitations, 4 for the sender) |
+| `npm run test:auth-email:edge` (429) | 158 passed, including `tests/accept.test.ts` (auth-accept-invitation's decisions and its two reads) and `tests/change.test.ts` (auth-change-password's decisions: every refusal changes nothing) |
 | `deno check` on all six functions | clean |
 | typecheck, build | clean |
 | Existing suites (auth-email 17, therapy 19 + 76 db, tiktok 33 + 35 db, xero 8, survey 26, phones 9) | unchanged |

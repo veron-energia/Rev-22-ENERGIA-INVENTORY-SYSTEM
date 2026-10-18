@@ -1,11 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { PasswordInput } from '../components/PasswordInput';
 import { Link, useNavigate } from 'react-router-dom';
 import { Leaf } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { acceptInvitation } from '../lib/userInvitations';
+import { acceptInvitation, checkInvitation } from '../lib/userInvitations';
+import { signedInFromEmailLink } from '../lib/resetSession';
 import { useAuth } from '../context/AuthContext';
 import '../components/users/users.css';
+
+/** The server's reason for a pending invitation whose link was opened over 30 minutes ago. */
+const LINK_EXPIRED = 'link_expired';
 
 /**
  * Where an invitation link lands.
@@ -17,11 +21,28 @@ import '../components/users/users.css';
  *
  * Nothing here decides that setup succeeded. The password is set by Supabase
  * through the Edge Function, and only the server's answer activates the account.
+ *
+ * 429: the page asks the server first whether this login has a pending
+ * invitation, and shows the password form only if it has. A login with none
+ * (a member of staff or an affiliate who opened a reset link, perhaps long
+ * ago), or with a used one, is told so and sent to sign in or reset the
+ * password. A cancelled or unfinished invitation, or one for another
+ * address, gets the server's words and "Go to sign in" only: that login is
+ * closed, so a reset link would not help. The server refuses all of these
+ * too, before any password is set.
+ *
+ * 18 Oct 2026 (the Owner: "30 minutes, like reset links"): with a pending
+ * invitation, the password is set only in the 30 minutes after the link was
+ * opened. The server decides that, by its own clock, after the checks above;
+ * this page never judges the link's age by the device clock. A link opened
+ * longer ago gets "This invitation link has expired. Ask for a new
+ * invitation." and "Go to sign in", on arrival or when the password is sent;
+ * an Owner or Manager then presses Resend on Users & Roles.
  */
 const AcceptInvitationPage: React.FC = () => {
   const nav = useNavigate();
   const { refreshProfile } = useAuth();
-  const [state, setState] = useState<'checking' | 'ready' | 'no_session' | 'done'>('checking');
+  const [state, setState] = useState<'checking' | 'ready' | 'no_session' | 'not_invited' | 'check_failed' | 'done'>('checking');
   const [account, setAccount] = useState<{ email: string; name: string } | null>(null);
   const [signedInAs, setSignedInAs] = useState<string | null>(null);
   const [pw, setPw] = useState('');
@@ -29,6 +50,26 @@ const AcceptInvitationPage: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Why the server said there is no pending invitation (its `reason`).
+  const [refusal, setRefusal] = useState<string | null>(null);
+  // The login the server was last asked about, so a token refresh does not ask again.
+  const askedFor = useRef<string | null>(null);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+
+  // Ask the server whether this login has a pending invitation. Only then the form.
+  const askServer = useCallback(async () => {
+    setState('checking'); setNotice(null); setRefusal(null);
+    const answer = await checkInvitation();
+    if (!live.current) return;
+    switch (answer.kind) {
+      case 'pending': setState('ready'); return;
+      case 'invalid_link': setErr(answer.message); setState('no_session'); return;
+      case 'not_pending': setNotice(answer.message); setRefusal(answer.reason ?? null); setState('not_invited'); return;
+      default: setNotice(answer.message); setState('check_failed');
+    }
+  }, []);
 
   // Wait for the session before calling the link stale, or a good link looks
   // broken on a slow connection.
@@ -46,16 +87,32 @@ const AcceptInvitationPage: React.FC = () => {
 
       // Somebody already signed in as themselves, opening an invitation meant
       // for a colleague. Better to say so than to quietly take over the session.
-      const invited = (user.user_metadata as { invited_to?: string } | null)?.invited_to;
-      const alreadyActive = user.email_confirmed_at && invited !== 'energia_internal';
-      setSignedInAs(alreadyActive ? (user.email ?? null) : null);
-      setState('ready');
+      // 429: told apart by how the session signed in, not by the login's
+      // details. A session opened from the emailed link (the invitation, or
+      // the recovery link a confirmed login gets) may be the invitee's own, so
+      // the server is asked whether the login has a pending invitation. That
+      // includes a member of staff who was removed and is invited again: their
+      // old login is confirmed and was never marked as invited. Any other
+      // session (a password sign-in) gets the warning; the server refuses it too.
+      const token = (session as { access_token?: string }).access_token;
+      const alreadyActive = !!user.email_confirmed_at && !signedInFromEmailLink(token);
+      if (alreadyActive) {
+        setSignedInAs(user.email ?? null);
+        setState('ready');
+        return;
+      }
+      setSignedInAs(null);
+      // 429: a session from an emailed link is not enough on its own. Every
+      // member of staff and every affiliate who opened a reset link has one.
+      if (askedFor.current === user.id) return;
+      askedFor.current = user.id;
+      await askServer();
     };
 
     supabase.auth.getSession().then(({ data }) => void read(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => { void read(session); });
     return () => { cancelled = true; sub.subscription.unsubscribe(); };
-  }, []);
+  }, [askServer]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,14 +140,23 @@ const AcceptInvitationPage: React.FC = () => {
       case 'password_rejected':
         setErr(result.message); return;
       case 'refused':
+        // The link passed 30 minutes while the form was open: the same words
+        // and way out as on arrival, in place of the form.
+        if (result.reason === LINK_EXPIRED) {
+          setNotice(result.message); setRefusal(LINK_EXPIRED); setState('not_invited'); return;
+        }
         setRefused(result.message); return;
       default:
         setErr(result.message);
     }
   };
 
+  // The advice to sign in or reset, only where it can help.
+  const offersReset = refusal === 'not_invited' || refusal === 'already_accepted';
+
   const switchAccount = async () => {
     await supabase.auth.signOut();
+    askedFor.current = null;
     setSignedInAs(null); setState('no_session');
   };
 
@@ -121,6 +187,45 @@ const AcceptInvitationPage: React.FC = () => {
               <Link to="/login" className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }}>
                 Go to sign in
               </Link>
+            </>
+          )}
+
+          {state === 'not_invited' && (
+            <>
+              <div className="alert alert-warning" role="status"><span>⚠</span><div>
+                {notice ?? 'There is no invitation for this account.'}
+              </div></div>
+              {/* Sign in or reset only helps someone who has an account: no
+                  invitation, or one already used. A cancelled or unfinished
+                  invitation's login is closed, so a reset link cannot help. */}
+              {offersReset && (
+                <p style={{ fontSize: 13.5, margin: '12px 0 0' }}>
+                  If you already have an account, sign in. If you forgot your password, ask for a reset link.
+                </p>
+              )}
+              <Link to="/login" className="btn btn-primary" style={{ width: '100%', marginTop: 12 }}>
+                Go to sign in
+              </Link>
+              {offersReset && (
+                <>
+                  <Link to="/forgot-password" className="btn btn-secondary" style={{ width: '100%', marginTop: 8 }}>
+                    Reset my password
+                  </Link>
+                  <p className="users-hint" style={{ marginTop: 10, textAlign: 'center' }}>
+                    Affiliates: <Link to="/affiliate/login">sign in here</Link>.
+                  </p>
+                </>
+              )}
+            </>
+          )}
+
+          {state === 'check_failed' && (
+            <>
+              <div className="alert alert-danger" role="alert"><span>⚠</span><div>{notice}</div></div>
+              <button type="button" className="btn btn-secondary" style={{ width: '100%', marginTop: 12 }}
+                      onClick={() => void askServer()}>
+                Try again
+              </button>
             </>
           )}
 

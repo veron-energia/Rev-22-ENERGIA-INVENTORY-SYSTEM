@@ -6,7 +6,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
-  cancelInvitation, closedInvitation, createInvitation, resendInvitation, validateInvite,
+  cancelInvitation, createInvitation, resendInvitation, validateInvite,
   type InvitationDeps, type InviteInput,
 } from '../invitations.ts';
 import type { AuthEmailConfig } from '../config.ts';
@@ -18,23 +18,24 @@ const CONFIG = {
   serviceRoleKey: 'service',
   publicAppUrl: 'https://energia.test',
   callbackBaseUrls: ['https://energia.test'],
-  fromAddress: 'info@rev22.com.sg',
+  fromAddress: 'info@example.com',
   fromName: 'Rev 22 Global Energia',
-  replyTo: 'info@rev22.com.sg',
+  replyTo: 'info@example.com',
   allowedOrigins: ['https://energia.test'],
 } as unknown as AuthEmailConfig;
 
 const LINK = 'https://project.supabase.co/auth/v1/verify?token=abc&type=invite';
+const RECOVERY_LINK = 'https://project.supabase.co/auth/v1/verify?token=def&type=recovery';
 const REDIRECT = 'https://energia.test/accept-invitation';
 
 const INPUT: InviteInput = {
   requestId: 'req-0000000001',
-  email: 'new.person@energia.test',
+  email: 'new.person@example.com',
   fullName: 'New Person',
   role: 'staff',
-  workPhone: '+6591110000',
-  personalPhone: '+6591110001',
-  personalEmail: 'new.person@example.test',
+  workPhone: '+61491579455',
+  personalPhone: '+61491579760',
+  personalEmail: 'new.person.home@example.com',
   storeIds: [],
 };
 
@@ -75,6 +76,10 @@ function deps(overrides: Partial<InvitationDeps> & {
     regenerateSignupLink: () => Promise.resolve({
       status: 'ok' as const,
       link: { actionLink: LINK, email: INPUT.email, displayName: INPUT.fullName, userId: 'auth-1' },
+    }),
+    generateRecoveryLink: () => Promise.resolve({
+      status: 'ok' as const,
+      link: { actionLink: RECOVERY_LINK, email: INPUT.email, displayName: INPUT.fullName, userId: 'auth-1' },
     }),
     deliver: (_c, req) => {
       delivered.push({ to: req.to, html: req.html, text: req.text });
@@ -270,10 +275,11 @@ Deno.test('resending an accepted invitation is refused rather than becoming a pa
   assertEquals(d.delivered.length, 0);
 });
 
-Deno.test('a resend for an account that already exists falls back to regenerating', async () => {
+Deno.test('a resend whose invite link fails outright still falls back to regenerating', async () => {
   let usedFallback = false;
   const d = deps({
-    generateInviteLink: () => Promise.resolve({ status: 'already_confirmed' as const }),
+    prepare: { outcome: 'ok', invitation_id: 'inv-1', email: INPUT.email, full_name: INPUT.fullName, auth_user_id: 'auth-1' },
+    generateInviteLink: () => Promise.resolve({ status: 'error' as const, message: 'upstream' }),
     regenerateSignupLink: () => {
       usedFallback = true;
       return Promise.resolve({
@@ -286,6 +292,179 @@ Deno.test('a resend for an account that already exists falls back to regeneratin
   assertEquals(result.kind, 'created');
   assert(usedFallback, 'the fallback path was not used');
   assertEquals(d.delivered.length, 1);
+});
+
+// 429 (ADMIN-AUTH-7 e): once the first link was opened, even by an email
+// scanner, the login's address is confirmed and Supabase refuses an 'invite'
+// link and a signup link. A recovery link for that same login works.
+Deno.test('a resend for a login whose address is confirmed sends a recovery link for that login', async () => {
+  let signupTried = false;
+  const d = deps({
+    prepare: { outcome: 'ok', invitation_id: 'inv-1', email: INPUT.email, full_name: INPUT.fullName, auth_user_id: 'auth-1' },
+    generateInviteLink: () => Promise.resolve({ status: 'already_confirmed' as const }),
+    regenerateSignupLink: () => { signupTried = true; return Promise.resolve({ status: 'already_confirmed' as const }); },
+  });
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-2');
+  assertEquals(result.kind, 'created');
+  assert(!signupTried, 'a signup link was tried for a confirmed address');
+  assertEquals(d.delivered.length, 1);
+  assertStringIncludes(d.delivered[0].text, RECOVERY_LINK);
+  assert(!d.calls.includes('admin:invite_user_provisioned'), 'a login already tied was set up again');
+});
+
+// 429 (ADMIN-AUTH-7 c): an invitation whose set-up never finished has no
+// login tied to it. Before 429 a resend sent the link with no profile behind
+// it, and accepting would have marked the invitation accepted with no access.
+Deno.test('a resend of an unfinished invitation sets up the login it makes before sending', async () => {
+  const order: string[] = [];
+  const d = deps({
+    adminRpc: (fn, args) => {
+      order.push(`admin:${fn}`);
+      if (fn === 'invite_user_reusable_login') return Promise.resolve({ data: null, error: null });
+      if (fn === 'invite_user_provisioned') {
+        assertEquals(args.p_auth_user_id, 'auth-1', 'the login the link was made for');
+        return Promise.resolve({ data: { outcome: 'provisioned' }, error: null });
+      }
+      return Promise.resolve({ data: null, error: null });
+    },
+    deliver: (_c, req) => { order.push('deliver'); d.delivered.push({ to: req.to, html: req.html, text: req.text }); return Promise.resolve(accepted); },
+  });
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-2');
+  assertEquals(result.kind, 'created');
+  assert(order.indexOf('admin:invite_user_provisioned') >= 0, 'the login was never set up');
+  assert(order.indexOf('admin:invite_user_provisioned') < order.indexOf('deliver'), 'the email went before the set-up');
+});
+
+Deno.test('a resend of an unfinished invitation whose set-up is refused sends nothing', async () => {
+  const d = deps({
+    adminRpc: (fn) => Promise.resolve(fn === 'invite_user_provisioned'
+      ? { data: { outcome: 'login_in_use', message: 'x' }, error: null }
+      : { data: null, error: null }),
+  });
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-2');
+  assertEquals(result.kind, 'provisioning_failed');
+  assertStringIncludes((result as { message: string }).message, 'cannot be invited');
+  assertEquals(d.delivered.length, 0);
+});
+
+// 429 (ADMIN-AUTH-7 d): a cancelled person invited again. Their login is set
+// up first (profile pending again, 412's block lifted), then the link.
+Deno.test('inviting a cancelled person again reuses their login: set up first, then the link', async () => {
+  const order: string[] = [];
+  const d = deps({
+    adminRpc: (fn, args) => {
+      order.push(`admin:${fn}`);
+      if (fn === 'invite_user_reusable_login') return Promise.resolve({ data: 'auth-old', error: null });
+      if (fn === 'invite_user_provisioned') {
+        assertEquals(args.p_auth_user_id, 'auth-old');
+        return Promise.resolve({ data: { outcome: 'provisioned' }, error: null });
+      }
+      return Promise.resolve({ data: null, error: null });
+    },
+    generateInviteLink: () => { order.push('invite-link'); return Promise.resolve({
+      status: 'ok' as const, link: { actionLink: LINK, email: INPUT.email, displayName: '', userId: 'auth-old' } }); },
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT, 'Olivia Owner');
+  assertEquals(result.kind, 'created');
+  assert(order.indexOf('admin:invite_user_provisioned') < order.indexOf('invite-link'),
+    'the link was made before the old login was unblocked');
+  assertEquals(order.filter(c => c === 'admin:invite_user_provisioned').length, 1, 'set up twice');
+  assertEquals(d.delivered.length, 1);
+});
+
+Deno.test('inviting a cancelled person again whose address is confirmed sends a recovery link', async () => {
+  const d = deps({
+    adminRpc: (fn) => Promise.resolve(fn === 'invite_user_reusable_login'
+      ? { data: 'auth-1', error: null }
+      : { data: { outcome: 'provisioned' }, error: null }),
+    generateInviteLink: () => Promise.resolve({ status: 'already_confirmed' as const }),
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);
+  assertEquals(result.kind, 'created');
+  assertStringIncludes(d.delivered[0].text, RECOVERY_LINK);
+});
+
+// The Owner, 10 Oct 2026: a removed member of staff may be invited again with
+// their old email; their login is reused, so their history stays linked.
+Deno.test('inviting a removed member of staff again reuses their login and sends a recovery link for it', async () => {
+  const order: string[] = [];
+  const d = deps({
+    adminRpc: (fn, args) => {
+      order.push(`admin:${fn}`);
+      if (fn === 'invite_user_reusable_login') return Promise.resolve({ data: 'auth-removed', error: null });
+      if (fn === 'invite_user_provisioned') {
+        assertEquals(args.p_auth_user_id, 'auth-removed');
+        return Promise.resolve({ data: { outcome: 'provisioned' }, error: null });
+      }
+      return Promise.resolve({ data: null, error: null });
+    },
+    // Their address was confirmed long ago, so Supabase Auth refuses 'invite'.
+    generateInviteLink: () => { order.push('invite-link'); return Promise.resolve({ status: 'already_confirmed' as const }); },
+    generateRecoveryLink: () => { order.push('recovery-link'); return Promise.resolve({
+      status: 'ok' as const, link: { actionLink: RECOVERY_LINK, email: INPUT.email, displayName: '', userId: 'auth-removed' } }); },
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT, 'Olivia Owner');
+  assertEquals(result.kind, 'created');
+  assert(order.indexOf('admin:invite_user_provisioned') < order.indexOf('recovery-link'),
+    'the link was made before their login was set up and unblocked');
+  assertEquals(order.filter(c => c === 'admin:invite_user_provisioned').length, 1, 'set up twice');
+  assertEquals(d.delivered.length, 1);
+  assertStringIncludes(d.delivered[0].text, RECOVERY_LINK);
+});
+
+Deno.test('a removed member of staff whose old role the inviter may not manage is refused before anything runs', async () => {
+  const message = 'This person was removed from Users & Roles, or their invitation was cancelled. '
+    + 'Your role may not manage the role they have. Ask an Owner to invite them again. Nothing has been changed.';
+  const d = deps({ begin: { outcome: 'forbidden', scope: 'removed_staff', message } });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);
+  assertEquals(result.kind, 'forbidden');
+  assertEquals(result.kind === 'forbidden' ? result.message : '', message);
+  assert(!d.calls.some(c => c.startsWith('admin:')), 'the server-only functions ran anyway');
+  assertEquals(d.delivered.length, 0);
+});
+
+Deno.test('a link made for a different login than the one set up is never sent', async () => {
+  const d = deps({
+    adminRpc: (fn) => Promise.resolve(fn === 'invite_user_reusable_login'
+      ? { data: 'auth-old', error: null }
+      : { data: { outcome: 'provisioned' }, error: null }),
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);
+  assertEquals(result.kind, 'provisioning_failed');
+  assertEquals(d.delivered.length, 0);
+});
+
+// ADMIN-AUTH-7 (c): the old wording said "Nothing was changed" after the
+// invitation had been saved.
+Deno.test('an address whose login is someone else\'s is refused without "nothing was changed"', async () => {
+  let recovery = false;
+  const d = deps({
+    adminRpc: (fn) => { d.calls.push(`admin:${fn}`); return Promise.resolve({ data: null, error: null }); },
+    generateInviteLink: () => Promise.resolve({ status: 'already_confirmed' as const }),
+    generateRecoveryLink: () => { recovery = true; return Promise.resolve({ status: 'no_such_user' as const }); },
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);
+  assertEquals(result.kind, 'provisioning_failed');
+  const message = (result as { message: string }).message;
+  assert(!/nothing was changed/i.test(message), message);
+  assertStringIncludes(message, 'The invitation is saved');
+  assertStringIncludes(message, 'cancel it');
+  assert(!recovery, 'a recovery link was made for a login that is not this invitation\'s');
+  assert(!d.calls.includes('admin:invite_user_provisioned'));
+  assert(d.calls.includes('admin:invite_user_record_delivery'), 'the failure was not recorded');
+  assertEquals(d.delivered.length, 0);
+});
+
+Deno.test('a failed login check saves the invitation and sends nothing', async () => {
+  const d = deps({
+    adminRpc: (fn) => Promise.resolve(fn === 'invite_user_reusable_login'
+      ? { data: null, error: { message: 'function does not exist' } }
+      : { data: null, error: null }),
+  });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT);
+  assertEquals(result.kind, 'provisioning_failed');
+  assertStringIncludes((result as { message: string }).message, 'Resend');
+  assertEquals(d.delivered.length, 0);
 });
 
 Deno.test('cancelling passes through the caller, so the database decides', async () => {
@@ -312,47 +491,18 @@ Deno.test('validation rejects what the interface should never send', () => {
   }
   const good = validateInvite(INPUT);
   assert(good.ok);
-  assertEquals((good as { value: InviteInput }).value.email, 'new.person@energia.test');
+  assertEquals((good as { value: InviteInput }).value.email, 'new.person@example.com');
 });
 
 Deno.test('the login email is normalized and never copied from the personal one', () => {
-  const r = validateInvite({ ...INPUT, email: '  New.Person@Energia.TEST  ', personalEmail: 'other@example.test' });
+  const r = validateInvite({ ...INPUT, email: '  New.Person@Example.COM  ', personalEmail: 'other@example.com' });
   assert(r.ok);
-  assertEquals(r.value.email, 'new.person@energia.test');
-  assertEquals(r.value.personalEmail, 'other@example.test');
+  assertEquals(r.value.email, 'new.person@example.com');
+  assertEquals(r.value.personalEmail, 'other@example.com');
 
   const blank = validateInvite({ ...INPUT, personalEmail: '' });
   assert(blank.ok);
   assertEquals(blank.value.personalEmail, null, 'a blank personal email became the login email');
 });
 
-// Accepting (406): a link whose invitation is already closed sets no password.
-const account = () => Promise.resolve({ status: 'ok' as const, userId: 'auth-1' });
-
-Deno.test('a cancelled, used or expired invitation stops before any password is set', async () => {
-  const asked: string[] = [];
-  const statusOf = (s: string) => (id: string) => { asked.push(id); return Promise.resolve(s); };
-  const cancelled = await closedInvitation({ readAccount: account, latestInvitationStatus: statusOf('cancelled') });
-  assertEquals(cancelled?.reason, 'cancelled');
-  assertStringIncludes(cancelled?.message ?? '', 'cancelled');
-  assertEquals((await closedInvitation({ readAccount: account, latestInvitationStatus: statusOf('accepted') }))?.reason,
-    'already_accepted');
-  assertEquals((await closedInvitation({ readAccount: account, latestInvitationStatus: statusOf('expired') }))?.reason,
-    'expired');
-  assertEquals(asked, ['auth-1', 'auth-1', 'auth-1'], 'looked up by the account the token belongs to');
-});
-
-Deno.test('a pending invitation, or none found, goes on to set the password as before', async () => {
-  assertEquals(await closedInvitation({ readAccount: account, latestInvitationStatus: () => Promise.resolve('pending') }), null);
-  assertEquals(await closedInvitation({ readAccount: account, latestInvitationStatus: () => Promise.resolve(null) }), null);
-});
-
-Deno.test('only a definite answer refuses: an unreadable account or invitation goes on as before', async () => {
-  // invite_user_accept still refuses a closed invitation after the password
-  // step, so failing open costs nothing that was not already the case.
-  const never = () => { throw new Error('must not be asked'); };
-  assertEquals(await closedInvitation({ readAccount: () => Promise.resolve({ status: 'unauthorized' as const }), latestInvitationStatus: never }), null);
-  assertEquals(await closedInvitation({ readAccount: () => Promise.resolve({ status: 'error' as const, message: 'down' }), latestInvitationStatus: never }), null);
-  assertEquals(await closedInvitation({ readAccount: account, latestInvitationStatus: () => Promise.reject(new Error('db down')) }), null);
-  assertEquals(await closedInvitation({ readAccount: () => Promise.reject(new Error('auth down')), latestInvitationStatus: never }), null);
-});
+// Accepting an invitation is tested in accept.test.ts (429).

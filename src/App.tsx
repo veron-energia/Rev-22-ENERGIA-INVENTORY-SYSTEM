@@ -1,8 +1,12 @@
 import React, { Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import AppLayout from './components/AppLayout';
-import AffiliateAuthShell from './components/AffiliateAuthShell';
+import { FullScreenLoader, Protected, AffiliateProtected } from './components/RouteGuards';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { lazyPage } from './lib/staleChunks';
+// Loaded with the app, not with the reset pages: it notes whether the app was
+// opened from an email link before Supabase clears the address (ADMIN-AUTH-9).
+import './lib/resetSession';
 
 /**
  * Pages are fetched when they are first opened, not when the application
@@ -11,116 +15,70 @@ import AffiliateAuthShell from './components/AffiliateAuthShell';
  * builder — and a staff member waited for all of it to open the dashboard.
  * The shell below (layout, auth, the loader) stays in the first bundle so
  * there is something on screen while a page arrives.
+ *
+ * lazyPage (ADMIN-AUTH-8): after a deploy a page file of the old build is
+ * gone; the app reloads once to pick up the new build instead of failing.
  */
-const LoginPage = React.lazy(() => import('./pages/LoginPage'));
-const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
-const ProductsPage = React.lazy(() => import('./pages/ProductsPage'));
-const WarehousesPage = React.lazy(() => import('./pages/WarehousesPage'));
-const StoresPage = React.lazy(() => import('./pages/StoresPage'));
-const PaymentMethodsPage = React.lazy(() => import('./pages/PaymentMethodsPage'));
-const UsersPage = React.lazy(() => import('./pages/UsersPage'));
-const WarehouseInventoryPage = React.lazy(() => import('./pages/WarehouseInventoryPage'));
-const StoreInventoryPage = React.lazy(() => import('./pages/StoreInventoryPage'));
-const TransfersPage = React.lazy(() => import('./pages/TransfersPage'));
-const StockMovementsPage = React.lazy(() => import('./pages/StockMovementsPage'));
-const CustomersPage = React.lazy(() => import('./pages/CustomersPage'));
-const PriceListPage = React.lazy(() => import('./pages/PriceListPage'));
-const CommissionsPage = React.lazy(() => import('./pages/CommissionsPage'));
-const VouchersPage = React.lazy(() => import('./pages/VouchersPage'));
-const PromotionsPage = React.lazy(() => import('./pages/PromotionsPage'));
-const SpecialPage = React.lazy(() => import('./pages/SpecialPage'));
-const EventsPage = React.lazy(() => import('./pages/EventsPage'));
-const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage'));
-const ExchangesPage = React.lazy(() => import('./pages/ExchangesPage'));
-const TherapyPage = React.lazy(() => import('./pages/TherapyPage'));
-const TherapyServicesPage = React.lazy(() => import('./pages/TherapyServicesPage'));
-const PublicSurveyPage = React.lazy(() => import('./pages/PublicSurveyPage'));
-const SurveysPage = React.lazy(() => import('./pages/SurveysPage'));
-const TikTokImportPage = React.lazy(() => import('./pages/TikTokImportPage'));
-const AffiliatesPage = React.lazy(() => import('./pages/AffiliatesPage'));
-const InvoicesPage = React.lazy(() => import('./pages/InvoicesPage'));
-const ApprovalsPage = React.lazy(() => import('./pages/ApprovalsPage'));
-const AdjustmentsPage = React.lazy(() => import('./pages/AdjustmentsPage'));
-const AuditLogPage = React.lazy(() => import('./pages/AuditLogPage'));
-const ReportsPage = React.lazy(() => import('./pages/ReportsPage'));
-const AffiliateJoinPage = React.lazy(() => import('./pages/AffiliateJoinPage'));
-const AffiliateLoginPage = React.lazy(() => import('./pages/AffiliateLoginPage'));
-const AffiliateVerifyPage = React.lazy(() => import('./pages/AffiliateVerifyPage'));
-const AffiliateForgotPasswordPage = React.lazy(() => import('./pages/AffiliateForgotPasswordPage'));
-const AffiliateResetPasswordPage = React.lazy(() => import('./pages/AffiliateResetPasswordPage'));
-const AffiliateDashboardPage = React.lazy(() => import('./pages/AffiliateDashboardPage'));
-const AffiliateNetworkPage = React.lazy(() => import('./pages/AffiliateNetworkPage'));
-const AffiliateEarningsPage = React.lazy(() => import('./pages/AffiliateEarningsPage'));
-const AffiliatePayoutsPage = React.lazy(() => import('./pages/AffiliatePayoutsPage'));
-const AffiliateReferralPage = React.lazy(() => import('./pages/AffiliateReferralPage'));
-const AffiliateAccountPage = React.lazy(() => import('./pages/AffiliateAccountPage'));
-const ReferralSignupPage = React.lazy(() => import('./pages/ReferralSignupPage'));
-const ForgotPasswordPage = React.lazy(() => import('./pages/ForgotPasswordPage'));
-const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
-const AcceptInvitationPage = React.lazy(() => import('./pages/AcceptInvitationPage'));
-import { Leaf } from 'lucide-react';
-import { ErrorBoundary } from './components/ErrorBoundary';
+const LoginPage = lazyPage(() => import('./pages/LoginPage'));
+const DashboardPage = lazyPage(() => import('./pages/DashboardPage'));
+const ProductsPage = lazyPage(() => import('./pages/ProductsPage'));
+const WarehousesPage = lazyPage(() => import('./pages/WarehousesPage'));
+const StoresPage = lazyPage(() => import('./pages/StoresPage'));
+const PaymentMethodsPage = lazyPage(() => import('./pages/PaymentMethodsPage'));
+const UsersPage = lazyPage(() => import('./pages/UsersPage'));
+const WarehouseInventoryPage = lazyPage(() => import('./pages/WarehouseInventoryPage'));
+const StoreInventoryPage = lazyPage(() => import('./pages/StoreInventoryPage'));
+const TransfersPage = lazyPage(() => import('./pages/TransfersPage'));
+const StockMovementsPage = lazyPage(() => import('./pages/StockMovementsPage'));
+const CustomersPage = lazyPage(() => import('./pages/CustomersPage'));
+const PriceListPage = lazyPage(() => import('./pages/PriceListPage'));
+const CommissionsPage = lazyPage(() => import('./pages/CommissionsPage'));
+const VouchersPage = lazyPage(() => import('./pages/VouchersPage'));
+const PromotionsPage = lazyPage(() => import('./pages/PromotionsPage'));
+const SpecialPage = lazyPage(() => import('./pages/SpecialPage'));
+const EventsPage = lazyPage(() => import('./pages/EventsPage'));
+const NotFoundPage = lazyPage(() => import('./pages/NotFoundPage'));
+const ExchangesPage = lazyPage(() => import('./pages/ExchangesPage'));
+const TherapyPage = lazyPage(() => import('./pages/TherapyPage'));
+const TherapyServicesPage = lazyPage(() => import('./pages/TherapyServicesPage'));
+const PublicSurveyPage = lazyPage(() => import('./pages/PublicSurveyPage'));
+const SurveysPage = lazyPage(() => import('./pages/SurveysPage'));
+const TikTokImportPage = lazyPage(() => import('./pages/TikTokImportPage'));
+const AffiliatesPage = lazyPage(() => import('./pages/AffiliatesPage'));
+const InvoicesPage = lazyPage(() => import('./pages/InvoicesPage'));
+const ApprovalsPage = lazyPage(() => import('./pages/ApprovalsPage'));
+const AdjustmentsPage = lazyPage(() => import('./pages/AdjustmentsPage'));
+const AuditLogPage = lazyPage(() => import('./pages/AuditLogPage'));
+const ReportsPage = lazyPage(() => import('./pages/ReportsPage'));
+const AffiliateJoinPage = lazyPage(() => import('./pages/AffiliateJoinPage'));
+const AffiliateLoginPage = lazyPage(() => import('./pages/AffiliateLoginPage'));
+const AffiliateVerifyPage = lazyPage(() => import('./pages/AffiliateVerifyPage'));
+const AffiliateForgotPasswordPage = lazyPage(() => import('./pages/AffiliateForgotPasswordPage'));
+const AffiliateResetPasswordPage = lazyPage(() => import('./pages/AffiliateResetPasswordPage'));
+const AffiliateDashboardPage = lazyPage(() => import('./pages/AffiliateDashboardPage'));
+const AffiliateNetworkPage = lazyPage(() => import('./pages/AffiliateNetworkPage'));
+const AffiliateEarningsPage = lazyPage(() => import('./pages/AffiliateEarningsPage'));
+const AffiliatePayoutsPage = lazyPage(() => import('./pages/AffiliatePayoutsPage'));
+const AffiliateReferralPage = lazyPage(() => import('./pages/AffiliateReferralPage'));
+const AffiliateAccountPage = lazyPage(() => import('./pages/AffiliateAccountPage'));
+const ReferralSignupPage = lazyPage(() => import('./pages/ReferralSignupPage'));
+const ForgotPasswordPage = lazyPage(() => import('./pages/ForgotPasswordPage'));
+const ResetPasswordPage = lazyPage(() => import('./pages/ResetPasswordPage'));
+const AcceptInvitationPage = lazyPage(() => import('./pages/AcceptInvitationPage'));
 
-const FullScreenLoader: React.FC<{ message?: string }> = ({ message }) => (
-  <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, background: 'var(--bg)' }}>
-    <div style={{ display: 'inline-flex', width: 48, height: 48, borderRadius: 13, background: 'var(--primary)', alignItems: 'center', justifyContent: 'center' }} className="spin">
-      <Leaf size={24} color="#fff" />
-    </div>
-    <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>{message ?? 'Loading…'}</p>
-  </div>
-);
-
-// Staff-only guard. Affiliates are redirected to their portal; a session with
-// neither identity gets a friendly setup state (never the staff "profile" error).
-const Protected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { session, actorType, profile, loading, error, signOut } = useAuth();
-
-  if (loading) return <FullScreenLoader />;
-  if (!session) return <Navigate to="/login" replace />;
-  if (actorType === 'affiliate') return <Navigate to="/affiliate/dashboard" replace />;
-
-  if (!profile) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-        <div className="card" style={{ padding: 32, maxWidth: 440, textAlign: 'center' }}>
-          <h3 style={{ marginBottom: 10 }}>Account setup needed</h3>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 18 }}>
-            {error ?? 'Your login works, but it is not yet linked to a Staff or Affiliate account. Please contact Energia.'}
-          </p>
-          <button className="btn btn-secondary" onClick={() => signOut()}>Sign out</button>
-        </div>
-      </div>
-    );
-  }
-  return <AppLayout>{children}</AppLayout>;
-};
-
-// Affiliate-only guard. Staff are sent to the staff app; unauthenticated to the
-// affiliate login. Not-yet-onboarded sessions go to the verify/onboarding flow.
-const AffiliateProtected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { session, actorType, loading, error, refreshProfile } = useAuth();
-  if (loading) return <FullScreenLoader />;
-  if (!session) return <Navigate to="/affiliate/login" replace />;
-  if (actorType === 'staff') return <Navigate to="/" replace />;
-  // A lookup that failed is not an account that does not exist. Sending the
-  // person on to /affiliate/verify here is how an existing affiliate on a poor
-  // phone connection was asked to "confirm their details" again.
-  if (actorType !== 'affiliate' && error) return (
-    <AffiliateAuthShell title="Could not load your account">
-      <p role="alert" style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{error}</p>
-      <button type="button" className="btn btn-primary" style={{ width: '100%', marginTop: 14 }} onClick={() => void refreshProfile()}>Try again</button>
-    </AffiliateAuthShell>
-  );
-  if (actorType !== 'affiliate') return <Navigate to="/affiliate/verify" replace />;
-  return <>{children}</>;
-};
+// The guards (Protected, AffiliateProtected) and the loader live in
+// components/RouteGuards.tsx, so they can be tested on their own.
 
 const AppRoutes: React.FC = () => {
   const { session, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <FullScreenLoader />;
 
+  // Staff pages have their own error boundary inside the menu layout, so the
+  // menu stays. This one covers the pages outside it, and clears itself when
+  // the address changes (ADMIN-AUTH-8).
   return (
-    <ErrorBoundary>
+    <ErrorBoundary resetKey={location.pathname}>
     <Suspense fallback={<FullScreenLoader />}>
     <Routes>
       {/* Public: no login required (QR survey) */}

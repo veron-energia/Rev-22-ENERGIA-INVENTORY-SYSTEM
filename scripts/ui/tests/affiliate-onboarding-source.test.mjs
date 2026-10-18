@@ -12,7 +12,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const read = p => readFileSync(new URL(`../../../${p}`, import.meta.url), 'utf8');
 const verify = read('src/pages/AffiliateVerifyPage.tsx');
-const app = read('src/App.tsx');
+// 429 moved the route guards out of App.tsx into their own file.
+const guards = read('src/components/RouteGuards.tsx');
 const affiliates = read('src/pages/AffiliatesPage.tsx');
 
 test('the verify page takes the details from the account before the browser', () => {
@@ -30,7 +31,7 @@ test('only typed details are pre-checked in the browser; the server decides the 
 });
 
 test('a failed account lookup offers a retry, not the details form', () => {
-  const guard = app.slice(app.indexOf('const AffiliateProtected'), app.indexOf('const AppRoutes'));
+  const guard = guards.slice(guards.indexOf('const AffiliateProtected'));
   assert.match(guard, /actorType !== 'affiliate' && error/, 'the error case must be handled first');
   assert.match(guard, /Try again/, 'a retry must be offered');
   assert.ok(guard.indexOf('&& error') < guard.indexOf('<Navigate to="/affiliate/verify"'), 'the retry must come before the redirect');
