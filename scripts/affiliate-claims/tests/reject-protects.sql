@@ -358,7 +358,8 @@ select pg_temp.check((select r->>'problem' is null and not (r->>'customer_previo
 -- ═════ P5 Only the rejection's own audit row counts ═════
 -- Rows shaped like an Owner's rejection of a claim suggesting cF and cFA:
 -- through write_audit by staff and by an Owner (signed-in users could call it
--- until 406; it leaves module empty), and through write_audit_ex for staff and for an
+-- until 406; it left module empty until 431, and since then saves the table's
+-- own name, never 'affiliate'), and through write_audit_ex for staff and for an
 -- Admin, for an Owner under another action, and for an Owner with the right
 -- action on another table (no signed-in user can call write_audit_ex; this
 -- runs as the database owner).
@@ -385,8 +386,8 @@ begin
       jsonb_build_object('auth_user_id', gen_random_uuid(), 'candidate_customer_id', pg_temp.fx(cust)), 'affiliate', 'not a rejection', null);
   end loop;
 end $$;
-select pg_temp.check((select count(*) filter (where actor_role = 'staff' and module is null) = 2
-                         and count(*) filter (where actor_role = 'owner' and module is null) = 2
+select pg_temp.check((select count(*) filter (where actor_role = 'staff' and coalesce(module, 'affiliate_account_claims') = 'affiliate_account_claims') = 2
+                         and count(*) filter (where actor_role = 'owner' and coalesce(module, 'affiliate_account_claims') = 'affiliate_account_claims') = 2
                          and count(*) filter (where actor_role = 'staff' and module = 'affiliate') = 2
                          and count(*) filter (where actor_role = 'admin' and module = 'affiliate') = 2
                          and count(*) filter (where actor_role = 'owner' and module = 'affiliate' and action = 'affiliate_claim_resolved') = 2

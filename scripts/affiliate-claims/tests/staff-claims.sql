@@ -874,8 +874,10 @@ begin
       jsonb_build_object('customer_id', pg_temp.fx(cust), 'auth_user_id', pg_temp.fx('lfk')), null, 'affiliate', 'not an unlink', null);
   end loop;
 end $$;
-select pg_temp.check((select count(*) filter (where actor_role = 'staff' and module is null) = 2
-                         and count(*) filter (where actor_role = 'owner' and module is null) = 2
+-- write_audit saved no module until 431; since 431 it saves its table's,
+-- here the table's own name. Either way never 'affiliate'.
+select pg_temp.check((select count(*) filter (where actor_role = 'staff' and coalesce(module, 'affiliate_accounts') = 'affiliate_accounts') = 2
+                         and count(*) filter (where actor_role = 'owner' and coalesce(module, 'affiliate_accounts') = 'affiliate_accounts') = 2
                          and count(*) filter (where actor_role = 'manager' and module = 'affiliate') = 2 and count(*) = 6
                         from audit_logs where action = 'affiliate_login_unlinked'
                          and old_data->>'customer_id' in (pg_temp.fx('cFk')::text, pg_temp.fx('cFa')::text)),

@@ -153,7 +153,11 @@ declare
                              -- 420: what stops a product, store or warehouse being deleted or
                              -- switched off while it holds stock, and the trigger on the three
                              -- tables that calls it (every path, the pages included)
-                             'stock_retire_blockers','trg_stock_place_retire'];
+                             'stock_retire_blockers','trg_stock_place_retire',
+                             -- 431: the module an audit entry is filed under, the trigger that
+                             -- files an entry saved with none, and write_audit_ex, which saves
+                             -- any audit entry it is given (service role only, like write_audit)
+                             'audit_module','trg_audit_logs_fill_module','write_audit_ex'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

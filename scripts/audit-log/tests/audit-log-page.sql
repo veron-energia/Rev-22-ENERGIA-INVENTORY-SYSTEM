@@ -9,7 +9,8 @@
 -- number; keep one search's pages steady with its as-of time; and offer the
 -- filters' choices only when asked.
 --
--- Needs a database with production's schema and 406 and 428 applied. Run it
+-- Needs a database with production's schema and 406 and 428 applied (431 too,
+-- or not: its fixture entries are saved as before 431, with no module). Run it
 -- after 428 in the same transaction on a disposable copy, for example:
 --   begin; \i supabase/428_audit_log_paging.sql
 --   \i scripts/audit-log/tests/audit-log-page.sql      (its rollback ends both)
@@ -114,6 +115,13 @@ begin
   --   e4 9 Sep 00:30 SGT     invoices, module invoice_edit, by the Manager, same time as e3
   --   e5 10 Sep 23:59 SGT    a table no module is known for, the mark in the action
   --   e6 11 Sep 00:00 SGT    app_settings, no module (taken: settings), a backslash in the reason
+  -- They stand for entries saved before 431. Since 431 a trigger gives an
+  -- entry saved with no module its table's, so it is off while they are
+  -- written (when the database has it).
+  if exists (select 1 from pg_trigger t where t.tgrelid = 'public.audit_logs'::regclass
+              and t.tgname = 'audit_logs_fill_module') then
+    alter table public.audit_logs disable trigger audit_logs_fill_module;
+  end if;
   insert into public.audit_logs (table_name, action, module, changed_by, actor_role, reason, record_id, old_data, new_data, created_at)
   values ('profiles', 'audx_one', null, pg_temp.audx_id('owner'), 'owner', 'audxmark checked 100%_done', null, null, null,
           timestamptz '2026-09-08 15:59:59+00'),
@@ -127,6 +135,10 @@ begin
           timestamptz '2026-09-10 15:59:00+00'),
          ('app_settings', 'audx_six', null, pg_temp.audx_id('owner'), 'owner', 'audxmark C:\temp', null, null, null,
           timestamptz '2026-09-10 16:00:00+00');
+  if exists (select 1 from pg_trigger t where t.tgrelid = 'public.audit_logs'::regclass
+              and t.tgname = 'audit_logs_fill_module') then
+    alter table public.audit_logs enable trigger audit_logs_fill_module;
+  end if;
 end $$;
 
 -- ── 1. Who may read it ──────────────────────────────────────────────────────

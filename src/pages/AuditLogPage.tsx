@@ -33,7 +33,8 @@ export interface AuditEntry {
   created_at: string;
   action: string;
   table_name: string;
-  /** The stored module, or one taken from the table when the entry has none. */
+  /** The stored module ("commission" shown as "commissions" since 431), or one
+   *  taken from the table when the entry has none. */
   module: string | null;
   /** False when the module was taken from the table. */
   module_recorded: boolean;
