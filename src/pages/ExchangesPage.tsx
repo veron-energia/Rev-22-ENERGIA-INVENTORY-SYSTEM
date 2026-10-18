@@ -2,12 +2,16 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { singaporeToday } from '../lib/invoices/business';
 import { exchangePaymentMethods, bundleLineBlock, componentsExchanged, exchangePaymentProblem,
-         exchangePaymentRowProblem, bundleQuoteFromRpc, affiliateHint, type BundleQuote } from '../lib/exchanges/rules.mjs';
+         exchangePaymentRowProblem, bundleQuoteFromRpc, affiliateHint, type BundleQuote,
+         creditPreviewFromRpc, previewLine, productLinesCredit, componentCredit, creditBasisText,
+         exchangeDay, displayDay, instalmentLabelFrom, type CreditPreview, type CreditFigures,
+         saleDay, exchangeDateFloor, exchangeDateProblem, exchangeDateHint } from '../lib/exchanges/rules.mjs';
+import { promotionOnSale } from '../lib/promotions/status.mjs';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { useAuth } from '../context/AuthContext';
-import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion, isManagerOrAbove } from '../types';
-import { Modal, NoAccess } from '../components/ui';
+import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion } from '../types';
+import { Modal } from '../components/ui';
 import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye, Printer } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { SearchSelect } from '../components/SearchSelect';
@@ -18,6 +22,8 @@ const ExchangesPage: React.FC = () => {
   const { profile } = useAuth();
   const [exchanges, setExchanges] = useState<ProductExchange[]>([]);
   const [exchangeInvoiceNos, setExchangeInvoiceNos] = useState<Record<string, string>>({});
+  /** The instalment label each replacement invoice records (424). */
+  const [exchangeInstalments, setExchangeInstalments] = useState<Record<string, { method_id: string; months: number }>>({});
   const [products, setProducts] = useState<Product[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -40,7 +46,7 @@ const ExchangesPage: React.FC = () => {
     setLoading(true);
     const [ex, exinv, pr, st, pm, spp, si, mine, myStoreList, promo] = await Promise.all([
       supabase.from('product_exchanges').select('*').order('created_at', { ascending: false }),
-      supabase.from('invoices').select('id, invoice_no, exchange_id').eq('is_exchange', true),
+      supabase.from('invoices').select('id, invoice_no, exchange_id, instalment_method_id, instalment_months').eq('is_exchange', true),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       // The customers table is deliberately absent. It was read whole here, a
@@ -56,8 +62,16 @@ const ExchangesPage: React.FC = () => {
     ]);
     setExchanges((ex.data as ProductExchange[]) ?? []);
     const exMap: Record<string, string> = {};
-    for (const r of ((exinv.data as any[]) ?? [])) if (r.exchange_id) exMap[r.exchange_id] = r.invoice_no;
+    const instMap: Record<string, { method_id: string; months: number }> = {};
+    for (const r of ((exinv.data as any[]) ?? [])) {
+      if (!r.exchange_id) continue;
+      exMap[r.exchange_id] = r.invoice_no;
+      if (r.instalment_method_id && r.instalment_months) {
+        instMap[r.exchange_id] = { method_id: r.instalment_method_id, months: Number(r.instalment_months) };
+      }
+    }
     setExchangeInvoiceNos(exMap);
+    setExchangeInstalments(instMap);
     setProducts((pr.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
     // Exactly the customers these exchanges name, by id, which is correct at
@@ -152,11 +166,39 @@ const ExchangesPage: React.FC = () => {
     });
   }, [mode, invoice, effectiveStore, bundleLineId, newPromoId]);
 
+  // ---- What the returned items count for (424): the server's own figures ----
+  // exchange_credit_preview works out, for each line, today's price, what the
+  // customer paid and the lower of the two, which is the credit the exchange
+  // itself gives. Without it nothing can be valued, so Confirm is refused.
+  const [creditPreview, setCreditPreview] = useState<CreditPreview | null>(null);
+  const [creditPreviewState, setCreditPreviewState] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  const creditSeq = useRef(0);
+  useEffect(() => {
+    const seq = ++creditSeq.current;
+    if (!invoice || !effectiveStore || eligMsg) {
+      setCreditPreview(null); setCreditPreviewState('idle'); return;
+    }
+    setCreditPreview(null); setCreditPreviewState('loading');
+    supabase.rpc('exchange_credit_preview', {
+      p_original_invoice_id: invoice.id, p_processing_store_id: effectiveStore,
+    }).then(({ data, error }) => {
+      if (seq !== creditSeq.current) return;   // another invoice or store since
+      const p = error ? null : creditPreviewFromRpc(data);
+      setCreditPreview(p); setCreditPreviewState(p ? 'ready' : 'failed');
+    });
+  }, [invoice, effectiveStore, eligMsg]);
+
+  // Everything one exchange typed is cleared before the next: a second
+  // exchange in the same session must not carry the last one's staff,
+  // affiliate, issuer, date or customer.
   const resetWizard = () => {
     setStore(isStaff && myStores.length === 1
       ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : ''); setInvSearch(''); setInvoice(null); setInvItems([]);
     setEligMsg(null); setReturnIds([]); setRepl([{ product_id: '', quantity: 1 }]); setPays([]); setReason(''); setNotes(''); setErr(null);
     setMode('product'); setBundleLineId(''); setNewPromoId(''); setComponentPid(''); setComponentQty(1); setBundleComps([]);
+    setExStaff([]); setExAffiliate(''); setExRaisedBy(''); setExDate(singaporeToday());
+    setOriginalContext(null); setInvoiceCustomer(null); setCustomerUnavailable(false);
+    setConfirming(false); setAttestName('');
   };
   const openWizard = () => { resetWizard(); setWizard(true); };
 
@@ -207,7 +249,8 @@ const ExchangesPage: React.FC = () => {
     setErr(null); setInvoice(null); setInvItems([]); setEligMsg(null); setReturnIds([]);
     setInvoiceCustomer(null); setCustomerUnavailable(false); setOriginalContext(null);
     setBundleLineId(''); setBundleComps([]); setComponentPid(''); setComponentQty(1);
-    setExStaff([]); setExAffiliate(''); setPays([]);
+    setExStaff([]); setExAffiliate(''); setExRaisedBy(''); setPays([]);
+    setExDate(singaporeToday());
     const q = invSearch.trim();
     if (!q) return;
     const { data: inv } = await supabase.from('invoices').select('*').eq('invoice_no', q).maybeSingle();
@@ -227,7 +270,6 @@ const ExchangesPage: React.FC = () => {
     if (!cid) { setCustomerUnavailable(true); return; }
     supabase.rpc('exchange_original_context', { p_invoice_id: (inv as Invoice).id })
       .then(({ data }) => setOriginalContext(data ?? null));
-    setExDate(singaporeToday());
     const found = await fetchCustomersByIds([cid]);
     if (found.length > 0) {
       setInvoiceCustomer(found[0]);
@@ -258,25 +300,28 @@ const ExchangesPage: React.FC = () => {
     return types.size === 1 ? [...types][0] : 'MIXED';
   }, [returnedItems, products]);
 
-  const creditTotal = useMemo(() => returnedItems.reduce((s, i) => {
-    const pr = priceAt(effectiveStore, i.product_id ?? ''); return s + (pr ?? 0) * i.quantity;
-  }, 0), [returnedItems, effectiveStore, prices]);
+  // 424 (the Owner, Q17): each returned line counts for the lower of today's
+  // price and what was paid for it (the server's preview).
+  const productFig = useMemo(() => productLinesCredit(creditPreview, returnIds), [creditPreview, returnIds]);
+  const creditTotal = productFig.credit ?? 0;
+  const componentFig: CreditFigures | null = mode === 'component' && bundleLineId && componentPid
+    ? componentCredit(creditPreview, bundleLineId, componentPid, componentQty) : null;
+  const componentHeld = bundleComps.find(x => x.product_id === componentPid)?.quantity ?? 0;
 
   const replLines = repl.filter(r => r.product_id && r.quantity > 0);
   const replTotal = useMemo(() => replLines.reduce((s, r) => {
     const pr = priceAt(effectiveStore, r.product_id); return s + (pr ?? 0) * r.quantity;
   }, 0), [replLines, effectiveStore, prices]);
 
-  const topup = Math.max(0, +(replTotal - creditTotal).toFixed(2));
-  const nonref = Math.max(0, +(creditTotal - replTotal).toFixed(2));
   const paySum = pays.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  // Mode-aware credit (component mode uses the selected component's store price).
-  const modeCredit = mode === 'component' ? (priceAt(effectiveStore, componentPid) ?? 0) * componentQty : creditTotal;
+  // Mode-aware credit (component mode: that item's share of what the bundle was paid, at most today's price).
+  const modeFig: CreditFigures | null = mode === 'component' ? componentFig
+    : { todays: productFig.todays, paid: productFig.paid, credit: productFig.credit };
+  const modeCredit = mode === 'component' ? (componentFig?.credit ?? 0) : creditTotal;
   const compTopup = mode === 'bundle' ? 0 : Math.max(0, +(replTotal - modeCredit).toFixed(2));
   // An instalment is a label on money that has arrived, so its amount is
   // received money like any other and needs no separate coverage figure.
   const receivedNow = pays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
-  const outstandingNow = Math.max(0, +(compTopup - receivedNow).toFixed(2));
   const compNonref = mode === 'bundle' ? 0 : Math.max(0, +(modeCredit - replTotal).toFixed(2));
   // What this exchange charges now: the whole bundle's top-up comes from the
   // server's preview; product and component exchanges are priced here.
@@ -288,15 +333,29 @@ const ExchangesPage: React.FC = () => {
   // replacement products must match returned type (own/third)
   const replCandidates = products.filter(p => returnedType && returnedType !== 'MIXED' ? p.product_type === returnedType : true);
 
+  /** Why the returned items cannot be valued yet, or null. */
+  const creditProblem = (): string | null => {
+    if (creditPreviewState === 'loading') return 'Still working out what the returned items count for. Try again in a moment.';
+    if (creditPreviewState !== 'ready' || !creditPreview) return 'What the returned items count for could not be worked out. Refresh the page and try again.';
+    return null;
+  };
+
   const validate = (): string | null => {
     if (!effectiveStore) return 'Select a processing store.';
     if (!invoice) return 'Find the original invoice first.';
     if (eligMsg) return eligMsg;
     if (!reason.trim()) return 'A reason is required for the exchange.';
+    // 424: the day the sale counts on: from the 1st of this month, not before
+    // the original sale, not in the future (the server checks the same).
+    { const dp = exchangeDateProblem(exDate, singaporeToday(), saleDay(invoice));
+      if (dp) return dp; }
     if (mode === 'product') {
       if (returnIds.length === 0) return 'Select at least one item to return.';
       if (returnedType === 'MIXED') return 'All returned items must be the same product type.';
       if (replLines.length === 0) return 'Add at least one replacement product.';
+      const valued = creditProblem();
+      if (valued) return valued;
+      if (productFig.missing) return 'A returned item has no price at this store, so it cannot be valued here.';
     } else if (mode === 'bundle') {
       if (!bundleLineId) return 'Select the bundle being returned.';
       { const block = bundleLineBlock(selectedBundleLine as any, 'bundle');
@@ -313,7 +372,11 @@ const ExchangesPage: React.FC = () => {
       if (!componentPid) return 'Select the component to exchange.';
       if (componentsExchanged(selectedBundleLine as any).includes(componentPid)) return 'That item of the bundle has already been exchanged.';
       if (componentQty <= 0) return 'Component quantity must be greater than zero.';
+      if (componentQty > componentHeld) return `The bundle holds ${componentHeld} of that item.`;
       if (replLines.length === 0) return 'Add at least one replacement product.';
+      const valued = creditProblem();
+      if (valued) return valued;
+      if (!componentFig || componentFig.credit === null) return 'That item has no price at this store, so it cannot be valued here.';
     }
     // Only what is due is sent (nothing when nothing is due): every amount
     // with a method (a row left on "— Method —" would count here but never be
@@ -358,14 +421,17 @@ const ExchangesPage: React.FC = () => {
         amount: p.amount, reference: p.reference,
       }));
     // An instalment is recorded as the payment it is, under the real method,
-    // so there is no arrangement to write alongside it.
+    // so there is no arrangement to write alongside it. Its method and months
+    // are the replacement invoice's instalment label (424), as on any invoice.
+    const instalment = mode === 'bundle' ? null : instalmentLabelFrom(active, INSTALMENT_METHOD);
     // One call: the exchange and who handled it are written together, so an
-    // exchange can never exist without its own attribution. The three original
-    // creators are called unchanged underneath.
+    // exchange can never exist without its own attribution. The three
+    // creators are called underneath.
     const common = {
       original_invoice_id: invoice.id, processing_store_id: effectiveStore,
       payments: payPayload,
       arrangements: [],
+      instalment,
       reason: reason.trim() || null, notes: notes.trim() || null,
       served_by: exStaff,
       // "None" is a decision, not an absence: it is sent explicitly so the
@@ -450,7 +516,7 @@ const ExchangesPage: React.FC = () => {
             <h1>EXCHANGE</h1>
             <div><b>${esc(detail.exchange_no)}</b></div>
             ${inv ? `<div class="mut">Invoice ${esc(inv)}</div>` : ''}
-            <div class="mut">${new Date(detail.created_at).toLocaleString()}</div>
+            <div class="mut">Exchange date ${esc(displayDay(exchangeDay(detail)))}</div>
           </div>
         </div>
         <h2>Customer</h2>
@@ -492,9 +558,9 @@ const ExchangesPage: React.FC = () => {
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
             rows={exchanges} filename="exchanges" sheetName="Exchanges"
-            dateOf={(r: any) => r.created_at} dateLabel="Exchange date"
+            dateOf={(r: any) => exchangeDay(r)} dateLabel="Exchange date"
             columns={[
-              { header: 'Date', value: (e: any) => new Date(e.created_at).toLocaleDateString('en-GB') },
+              { header: 'Date', value: (e: any) => exchangeDay(e).split('-').reverse().join('/') },
               { header: 'Exchange No', value: (e: any) => e.exchange_no ?? '' },
               { header: 'Customer', value: (e: any) => cName(e.customer_id) },
               { header: 'Status', value: (e: any) => e.status ?? '' },
@@ -517,7 +583,7 @@ const ExchangesPage: React.FC = () => {
                     <td><strong>{e.exchange_no}</strong>
                       {exchangeInvoiceNos[e.id] && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Invoice {exchangeInvoiceNos[e.id]}</div>}
                     </td>
-                    <td style={{ fontSize: 12.5 }}>{new Date(e.created_at).toLocaleDateString()}</td>
+                    <td style={{ fontSize: 12.5 }}>{displayDay(exchangeDay(e))}</td>
                     <td>{cName(e.customer_id)}</td>
                     <td style={{ fontSize: 12.5 }}>{sName(e.processing_store_id)}</td>
                     <td style={{ textAlign: 'right' }}>{money(e.returned_credit_total)}</td>
@@ -590,7 +656,14 @@ const ExchangesPage: React.FC = () => {
                         <label key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: already ? 0.5 : 1, fontSize: 13 }}>
                           <input type="checkbox" disabled={!!already} checked={on} style={{ width: 'auto' }}
                             onChange={() => setReturnIds(prev => on ? prev.filter(x => x !== i.id) : [...prev, i.id])} />
-                          <span>{pName(i.product_id ?? '')} × {i.quantity} {already ? '(already exchanged)' : ''}</span>
+                          <span>{pName(i.product_id ?? '')} × {i.quantity} {already ? '(already exchanged)' : ''}
+                            {!already && previewLine(creditPreview, i.id) && (() => {
+                              const f = previewLine(creditPreview, i.id)!;
+                              return <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>
+                                paid {f.paid === null ? '—' : money(f.paid)} · today {f.todays === null ? 'no price here' : money(f.todays)}
+                              </span>;
+                            })()}
+                          </span>
                         </label>
                       );
                     })}
@@ -627,7 +700,7 @@ const ExchangesPage: React.FC = () => {
                       <SearchSelect placeholder="Search bundle name, code or price…"
                         value={newPromoId} onChange={v => setNewPromoId(v)}
                         emptyLabel="No bundle matches that name, code or price"
-                        options={promotions.map(p => ({
+                        options={promotions.filter(p => promotionOnSale(p, singaporeToday())).map(p => ({
                           value: p.id,
                           label: `${p.name} — ${money(Number(p.fixed_price))}`,
                           sublabel: p.code,
@@ -648,7 +721,13 @@ const ExchangesPage: React.FC = () => {
                         ? <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{bundleQuote.problem}</div></div>
                         : (
                           <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 12, fontSize: 13 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (returned bundle)</span><strong>{money(bundleQuote.credit)}</strong></div>
+                            {bundleQuote.todays_value !== null && bundleQuote.paid !== null && (<>
+                              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Returned bundle, today's value</span><span>{money(bundleQuote.todays_value)}</span></div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Returned bundle, what was paid</span><span>{money(bundleQuote.paid)}</span></div>
+                            </>)}
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (the lower of the two)</span><strong>{money(bundleQuote.credit)}</strong></div>
+                            {bundleQuote.todays_value !== null && bundleQuote.paid !== null && (
+                              <div className="muted" style={{ fontSize: 12 }}>{creditBasisText({ todays: bundleQuote.todays_value, paid: bundleQuote.paid, credit: bundleQuote.credit })}</div>)}
                             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Replacement bundle</span><strong>{money(bundleQuote.replacement)}</strong></div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
                               {bundleQuote.topup > 0 ? <><span>Additional charge (paid in full now)</span><strong style={{ color: 'var(--primary)' }}>{money(bundleQuote.topup)}</strong></>
@@ -706,10 +785,19 @@ const ExchangesPage: React.FC = () => {
                 </div>
                 )}
 
-                {/* Valuation (product & component modes compute client-side; bundle is server-side) */}
+                {/* Valuation: the credit comes from the server's preview (424); the
+                    replacement is priced here, as the server prices it. */}
                 {mode !== 'bundle' && (
                 <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 12, fontSize: 13 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (returned)</span><strong>{money(mode === 'component' ? (priceAt(effectiveStore, componentPid) ?? 0) * componentQty : creditTotal)}</strong></div>
+                  {creditPreviewState === 'loading' && <div className="muted">Working out what the returned items count for…</div>}
+                  {creditPreviewState === 'failed' && <div style={{ color: 'var(--danger)' }}>What the returned items count for could not be worked out. Refresh the page and try again.</div>}
+                  {creditPreviewState === 'ready' && modeFig && modeFig.credit !== null && (mode === 'product' ? returnIds.length > 0 : !!componentPid) && (<>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Returned, today's price</span><span>{money(modeFig.todays ?? 0)}</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{mode === 'component' ? 'Returned, its share of what the bundle was paid' : 'Returned, what was paid'}</span><span>{money(modeFig.paid ?? 0)}</span></div>
+                  </>)}
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (the lower of the two)</span><strong>{money(modeCredit)}</strong></div>
+                  {creditPreviewState === 'ready' && (mode === 'product' ? returnIds.length > 0 : !!componentPid) && (
+                    <div className="muted" style={{ fontSize: 12 }}>{creditBasisText(modeFig, mode === 'component')}</div>)}
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Replacement total</span><strong>{money(replTotal)}</strong></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
                     {compTopup > 0 ? <><span>Additional charge</span><strong style={{ color: 'var(--primary)' }}>{money(compTopup)}</strong></>
@@ -722,13 +810,14 @@ const ExchangesPage: React.FC = () => {
                   <div className="form-group">
                     <label>Additional payment ({money(due)} due) — {mode === 'bundle'
                       ? 'exactly this amount, now, by one or more methods'
-                      : 'one or more methods, or an instalment'}</label>
+                      : 'all of it now, by one or more methods (Instalment records how it is paid)'}</label>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {pays.map((p, i) => (
                         <div key={i} style={{ display: 'flex', gap: 6 }}>
                           <select value={p.payment_method_id} style={{ flex: 1 }} onChange={e => setPays(ps => ps.map((x, j) => j === i ? { ...x, payment_method_id: e.target.value } : x))}>
                             <option value="">— Method —</option>
-                            {mode !== 'bundle' && <option value={INSTALMENT_METHOD}>Instalment — pay over time</option>}
+                            {/* A label on money taken now (the duration is recorded on the replacement invoice). */}
+                            {mode !== 'bundle' && <option value={INSTALMENT_METHOD}>Instalment</option>}
                             {/* Never wallet credit: an exchange takes no credit from the wallet. */}
                             {payMethods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                           </select>
@@ -758,10 +847,7 @@ const ExchangesPage: React.FC = () => {
                       {mode !== 'bundle' && (
                         <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
                           <div>Additional charge: <strong>{money(compTopup)}</strong></div>
-                          <div>Received now: <strong>{money(receivedNow)}</strong></div>
-                          <div>Outstanding: <strong style={{ color: outstandingNow > 0 ? 'var(--accent)' : 'var(--success)' }}>{money(outstandingNow)}</strong></div>
-                          {outstandingNow > 0 && (
-                            <div className="muted">The balance stays owed on the replacement invoice.</div>)}
+                          <div>Received now: <strong style={{ color: Math.abs(receivedNow - compTopup) < 0.005 ? 'var(--success)' : 'var(--accent)' }}>{money(receivedNow)}</strong></div>
                         </div>
                       )}
                     </div>
@@ -822,8 +908,14 @@ const ExchangesPage: React.FC = () => {
                   <div className="form-group">
                     <label>Exchange date</label>
                     <input type="date" value={exDate} max={singaporeToday()}
+                      min={exchangeDateFloor(singaporeToday(), saleDay(invoice))}
                       onChange={e => setExDate(e.target.value)} />
-                    <small>Defaults to today in Singapore. The original invoice’s date is not changed.</small>
+                    {/* 424 (the Owner, 9 Oct 2026): the sale counts on this date,
+                        never before the 1st of this month. */}
+                    <small>
+                      Defaults to today in Singapore. {exchangeDateHint(exDate, singaporeToday())}{' '}
+                      The earliest is the 1st of this month, so a month already sent to Xero never changes. It cannot be before the original sale. The original invoice’s date is not changed.
+                    </small>
                   </div>
 
                   {originalContext && (
@@ -882,6 +974,16 @@ const ExchangesPage: React.FC = () => {
                     )}
                   </div>
                 )}
+                {exDate && exDate < singaporeToday() && (
+                  <div style={{ fontSize: 13 }}>{exchangeDateHint(exDate, singaporeToday())}</div>
+                )}
+                {mode !== 'bundle' && (
+                  <div style={{ fontSize: 13 }}>
+                    Credit {money(modeCredit)} · Replacement {money(replTotal)} ·{' '}
+                    <strong>{compTopup > 0 ? `${money(compTopup)} paid now`
+                      : compNonref > 0 ? `${money(compNonref)} unused (non-refundable)` : 'even exchange'}</strong>
+                  </div>
+                )}
                 {mode === 'component' && componentPid && (
                   <div style={{ fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
                     <strong>{pName(componentPid)}</strong> × {componentQty}
@@ -906,7 +1008,7 @@ const ExchangesPage: React.FC = () => {
         <Modal title={`Exchange ${detail.exchange_no}${exchangeInvoiceNos[detail.id] ? ` — Invoice ${exchangeInvoiceNos[detail.id]}` : ''}`} maxWidth={520} onClose={() => setDetail(null)}
           footer={<><button className="btn btn-secondary" onClick={printExchange}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>}>
           <div className="form-grid">
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cName(detail.customer_id)} · {sName(detail.processing_store_id)} · {new Date(detail.created_at).toLocaleString()}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cName(detail.customer_id)} · {sName(detail.processing_store_id)} · {displayDay(exchangeDay(detail))}</div>
             <div>
               <label>Returned</label>
               {detailItems.filter(i => i.direction === 'returned').map(i => <div key={i.id} style={{ fontSize: 13 }}>{pName(i.product_id)} × {i.quantity} @ {money(i.unit_price)} = {money(i.line_total)}</div>)}
@@ -928,6 +1030,11 @@ const ExchangesPage: React.FC = () => {
                     <span>Outstanding</span>
                     <strong style={{ color: Number(detailPosition.outstanding) > 0 ? 'var(--accent)' : 'var(--success)' }}>
                       {money(detailPosition.outstanding)}</strong></div>
+                  {exchangeInstalments[detail.id] && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <span>Paid by instalment</span>
+                      <span>{exchangeInstalments[detail.id].months} months · {methods.find(m => m.id === exchangeInstalments[detail.id].method_id)?.name ?? 'payment method'}</span>
+                    </div>)}
                   {(detailPosition.arrangements ?? []).map((a: any) => (
                     <div key={a.arrangement_id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-secondary)' }}>
                       <span>{a.category === 'in_house' ? 'In-house' : 'Provider-funded'} instalment · {a.months} months · {a.method}</span>

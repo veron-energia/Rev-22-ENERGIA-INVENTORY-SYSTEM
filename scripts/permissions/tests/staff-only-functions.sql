@@ -278,7 +278,7 @@ declare
       'confirm_tiktok_batch(uuid,jsonb,boolean,text)', 'confirm_tiktok_settlement_batch(uuid,jsonb)',
       'correct_invoice(uuid,jsonb,jsonb,text,uuid)',
       'correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)',
-      'correct_tiktok_row(uuid,integer,text)', 'create_exchange_with_details(text,jsonb)',
+      'correct_tiktok_row(uuid,integer,text)',
       'create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)',
       'create_invoice_with_details(uuid,uuid,jsonb,jsonb)',
       'create_rental(uuid,uuid,uuid,integer,special_rate_type,integer,date,date,text)',
@@ -563,6 +563,7 @@ begin
     ('exchange eligibility',   'all',    true,  false, 'select public.exchange_ineligibility_reason(@inv_a@)'),
     ('bundle components',      'all',    true,  false, 'select count(*)::text from public.bundle_line_components(@item_a@)'),
     ('promotion total',        'all',    true,  false, 'select public.promotion_original_total(null, @store_a@)::text'),
+    ('exchange credit preview', 'a',     true,  false, 'select public.exchange_credit_preview(@inv_a@, @store_a@)::text'),
     -- Therapy
     ('therapy customers',      'all',    true,  false, 'select count(*)::text from public.therapy_customer_summary(null, 50, 0, false)'),
     ('therapy customer',       'all',    true,  true,  'select public.therapy_customer_detail(@c1@)::text'),

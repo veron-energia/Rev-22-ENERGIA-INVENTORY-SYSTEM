@@ -260,7 +260,8 @@ function createBackend(fx) {
     report_tiktok_settlement_by_store: () => fx.ttByStore,
     report_tiktok_qty_sold: () => fx.ttQty,
     report_tiktok_orders_by_status: () => fx.ttStatus,
-    report_exchange_invoices: a => fx.exchanges.filter(e => inPeriod(sgtDate(e.created_at), a?.p_from, a?.p_to) || (!a?.p_from && !a?.p_to)),
+    // 424: an exchange is listed on its exchange date; without one, the Singapore day it was saved (367).
+    report_exchange_invoices: a => fx.exchanges.filter(e => inPeriod(e.exchange_date ?? sgtDate(e.created_at), a?.p_from, a?.p_to) || (!a?.p_from && !a?.p_to)),
     report_events: () => [{ event_id: 'ev-1', name: 'Fixture Event', is_active: true, first_day: '2026-09-22', last_day: '2026-09-23', early_bird_until: '2026-09-10',
       days: [{ day: '2026-09-22', capacity: 40, registered: 41, attended: 30, ticket: 30, free: 11 }, { day: '2026-09-23', capacity: null, registered: 20, attended: 12, ticket: 15, free: 5 }],
       options: [{ option_id: 'eo-1', name: '1 Day', days_count: 1, price: 61, people: 20, early_bird_people: 12, foc_people: 1, revenue: 853.5 },
@@ -528,6 +529,31 @@ test('B3: the period reaches the reports that take one; the TikTok tables follow
   assert.ok(headings.some(h => h.startsWith('Quantity Sold') && h.includes('all periods')));
   assert.ok(headings.some(h => h.startsWith('Orders by Status') && h.includes('all periods')));
   assert.ok(headings.some(h => h.startsWith('Settlement by Day') && h.includes('reporting month')));
+});
+
+test('424: Exchange Invoices shows, exports and sorts by the exchange date, so a late-typed exchange reads its own day', async () => {
+  const fixture = makeFixture();
+  fixture.exchanges.push(
+    // Typed in at 10:07 on 10 Oct (Singapore), dated 8 Oct.
+    { exchange_id: 'ex-3', exchange_no: 'EX-0003', invoice_no: 'INV-2026-0003', store_name: 'North Store', customer_name: 'Customer 02',
+      created_at: '2026-10-10T02:07:13Z', exchange_date: '2026-10-08', returned_credit: 50, replacement_total: 70, topup_amount: 20,
+      nonrefundable_amount: 0, is_foc: false, foc_amount: 0 },
+    // Saved on its own exchange date, 9 Oct, before EX-0003 was typed in.
+    { exchange_id: 'ex-4', exchange_no: 'EX-0004', invoice_no: 'INV-2026-0005', store_name: 'South Store', customer_name: 'Customer 03',
+      created_at: '2026-10-09T03:00:00Z', exchange_date: '2026-10-09', returned_credit: 40, replacement_total: 40, topup_amount: 0,
+      nonrefundable_amount: 0, is_foc: false, foc_amount: 0 });
+  await mount({ fixture });
+  await setDate(0, '2026-10-08'); await setDate(1, '2026-10-08');
+  await selectTab('Exchange Invoices');
+  const at = tables()[0].headers.indexOf('Date');
+  assert.deepEqual(dataRows(0).map(r => [r[0], r[at]]), [['EX-0003', '08/10/2026']], 'listed on 8 Oct and dated 8 Oct');
+  const exported = await exportWith(pageExport());
+  assert.deepEqual(exported.sheet.ws.body.map(r => [r['Exchange'], r['Date']]), [['EX-0003', '08/10/2026']], 'the export says 8 Oct too');
+  await setDate(1, '2026-10-10'); await setDate(0, '2026-10-10');
+  assert.equal(dataRows(0).length, 0, 'not listed on the day it was typed in');
+  await setDate(1, '2026-10-31'); await setDate(0, '2026-10-01');
+  assert.deepEqual(dataRows(0).map(r => [r[0], r[at]]), [['EX-0004', '09/10/2026'], ['EX-0003', '08/10/2026']],
+    'the later exchange date comes first, though EX-0003 was saved later');
 });
 
 test('B3: the invoice-sales cards show only where the table follows that period; the others say what they cover', async () => {

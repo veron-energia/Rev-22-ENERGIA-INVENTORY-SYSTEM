@@ -109,6 +109,10 @@ declare
                              'exchange_inherited_affiliate','exchange_assert_payments','exchange_bundle_quote',
                              'exchange_invoice_hold','trg_invoice_exchange_hold','trg_invoice_refund_exchange_hold',
                              'trg_stock_return_exchange_hold','trg_invoice_item_exchange_hold',
+                             -- 424: what a returned item counts for (the creators and the quote
+                             -- call it; the page reads exchange_credit_preview, which checks who asks),
+                             -- and what a bundle holds besides products, for its split
+                             'exchange_credit_value','promotion_non_product_value',
                              -- 402: the TikTok ads engine, which Pabbly calls with the service key
                              -- and nobody signs in to use: the sheet write and its pieces, the
                              -- calendar import, the morning email and the earlier sheet writes

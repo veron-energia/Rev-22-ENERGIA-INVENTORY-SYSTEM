@@ -21,6 +21,10 @@
 --     of stock again (SALES-EXTRAS-M2).
 --   * An invoice with an affiliate can be exchanged, and the exchange carries
 --     that affiliate unless told otherwise (EXC-3).
+-- 424 (the Owner, 9 Oct 2026, Q17): a returned bundle counts for the lower of
+-- its value today and what was paid for it, so the bundle sold for S$150
+-- (S$200 of products today) counts for S$150 here. The legacy
+-- product_exchanges.affiliate_id column is gone.
 -- Fixtures only (made-up names, +6591400xxx phones, @sig.invalid emails).
 -- Disposable database only; everything is rolled back.
 begin;
@@ -176,11 +180,13 @@ begin
   perform record_invoice_payment(inv, jsonb_build_array(jsonb_build_object('payment_method_id', pm, 'amount', 150)), gen_random_uuid());
   select id into li from invoice_items where invoice_id = inv and line_kind = 'promotion';
   res := exchange_bundle_preview(inv, st, li, prc);
-  if res->>'problem' is not null or (res->>'credit')::numeric <> 200 or (res->>'replacement')::numeric <> 360
-     or (res->>'topup')::numeric <> 160 or (res->>'nonrefundable')::numeric <> 0
+  -- 424: paid S$150 for S$200 of products today, so it counts for S$150
+  if res->>'problem' is not null or (res->>'credit')::numeric <> 150 or (res->>'replacement')::numeric <> 360
+     or (res->>'topup')::numeric <> 210 or (res->>'nonrefundable')::numeric <> 0
+     or (res->>'todays_value')::numeric <> 200 or (res->>'paid')::numeric <> 150
      or jsonb_array_length(res->'returned') <> 2 or jsonb_array_length(res->'replacement_items') <> 1
      or (res->'replacement_items'->0->>'quantity')::int <> 3 then
-    raise exception 'FAIL 3: the preview is not credit 200, replacement 360, top-up 160: %', res; end if;
+    raise exception 'FAIL 3: the preview is not credit 150 (today 200, paid 150), replacement 360, top-up 210: %', res; end if;
   begin
     perform create_exchange_with_details('bundle', jsonb_build_object(
       'original_invoice_id', inv, 'processing_store_id', st, 'original_invoice_item_id', li, 'new_promotion_id', prc,
@@ -188,7 +194,7 @@ begin
       'reason', 'Bigger bundle', 'served_by', staff));
     raise exception 'FAIL 3: a short payment on a dearer bundle was accepted';
   exception when others then
-    if sqlerrm not like '%needs exactly S$160.00 paid now: S$10.00 was entered%' then raise; end if;
+    if sqlerrm not like '%needs exactly S$210.00 paid now: S$10.00 was entered%' then raise; end if;
   end;
   begin
     perform create_exchange_with_details('bundle', jsonb_build_object(
@@ -196,28 +202,34 @@ begin
       'reason', 'Bigger bundle', 'served_by', staff));
     raise exception 'FAIL 3: a dearer bundle was swapped with nothing paid';
   exception when others then
-    if sqlerrm not like '%needs exactly S$160.00 paid now: S$0.00 was entered%' then raise; end if;
+    if sqlerrm not like '%needs exactly S$210.00 paid now: S$0.00 was entered%' then raise; end if;
   end;
   q0 := pg_temp.q(st, pc); q1 := pg_temp.q(st, pa);
   res := create_exchange_with_details('bundle', jsonb_build_object(
     'original_invoice_id', inv, 'processing_store_id', st, 'original_invoice_item_id', li, 'new_promotion_id', prc,
-    'payments', jsonb_build_array(jsonb_build_object('payment_method_id', pm, 'amount', 160)),
+    'payments', jsonb_build_array(jsonb_build_object('payment_method_id', pm, 'amount', 210)),
     'reason', 'Bigger bundle', 'served_by', staff));
   ex := (res->>'id')::uuid;
   perform pg_temp.settle();
   select id into exinv from invoices where exchange_id = ex and is_exchange;
-  if (select topup_amount from product_exchanges where id = ex) <> 160
-     or (select coalesce(sum(amount), 0) from product_exchange_payments where exchange_id = ex) <> 160
+  if (select topup_amount from product_exchanges where id = ex) <> 210
+     or (select returned_credit_total from product_exchanges where id = ex) <> 150
+     or (select coalesce(sum(amount), 0) from product_exchange_payments where exchange_id = ex) <> 210
      or (select status::text from invoices where id = exinv) <> 'paid'
      or pg_temp.q(st, pc) <> q0 - 3 or pg_temp.q(st, pa) <> q1 + 1 then
-    raise exception 'FAIL 3: the exact top-up swap did not record 160 paid, C -3 and A +1'; end if;
+    raise exception 'FAIL 3: the exact top-up swap did not record 210 paid on a credit of 150, C -3 and A +1'; end if;
+  -- 424: the returned items record their part of the credit, not today's price
+  if (select sum(line_total) from product_exchange_items where exchange_id = ex and direction = 'returned') <> 150 then
+    raise exception 'FAIL 3: the returned items record %, not the 150 credit',
+      (select sum(line_total) from product_exchange_items where exchange_id = ex and direction = 'returned'); end if;
 
   -- ════ 4. A cheaper bundle: no payment, the rest is unused value ═════════════
   inv := create_invoice(st, cust, null, jsonb_build_array(jsonb_build_object('kind', 'promotion', 'promotion_id', pra, 'quantity', 1)), 0, null, null, null);
   perform record_invoice_payment(inv, jsonb_build_array(jsonb_build_object('payment_method_id', pm, 'amount', 150)), gen_random_uuid());
   select id into li from invoice_items where invoice_id = inv and line_kind = 'promotion';
-  if (exchange_bundle_preview(inv, st, li, prb)->>'nonrefundable')::numeric <> 80 then
-    raise exception 'FAIL 4: the preview does not show the 80 of unused value'; end if;
+  -- 424: it counts for the S$150 paid, so S$30 is left unused by bundle C (S$120 of products today)
+  if (exchange_bundle_preview(inv, st, li, prb)->>'nonrefundable')::numeric <> 30 then
+    raise exception 'FAIL 4: the preview does not show the 30 of unused value'; end if;
   begin
     perform create_exchange_with_details('bundle', jsonb_build_object(
       'original_invoice_id', inv, 'processing_store_id', st, 'original_invoice_item_id', li, 'new_promotion_id', prb,
@@ -231,7 +243,7 @@ begin
     'original_invoice_id', inv, 'processing_store_id', st, 'original_invoice_item_id', li, 'new_promotion_id', prb,
     'reason', 'Smaller bundle', 'served_by', staff));
   perform pg_temp.settle();
-  if (select nonrefundable_amount from product_exchanges where id = (res->>'id')::uuid) <> 80 then
+  if (select nonrefundable_amount from product_exchanges where id = (res->>'id')::uuid) <> 30 then
     raise exception 'FAIL 4: the unused value was not recorded'; end if;
 
   -- ════ 5. Swaps that cannot be done completely are refused, before and at Confirm
@@ -721,8 +733,10 @@ begin
     'reason', 'Colour', 'served_by', staff));
   ex := (res->>'id')::uuid;
   perform pg_temp.settle();
-  if (select affiliate_id from product_exchanges where id = ex) is not null then
-    raise exception 'FAIL 13: the legacy affiliate column was written'; end if;
+  -- 424: the legacy affiliate column (to the empty affiliates table) is gone
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'product_exchanges' and column_name = 'affiliate_id') then
+    raise exception 'FAIL 13: the legacy product_exchanges.affiliate_id column is still there'; end if;
   if (select exchange_affiliate_id from product_exchanges where id = ex) is distinct from aff
      or (select affiliate_id from invoices where exchange_id = ex and is_exchange) is distinct from aff then
     raise exception 'FAIL 13: left as the original sale, the exchange did not carry its affiliate'; end if;
@@ -748,8 +762,13 @@ begin
   if not has_function_privilege('authenticated', 'public.exchange_bundle_preview(uuid,uuid,uuid,uuid)', 'execute')
      or has_function_privilege('anon', 'public.exchange_bundle_preview(uuid,uuid,uuid,uuid)', 'execute') then
     raise exception 'FAIL 14: the preview is not staff''s alone'; end if;
+  -- 424: the credit preview too
+  if not has_function_privilege('authenticated', 'public.exchange_credit_preview(uuid,uuid)', 'execute')
+     or has_function_privilege('anon', 'public.exchange_credit_preview(uuid,uuid)', 'execute') then
+    raise exception 'FAIL 14: the credit preview is not staff''s alone'; end if;
   select string_agg(f, ', ') into v from unnest(array[
       'exchange_inherited_affiliate(uuid)', 'exchange_assert_payments(jsonb,numeric,boolean)',
+      'exchange_credit_value(uuid,uuid,uuid,integer)',
       'exchange_bundle_quote(uuid,uuid,uuid,uuid)', 'exchange_invoice_hold(uuid,uuid[])',
       'trg_invoice_exchange_hold()', 'trg_invoice_refund_exchange_hold()',
       'trg_stock_return_exchange_hold()', 'trg_invoice_item_exchange_hold()']) f

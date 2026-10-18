@@ -279,9 +279,11 @@ const ReportsPage: React.FC = () => {
     if (error) throw error;
     return (data as any[]) ?? [];
   }, NO_ROWS);
+  // 424: an exchange counts on its exchange date, so the list shows and sorts
+  // by that day. Without it (before 424), the day it was saved, as before.
   const exchLoad = useReportLoad(tab === 'r_exchange_inv', `${refreshKey}|${dFrom}|${dTo}`, async () =>
     (await fetchReportRows(() => supabase.rpc('report_exchange_invoices', { p_store_id: null, p_from: dFrom || null, p_to: dTo || null }), ['exchange_id']))
-      .sort((a, b) => time(b.created_at) - time(a.created_at)), NO_ROWS);
+      .sort((a, b) => String(b.exchange_date ?? '').localeCompare(String(a.exchange_date ?? '')) || time(b.created_at) - time(a.created_at)), NO_ROWS);
   const trOverdueLoad = useReportLoad(onTransfers, String(refreshKey), async () =>
     (await fetchReportRows(() => supabase.rpc('report_transfers_overdue', { p_days: 7 }), ['transfer_id']))
       .sort((a, b) => time(a.dispatched_at) - time(b.dispatched_at)), NO_ROWS);
@@ -729,7 +731,7 @@ const ReportsPage: React.FC = () => {
         col('Reconciled', r => r.reconciled === false ? 'Off' : r.reconciled === true ? 'OK' : null)] };
       case 'r_exchange_inv': return { rows: exchLoad.data, sheet: 'Exchange Invoices', columns: [
         col('Exchange', r => r.exchange_no), col('Invoice', r => r.invoice_no ?? null), col('Store', r => r.store_name), col('Customer', r => r.customer_name ?? null),
-        col('Date', r => new Date(r.created_at).toLocaleDateString('en-GB')), col('Credit', r => cents(r.returned_credit)),
+        col('Date', r => r.exchange_date ? dateOnly(r.exchange_date) : new Date(r.created_at).toLocaleDateString('en-GB')), col('Credit', r => cents(r.returned_credit)),
         col('Replacement', r => cents(r.replacement_total)), col('Top-up', r => orDash(Number(r.topup_amount), cents)),
         col('Non-refundable', r => orDash(Number(r.nonrefundable_amount), cents)), col('FOC', r => r.is_foc ? `FOC ${money(Number(r.foc_amount))}` : null)] };
       case 'r_transfers': return { rows: trReceiptsLoad.data, sheet: 'Transfer receipts', name: 'receipts', columns: [
@@ -1270,7 +1272,7 @@ const ReportsPage: React.FC = () => {
                         <td style={{ fontSize: 12 }}>{r.invoice_no ?? '—'}</td>
                         <td style={{ fontSize: 12 }}>{r.store_name}</td>
                         <td style={{ fontSize: 12 }}>{r.customer_name ?? '—'}</td>
-                        <td style={{ fontSize: 12 }}>{new Date(r.created_at).toLocaleDateString('en-GB')}</td>
+                        <td style={{ fontSize: 12 }}>{r.exchange_date ? dateOnly(r.exchange_date) : new Date(r.created_at).toLocaleDateString('en-GB')}</td>
                         <td style={{ textAlign: 'right' }}>{money(Number(r.returned_credit))}</td>
                         <td style={{ textAlign: 'right' }}>{money(Number(r.replacement_total))}</td>
                         <td style={{ textAlign: 'right', fontWeight: 700 }}>{Number(r.topup_amount) > 0 ? money(Number(r.topup_amount)) : '—'}</td>

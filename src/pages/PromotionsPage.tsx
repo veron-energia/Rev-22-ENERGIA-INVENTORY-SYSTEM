@@ -11,8 +11,19 @@ import StorePriceEditor from '../components/StorePriceEditor';
 import { SearchSelect } from '../components/SearchSelect';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Package2, RefreshCw, X, Layers } from 'lucide-react';
+import { singaporeToday } from '../lib/invoices/business';
+import { promotionStatus, promotionStatusBadge, displayDateOnly } from '../lib/promotions/status.mjs';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
+
+/** A save or remove error in plain words (424: one code per live promotion). */
+function saveError(e: { code?: string; message?: string } | null | undefined): string {
+  if (!e) return '';
+  if (e.code === '23505' || /promotions_code_live_key|duplicate key/i.test(e.message ?? '')) {
+    return 'This code is already used by another promotion. Choose another code.';
+  }
+  return e.message ?? 'It could not be saved.';
+}
 
 const blankPromo = (p?: Promotion) => ({
   name: p?.name ?? '', code: p?.code ?? '', promo_type: (p?.promo_type ?? 'bundle') as PromotionType,
@@ -41,6 +52,14 @@ const PromotionsPage: React.FC = () => {
   const [form, setForm] = useState(blankPromo());
   const [saving, setSaving] = useState(false);
   const [applyPriceEverywhere, setApplyPriceEverywhere] = useState(true);
+  /** The price every store was last given from this window (null: not yet).
+   *  On edit the stores' prices are changed only when the price changes
+   *  (SALES-EXTRAS-10), so a name change never resets them. */
+  const [storePriceBase, setStorePriceBase] = useState<number | null>(null);
+  /** An error from the list's own buttons (Delete). */
+  const [pageErr, setPageErr] = useState<string | null>(null);
+  /** How many invoice lines sold the promotion open in the builder. */
+  const [soldCount, setSoldCount] = useState<number>(0);
   const [dgBase, setDgBase] = useState<'cheapest' | 'highest'>('cheapest');
   const [ngBase, setNgBase] = useState<'cheapest' | 'highest'>('cheapest');
   const [therapyPkgs, setTherapyPkgs] = useState<any[]>([]);
@@ -53,6 +72,8 @@ const PromotionsPage: React.FC = () => {
   const [previewStore, setPreviewStore] = useState('');
   const [origTotal, setOrigTotal] = useState<number | null>(null);
   const [itemErr, setItemErr] = useState<string | null>(null);
+  /** A removal from the included items that did not go through. */
+  const [itemListErr, setItemListErr] = useState<string | null>(null);
   const [itemBusy, setItemBusy] = useState(false);
   // new-item form
   const [niType, setNiType] = useState<PromotionItemType>('product');
@@ -109,8 +130,19 @@ const PromotionsPage: React.FC = () => {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => { setForm(blankPromo()); setEditId(null); setErr(null); setDItems([]); setDErr(null); setDGroups([]); setDgLabel(''); setDgKind('product'); setDgQty(1); setDgOptSel({}); resetNewItem(); setModalOpen(true); };
-  const openEdit = (p: Promotion) => { setForm(blankPromo(p)); setEditId(p.id); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm(blankPromo()); setEditId(null); setErr(null); setDItems([]); setDErr(null); setDGroups([]); setDgLabel(''); setDgKind('product'); setDgQty(1); setDgBase('cheapest'); setDgOptSel({}); resetNewItem(); setApplyPriceEverywhere(true); setStorePriceBase(null); setModalOpen(true); };
+  // Editing starts with the box unticked: the stores keep their prices unless
+  // the price itself is changed (SALES-EXTRAS-10).
+  const openEdit = (p: Promotion) => {
+    setForm({ ...blankPromo(p), fixed_price: Number(p.fixed_price ?? 0) }); setEditId(p.id); setErr(null);
+    setApplyPriceEverywhere(false); setStorePriceBase(Number(p.fixed_price ?? 0)); setModalOpen(true);
+  };
+  /** The price typed. On edit, a new price ticks "every store" (untick to keep store prices). */
+  const setFixedPrice = (v: number) => {
+    setForm(f => ({ ...f, fixed_price: v }));
+    if (editId) setApplyPriceEverywhere(v > 0 && v !== storePriceBase);
+  };
+  const priceUnchanged = !!editId && form.fixed_price === storePriceBase;
 
   const addDraftItem = () => {
     setDErr(null);
@@ -144,8 +176,11 @@ const PromotionsPage: React.FC = () => {
     setDErr(null);
     if (!dgLabel.trim()) { setDErr('Enter a choice-group label.'); return; }
     if (!dgQty || dgQty <= 0) { setDErr('Choose quantity must be greater than zero.'); return; }
-    setDGroups(gs => [...gs, { label: dgLabel.trim(), item_kind: dgKind, choose_qty: dgQty, option_ids: [], base_mode: dgBase }]);
-    setDgLabel(''); setDgKind('product'); setDgQty(1);
+    // The base option is a products group's setting (the till's top-up reads it
+    // for products only), so any other group is saved as 'cheapest'.
+    setDGroups(gs => [...gs, { label: dgLabel.trim(), item_kind: dgKind, choose_qty: dgQty, option_ids: [],
+      base_mode: dgKind === 'product' ? dgBase : 'cheapest' }]);
+    setDgLabel(''); setDgKind('product'); setDgQty(1); setDgBase('cheapest');
   };
 
   const addDraftOption = (gi: number) => {
@@ -167,23 +202,19 @@ const PromotionsPage: React.FC = () => {
       fixed_price: form.fixed_price, start_date: form.start_date || null, end_date: form.end_date || null,
       is_active: form.is_active, description: form.description.trim() || null, terms: form.terms.trim() || null,
     };
+    const isNew = !editId;
     const res = editId
       ? await supabase.from('promotions').update(payload).eq('id', editId).select().single()
       : await supabase.from('promotions').insert(payload).select().single();
-    if (res.error) { setErr(res.error.message); setSaving(false); return; }
-    // One price, applied to every store.
+    if (res.error) { setErr(saveError(res.error)); setSaving(false); return; }
     const savedId = (res.data as any)?.id ?? editId;
-    if (applyPriceEverywhere && savedId && form.fixed_price > 0) {
-      const { error: pErr } = await supabase.rpc('set_promotion_price_all_stores', {
-        p_promotion_id: savedId, p_price: form.fixed_price, p_available: true,
-      });
-      if (pErr) { setErr(`Saved, but the store prices could not be set: ${pErr.message}`); setSaving(false); load(); return; }
-    }
-    setSaving(false); setModalOpen(false);
-    if (!editId && res.data) {
-      // Save the draft items chosen in the modal, then open the builder (shows totals).
+    let firstErr: string | null = null;
+    if (isNew && res.data) {
+      // The window now edits this promotion: a retry after a failure below
+      // updates it instead of creating a second one (SALES-EXTRAS-11).
+      setEditId(savedId);
+      // Save the draft items chosen in the modal (the builder then shows totals).
       const promo = res.data as Promotion;
-      let firstErr: string | null = null;
       for (const d of dItems) {
         const { error } = await supabase.rpc('add_promotion_item', {
           p_promotion_id: promo.id, p_item_type: d.item_type,
@@ -215,25 +246,47 @@ const PromotionsPage: React.FC = () => {
           if (error && !firstErr) firstErr = error.message;
         }
       }
-      await load();
-      await openItems(promo);
+      setDItems([]); setDGroups([]);
+    }
+    // One price at every store. With "available" sent as null, each store
+    // keeps its on/off choice (424); a store with no price yet starts on.
+    // Left out, the server would switch every store on, so it is always sent.
+    if (applyPriceEverywhere && savedId && form.fixed_price > 0 && form.fixed_price !== storePriceBase) {
+      const { error: pErr } = await supabase.rpc('set_promotion_price_all_stores', {
+        p_promotion_id: savedId, p_price: form.fixed_price, p_available: null,
+      });
+      if (pErr) {
+        setErr(`Saved, but the store prices could not be set: ${pErr.message}. Press Save to try the prices again.`
+          + (firstErr ? ` One item could not be added: ${firstErr}` : ''));
+        setSaving(false); await load(); return;
+      }
+      setStorePriceBase(form.fixed_price);
+    }
+    setSaving(false); setModalOpen(false);
+    await load();
+    if (isNew && res.data) {
+      await openItems(res.data as Promotion);
       if (firstErr) setItemErr(`One item could not be added: ${firstErr}`);
-    } else {
-      await load();
     }
   };
 
   const handleDelete = async (p: Promotion) => {
     if (!confirm(`Delete promotion "${p.name}"?`)) return;
-    await supabase.from('promotions').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', p.id);
+    setPageErr(null);
+    const { error } = await supabase.from('promotions').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', p.id);
+    if (error) setPageErr(`"${p.name}" was not deleted: ${error.message}`);
     load();
   };
 
   const openItems = async (p: Promotion) => {
-    setItemsFor(p); setItemErr(null); setPreviewStore(stores[0]?.id ?? '');
+    setItemsFor(p); setItemErr(null); setItemListErr(null); setPreviewStore(stores[0]?.id ?? '');
     resetNewItem();
     const { data } = await supabase.from('promotion_items').select('*').eq('promotion_id', p.id).order('created_at');
     setItems((data as PromotionItem[]) ?? []);
+    // Whether it has been sold: removing a part then changes it for future sales.
+    setSoldCount(0);
+    supabase.from('invoice_items').select('id', { count: 'exact', head: true }).eq('promotion_id', p.id)
+      .then(({ count }) => setSoldCount(count ?? 0));
     await loadGroups(p.id);
   };
 
@@ -245,7 +298,7 @@ const PromotionsPage: React.FC = () => {
       const o = await supabase.from('promotion_choice_options').select('*').in('group_id', gs.map(x => x.id));
       setOptions((o.data as PromotionChoiceOption[]) ?? []);
     } else setOptions([]);
-    setGrpErr(null); setNgLabel(''); setNgKind('product'); setNgQty(1); setNoFor(''); setNoItem('');
+    setGrpErr(null); setNgLabel(''); setNgKind('product'); setNgQty(1); setNgBase('cheapest'); setNoFor(''); setNoItem('');
   };
 
   const addGroup = async () => {
@@ -254,7 +307,8 @@ const PromotionsPage: React.FC = () => {
     if (!ngLabel.trim()) { setGrpErr('Enter a group label (e.g. "Choose your product").'); return; }
     if (!ngQty || ngQty <= 0) { setGrpErr('Choose quantity must be greater than zero.'); return; }
     const { error } = await supabase.from('promotion_choice_groups').insert({
-      promotion_id: itemsFor.id, label: ngLabel.trim(), item_kind: ngKind, choose_qty: ngQty, base_mode: ngBase,
+      promotion_id: itemsFor.id, label: ngLabel.trim(), item_kind: ngKind, choose_qty: ngQty,
+      base_mode: ngKind === 'product' ? ngBase : 'cheapest',   // a products group's setting only
     });
     if (error) { setGrpErr(error.message); return; }
     await loadGroups(itemsFor.id);
@@ -276,13 +330,35 @@ const PromotionsPage: React.FC = () => {
     if (itemsFor) await loadGroups(itemsFor.id);
   };
 
-  const removeGroup = async (id: string) => {
-    await supabase.from('promotion_choice_groups').delete().eq('id', id);
-    if (itemsFor) await loadGroups(itemsFor.id);
+  /** The note added when a sold promotion is changed. */
+  const soldNote = () => soldCount > 0
+    ? `\n\nThis promotion is in ${soldCount} past sale${soldCount === 1 ? '' : 's'}. Those sales keep what they sold; from now on it is sold without this. To keep it as it was, switch this promotion off and create a new one instead.`
+    : '';
+  /** A removal's error in words, or null when it went through. */
+  const removeProblem = (error: { code?: string; message?: string } | null, data: unknown, what: string): string | null => {
+    if (error?.code === '23503') {
+      return `${what} was used in past sales, so it cannot be removed. Switch this promotion off and create a new one instead.`;
+    }
+    if (error) return `${what} was not removed: ${error.message}`;
+    if (Array.isArray(data) && data.length === 0) return `${what} was not removed. Refresh and try again.`;
+    return null;
   };
-  const removeOption = async (id: string) => {
-    await supabase.from('promotion_choice_options').delete().eq('id', id);
+  const removeGroup = async (g: PromotionChoiceGroup) => {
+    if (!confirm(`Remove the choice group "${g.label}" and its options?${soldNote()}`)) return;
+    setGrpErr(null);
+    const { data, error } = await supabase.from('promotion_choice_groups').delete().eq('id', g.id).select('id');
+    const problem = removeProblem(error, data, `The choice group "${g.label}"`);
     if (itemsFor) await loadGroups(itemsFor.id);
+    if (problem) setGrpErr(problem);
+  };
+  const removeOption = async (o: PromotionChoiceOption, g: PromotionChoiceGroup) => {
+    const label = optionLabel(g.item_kind as ChoiceKind, o);
+    if (!confirm(`Remove "${label}" from the choices in "${g.label}"?${soldNote()}`)) return;
+    setGrpErr(null);
+    const { data, error } = await supabase.from('promotion_choice_options').delete().eq('id', o.id).select('id');
+    const problem = removeProblem(error, data, `"${label}"`);
+    if (itemsFor) await loadGroups(itemsFor.id);
+    if (problem) setGrpErr(problem);
   };
   const resetNewItem = () => {
     setNiType('product'); setNiProduct(''); setNiVoucher(''); setNiChild('');
@@ -318,12 +394,17 @@ const PromotionsPage: React.FC = () => {
     setItems((data as PromotionItem[]) ?? []);
   };
 
-  const removeItem = async (id: string) => {
-    await supabase.from('promotion_items').delete().eq('id', id);
+  const removeItem = async (it: PromotionItem) => {
+    const label = itemLabel(it) ?? 'this item';
+    if (!confirm(`Remove "${label}" from this promotion?${soldNote()}`)) return;
+    setItemListErr(null);
+    const { data: gone, error } = await supabase.from('promotion_items').delete().eq('id', it.id).select('id');
+    const problem = removeProblem(error, gone, `"${label}"`);
     if (itemsFor) {
       const { data } = await supabase.from('promotion_items').select('*').eq('promotion_id', itemsFor.id).order('created_at');
       setItems((data as PromotionItem[]) ?? []);
     }
+    if (problem) setItemListErr(problem);
   };
 
   const pName = (id: string | null) => products.find(p => p.id === id)?.name ?? '—';
@@ -388,6 +469,7 @@ const PromotionsPage: React.FC = () => {
     rows.filter(r => itemsFor && r.id !== itemsFor.id), [rows, itemsFor]);
 
   const savings = origTotal != null && itemsFor ? origTotal - itemsFor.fixed_price : null;
+  const today = singaporeToday();
   const filtered = rows.filter(p => { const q = search.toLowerCase(); return !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q); });
 
   if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage promotions." />;
@@ -406,15 +488,16 @@ const PromotionsPage: React.FC = () => {
               { header: 'Code', value: (p: any) => p.code ?? '' },
               { header: 'Type', value: (p: any) => p.promo_type },
               { header: 'Fixed price', value: (p: any) => Number(p.fixed_price ?? 0) },
-              { header: 'Start', value: (p: any) => p.start_date ? new Date(p.start_date).toLocaleDateString('en-GB') : '' },
-              { header: 'End', value: (p: any) => p.end_date ? new Date(p.end_date).toLocaleDateString('en-GB') : '' },
-              { header: 'Status', value: (p: any) => p.is_active ? 'Active' : 'Inactive' },
+              { header: 'Start', value: (p: any) => displayDateOnly(p.start_date) },
+              { header: 'End', value: (p: any) => displayDateOnly(p.end_date) },
+              { header: 'Status', value: (p: any) => promotionStatus(p, today) },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Promotion</button>
         </div>
       </div>
 
+      {pageErr && <div className="alert alert-danger" style={{ marginBottom: 12 }}><span>⚠</span><div>{pageErr}</div></div>}
       <div style={{ marginBottom: 14, position: 'relative', maxWidth: 360 }}>
         <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or code…" style={{ paddingLeft: 34 }} />
@@ -434,7 +517,13 @@ const PromotionsPage: React.FC = () => {
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{p.code}</td>
                     <td><span className="badge badge-primary">{PROMO_TYPE_LABELS[p.promo_type]}</span></td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(p.fixed_price)}</td>
-                    <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                    <td>{(() => {
+                      // Switched on but past its end date (or before its start) is not on sale.
+                      const st = promotionStatus(p, today);
+                      return <span className={`badge ${promotionStatusBadge(st)}`}
+                        title={st === 'Ended' ? `Ended ${displayDateOnly(p.end_date)}. The till refuses it, and Exchanges no longer offers it.`
+                          : st === 'Not started' ? `Starts ${displayDateOnly(p.start_date)}.` : undefined}>{st}</span>;
+                    })()}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openItems(p)}><Layers size={13} /> Items</button>
                       <button className="btn btn-secondary btn-sm" title="Per-store selling prices" onClick={() => setMnmFor({ id: p.id, name: p.name })}>Prices</button>
@@ -470,14 +559,20 @@ const PromotionsPage: React.FC = () => {
               </div>
               <div className="form-group">
                 <label>Fixed Price (S$)</label>
-                <input type="number" min={0} step={0.01} value={form.fixed_price || ''} onChange={e => setForm(f => ({ ...f, fixed_price: +e.target.value }))} placeholder="e.g. 188" />
+                <input type="number" min={0} step={0.01} value={form.fixed_price || ''} onChange={e => setFixedPrice(+e.target.value)} placeholder="e.g. 188" />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 6, fontWeight: 400 }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={applyPriceEverywhere}
-                    onChange={e => setApplyPriceEverywhere(e.target.checked)} />
+                  <input type="checkbox" style={{ width: 'auto' }} checked={applyPriceEverywhere && !priceUnchanged}
+                    disabled={priceUnchanged} onChange={e => setApplyPriceEverywhere(e.target.checked)} />
                   Use this price at every store
                 </label>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Leave ticked and you never need to open Prices — untick it only to set different prices per store.
+                  {!editId
+                    ? (applyPriceEverywhere
+                      ? 'Every store sells it at this price. Use Prices to set one store differently.'
+                      : 'No store sells it until you set a price under Prices.')
+                    : priceUnchanged
+                      ? 'Store prices stay as they are. Change the price to use it at every store, or use Prices for one store.'
+                      : 'Ticked, every store gets this price and stays on or off as it is. Untick to leave store prices as they are.'}
                 </div>
               </div>
             </div>
@@ -633,7 +728,7 @@ const PromotionsPage: React.FC = () => {
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <div style={{ padding: 10, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', textAlign: 'center', minWidth: 96 }}>
-                  <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Original</div>
+                  <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{groups.length > 0 ? 'Original, with the base choice' : 'Original'}</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{origTotal == null ? '—' : money(origTotal)}</div>
                 </div>
                 <div style={{ padding: 10, background: 'var(--primary-light)', borderRadius: 'var(--radius-sm)', textAlign: 'center', minWidth: 96 }}>
@@ -647,9 +742,15 @@ const PromotionsPage: React.FC = () => {
               </div>
             </div>
 
+            {groups.length > 0 && (
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                Each choice group counts at its base option: the cheapest, or the dearest for a products group set that way.
+              </div>)}
+
             {/* Existing items */}
             <div>
               <label>Included items ({items.length})</label>
+              {itemListErr && <div className="alert alert-danger" style={{ marginTop: 6 }}><span>⚠</span><div>{itemListErr}</div></div>}
               {items.length === 0 ? <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>No items yet — add some below.</div> : (
                 <table style={{ marginTop: 4 }}>
                   <thead><tr><th>Item</th><th style={{ textAlign: 'right' }}>Qty</th><th></th></tr></thead>
@@ -658,7 +759,7 @@ const PromotionsPage: React.FC = () => {
                       <tr key={it.id}>
                         <td style={{ fontSize: 13 }}>{itemLabel(it)}</td>
                         <td style={{ textAlign: 'right' }}>{it.quantity}</td>
-                        <td style={{ textAlign: 'right' }}><button className="btn btn-danger btn-sm btn-icon" onClick={() => removeItem(it.id)}><X size={13} /></button></td>
+                        <td style={{ textAlign: 'right' }}><button className="btn btn-danger btn-sm btn-icon" title="Remove this item" onClick={() => removeItem(it)}><X size={13} /></button></td>
                       </tr>
                     ))}
                   </tbody>
@@ -690,13 +791,13 @@ const PromotionsPage: React.FC = () => {
                         </span>
                       );
                     })()}
-                    <button className="btn btn-danger btn-sm btn-icon" onClick={() => removeGroup(g.id)}><X size={13} /></button>
+                    <button className="btn btn-danger btn-sm btn-icon" title="Remove this choice group" onClick={() => removeGroup(g)}><X size={13} /></button>
                   </div>
                   <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {options.filter(o => o.group_id === g.id).map(o => (
                       <span key={o.id} className="badge badge-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                         {optionLabel(g.item_kind as ChoiceKind, o)}
-                        <X size={11} style={{ cursor: 'pointer' }} onClick={() => removeOption(o.id)} />
+                        <X size={11} style={{ cursor: 'pointer' }} aria-label="Remove this option" onClick={() => removeOption(o, g)} />
                       </span>
                     ))}
                     {options.filter(o => o.group_id === g.id).length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No options yet</span>}
@@ -720,6 +821,13 @@ const PromotionsPage: React.FC = () => {
                   {/* 352: a credit package inside a promotion is never issued — the customer would pay and receive nothing. Removed from the editor until the issuing side is finished; the database refuses it too. */}
                   <option value="promotion">Promotions</option>
                 </select>
+                {/* The base option sets the Original and the top-up (as in the Add window). */}
+                {ngKind === 'product' && (
+                  <select value={ngBase} onChange={e => setNgBase(e.target.value as 'cheapest' | 'highest')} style={{ width: 140 }} title="Which option sets the base price">
+                    <option value="cheapest">base = cheapest</option>
+                    <option value="highest">base = highest</option>
+                  </select>
+                )}
                 <input type="number" min={1} value={ngQty || ''} onChange={e => setNgQty(+e.target.value)} placeholder="N" style={{ width: 64 }} title="How many the customer chooses" />
                 <button className="btn btn-secondary btn-sm" onClick={addGroup}><Plus size={13} /> Group</button>
               </div>
