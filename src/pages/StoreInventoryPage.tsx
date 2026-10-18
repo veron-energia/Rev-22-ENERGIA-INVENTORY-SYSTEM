@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -11,14 +11,17 @@ import TakeBackModal from '../components/stock-loans/TakeBackModal';
 import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
 import { useStockLoans } from '../components/stock-loans/useStockLoans';
 import { StockLoan } from '../lib/stock-loans/stockLoans';
+import { countableStoreIds, stockStatus as statusOf, stockStatusText } from '../lib/stock/stockPages';
 
 interface Row { product: Product; inv: StoreInventory | null; }
 
 const StoreInventoryPage: React.FC = () => {
-  const { profile } = useAuth();
+  const { profile, assignments } = useAuth();
   const canSetThreshold = isOwnerOrManager(profile?.role);
 
-  const [stores, setStores] = useState<Store[]>([]);
+  // The open stores my_assigned_stores() lists, as it lists them (every one
+  // for an Owner, Admin or Manager; the stores they work at for the others).
+  const [listed, setListed] = useState<{ store_id: string; store_name: string; is_default: boolean }[]>([]);
   const [selectedStore, setSelectedStore] = useState<string>('');
   const [products, setProducts] = useState<Product[]>([]);
   // Recording a use is a real consumption (demo, sample, tester), not a
@@ -38,6 +41,7 @@ const StoreInventoryPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'important' | 'in' | 'out' | 'low'>('all');
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [storesErr, setStoresErr] = useState<string | null>(null);
   // Importance is a product-level flag any staff member may set; kept in its
   // own map so a toggle updates instantly without reloading the whole list.
   const [imp, setImp] = useState<Record<string, boolean>>({});
@@ -55,16 +59,39 @@ const StoreInventoryPage: React.FC = () => {
   const [thresholdVal, setThresholdVal] = useState(0);
 
   const loadBase = useCallback(async () => {
-    const [{ data: st }, { data: prod }] = await Promise.all([
-      supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
+    const [mine, { data: prod }] = await Promise.all([
+      supabase.rpc('my_assigned_stores'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
     ]);
-    setStores((st as Store[]) ?? []);
+    setStoresErr(mine.error ? mine.error.message : null);
+    setListed((mine.data as { store_id: string; store_name: string; is_default: boolean }[]) ?? []);
     const prodRows = (prod as Product[]) ?? [];
     setProducts(prodRows);
     setImp(Object.fromEntries(prodRows.map((p2: any) => [p2.id, !!p2.is_important])));
-    if (st && st.length > 0 && !selectedStore) setSelectedStore(st[0].id);
-  }, [selectedStore]);
+  }, []);
+
+  // The stores this page lists: every open store for an Owner or Admin,
+  // otherwise the stores they work at. my_assigned_stores() already lists
+  // only those for Staff and Inventory Managers. It lists every store for a
+  // Manager, and the server still lets a Manager read every store's stock
+  // (other pages need it), but on this page a Manager sees only the stores
+  // they work at, like Staff (the Owner, 9 Oct 2026).
+  const workAt = (assignments ?? []).map(a => a.store_id).join(',');
+  const stores = useMemo<Store[]>(() => {
+    const all = listed.map(r => r.store_id);
+    const ids = profile?.role === 'manager'
+      ? countableStoreIds(profile.role, all, workAt ? workAt.split(',') : []) ?? []
+      : all;
+    return listed.filter(r => ids.includes(r.store_id))
+      .map(r => ({ id: r.store_id, name: r.store_name }) as Store)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [listed, profile?.role, workAt]);
+  // Open on the person's default store (their first), else the first by name.
+  useEffect(() => {
+    if (stores.length === 0 || stores.some(s => s.id === selectedStore)) return;
+    const def = listed.find(r => r.is_default && stores.some(s => s.id === r.store_id))?.store_id;
+    setSelectedStore(def ?? stores[0].id);
+  }, [stores, listed, selectedStore]);
 
   const loadInventory = useCallback(async (storeId: string) => {
     if (!storeId) return;
@@ -82,10 +109,9 @@ const StoreInventoryPage: React.FC = () => {
   const loans = useStockLoans('store', selectedStore, showClosed);
   // Lend, Take back and Record use need access to this store (Owner and
   // Admin: every store; others: the stores they are assigned to), which the
-  // database answers as can_act with the On loan list. Managers can read
-  // every store's list, so a store they are not assigned to shows it without
-  // the buttons. Unknown (not answered yet, or the read failed): Lend and
-  // Record use stay, and the database checks them as before.
+  // database answers as can_act with the On loan list. Unknown (not answered
+  // yet, or the read failed): Lend and Record use stay, and the database
+  // checks them as before.
   const actHere = loans.canAct !== false;
   const noActTitle = actHere ? undefined : 'You are not assigned to this store';
   const available = Object.fromEntries(inventory.map(i => [i.product_id, i.current_qty]));
@@ -119,13 +145,9 @@ const StoreInventoryPage: React.FC = () => {
     loadInventory(selectedStore);
   };
 
-  const stockStatus = (r: Row) => {
-    const qty = r.inv?.current_qty ?? 0;
-    const thr = r.inv?.low_stock_threshold ?? 0;
-    if (qty === 0) return { label: 'Out of Stock', cls: 'badge-danger' };
-    if (thr > 0 && qty <= thr) return { label: 'Low Stock', cls: 'badge-accent' };
-    return { label: 'Normal', cls: 'badge-success' };
-  };
+  // 0 or less is out of stock. Below 0 (a confirmed TikTok sale may cause
+  // it) also shows a red Negative badge (STOCK-M3).
+  const stockStatus = (r: Row) => statusOf(r.inv?.current_qty, r.inv?.low_stock_threshold);
 
   return (
     <div>
@@ -142,7 +164,7 @@ const StoreInventoryPage: React.FC = () => {
               { header: 'Stock', value: (r: any) => Number(r.inv?.current_qty ?? 0) },
               { header: 'Out on loan', value: (r: any) => Number(loans.outBy[r.product.id] ?? 0) },
               { header: 'Threshold', value: (r: any) => r.inv?.low_stock_threshold ?? '' },
-              { header: 'Status', value: (r: any) => stockStatus(r).label },
+              { header: 'Status', value: (r: any) => stockStatusText(r.inv?.current_qty, r.inv?.low_stock_threshold) },
             ]} />
           <button className="btn btn-secondary" onClick={() => { loadInventory(selectedStore); loans.reload(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-secondary" disabled={!selectedStore || !actHere} title={noActTitle} onClick={() => { setFlash(null); setLendOpen(true); }}>
@@ -160,12 +182,13 @@ const StoreInventoryPage: React.FC = () => {
             <StoreIcon size={14} /> {s.name}
           </button>
         ))}
-        {stores.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No stores available to you.</p>}
+        {storesErr && <div className="alert alert-danger" style={{ width: '100%' }}><span>⚠</span><div>Couldn't read your stores: {storesErr}. Refresh to try again.</div></div>}
+        {!storesErr && stores.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No stores available to you.</p>}
       </div>
 
       {selectedStore && (
         <>
-          {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read store stock: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
+          {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read stock: {loadErr}. Refresh to try again.</div></div>}
           {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
           <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }} role="tablist" aria-label="Store stock views">
             <button role="tab" aria-selected={tab === 'stock'} className={`btn btn-sm ${tab === 'stock' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('stock')}>Stock</button>
@@ -226,7 +249,8 @@ const StoreInventoryPage: React.FC = () => {
                             ? <button className="btn btn-secondary btn-sm" onClick={() => setTab('loans')} title="Show the On loan list">{loans.outBy[r.product.id]}</button>
                             : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                           <td>{r.inv?.low_stock_threshold ? r.inv.low_stock_threshold : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                          <td><span className={`badge ${st.cls}`}>{st.label === 'Low Stock' && <AlertTriangle size={11} />}{st.label}</span></td>
+                          <td><span className={`badge ${st.cls}`}>{st.label === 'Low Stock' && <AlertTriangle size={11} />}{st.label}</span>
+                            {st.negative && <span className="badge badge-danger" style={{ marginLeft: 4 }}>Negative ({r.inv?.current_qty})</span>}</td>
                           {canSetThreshold && <td><button className="btn btn-secondary btn-sm" onClick={() => openThreshold(r)}><SlidersHorizontal size={13} /> Threshold</button></td>}
                         </tr>
                       );

@@ -2,10 +2,10 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Warehouse as WarehouseT, isOwnerOrManager } from '../types';
-import { Modal, RoleGate, NoAccess } from '../components/ui';
-import { isManagerOrAbove } from '../types';
-import { Plus, Pencil, Trash2, Warehouse, RefreshCw } from 'lucide-react';
+import { Warehouse as WarehouseT, isManagerOrAbove } from '../types';
+import { Modal, NoAccess } from '../components/ui';
+import { Plus, Pencil, Trash2, Warehouse, RefreshCw, RotateCcw } from 'lucide-react';
+import { canManagePlaces } from '../lib/permissions/products';
 
 const WarehousesPage: React.FC = () => {
   const { profile } = useAuth();
@@ -14,7 +14,7 @@ const WarehousesPage: React.FC = () => {
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
   const hasAccess = isManagerOrAbove(profile?.role);
-  const canManage = isOwnerOrManager(profile?.role);
+  const canManage = canManagePlaces(profile?.role);
 
   const [rows, setRows] = useState<WarehouseT[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,13 +23,21 @@ const WarehousesPage: React.FC = () => {
   const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', is_active: true });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A deleted warehouse is hidden, not removed: "Show deleted" lists it with
+  // Restore.
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [pageErr, setPageErr] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('warehouses').select('*').is('deleted_at', null).order('created_at');
+    const q = supabase.from('warehouses').select('*');
+    const { data, error } = await (showDeleted ? q.not('deleted_at', 'is', null) : q.is('deleted_at', null)).order('created_at');
+    setPageErr(error ? `Couldn't read the warehouses: ${error.message}. Refresh to try again.` : null);
     setRows((data as WarehouseT[]) ?? []);
     setLoading(false);
-  }, []);
+  }, [showDeleted]);
   useEffect(() => { load(); }, [load]);
 
   const openAdd = () => { setForm({ name: '', code: '', address: '', phone: '', is_active: true }); setEditId(null); setErr(null); setModalOpen(true); };
@@ -44,13 +52,30 @@ const WarehousesPage: React.FC = () => {
     const res = editId
       ? await supabase.from('warehouses').update(payload).eq('id', editId)
       : await supabase.from('warehouses').insert(payload);
-    if (res.error) { setErr(res.error.message.includes('duplicate') ? 'That code already exists.' : res.error.message); setSaving(false); return; }
+    // A store or warehouse that still holds stock cannot be switched off: the
+    // database says what is left there (the Owner, 9 Oct 2026).
+    if (res.error) { setErr(res.error.code === '23505' ? 'That code already exists.' : res.error.message); setSaving(false); return; }
     setSaving(false); setModalOpen(false); load();
   };
 
+  // Delete hides the warehouse. The database refuses while it still holds
+  // stock or has stock on the way, and says what (the Owner, 9 Oct 2026).
   const handleDelete = async (w: WarehouseT) => {
-    if (!confirm(`Delete "${w.name}"? It can be restored later.`)) return;
-    await supabase.from('warehouses').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', w.id);
+    if (!confirm(`Delete "${w.name}"? It will be hidden. You can bring it back with "Show deleted".`)) return;
+    setBusyId(w.id); setPageErr(null); setFlash(null);
+    const { error } = await supabase.rpc('soft_delete_warehouse', { p_warehouse_id: w.id });
+    setBusyId(null);
+    if (error) { setPageErr(error.message); return; }
+    setFlash(`${w.name} was deleted.`);
+    load();
+  };
+
+  const handleRestore = async (w: WarehouseT) => {
+    setBusyId(w.id); setPageErr(null); setFlash(null);
+    const { error } = await supabase.rpc('restore_warehouse', { p_warehouse_id: w.id });
+    setBusyId(null);
+    if (error) { setPageErr(error.message); return; }
+    setFlash(`${w.name} is back and active.`);
     load();
   };
 
@@ -70,17 +95,22 @@ const WarehousesPage: React.FC = () => {
               { header: 'Status', value: (w: any) => w.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          <RoleGate allow={isOwnerOrManager}>
-            <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Warehouse</button>
-          </RoleGate>
+          {canManage && <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Warehouse</button>}
         </div>
       </div>
+
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', marginBottom: 12 }}>
+        <input type="checkbox" checked={showDeleted} onChange={e => { setShowDeleted(e.target.checked); setFlash(null); }} style={{ width: 'auto' }} />
+        Show deleted
+      </label>
+      {pageErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{pageErr}</div></div>}
+      {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
 
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
           : rows.length === 0 ? (
-            <div className="empty-state"><Warehouse size={34} style={{ opacity: 0.3, marginBottom: 10 }} /><p style={{ fontWeight: 600 }}>No warehouses yet</p></div>
+            <div className="empty-state"><Warehouse size={34} style={{ opacity: 0.3, marginBottom: 10 }} /><p style={{ fontWeight: 600 }}>{showDeleted ? 'No deleted warehouses' : 'No warehouses yet'}</p></div>
           ) : (
             <table>
               <thead><tr><th>Warehouse</th><th>Code</th><th>Address</th><th>Phone</th><th>Status</th>{canManage && <th></th>}</tr></thead>
@@ -91,11 +121,14 @@ const WarehousesPage: React.FC = () => {
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{w.code}</td>
                     <td style={{ color: 'var(--text-secondary)' }}>{w.address || '—'}</td>
                     <td style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{w.phone || '—'}</td>
-                    <td>{w.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
-                    {canManage && <td><div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(w)}><Pencil size={13} /></button>
-                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(w)}><Trash2 size={13} /></button>
-                    </div></td>}
+                    <td>{w.deleted_at ? <span className="badge badge-danger">Deleted</span>
+                      : w.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                    {canManage && <td>{w.deleted_at
+                      ? <button className="btn btn-secondary btn-sm" disabled={busyId === w.id} onClick={() => handleRestore(w)}><RotateCcw size={13} /> Restore</button>
+                      : <div style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-secondary btn-sm btn-icon" title="Edit" onClick={() => openEdit(w)}><Pencil size={13} /></button>
+                      <button className="btn btn-danger btn-sm btn-icon" title="Delete" disabled={busyId === w.id} onClick={() => handleDelete(w)}><Trash2 size={13} /></button>
+                    </div>}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -120,6 +153,10 @@ const WarehousesPage: React.FC = () => {
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>
+            {editId && !form.is_active && (
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
+                A warehouse that still holds stock, or has stock on the way, cannot be switched off. Move or correct that stock first.
+              </p>)}
           </div>
         </Modal>
       )}

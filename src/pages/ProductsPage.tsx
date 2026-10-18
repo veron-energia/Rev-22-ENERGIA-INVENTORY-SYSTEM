@@ -2,15 +2,19 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Product, ProductType, Brand, Category, Supplier, isManagerOrAbove, isOwnerOrManager } from '../types';
-import { Modal, RoleGate } from '../components/ui';
-import { Plus, Pencil, Trash2, Search, Package, RefreshCw, Star, Tag, Boxes, Truck, SlidersHorizontal } from 'lucide-react';
+import { Product, ProductType, Brand, Category, Supplier } from '../types';
+import { Modal } from '../components/ui';
+import { Plus, Pencil, Trash2, Search, Package, RefreshCw, Star, Tag, Boxes, Truck, RotateCcw } from 'lucide-react';
 import DropdownManager from '../components/DropdownManager';
+import { canConfigureCatalogue, canEditProducts } from '../lib/permissions/products';
+import { productTypeBadge, productTypeLabel } from '../lib/stock/stockPages';
 
 interface FormState {
   name: string; sku: string; product_type: ProductType;
   category: string; brand: string; uom: string; barcode: string;
-  description: string; supplier_name: string; default_cost_price: number;
+  description: string; supplier_name: string;
+  /** Typed as text and checked as money (0 or more, 2 decimal places). */
+  default_cost_price: string;
   is_active: boolean;
   brand_id: string; categoryIds: string[]; supplierIds: string[];
 }
@@ -19,15 +23,19 @@ const blank = (p?: Product): FormState => ({
   name: p?.name ?? '', sku: p?.sku ?? '', product_type: p?.product_type ?? 'own',
   category: p?.category ?? '', brand: p?.brand ?? '', uom: p?.uom ?? 'pcs',
   barcode: p?.barcode ?? '', description: p?.description ?? '',
-  supplier_name: p?.supplier_name ?? '', default_cost_price: p?.default_cost_price ?? 0,
+  supplier_name: p?.supplier_name ?? '',
+  default_cost_price: p?.default_cost_price != null && Number(p.default_cost_price) !== 0 ? String(p.default_cost_price) : '',
   is_active: p?.is_active ?? true,
   brand_id: p?.brand_id ?? '', categoryIds: [], supplierIds: [],
 });
 
 const ProductsPage: React.FC = () => {
   const { profile } = useAuth();
-  const canManage = isManagerOrAbove(profile?.role);
-  const canConfig = isOwnerOrManager(profile?.role);   // dropdowns + important flag: Owner/Manager only
+  // Add, edit, delete and restore products: an Owner, Manager or Inventory
+  // Manager, as the database's can_edit_products() (the Owner, 9 Oct 2026).
+  // An Admin looks but does not change.
+  const canManage = canEditProducts(profile?.role);
+  const canConfig = canConfigureCatalogue(profile?.role);   // dropdowns + important flag: Owner/Manager only
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -45,11 +53,17 @@ const ProductsPage: React.FC = () => {
   const [form, setForm] = useState<FormState>(blank());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Deleted products are hidden, not removed: "Show deleted" lists them with
+  // Restore.
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [pageErr, setPageErr] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const [prod, br, cat, sup, pc, ps] = await Promise.all([
-      supabase.from('products').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+      supabase.from('products').select('*').order('created_at', { ascending: false }),
       supabase.from('brands').select('*').is('deleted_at', null).order('name'),
       supabase.from('categories').select('*').is('deleted_at', null).order('name'),
       supabase.from('suppliers').select('*').is('deleted_at', null).order('name'),
@@ -83,49 +97,50 @@ const ProductsPage: React.FC = () => {
   const handleSave = async () => {
     if (!form.name.trim()) { setErr('Product name is required.'); return; }
     if (!form.sku.trim()) { setErr('SKU / product code is required.'); return; }
+    const cost = form.default_cost_price.trim() || '0';
+    if (!/^\d{1,10}(\.\d{1,2})?$/.test(cost)) { setErr('Cost price must be 0 or more, with at most 2 decimal places.'); return; }
     setSaving(true); setErr(null);
 
-    const payload = {
-      name: form.name.trim(), sku: form.sku.trim(), product_type: form.product_type,
-      category: form.category.trim() || null, brand: form.brand.trim() || null,
-      brand_id: form.brand_id || null,
-      uom: form.uom.trim() || 'pcs', barcode: form.barcode.trim() || null,
-      description: form.description.trim() || null, supplier_name: form.supplier_name.trim() || null,
-      default_cost_price: form.default_cost_price || 0, is_active: form.is_active,
-    };
-
-    let productId = editId;
-    let res;
-    if (editId) {
-      res = await supabase.from('products').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editId);
-    } else {
-      const ins = await supabase.from('products').insert(payload).select('id').single();
-      res = ins;
-      productId = (ins.data as any)?.id ?? null;
-    }
-
-    if (res.error) {
-      setErr(res.error.message.includes('duplicate') ? 'That SKU already exists. Use a unique product code.' : res.error.message);
-      setSaving(false);
-      return;
-    }
-
-    // Sync category + supplier links (replace-all).
-    if (productId) {
-      await supabase.from('product_categories').delete().eq('product_id', productId);
-      await supabase.from('product_suppliers').delete().eq('product_id', productId);
-      if (form.categoryIds.length) await supabase.from('product_categories').insert(form.categoryIds.map(cid => ({ product_id: productId, category_id: cid })));
-      if (form.supplierIds.length) await supabase.from('product_suppliers').insert(form.supplierIds.map(sid => ({ product_id: productId, supplier_id: sid })));
-    }
-
+    // The product and its category and supplier links are saved together, in
+    // one call, or not at all; every refusal comes back to show (save_product,
+    // 420). Switching a product off is refused while it still holds stock.
+    const { error } = await supabase.rpc('save_product', {
+      p_id: editId,
+      p_fields: {
+        name: form.name.trim(), sku: form.sku.trim(), product_type: form.product_type,
+        category: form.category.trim() || null, brand: form.brand.trim() || null,
+        brand_id: form.brand_id || null,
+        uom: form.uom.trim() || 'pcs', barcode: form.barcode.trim() || null,
+        description: form.description.trim() || null, supplier_name: form.supplier_name.trim() || null,
+        default_cost_price: cost, is_active: form.is_active,
+      },
+      p_category_ids: form.categoryIds,
+      p_supplier_ids: form.supplierIds,
+    });
     setSaving(false);
+    if (error) { setErr(error.message); return; }
     setModalOpen(false);
     load();
   };
 
+  // Delete hides the product. The database refuses while it still holds stock
+  // or has stock on the way, and says where (the Owner, 9 Oct 2026).
   const handleDelete = async (p: Product) => {
-    if (!confirm(`Delete "${p.name}"? It will be hidden but kept in the database and can be restored later.`)) return;
-    await supabase.from('products').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', p.id);
+    if (!confirm(`Delete "${p.name}"? It will be hidden. You can bring it back with "Show deleted".`)) return;
+    setBusyId(p.id); setPageErr(null); setFlash(null);
+    const { error } = await supabase.rpc('soft_delete_product', { p_product_id: p.id });
+    setBusyId(null);
+    if (error) { setPageErr(error.message); return; }
+    setFlash(`${p.name} was deleted. Tick "Show deleted" to restore it.`);
+    load();
+  };
+
+  const handleRestore = async (p: Product) => {
+    setBusyId(p.id); setPageErr(null); setFlash(null);
+    const { error } = await supabase.rpc('restore_product', { p_product_id: p.id });
+    setBusyId(null);
+    if (error) { setPageErr(error.message); return; }
+    setFlash(`${p.name} is back, active, with its SKU, links and prices as they were.`);
     load();
   };
 
@@ -152,6 +167,7 @@ const ProductsPage: React.FC = () => {
     sortBy !== col ? '' : sortDir === 'asc' ? ' ▲' : ' ▼';
 
   const filtered = products.filter(p => {
+    if (showDeleted ? !p.deleted_at : !!p.deleted_at) return false;
     const q = search.trim().toLowerCase();
     const matchSearch = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
     const matchType = typeFilter === 'all' || p.product_type === typeFilter;
@@ -185,18 +201,18 @@ const ProductsPage: React.FC = () => {
             columns={[
               { header: 'Product', value: (p: any) => p.name },
               { header: 'SKU', value: (p: any) => p.sku },
-              { header: 'Type', value: (p: any) => p.product_type === 'own' ? 'Own' : p.product_type === 'no_commission' ? 'No commission' : '3rd Party' },
-              { header: 'Brand', value: (p: any) => p.brand_name ?? '' },
+              { header: 'Type', value: (p: Product) => productTypeLabel(p.product_type) },
+              { header: 'Brand', value: (p: Product) => brandName(p) },
+              { header: 'Categories', value: (p: Product) => (catNames(p.id).length ? catNames(p.id) : (p.category ? [p.category] : [])).join(', ') },
+              { header: 'Suppliers', value: (p: Product) => (supNames(p.id).length ? supNames(p.id) : (p.supplier_name ? [p.supplier_name] : [])).join(', ') },
               { header: 'UoM', value: (p: any) => p.uom ?? '' },
               { header: 'Cost', value: (p: any) => Number(p.default_cost_price ?? 0) },
               { header: 'Important', value: (p: any) => p.is_important ? 'Yes' : 'No' },
-              { header: 'Status', value: (p: any) => p.is_active ? 'Active' : 'Inactive' },
+              { header: 'Status', value: (p: Product) => p.deleted_at ? 'Deleted' : p.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {tab === 'products' && (
-            <RoleGate allow={isManagerOrAbove}>
-              <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Product</button>
-            </RoleGate>
+          {tab === 'products' && canManage && (
+            <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Product</button>
           )}
         </div>
       </div>
@@ -234,8 +250,11 @@ const ProductsPage: React.FC = () => {
       <>
       <div className="alert alert-info">
         <span>ℹ️</span>
-        <div>Opening stock, current balance, and low-stock thresholds are no longer set here — they live in inventory (added in Phase 2).</div>
+        <div>Stock levels and low-stock thresholds are set on the Warehouse Stock and Store Stock pages.</div>
       </div>
+      {pageErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{pageErr}</div>
+        <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setPageErr(null)}>Close</button></div>}
+      {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -244,12 +263,16 @@ const ProductsPage: React.FC = () => {
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or SKU…" style={{ paddingLeft: 34 }} />
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          {(['all', 'own', 'third_party'] as const).map(t => (
+          {(['all', 'own', 'third_party', 'no_commission'] as const).map(t => (
             <button key={t} className={`btn btn-sm ${typeFilter === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTypeFilter(t)}>
-              {t === 'all' ? 'All' : t === 'own' ? 'Own' : '3rd Party'}
+              {t === 'all' ? 'All' : productTypeLabel(t)}
             </button>
           ))}
         </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+          <input type="checkbox" checked={showDeleted} onChange={e => { setShowDeleted(e.target.checked); setFlash(null); }} style={{ width: 'auto' }} />
+          Show deleted
+        </label>
         <div style={{ display: 'flex', gap: 6 }}>
           {([['all', 'All'], ['only', '★ Important only'], ['first', 'Important first']] as const).map(([v, lbl]) => (
             <button key={v} className={`btn btn-sm ${importantFilter === v ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setImportantFilter(v)}>{lbl}</button>
@@ -265,8 +288,8 @@ const ProductsPage: React.FC = () => {
           ) : filtered.length === 0 ? (
             <div className="empty-state">
               <Package size={36} style={{ opacity: 0.3, marginBottom: 10 }} />
-              <p style={{ fontWeight: 600 }}>No products found</p>
-              <p style={{ fontSize: 13 }}>{canManage ? 'Add your first product to get started.' : 'No products have been added yet.'}</p>
+              <p style={{ fontWeight: 600 }}>{showDeleted ? 'No deleted products' : 'No products found'}</p>
+              {!showDeleted && <p style={{ fontSize: 13 }}>{canManage ? 'Add your first product to get started.' : 'No products have been added yet.'}</p>}
             </div>
           ) : (
             <table>
@@ -292,7 +315,7 @@ const ProductsPage: React.FC = () => {
                       {brandName(p) && <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{brandName(p)}</div>}
                     </td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{p.sku}</td>
-                    <td><span className={`badge ${p.product_type === 'own' ? 'badge-primary' : p.product_type === 'no_commission' ? 'badge-muted' : 'badge-accent'}`}>{p.product_type === 'own' ? 'Own' : p.product_type === 'no_commission' ? 'No commission' : '3rd Party'}</span></td>
+                    <td><span className={`badge ${productTypeBadge(p.product_type)}`}>{productTypeLabel(p.product_type)}</span></td>
                     <td>
                       {(() => {
                         const names = catNames(p.id);
@@ -302,15 +325,21 @@ const ProductsPage: React.FC = () => {
                       })()}
                     </td>
                     <td>{p.uom}</td>
-                    <td>{p.default_cost_price ? `S$${p.default_cost_price.toFixed(2)}` : '—'}</td>
-                    <td>{p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                    <td>{p.default_cost_price ? `S$${Number(p.default_cost_price).toFixed(2)}` : '—'}</td>
+                    <td>{p.deleted_at
+                      ? <span className="badge badge-danger" title={`Deleted ${new Date(p.deleted_at).toLocaleDateString('en-GB')}`}>Deleted</span>
+                      : p.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     {canManage && (
                       <td>
+                        {p.deleted_at ? (
+                          <button className="btn btn-secondary btn-sm" disabled={busyId === p.id} onClick={() => handleRestore(p)}><RotateCcw size={13} /> Restore</button>
+                        ) : (
                         <div style={{ display: 'flex', gap: 4 }}>
                           {canConfig && <button className={`btn btn-sm btn-icon ${p.is_important ? 'btn-primary' : 'btn-secondary'}`} title={p.is_important ? 'Unmark important' : 'Mark important'} onClick={() => toggleImportant(p)}><Star size={13} fill={p.is_important ? '#fff' : 'none'} /></button>}
-                          <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(p)}><Pencil size={13} /></button>
-                          <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(p)}><Trash2 size={13} /></button>
+                          <button className="btn btn-secondary btn-sm btn-icon" title="Edit" onClick={() => openEdit(p)}><Pencil size={13} /></button>
+                          <button className="btn btn-danger btn-sm btn-icon" title="Delete" disabled={busyId === p.id} onClick={() => handleDelete(p)}><Trash2 size={13} /></button>
                         </div>
+                        )}
                       </td>
                     )}
                   </tr>
@@ -374,7 +403,7 @@ const ProductsPage: React.FC = () => {
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Barcode</label><input value={form.barcode} onChange={e => setForm(f => ({ ...f, barcode: e.target.value }))} placeholder="Optional" /></div>
-              <div className="form-group"><label>Default Cost Price (S$)</label><input type="number" min={0} step={0.01} value={form.default_cost_price || ''} onChange={e => setForm(f => ({ ...f, default_cost_price: +e.target.value }))} placeholder="0.00" /></div>
+              <div className="form-group"><label>Default Cost Price (S$)</label><input type="text" inputMode="decimal" value={form.default_cost_price} onChange={e => setForm(f => ({ ...f, default_cost_price: e.target.value }))} placeholder="0.00" /></div>
             </div>
             <div className="form-group"><label>Suppliers <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(multiple)</span></label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

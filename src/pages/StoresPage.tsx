@@ -1,16 +1,21 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Store as StoreT, Profile, UserStoreAssignment, isOwnerOrManager, isOwnerOrAdmin, ROLE_LABELS } from '../types';
-import { Modal, RoleGate } from '../components/ui';
+import { Store as StoreT, Profile, UserStoreAssignment, ROLE_LABELS } from '../types';
+import { Modal } from '../components/ui';
 import { uploadStoreAsset } from '../lib/storeAssets';
-import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, X } from 'lucide-react';
+import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, RotateCcw } from 'lucide-react';
+import { canManagePlaces, storeAssignmentBlock, worksAtEveryStore } from '../lib/permissions/products';
 
 const StoresPage: React.FC = () => {
   const { profile, assignments: myAssignments } = useAuth();
-  const canManage = isOwnerOrManager(profile?.role);
-  const seesAll = isOwnerOrAdmin(profile?.role);
+  const canManage = canManagePlaces(profile?.role);
+  // Owners, Admins and Managers see every store (Managers edit any store, as
+  // before). Staff and Inventory Managers see the stores they work at. Every
+  // store's name stays readable elsewhere: transfers and invoices name them.
+  const seesAll = worksAtEveryStore(profile?.role) || profile?.role === 'manager';
+  const myStoreIds = myAssignments.map(a => a.store_id);
 
   const [rows, setRows] = useState<StoreT[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,19 +25,36 @@ const StoresPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // The form is long and the message sits at its top, far above Save. Bring
+  // it into view when it appears (a refused switch-off, a code in use, an
+  // upload that failed).
+  const errRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { if (err) errRef.current?.scrollIntoView?.({ block: 'nearest' }); }, [err]);
 
   // Assignment management
   const [assignStore, setAssignStore] = useState<StoreT | null>(null);
   const [allUsers, setAllUsers] = useState<Profile[]>([]);
   const [storeAssignments, setStoreAssignments] = useState<UserStoreAssignment[]>([]);
+  const [assignBusy, setAssignBusy] = useState<string | null>(null);
+  const [assignErr, setAssignErr] = useState<string | null>(null);
+
+  // A deleted store is hidden, not removed: "Show deleted" lists it with Restore.
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [pageErr, setPageErr] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    // RLS automatically limits stores to those the user can access.
-    const { data } = await supabase.from('stores').select('*').is('deleted_at', null).order('created_at');
-    setRows((data as StoreT[]) ?? []);
+    // Every staff member may read every store's row, so the page itself keeps
+    // Staff and Inventory Managers to the stores they work at.
+    const q = supabase.from('stores').select('*');
+    const { data, error } = await (showDeleted ? q.not('deleted_at', 'is', null) : q.is('deleted_at', null)).order('created_at');
+    setPageErr(error ? `Couldn't read the stores: ${error.message}. Refresh to try again.` : null);
+    const all = (data as StoreT[]) ?? [];
+    setRows(seesAll ? all : all.filter(s => myStoreIds.includes(s.id)));
     setLoading(false);
-  }, []);
+  }, [showDeleted, seesAll, myStoreIds.join(',')]);
   useEffect(() => { load(); }, [load]);
 
   const openAdd = () => { setForm({ name: '', code: '', address: '', phone: '', whatsapp_phone: '', policy_text: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' }); setEditId(null); setErr(null); setModalOpen(true); };
@@ -61,38 +83,59 @@ const StoresPage: React.FC = () => {
     const res = editId
       ? await supabase.from('stores').update(payload).eq('id', editId)
       : await supabase.from('stores').insert(payload);
-    if (res.error) { setErr(res.error.message.includes('duplicate') ? 'That code already exists.' : res.error.message); setSaving(false); return; }
+    // A store or warehouse that still holds stock cannot be switched off: the
+    // database says what is left there (the Owner, 9 Oct 2026).
+    if (res.error) { setErr(res.error.code === '23505' ? 'That code already exists.' : res.error.message); setSaving(false); return; }
     setSaving(false); setModalOpen(false); load();
   };
 
+  // Delete hides the store. The database refuses while it still holds stock
+  // or has stock on the way, and says what (the Owner, 9 Oct 2026).
   const handleDelete = async (s: StoreT) => {
-    if (!confirm(`Delete "${s.name}"? It can be restored later.`)) return;
-    await supabase.from('stores').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', s.id);
+    if (!confirm(`Delete "${s.name}"? It will be hidden. You can bring it back with "Show deleted".`)) return;
+    setBusyId(s.id); setPageErr(null); setFlash(null);
+    const { error } = await supabase.rpc('soft_delete_store', { p_store_id: s.id });
+    setBusyId(null);
+    if (error) { setPageErr(error.message); return; }
+    setFlash(`${s.name} was deleted.`);
+    load();
+  };
+
+  const handleRestore = async (s: StoreT) => {
+    setBusyId(s.id); setPageErr(null); setFlash(null);
+    const { error } = await supabase.rpc('restore_store', { p_store_id: s.id });
+    setBusyId(null);
+    if (error) { setPageErr(error.message); return; }
+    setFlash(`${s.name} is back and active.`);
     load();
   };
 
   // ── Assignments ──
+  const loadAssignments = async (storeId: string) => {
+    const { data, error } = await supabase.from('user_store_assignments').select('*').eq('store_id', storeId);
+    if (error) setAssignErr(`Couldn't read who works here: ${error.message}`);
+    setStoreAssignments((data as UserStoreAssignment[]) ?? []);
+  };
   const openAssignments = async (s: StoreT) => {
-    setAssignStore(s);
-    const [{ data: users }, { data: assigns }] = await Promise.all([
-      supabase.from('profiles').select('*').is('deleted_at', null).order('full_name'),
-      supabase.from('user_store_assignments').select('*').eq('store_id', s.id),
-    ]);
+    setAssignStore(s); setAssignErr(null);
+    const { data: users } = await supabase.from('profiles').select('*').is('deleted_at', null).order('full_name');
     setAllUsers((users as Profile[]) ?? []);
-    setStoreAssignments((assigns as UserStoreAssignment[]) ?? []);
+    await loadAssignments(s.id);
   };
 
-  const toggleAssignment = async (userId: string) => {
+  // Through the server (assign_user_store, 420): Managers put Staff and
+  // Inventory Managers on the stores they work at; only an Owner changes a
+  // Manager's stores; nobody changes their own. A refusal is shown.
+  const toggleAssignment = async (u: Profile) => {
     if (!assignStore) return;
-    const existing = storeAssignments.find(a => a.user_id === userId);
-    if (existing) {
-      await supabase.from('user_store_assignments').delete().eq('id', existing.id);
-    } else {
-      await supabase.from('user_store_assignments').insert({ user_id: userId, store_id: assignStore.id });
-    }
-    // reload assignments
-    const { data } = await supabase.from('user_store_assignments').select('*').eq('store_id', assignStore.id);
-    setStoreAssignments((data as UserStoreAssignment[]) ?? []);
+    const assigned = storeAssignments.some(a => a.user_id === u.id);
+    setAssignBusy(u.id); setAssignErr(null);
+    const { error } = await supabase.rpc('assign_user_store', {
+      p_user_id: u.id, p_store_id: assignStore.id, p_assigned: !assigned,
+    });
+    setAssignBusy(null);
+    if (error) setAssignErr(`${u.full_name}: ${error.message}`);
+    await loadAssignments(assignStore.id);
   };
 
   return (
@@ -100,7 +143,7 @@ const StoresPage: React.FC = () => {
       <div className="page-header">
         <div>
           <h2>Stores</h2>
-          <p>{seesAll ? 'All store locations. Assign managers, inventory managers, and staff to each store.' : 'Stores you are assigned to.'}</p>
+          <p>{seesAll ? 'All store locations. Choose who works at each store.' : 'The stores you work at.'}</p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
@@ -114,21 +157,27 @@ const StoresPage: React.FC = () => {
               { header: 'Status', value: (s2: any) => s2.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          <RoleGate allow={isOwnerOrManager}>
-            <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Store</button>
-          </RoleGate>
+          {canManage && <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Store</button>}
         </div>
       </div>
 
+      {canManage && (
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', marginBottom: 12 }}>
+          <input type="checkbox" checked={showDeleted} onChange={e => { setShowDeleted(e.target.checked); setFlash(null); }} style={{ width: 'auto' }} />
+          Show deleted
+        </label>
+      )}
+      {pageErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{pageErr}</div></div>}
+      {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
       {!seesAll && rows.length > 0 && (
-        <div className="alert alert-info"><span>ℹ️</span><div>You're viewing the {rows.length} store{rows.length > 1 ? 's' : ''} you're assigned to.</div></div>
+        <div className="alert alert-info"><span>ℹ️</span><div>You're viewing the {rows.length} store{rows.length > 1 ? 's' : ''} you work at.</div></div>
       )}
 
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
           : rows.length === 0 ? (
-            <div className="empty-state"><Store size={34} style={{ opacity: 0.3, marginBottom: 10 }} /><p style={{ fontWeight: 600 }}>No stores {seesAll ? 'yet' : 'assigned to you'}</p></div>
+            <div className="empty-state"><Store size={34} style={{ opacity: 0.3, marginBottom: 10 }} /><p style={{ fontWeight: 600 }}>{showDeleted ? 'No deleted stores' : `No stores ${seesAll ? 'yet' : 'assigned to you'}`}</p></div>
           ) : (
             <table>
               <thead><tr><th>Store</th><th>Code</th><th>Address</th><th>Phone</th><th>Status</th>{canManage && <th></th>}</tr></thead>
@@ -139,12 +188,15 @@ const StoresPage: React.FC = () => {
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{s.code}</td>
                     <td style={{ color: 'var(--text-secondary)', maxWidth: 240 }}>{s.address || '—'}</td>
                     <td style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{s.phone || '—'}</td>
-                    <td>{s.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
-                    {canManage && <td><div style={{ display: 'flex', gap: 4 }}>
+                    <td>{s.deleted_at ? <span className="badge badge-danger">Deleted</span>
+                      : s.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                    {canManage && <td>{s.deleted_at
+                      ? <button className="btn btn-secondary btn-sm" disabled={busyId === s.id} onClick={() => handleRestore(s)}><RotateCcw size={13} /> Restore</button>
+                      : <div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openAssignments(s)}><Users2 size={13} /> Staff</button>
-                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(s)}><Pencil size={13} /></button>
-                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(s)}><Trash2 size={13} /></button>
-                    </div></td>}
+                      <button className="btn btn-secondary btn-sm btn-icon" title="Edit" onClick={() => openEdit(s)}><Pencil size={13} /></button>
+                      <button className="btn btn-danger btn-sm btn-icon" title="Delete" disabled={busyId === s.id} onClick={() => handleDelete(s)}><Trash2 size={13} /></button>
+                    </div>}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -158,7 +210,7 @@ const StoresPage: React.FC = () => {
         <Modal title={editId ? 'Edit Store' : 'Add Store'} onClose={() => setModalOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
-            {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+            {err && <div ref={errRef} className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
             <div className="form-grid-2">
               <div className="form-group"><label>Name *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Energia Rev22 (Adelphi)" autoFocus /></div>
               <div className="form-group"><label>Code *</label><input value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} placeholder="STORE-ADELPHI" /></div>
@@ -238,6 +290,10 @@ const StoresPage: React.FC = () => {
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>
+            {editId && !form.is_active && (
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
+                A store that still holds stock, or has stock on the way, cannot be switched off. Move or correct that stock first.
+              </p>)}
           </div>
         </Modal>
       )}
@@ -247,22 +303,25 @@ const StoresPage: React.FC = () => {
         <Modal title={`Staff — ${assignStore.name}`} maxWidth={460} onClose={() => setAssignStore(null)}
           footer={<button className="btn btn-primary" onClick={() => setAssignStore(null)}>Done</button>}>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-            Assign managers, inventory managers, and staff to this store. Owners and Admins always have access to every store.
+            Tick who works at this store. Owners and Admins work at every store. Managers put Staff and
+            Inventory Managers on the stores they work at; only an Owner changes a Manager's stores.
           </p>
+          {assignErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 10 }}><span>⚠</span><div>{assignErr}</div></div>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {allUsers.filter(u => !isOwnerOrAdmin(u.role)).map(u => {
+            {allUsers.filter(u => !worksAtEveryStore(u.role)).map(u => {
               const assigned = storeAssignments.some(a => a.user_id === u.id);
+              const block = profile ? storeAssignmentBlock(profile, u, assignStore.id, myStoreIds) : 'Sign in again.';
               return (
-                <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', background: assigned ? 'var(--primary-light)' : 'var(--surface)' }}>
-                  <input type="checkbox" checked={assigned} onChange={() => toggleAssignment(u.id)} style={{ width: 'auto' }} />
+                <label key={u.id} title={block ?? undefined} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: block ? 'not-allowed' : 'pointer', opacity: block ? 0.7 : 1, background: assigned ? 'var(--primary-light)' : 'var(--surface)' }}>
+                  <input type="checkbox" checked={assigned} disabled={!!block || assignBusy === u.id} onChange={() => toggleAssignment(u)} style={{ width: 'auto' }} />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>{u.full_name}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{ROLE_LABELS[u.role]}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{ROLE_LABELS[u.role]}{block ? ` · ${block}` : ''}</div>
                   </div>
                 </label>
               );
             })}
-            {allUsers.filter(u => !isOwnerOrAdmin(u.role)).length === 0 && (
+            {allUsers.filter(u => !worksAtEveryStore(u.role)).length === 0 && (
               <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>No assignable users yet. Create users in Users &amp; Roles first.</p>
             )}
           </div>

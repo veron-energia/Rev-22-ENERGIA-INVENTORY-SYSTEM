@@ -7,20 +7,34 @@ import {
 } from '../types';
 import { SearchSelect } from '../components/SearchSelect';
 import { Modal } from '../components/ui';
-import { Plus, RefreshCw, SlidersHorizontal, X } from 'lucide-react';
+import { Plus, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
+import {
+  AdjustmentLine, adjustmentPlace, adjustmentSentMessage, checkAdjustmentForm, countableStoreIds, linesSettingToZero,
+  zeroConfirmText,
+} from '../lib/stock/stockPages';
+import { mayHaveSaved, newRequestId, saveFailure } from '../lib/stock-loans/stockLoans';
+
+const emptyLine = (): AdjustmentLine => ({ product_id: '', new_qty: '' });
 
 const AdjustmentsPage: React.FC = () => {
-  const { profile } = useAuth();
+  const { profile, assignments } = useAuth();
   const canWarehouse = canManageWarehouseStock(profile?.role);
 
   const [requests, setRequests] = useState<AdjustmentRequest[]>([]);
+  // Every product, store and warehouse, deleted ones too, so old requests
+  // keep their names. The form offers only the live ones.
   const [products, setProducts] = useState<Product[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  // The open stores my_assigned_stores() lists (every one for an Owner, Admin
+  // or Manager). The form offers only those this person may count.
+  const [myStoreIds, setMyStoreIds] = useState<string[] | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [flash, setFlash] = useState<string | null>(null);
 
   const [open, setOpen] = useState(false);
   const [locType, setLocType] = useState<LocationType>('store');
@@ -29,32 +43,62 @@ const AdjustmentsPage: React.FC = () => {
   const [reference, setReference] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // One id per opened form: a retry after a lost answer sends nothing twice.
+  // After a failure that may have saved, the form is locked as it was sent.
+  const [formId, setFormId] = useState('');
+  const [locked, setLocked] = useState(false);
+  // Several products can be corrected in one go; each line carries its own
+  // counted total, typed as text so an empty box is never taken as 0.
+  const [adjLines, setAdjLines] = useState<AdjustmentLine[]>([emptyLine()]);
+  // The stock at the chosen place now, by product (null: not read).
+  const [live, setLive] = useState<Record<string, number> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [req, prod, st, wh, prof] = await Promise.all([
+    const [req, prod, st, wh, prof, mine] = await Promise.all([
       supabase.from('approval_requests').select('*').eq('request_type', 'adjustment').order('created_at', { ascending: false }),
-      supabase.from('products').select('id,name,sku').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('stores').select('id,name').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('warehouses').select('id,name').is('deleted_at', null).eq('is_active', true).order('name'),
+      supabase.from('products').select('id,name,sku,is_active,deleted_at').order('name'),
+      supabase.from('stores').select('id,name,is_active,deleted_at').order('name'),
+      supabase.from('warehouses').select('id,name,is_active,deleted_at').order('name'),
       supabase.from('profiles').select('id,full_name'),
+      supabase.rpc('my_assigned_stores'),
     ]);
+    setLoadErr(req.error ? `The requests could not be loaded (${req.error.message}). Refresh to try again.` : null);
     setRequests((req.data as AdjustmentRequest[]) ?? []);
     setProducts((prod.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
     setWarehouses((wh.data as Warehouse[]) ?? []);
     setProfiles((prof.data as Profile[]) ?? []);
+    setMyStoreIds(mine.error ? null : ((mine.data as { store_id: string }[]) ?? []).map(s => s.store_id));
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // The stock at the chosen place, so each line shows what the system holds
+  // and a count of 0 over real stock is confirmed first.
+  useEffect(() => {
+    if (!open || !locId) { setLive(null); return; }
+    let gone = false;
+    (async () => {
+      const res = locType === 'store'
+        ? await supabase.from('store_inventory').select('product_id,current_qty').eq('store_id', locId)
+        : await supabase.from('warehouse_inventory').select('product_id,current_qty').eq('warehouse_id', locId);
+      if (gone) return;
+      setLive(res.error ? null : Object.fromEntries(
+        ((res.data as { product_id: string; current_qty: number }[]) ?? []).map(r => [r.product_id, r.current_qty])));
+    })();
+    return () => { gone = true; };
+  }, [open, locType, locId]);
+
   const pName = (id?: string) => products.find(p => p.id === id)?.name ?? '—';
   const uName = (id: string | null) => id ? (profiles.find(p => p.id === id)?.full_name ?? '—') : '—';
   const pSku = (id?: string) => products.find(p => p.id === id)?.sku ?? '';
+  const storeName = (id?: string) => stores.find(s => s.id === id)?.name;
+  const warehouseName = (id?: string) => warehouses.find(w => w.id === id)?.name;
+  const place = (p: AdjustmentRequest['payload']) => adjustmentPlace(p, storeName, warehouseName);
   const locName = (p: AdjustmentRequest['payload']) => {
     if (!p) return '—';
-    if (p.location_type === 'store') return `🏪 ${stores.find(s => s.id === p.location_id)?.name ?? '—'}`;
-    return `🏭 ${warehouses.find(w => w.id === p.location_id)?.name ?? '—'}`;
+    return `${p.location_type === 'store' ? '🏪' : '🏭'} ${place(p) || '—'}`;
   };
 
   // Searches everything in a row, plus the SKU, which is not a visible column
@@ -67,50 +111,55 @@ const AdjustmentsPage: React.FC = () => {
       const when = req.created_at ? new Date(req.created_at) : null;
       return [
         pName(p?.product_id), pSku(p?.product_id),
-        locName(p), uName(req.requested_by), uName((req as any).approved_by),
-        req.reason, req.status, (req as any).reference,
+        locName(p), uName(req.requested_by), uName(req.approved_by),
+        req.reason, req.status, p?.reference, req.response_note,
         String(p?.current_qty ?? ''), String(p?.new_qty ?? ''), String(p?.difference ?? ''),
         when?.toLocaleDateString('en-GB'), when?.toLocaleDateString('en-CA'),
       ].filter(Boolean).join(' ').toLowerCase().includes(q);
     });
   }, [requests, search, products, stores, warehouses, profiles]);
 
-  // Several products can be corrected in one go; each line carries its own
-  // corrected total.
-  const [adjLines, setAdjLines] = useState<{ product_id: string; new_qty: number }[]>([{ product_id: '', new_qty: 0 }]);
+  const liveProducts = products.filter(p => p.is_active && !p.deleted_at);
+  // An Owner or Admin counts any store; anyone else, a Manager too, only the
+  // stores they work at, as the server requires.
+  const countable = countableStoreIds(profile?.role, myStoreIds, (assignments ?? []).map(a => a.store_id));
+  const locOptions = locType === 'store'
+    ? stores.filter(s => s.is_active && !s.deleted_at && (countable == null || countable.includes(s.id)))
+    : warehouses.filter(w => w.is_active && !w.deleted_at);
+  const placeName = (locType === 'store' ? storeName(locId) : warehouseName(locId)) ?? 'this place';
 
-  const locOptions = locType === 'store' ? stores : warehouses;
+  const openForm = () => {
+    setErr(null); setFlash(null); setLocId(''); setReason(''); setReference('');
+    setAdjLines([emptyLine()]); setFormId(newRequestId()); setLocked(false); setOpen(true);
+  };
 
   const submit = async () => {
-    if (!locId) { setErr('Select a location.'); return; }
-    const valid = adjLines.filter(l => l.product_id);
-    if (valid.length === 0) { setErr('Select at least one product.'); return; }
-    const ids = valid.map(l => l.product_id);
-    if (new Set(ids).size !== ids.length) { setErr('The same product is listed more than once.'); return; }
-    if (valid.some(l => l.new_qty < 0)) { setErr('A corrected total cannot be negative.'); return; }
-    if (!reason.trim()) { setErr('A reason is required.'); return; }
+    const c = checkAdjustmentForm(locId, adjLines, reason, reference);
+    if (!c.ok) { setErr(c.error); return; }
+    const zero = locked ? [] : linesSettingToZero(c.value.p_lines, live);
+    if (zero.length > 0 && !window.confirm(zeroConfirmText(zero.map(id => pName(id)), placeName))) return;
 
     setSaving(true); setErr(null);
-    const done: string[] = [];
-    for (const line of valid) {
-      const { error } = await supabase.rpc('request_inventory_adjustment', {
-        p_location_type: locType, p_location_id: locId, p_product_id: line.product_id,
-        p_new_qty: line.new_qty, p_reason: reason.trim(), p_reference: reference.trim() || null,
-      });
-      if (error) {
-        setSaving(false);
-        const name = products.find(p => p.id === line.product_id)?.name ?? 'A product';
-        setErr(done.length > 0
-          ? `${name}: ${error.message} — ${done.length} request(s) were already submitted.`
-          : `${name}: ${error.message}`);
-        load();
-        return;
-      }
-      done.push(line.product_id);
-    }
+    // One call for every line: all are sent or none is. A line whose count
+    // matches the system is left out and named.
+    const { data, error } = await supabase.rpc('request_inventory_adjustments', {
+      p_location_type: locType, p_location_id: locId, p_lines: c.value.p_lines,
+      p_reason: c.value.p_reason, p_reference: c.value.p_reference, p_request_id: formId,
+    });
     setSaving(false);
+    if (error) {
+      setLocked(mayHaveSaved(error));
+      // "This form was already sent, and has been changed since" says itself
+      // what was kept.
+      setErr(/already sent/i.test(error.message ?? '') ? error.message
+        : saveFailure(error, 'The form is locked as it was sent: press Submit Request again to finish, and nothing will be sent twice.'));
+      load();
+      return;
+    }
+    const res = (data ?? {}) as { requests?: unknown[]; unchanged?: { product_id: string; current_qty: number }[] };
+    setFlash(adjustmentSentMessage(res.requests?.length ?? 0, res.unchanged ?? [], id => pName(id)));
     setOpen(false); setLocId('');
-    setAdjLines([{ product_id: '', new_qty: 0 }]);
+    setAdjLines([emptyLine()]);
     setReason(''); setReference('');
     load();
   };
@@ -127,19 +176,29 @@ const AdjustmentsPage: React.FC = () => {
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
             rows={filtered} filename="adjustments" sheetName="Adjustments"
-            dateOf={(r: any) => r.created_at} dateLabel="Requested"
+            dateOf={(r: AdjustmentRequest) => r.created_at} dateLabel="Requested"
             columns={[
-              { header: 'Date', value: (r: any) => new Date(r.created_at).toLocaleDateString('en-GB') },
-              { header: 'Location', value: (r: any) => r.location_name ?? '' },
-              { header: 'Product', value: (r: any) => r.product_name ?? '' },
-              { header: 'Change', value: (r: any) => Number(r.delta ?? 0) },
-              { header: 'Reason', value: (r: any) => r.reason ?? '' },
-              { header: 'Status', value: (r: any) => r.status ?? '' },
+              { header: 'Date', value: (r: AdjustmentRequest) => new Date(r.created_at).toLocaleDateString('en-GB') },
+              { header: 'Location', value: (r: AdjustmentRequest) => place(r.payload) },
+              { header: 'Product', value: (r: AdjustmentRequest) => r.payload?.product_id ? pName(r.payload.product_id) : '' },
+              { header: 'SKU', value: (r: AdjustmentRequest) => pSku(r.payload?.product_id) },
+              { header: 'Current', value: (r: AdjustmentRequest) => r.payload?.current_qty ?? '' },
+              { header: 'New total', value: (r: AdjustmentRequest) => r.payload?.new_qty ?? '' },
+              { header: 'Change', value: (r: AdjustmentRequest) => Number(r.payload?.difference ?? 0) },
+              { header: 'Reason', value: (r: AdjustmentRequest) => r.reason ?? '' },
+              { header: 'Reference', value: (r: AdjustmentRequest) => r.payload?.reference ?? '' },
+              { header: 'Status', value: (r: AdjustmentRequest) => APPROVAL_STATUS_LABELS[r.status] ?? r.status },
+              { header: 'Approver\'s note', value: (r: AdjustmentRequest) => r.response_note ?? '' },
+              { header: 'Requested by', value: (r: AdjustmentRequest) => uName(r.requested_by) },
+              { header: 'Resolved by', value: (r: AdjustmentRequest) => r.approved_by ? uName(r.approved_by) : '' },
+              { header: 'Resolved at', value: (r: AdjustmentRequest) => r.approved_at ? new Date(r.approved_at).toLocaleString('en-GB') : '' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          <button className="btn btn-primary" onClick={() => { setErr(null); (() => { setErr(null); setAdjLines([{ product_id: '', new_qty: 0 }]); setOpen(true); })(); }}><Plus size={16} /> New Adjustment</button>
+          <button className="btn btn-primary" onClick={openForm}><Plus size={16} /> New Adjustment</button>
         </div>
       </div>
+
+      {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
 
       <div style={{ marginBottom: 12, maxWidth: 460 }}>
         <input value={search} onChange={e => setSearch(e.target.value)}
@@ -156,6 +215,7 @@ const AdjustmentsPage: React.FC = () => {
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
+          : loadErr ? <div className="alert alert-danger" role="alert">{loadErr}</div>
           : filtered.length === 0 ? <div className="empty-state"><SlidersHorizontal size={32} style={{ opacity: 0.3 }} />
               <p style={{ fontWeight: 600, marginTop: 8 }}>
                 {search ? 'Nothing matches that search' : 'No adjustment requests yet'}
@@ -176,7 +236,14 @@ const AdjustmentsPage: React.FC = () => {
                       <td><strong>{pName(p?.product_id)}</strong></td>
                       <td style={{ fontSize: 13 }}>{p?.current_qty} → <strong>{p?.new_qty}</strong> <span style={{ color: (p?.difference ?? 0) >= 0 ? 'var(--success)' : 'var(--danger)' }}>({(p?.difference ?? 0) >= 0 ? '+' : ''}{p?.difference})</span></td>
                       <td style={{ fontSize: 12.5, color: 'var(--text-secondary)', maxWidth: 180 }}>{req.reason || '—'}</td>
-                      <td>{statusBadge(req.status)}</td>
+                      <td>
+                        {statusBadge(req.status)}
+                        {/* The approver's reason: every rejection has one (the Owner, 9 Oct 2026). */}
+                        {req.response_note && (
+                          <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 3, maxWidth: 200 }}>
+                            {req.status === 'rejected' ? 'Reason' : 'Note'}: {req.response_note}
+                          </div>)}
+                      </td>
                       <td style={{ fontSize: 12.5 }}>{uName(req.requested_by)}</td>
                     </tr>
                   );
@@ -188,21 +255,21 @@ const AdjustmentsPage: React.FC = () => {
       </div>
 
       {open && (
-        <Modal title="New Inventory Adjustment" maxWidth={460} confirmClose onClose={() => setOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
+        <Modal title="New Inventory Adjustment" maxWidth={480} confirmClose onClose={() => setOpen(false)}
+          footer={<><button className="btn btn-secondary" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submit} disabled={saving}>{saving ? 'Submitting…' : locked ? 'Submit Request again' : 'Submit Request'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
             <div className="form-grid-2">
               <div className="form-group">
                 <label>Location Type</label>
-                <select value={locType} onChange={e => { setLocType(e.target.value as LocationType); setLocId(''); }}>
+                <select value={locType} disabled={locked} onChange={e => { setLocType(e.target.value as LocationType); setLocId(''); }}>
                   <option value="store">Store</option>
                   {canWarehouse && <option value="warehouse">Warehouse</option>}
                 </select>
               </div>
               <div className="form-group">
                 <label>{locType === 'store' ? 'Store' : 'Warehouse'}</label>
-                <select value={locId} onChange={e => setLocId(e.target.value)}>
+                <select value={locId} disabled={locked} onChange={e => setLocId(e.target.value)}>
                   <option value="">— Select —</option>
                   {locOptions.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
                 </select>
@@ -214,24 +281,34 @@ const AdjustmentsPage: React.FC = () => {
                 <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
                   <div style={{ flex: 1 }}>
                     <SearchSelect
-                      options={products.map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
-                      value={l.product_id}
+                      options={liveProducts.map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
+                      value={l.product_id} disabled={locked}
                       exclude={adjLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
                       onChange={v => setAdjLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
                       placeholder="Search product name or SKU…" />
+                    {live && l.product_id && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                        System now: {live[l.product_id] ?? 0}
+                      </div>
+                    )}
                   </div>
-                  <input type="number" min={0} value={l.new_qty || ''} placeholder="New total" style={{ width: 110 }}
-                    onChange={e => setAdjLines(ls => ls.map((x, j) => j === i ? { ...x, new_qty: +e.target.value } : x))} />
-                  <button className="btn btn-secondary btn-sm btn-icon" disabled={adjLines.length === 1}
+                  <input type="text" inputMode="numeric" value={l.new_qty} placeholder="New total" style={{ width: 110 }}
+                    aria-label="Counted total" disabled={locked}
+                    onChange={e => setAdjLines(ls => ls.map((x, j) => j === i ? { ...x, new_qty: e.target.value } : x))} />
+                  <button className="btn btn-secondary btn-sm btn-icon" disabled={locked || adjLines.length === 1}
                     onClick={() => setAdjLines(ls => ls.filter((_, j) => j !== i))} title="Remove">×</button>
                 </div>
               ))}
-              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
-                onClick={() => setAdjLines(ls => [...ls, { product_id: '', new_qty: 0 }])}>+ Add another product</button>
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }} disabled={locked}
+                onClick={() => setAdjLines(ls => [...ls, emptyLine()])}>+ Add another product</button>
             </div>
-            <div className="form-group"><label>Reference</label><input value={reference} onChange={e => setReference(e.target.value)} placeholder="Optional" /></div>
-            <div className="form-group"><label>Reason *</label><textarea rows={2} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Stock count correction after audit" /></div>
-            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Enter the <strong>corrected total</strong> for each product, not the difference. The system works out the change and applies it after approval. The reason and reference apply to every line, and each product becomes its own approval request.</div></div>
+            <div className="form-group"><label>Reference</label><input value={reference} disabled={locked} onChange={e => setReference(e.target.value)} placeholder="Optional" /></div>
+            <div className="form-group"><label>Reason *</label><textarea rows={2} value={reason} disabled={locked} onChange={e => setReason(e.target.value)} placeholder="e.g. Stock count correction after audit" /></div>
+            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
+              Enter the <strong>counted total</strong> for each product, as a whole number, not the difference.
+              Each product becomes its own approval request. A product whose count matches the system is left out.
+              If a sale or delivery changes the stock before approval, the approver will ask for a new count.
+            </div></div>
           </div>
         </Modal>
       )}

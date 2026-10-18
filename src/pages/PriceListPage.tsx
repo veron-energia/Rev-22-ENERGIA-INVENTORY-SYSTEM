@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Store, Product, StoreProductPrice, isOwnerOrManager } from '../types';
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Tag, Store as StoreIcon, Pencil } from 'lucide-react';
+import { pricedCount as countPriced, productTypeBadge, productTypeLabel } from '../lib/stock/stockPages';
 
 const PriceListPage: React.FC = () => {
   const { profile } = useAuth();
@@ -80,7 +81,9 @@ const PriceListPage: React.FC = () => {
     if (priceFilter === 'unpriced') return !priceOf(p.id);
     return true;
   });
-  const pricedCount = prices.length;
+  // Only the listed products count: a price kept for a deleted or switched-off
+  // product is not one of them (STOCK-10).
+  const pricedCount = countPriced(products.map(p => p.id), prices.map(x => x.product_id));
 
   if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage store price lists." />;
 
@@ -95,7 +98,7 @@ const PriceListPage: React.FC = () => {
             columns={[
               { header: 'Product', value: (p: any) => p.name },
               { header: 'SKU', value: (p: any) => p.sku },
-              { header: 'Type', value: (p: any) => p.product_type },
+              { header: 'Type', value: (p: any) => productTypeLabel(p.product_type) },
               { header: 'Selling price', value: (p: any) => { const pr = priceOf(p.id); return pr ? Number(pr.selling_price) : ''; } },
               { header: 'Priced', value: (p: any) => priceOf(p.id) ? 'Yes' : 'No' },
             ]} />
@@ -147,7 +150,7 @@ const PriceListPage: React.FC = () => {
                         <tr key={p.id} style={{ opacity: price ? 1 : 0.7 }}>
                           <td><strong>{p.name}</strong></td>
                           <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{p.sku}</td>
-                          <td><span className={`badge ${p.product_type === 'own' ? 'badge-primary' : 'badge-accent'}`}>{p.product_type === 'own' ? 'Own' : '3rd Party'}</span></td>
+                          <td><span className={`badge ${productTypeBadge(p.product_type)}`}>{productTypeLabel(p.product_type)}</span></td>
                           <td style={{ textAlign: 'right', fontSize: 12.5 }}>
                             {(() => {
                               if (!price) return <span className="badge badge-danger">No price</span>;

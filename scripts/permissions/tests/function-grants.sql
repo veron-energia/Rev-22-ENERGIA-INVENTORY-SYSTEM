@@ -149,7 +149,11 @@ declare
                              'customer_name_words','customer_names_match','customer_email_match_key',
                              -- 418: the date-of-birth rule, called inside update_customer and
                              -- the survey's Edit details (which run as the owner)
-                             'assert_customer_dob_change'];
+                             'assert_customer_dob_change',
+                             -- 420: what stops a product, store or warehouse being deleted or
+                             -- switched off while it holds stock, and the trigger on the three
+                             -- tables that calls it (every path, the pages included)
+                             'stock_retire_blockers','trg_stock_place_retire'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

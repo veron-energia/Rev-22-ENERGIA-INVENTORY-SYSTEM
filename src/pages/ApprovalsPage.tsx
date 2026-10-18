@@ -1,4 +1,3 @@
-import { useNavigate } from 'react-router-dom';
 import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
 import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
@@ -9,6 +8,10 @@ import {
 } from '../types';
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Check, X, ClipboardCheck, RotateCcw, XCircle, SlidersHorizontal } from 'lucide-react';
+import { adjustmentPlace, liveNote } from '../lib/stock/stockPages';
+
+/** Today's stock beside a pending correction (pending_adjustments_live, 420). */
+interface LiveRow { request_id: string; live_qty: number; product_live: boolean; place_open: boolean }
 
 const TYPE_META: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
   invoice_refund: { label: 'Refund', icon: <RotateCcw size={13} />, cls: 'badge-danger' },
@@ -31,7 +34,6 @@ function invoiceRequestSummary(p: AdjustmentRequest['payload']): string {
 
 const ApprovalsPage: React.FC = () => {
   const { profile } = useAuth();
-  const navigate = useNavigate();
   // Access is checked AFTER the hooks below. Returning early here would call
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
@@ -47,10 +49,14 @@ const ApprovalsPage: React.FC = () => {
   const [rejectNote, setRejectNote] = useState('');
   // A failed read is said as one, never shown as "Nothing pending".
   const [loadError, setLoadError] = useState<string | null>(null);
+  // The stock now at each pending correction's place (the Owner, 9 Oct 2026:
+  // the card shows the live number; approving stops if it moved).
+  const [live, setLive] = useState<Record<string, LiveRow>>({});
+  const [liveError, setLiveError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [req, prod, st, wh, prof] = await Promise.all([
+    const [req, prod, st, wh, prof, lv] = await Promise.all([
       supabase.from('approval_requests').select('*')
         .in('request_type', ['invoice_refund', 'invoice_cancel', 'adjustment'])
         .eq('status', 'pending').order('created_at', { ascending: false }),
@@ -58,8 +64,11 @@ const ApprovalsPage: React.FC = () => {
       supabase.from('stores').select('id,name'),
       supabase.from('warehouses').select('id,name'),
       supabase.from('profiles').select('id,full_name'),
+      supabase.rpc('pending_adjustments_live'),
     ]);
     setLoadError(req.error ? `The requests could not be loaded (${req.error.message}). Refresh to try again.` : null);
+    setLiveError(lv.error ? `Today's stock could not be read (${lv.error.message}). Approving still checks it.` : null);
+    setLive(Object.fromEntries(((lv.data as LiveRow[]) ?? []).map(r => [r.request_id, r])));
     setRequests((req.data as AdjustmentRequest[]) ?? []);
     setProducts((prod.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -70,6 +79,10 @@ const ApprovalsPage: React.FC = () => {
   useEffect(() => { load(); }, [load]);
 
   const pName = (id?: string) => products.find(p => p.id === id)?.name ?? '—';
+  const pSku = (id?: string) => products.find(p => p.id === id)?.sku ?? '';
+  const place = (p: AdjustmentRequest['payload']) => p?.location_type
+    ? adjustmentPlace(p, id => stores.find(s => s.id === id)?.name, id => warehouses.find(w => w.id === id)?.name)
+    : (p?.invoice_no ?? '');
   const uName = (id: string | null) => id ? (profiles.find(p => p.id === id)?.full_name ?? '—') : '—';
   const locName = (p: AdjustmentRequest['payload']) => {
     if (!p) return '—';
@@ -93,17 +106,23 @@ const ApprovalsPage: React.FC = () => {
     setBusy(req.id);
     const { error } = await supabase.rpc('resolve_inventory_adjustment', { p_request_id: req.id, p_approve: true, p_note: null });
     setBusy(null);
-    if (error) { alert(error.message); return; }
+    // "Stock changed since this count (was X, now Y)": the card then shows
+    // the new number, and the request waits to be rejected.
+    if (error) { alert(error.message); load(); return; }
     load();
   };
 
+  // Every request is rejected with a reason of the approver's own: an invoice
+  // request, and a stock correction too (the Owner, 9 Oct 2026). The person
+  // who asked for a correction sees the reason on the Adjustments page.
   const doReject = async () => {
     if (!rejectFor) return;
+    if (!rejectNote.trim()) { alert('Give the reason for rejecting this request.'); return; }
     setBusy(rejectFor.id);
     // Rejection changes no money, so it stays a direct call; invoice requests
     // go through the validated workflow, inventory adjustments through theirs.
     const fn = rejectFor.request_type === 'adjustment' ? 'resolve_inventory_adjustment' : 'resolve_invoice_action_v2';
-    const { error } = await supabase.rpc(fn, { p_request_id: rejectFor.id, p_approve: false, p_note: rejectNote.trim() || null });
+    const { error } = await supabase.rpc(fn, { p_request_id: rejectFor.id, p_approve: false, p_note: rejectNote.trim() });
     setBusy(null);
     if (error) { alert(error.message); return; }
     setRejectFor(null); setRejectNote(''); load();
@@ -129,15 +148,24 @@ const ApprovalsPage: React.FC = () => {
             rows={requests} filename="approvals" sheetName="Approvals"
             dateOf={(r: any) => r.created_at} dateLabel="Requested"
             columns={[
-              { header: 'Requested', value: (r: any) => new Date(r.created_at).toLocaleString('en-GB') },
-              { header: 'Type', value: (r: any) => r.request_type ?? '' },
-              { header: 'Status', value: (r: any) => r.status ?? '' },
-              { header: 'Reason', value: (r: any) => r.reason ?? '' },
+              { header: 'Requested', value: (r: AdjustmentRequest) => new Date(r.created_at).toLocaleString('en-GB') },
+              { header: 'Type', value: (r: AdjustmentRequest) => TYPE_META[r.request_type]?.label ?? r.request_type },
+              { header: 'Product', value: (r: AdjustmentRequest) => r.request_type === 'adjustment' ? pName(r.payload?.product_id) : '' },
+              { header: 'SKU', value: (r: AdjustmentRequest) => r.request_type === 'adjustment' ? pSku(r.payload?.product_id) : '' },
+              { header: 'Location / Invoice', value: (r: AdjustmentRequest) => place(r.payload) },
+              { header: 'Counted from', value: (r: AdjustmentRequest) => r.request_type === 'adjustment' ? (r.payload?.current_qty ?? '') : '' },
+              { header: 'New total', value: (r: AdjustmentRequest) => r.request_type === 'adjustment' ? (r.payload?.new_qty ?? '') : '' },
+              { header: 'Change', value: (r: AdjustmentRequest) => r.request_type === 'adjustment' ? Number(r.payload?.difference ?? 0) : '' },
+              { header: 'Stock now', value: (r: AdjustmentRequest) => live[r.id] ? Number(live[r.id].live_qty) : '' },
+              { header: 'Status', value: (r: AdjustmentRequest) => r.status ?? '' },
+              { header: 'Reason', value: (r: AdjustmentRequest) => r.reason ?? '' },
+              { header: 'Requested by', value: (r: AdjustmentRequest) => uName(r.requested_by) },
             ]} />
         </div>
         <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
       </div>
 
+      {liveError && <div className="alert alert-danger" role="alert">{liveError}</div>}
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
@@ -155,7 +183,11 @@ const ApprovalsPage: React.FC = () => {
                       <td><span className={`badge ${meta.cls}`}>{meta.icon} {meta.label}</span></td>
                       <td style={{ fontSize: 13 }}>
                         {req.request_type === 'adjustment'
-                          ? <><strong>{pName(p?.product_id)}</strong><div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{p?.current_qty} → {p?.new_qty} ({(p?.difference ?? 0) >= 0 ? '+' : ''}{p?.difference})</div></>
+                          ? <><strong>{pName(p?.product_id)}</strong><div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{p?.current_qty} → {p?.new_qty} ({(p?.difference ?? 0) >= 0 ? '+' : ''}{p?.difference})</div>
+                              {(() => {
+                                const note = liveNote(p, live[req.id]);
+                                return note && <div style={{ fontSize: 11.5, fontWeight: note.warn ? 600 : 400, color: note.warn ? 'var(--danger)' : 'var(--text-muted)' }}>{note.text}</div>;
+                              })()}</>
                           : <>Invoice {p?.invoice_no}<div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{invoiceRequestSummary(p)}</div></>}
                       </td>
                       <td style={{ fontSize: 12.5 }}>{locName(p)}</td>
@@ -178,11 +210,16 @@ const ApprovalsPage: React.FC = () => {
 
       {rejectFor && (
         <Modal title="Reject Request" maxWidth={400} onClose={() => setRejectFor(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setRejectFor(null)}>Back</button><button className="btn btn-danger" onClick={doReject} disabled={busy === rejectFor.id}>Reject</button></>}>
+          footer={<><button className="btn btn-secondary" onClick={() => setRejectFor(null)}>Back</button><button className="btn btn-danger" onClick={doReject} disabled={busy === rejectFor.id || !rejectNote.trim()}>Reject</button></>}>
           <div className="form-group">
-            <label>Reason / note (optional)</label>
-            <textarea rows={2} value={rejectNote} onChange={e => setRejectNote(e.target.value)} placeholder="Why is this being rejected?" autoFocus />
+            <label>Reason for rejecting *</label>
+            <textarea rows={2} value={rejectNote} onChange={e => setRejectNote(e.target.value)}
+              placeholder={rejectFor.request_type === 'adjustment' ? 'For example: count again' : 'Why are you rejecting this request?'} autoFocus />
           </div>
+          {rejectFor.request_type === 'adjustment' && (
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
+              The person who asked sees this reason on the Adjustments page. Rejecting changes no stock.
+            </p>)}
           {rejectFor.request_type !== 'adjustment' && (
             <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
               Rejecting changes no money or stock. A request raised the old way (no plan) put the invoice into

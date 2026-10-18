@@ -14,7 +14,8 @@ import LendModal from '../components/stock-loans/LendModal';
 import TakeBackModal from '../components/stock-loans/TakeBackModal';
 import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
 import { useStockLoans } from '../components/stock-loans/useStockLoans';
-import { StockLoan } from '../lib/stock-loans/stockLoans';
+import { StockLoan, mayHaveSaved, newRequestId, saveFailure } from '../lib/stock-loans/stockLoans';
+import { StockInLine, checkStockInForm, stockStatus as statusOf, stockStatusText } from '../lib/stock/stockPages';
 
 interface Row {
   product: Product;
@@ -52,9 +53,15 @@ const WarehouseInventoryView: React.FC = () => {
   // Stock-in modal
   const [stockInOpen, setStockInOpen] = useState(false);
   const [siForm, setSiForm] = useState({ reason: '', note: '', reference: '' });
-  const [siLines, setSiLines] = useState<{ product_id: string; quantity: number }[]>([{ product_id: '', quantity: 0 }]);
+  // Quantities are typed as text, so an empty box is never taken as a number.
+  const [siLines, setSiLines] = useState<StockInLine[]>([{ product_id: '', quantity: '' }]);
   const [siSaving, setSiSaving] = useState(false);
   const [siErr, setSiErr] = useState<string | null>(null);
+  // One id per opened Stock In form: a retry after a lost answer adds nothing
+  // twice (420). After a failure that may have saved, the form is locked as
+  // it was sent.
+  const [siFormId, setSiFormId] = useState('');
+  const [siLocked, setSiLocked] = useState(false);
 
   // Threshold modal
   const [thresholdRow, setThresholdRow] = useState<Row | null>(null);
@@ -115,36 +122,33 @@ const WarehouseInventoryView: React.FC = () => {
     return !q || r.product.name.toLowerCase().includes(q) || r.product.sku.toLowerCase().includes(q);
   });
 
-  const handleStockIn = async () => {
-    const valid = siLines.filter(l => l.product_id && l.quantity > 0);
-    if (valid.length === 0) { setSiErr('Add at least one product with a quantity.'); return; }
-    if (siLines.some(l => l.product_id && l.quantity <= 0)) {
-      setSiErr('Every selected product needs a quantity greater than zero.'); return; }
-    const ids = valid.map(l => l.product_id);
-    if (new Set(ids).size !== ids.length) { setSiErr('The same product is listed more than once.'); return; }
-    if (!siForm.reason.trim()) { setSiErr('A reason is required.'); return; }
+  const openStockIn = () => {
+    setSiForm({ reason: '', note: '', reference: '' }); setSiErr(null); setFlash(null);
+    setSiLines([{ product_id: '', quantity: '' }]); setSiFormId(newRequestId()); setSiLocked(false); setStockInOpen(true);
+  };
 
+  const handleStockIn = async () => {
+    const c = checkStockInForm(siLines, siForm);
+    if (!c.ok) { setSiErr(c.error); return; }
     setSiSaving(true); setSiErr(null);
-    for (const line of valid) {
-      const { error } = await supabase.rpc('warehouse_stock_in', {
-        p_warehouse_id: selectedWh,
-        p_product_id: line.product_id,
-        p_quantity: line.quantity,
-        p_reason: siForm.reason.trim(),
-        p_note: siForm.note.trim() || null,
-        p_reference: siForm.reference.trim() || null,
-      });
-      if (error) {
-        setSiSaving(false);
-        setSiErr(`${products.find(p => p.id === line.product_id)?.name ?? 'A product'}: ${error.message}`);
-        loadInventory(selectedWh);
-        return;
-      }
-    }
+    // One call for every line: all are added or none is, so a failed save
+    // leaves nothing half done and the same form can simply be sent again.
+    const { data, error } = await supabase.rpc('warehouse_stock_ins', {
+      p_warehouse_id: selectedWh, p_lines: c.value.p_lines, p_reason: c.value.p_reason,
+      p_note: c.value.p_note, p_reference: c.value.p_reference, p_request_id: siFormId,
+    });
     setSiSaving(false);
+    if (error) {
+      setSiLocked(mayHaveSaved(error));
+      setSiErr(saveFailure(error, 'The form is locked as it was sent: press Add Stock again to finish, and nothing will be added twice.'));
+      loadInventory(selectedWh);
+      return;
+    }
+    const n = ((data as { lines?: unknown[] } | null)?.lines ?? []).length;
     setStockInOpen(false);
     setSiForm({ reason: '', note: '', reference: '' });
-    setSiLines([{ product_id: '', quantity: 0 }]);
+    setSiLines([{ product_id: '', quantity: '' }]);
+    setFlash(`Stock added for ${n} product${n === 1 ? '' : 's'} at ${whName}.`);
     loadInventory(selectedWh);
   };
 
@@ -160,13 +164,9 @@ const WarehouseInventoryView: React.FC = () => {
     loadInventory(selectedWh);
   };
 
-  const stockStatus = (r: Row) => {
-    const qty = r.inv?.current_qty ?? 0;
-    const thr = r.inv?.low_stock_threshold ?? 0;
-    if (qty === 0) return { label: 'Out of Stock', cls: 'badge-danger' };
-    if (thr > 0 && qty <= thr) return { label: 'Low Stock', cls: 'badge-accent' };
-    return { label: 'Normal', cls: 'badge-success' };
-  };
+  // 0 or less is out of stock; below 0 also shows as Negative (shared with
+  // Store Stock; a warehouse cannot go below 0 today).
+  const stockStatus = (r: Row) => statusOf(r.inv?.current_qty, r.inv?.low_stock_threshold);
 
   return (
     <div>
@@ -183,12 +183,12 @@ const WarehouseInventoryView: React.FC = () => {
               { header: 'Stock', value: (r: any) => Number(r.inv?.current_qty ?? 0) },
               { header: 'Out on loan', value: (r: any) => Number(loans.outBy[r.product.id] ?? 0) },
               { header: 'Threshold', value: (r: any) => r.inv?.low_stock_threshold ?? '' },
-              { header: 'Status', value: (r: any) => stockStatus(r).label },
+              { header: 'Status', value: (r: any) => stockStatusText(r.inv?.current_qty, r.inv?.low_stock_threshold) },
             ]} />
           <button className="btn btn-secondary" onClick={() => { loadInventory(selectedWh); loans.reload(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canUseStock && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setLendOpen(true); }}><HandHelping size={16} /> Lend</button>}
           {canUseStock && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setUseOpen(true); }}><MinusCircle size={16} /> Record Use</button>}
-          {canStockIn && <button className="btn btn-primary" onClick={() => { setSiForm({ reason: '', note: '', reference: '' }); setSiErr(null); setSiLines([{ product_id: '', quantity: 0 }]); setStockInOpen(true); }} disabled={!selectedWh}><PackagePlus size={16} /> Stock In</button>}
+          {canStockIn && <button className="btn btn-primary" onClick={openStockIn} disabled={!selectedWh}><PackagePlus size={16} /> Stock In</button>}
         </div>
       </div>
 
@@ -205,7 +205,7 @@ const WarehouseInventoryView: React.FC = () => {
 
       {selectedWh && (
         <>
-          {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read warehouse stock: {loadErr}. If this mentions a policy, run <code>07_phase2_fix_rls.sql</code>.</div></div>}
+          {loadErr && <div className="alert alert-danger"><span>⚠</span><div>Couldn't read stock: {loadErr}. Refresh to try again.</div></div>}
           {flash && <div className="alert alert-info" role="status"><span>✓</span><div>{flash}</div></div>}
           <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }} role="tablist" aria-label="Warehouse stock views">
             <button role="tab" aria-selected={tab === 'stock'} className={`btn btn-sm ${tab === 'stock' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('stock')}>Stock</button>
@@ -247,7 +247,8 @@ const WarehouseInventoryView: React.FC = () => {
                             ? <button className="btn btn-secondary btn-sm" onClick={() => setTab('loans')} title="Show the On loan list">{loans.outBy[r.product.id]}</button>
                             : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                           <td>{r.inv?.low_stock_threshold ? r.inv.low_stock_threshold : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                          <td><span className={`badge ${st.cls}`}>{st.label === 'Low Stock' && <AlertTriangle size={11} />}{st.label}</span></td>
+                          <td><span className={`badge ${st.cls}`}>{st.label === 'Low Stock' && <AlertTriangle size={11} />}{st.label}</span>
+                            {st.negative && <span className="badge badge-danger" style={{ marginLeft: 4 }}>Negative ({r.inv?.current_qty})</span>}</td>
                           {canSetThreshold && <td><button className="btn btn-secondary btn-sm" onClick={() => openThreshold(r)}><SlidersHorizontal size={13} /> Threshold</button></td>}
                         </tr>
                       );
@@ -264,7 +265,7 @@ const WarehouseInventoryView: React.FC = () => {
       {/* Stock-in modal */}
       {stockInOpen && (
         <Modal title="Manual Warehouse Stock-In" maxWidth={460} onClose={() => setStockInOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setStockInOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleStockIn} disabled={siSaving}>{siSaving ? 'Saving…' : 'Add Stock'}</button></>}>
+          footer={<><button className="btn btn-secondary" onClick={() => setStockInOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleStockIn} disabled={siSaving}>{siSaving ? 'Saving…' : siLocked ? 'Add Stock again' : 'Add Stock'}</button></>}>
           <div className="form-grid">
             {siErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{siErr}</div></div>}
             <div className="form-group">
@@ -274,27 +275,27 @@ const WarehouseInventoryView: React.FC = () => {
                   <div style={{ flex: 1 }}>
                     <SearchSelect
                       options={products.map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }))}
-                      value={l.product_id}
+                      value={l.product_id} disabled={siLocked}
                       exclude={siLines.filter((_, j) => j !== i).map(x => x.product_id).filter(Boolean)}
                       onChange={v => setSiLines(ls => ls.map((x, j) => j === i ? { ...x, product_id: v } : x))}
                       placeholder="Search product name or SKU…" />
                   </div>
-                  <input type="number" min={1} value={l.quantity || ''} placeholder="Qty" style={{ width: 90 }}
-                    onChange={e => setSiLines(ls => ls.map((x, j) => j === i ? { ...x, quantity: +e.target.value } : x))} />
-                  <button className="btn btn-secondary btn-sm btn-icon" disabled={siLines.length === 1}
+                  <input type="text" inputMode="numeric" value={l.quantity} placeholder="Qty" style={{ width: 90 }} aria-label="Quantity" disabled={siLocked}
+                    onChange={e => setSiLines(ls => ls.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
+                  <button className="btn btn-secondary btn-sm btn-icon" disabled={siLocked || siLines.length === 1}
                     onClick={() => setSiLines(ls => ls.filter((_, j) => j !== i))} title="Remove">×</button>
                 </div>
               ))}
-              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }}
-                onClick={() => setSiLines(ls => [...ls, { product_id: '', quantity: 0 }])}>+ Add another product</button>
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 2 }} disabled={siLocked}
+                onClick={() => setSiLines(ls => [...ls, { product_id: '', quantity: '' }])}>+ Add another product</button>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
-                The reason, reference and note below apply to every line.
+                The reason, reference and note below apply to every line. Every line is added together, or none is.
               </div>
             </div>
-            <div className="form-group"><label>Reason *</label><input value={siForm.reason} onChange={e => setSiForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. New delivery from supplier" /></div>
+            <div className="form-group"><label>Reason *</label><input value={siForm.reason} disabled={siLocked} onChange={e => setSiForm(f => ({ ...f, reason: e.target.value }))} placeholder="e.g. New delivery from supplier" /></div>
             <div className="form-grid-2">
-              <div className="form-group"><label>Reference No.</label><input value={siForm.reference} onChange={e => setSiForm(f => ({ ...f, reference: e.target.value }))} placeholder="Optional" /></div>
-              <div className="form-group"><label>Note</label><input value={siForm.note} onChange={e => setSiForm(f => ({ ...f, note: e.target.value }))} placeholder="Optional" /></div>
+              <div className="form-group"><label>Reference No.</label><input value={siForm.reference} disabled={siLocked} onChange={e => setSiForm(f => ({ ...f, reference: e.target.value }))} placeholder="Optional" /></div>
+              <div className="form-group"><label>Note</label><input value={siForm.note} disabled={siLocked} onChange={e => setSiForm(f => ({ ...f, note: e.target.value }))} placeholder="Optional" /></div>
             </div>
           </div>
         </Modal>
