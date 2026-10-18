@@ -8,8 +8,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  XERO_SALES_INVOICE_HEADERS, XERO_MANDATORY_HEADERS,
-  csvCell, toXeroCsv, findMissingMandatory, xeroCsvFilename,
+  XERO_SALES_INVOICE_HEADERS, XERO_MANDATORY_HEADERS, XERO_TEXT_HEADERS,
+  csvCell, toXeroCsv, findMissingMandatory, xeroCsvFilename, guardCsvText, xeroEmail,
 } from '../../../src/lib/xero/salesInvoiceTemplate.mjs';
 
 // Copied verbatim from the header row of Xero's SalesInvoiceTemplate.csv.
@@ -99,4 +99,52 @@ test('the filename says csv and carries the period', () => {
     'xero-invoices-all-stores-2026-08-01-to-2026-08-31.csv');
   assert.equal(xeroCsvFilename('Thomson Plaza', '2026-08-01', '2026-08-31'),
     'xero-invoices-Thomson-Plaza-2026-08-01-to-2026-08-31.csv');
+});
+
+// 427 (REPORTS-17): a text cell that Excel would run as a formula, if the file
+// is opened before it is imported, is written as text. Amounts are not touched.
+test('a text cell starting with =, +, -, @, a tab or a return is written as text', () => {
+  for (const v of ['=HYPERLINK("http://x.invalid","Pay")', '+61491574118', '-Tan', '@SUM(A1)', '\tTab', '\rReturn']) {
+    assert.equal(guardCsvText(v), `'${v}`, JSON.stringify(v));
+  }
+  for (const v of ['Tan Ah Kow', 'INV-2026-0001', 'A=B', '12 Main St', '']) assert.equal(guardCsvText(v), v);
+  assert.equal(guardCsvText(null), null);
+  assert.equal(guardCsvText(undefined), undefined);
+});
+
+test('every text column of both exports is guarded; amounts, quantities and dates are not', () => {
+  const row = Object.fromEntries(XERO_SALES_INVOICE_HEADERS.map(h => [h, '=1+1']));
+  Object.assign(row, { '*Quantity': -1, '*UnitAmount': -4.25, Total: -4.25, TaxAmount: '-0.35', Discount: '-5',
+    '*InvoiceDate': '08/09/2026', '*DueDate': '08/09/2026', EmailAddress: 'buyer@example.invalid' });
+  const cols = toXeroCsv([row]).trimEnd().split('\r\n')[1].split(',');
+  const at = h => cols[XERO_SALES_INVOICE_HEADERS.indexOf(h)];
+  for (const h of XERO_TEXT_HEADERS.filter(h => h !== 'EmailAddress')) assert.equal(at(h), "'=1+1", h);
+  assert.equal(at('*Quantity'), '-1');
+  assert.equal(at('*UnitAmount'), '-4.25');
+  assert.equal(at('Total'), '-4.25');
+  assert.equal(at('TaxAmount'), '-0.35');
+  assert.equal(at('Discount'), '-5');
+  assert.equal(at('*InvoiceDate'), '08/09/2026');
+  assert.equal(at('EmailAddress'), 'buyer@example.invalid');
+  // Columns that are not free text keep what they were given.
+  for (const h of ['*InvoiceNumber', '*AccountCode', '*TaxType', 'Currency']) assert.equal(at(h), '=1+1', h);
+  assert.deepEqual([...XERO_TEXT_HEADERS].sort(), ['*ContactName', '*Description', 'BrandingTheme', 'EmailAddress',
+    'InventoryItemCode', 'POAddressLine1', 'POAddressLine2', 'POAddressLine3', 'POAddressLine4', 'POCity', 'POCountry',
+    'POPostalCode', 'PORegion', 'Reference', 'TrackingName1', 'TrackingName2', 'TrackingOption1', 'TrackingOption2'].sort());
+});
+
+test('an email field that holds no email address is written blank', () => {
+  assert.equal(xeroEmail('+61491574118'), '');
+  assert.equal(xeroEmail('=cmd|"/c calc"!A1'), '');
+  assert.equal(xeroEmail('not an email'), '');
+  assert.equal(xeroEmail('@example.invalid'), '');
+  assert.equal(xeroEmail(null), '');
+  assert.equal(xeroEmail('  buyer@example.invalid '), 'buyer@example.invalid');
+  const csv = toXeroCsv([{ '*ContactName': 'Walk-in customer', EmailAddress: '+61491574118' }]);
+  assert.equal(csv.trimEnd().split('\r\n')[1].split(',')[1], '', 'the phone typed into the email field is not exported');
+});
+
+test('a guarded cell that also needs quoting is quoted around the apostrophe', () => {
+  const csv = toXeroCsv([{ '*ContactName': '=Tan, Ah Kow' }]);
+  assert.match(csv.trimEnd().split('\r\n')[1], /^"'=Tan, Ah Kow",/);
 });

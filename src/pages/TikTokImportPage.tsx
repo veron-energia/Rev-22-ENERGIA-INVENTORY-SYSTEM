@@ -160,9 +160,16 @@ const stagedNet = (r: any): number | null => {
 };
 
 const TikTokImportPage: React.FC = () => {
-  const { profile } = useAuth();
+  const { profile, assignments } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
   const isStaff = profile?.role === 'staff';
+  // 427 (the Owner, 18 Oct 2026, rule (a)): a settled line with no imported
+  // order may be marked reviewed (no stock to take off) by an Owner at any
+  // store, and by a Manager at a store they work at. The server checks the
+  // same; this only decides which lines get a tick box.
+  const myAssignedStores = useMemo(() => new Set((assignments ?? []).map(a => String(a.store_id))), [assignments]);
+  const canReviewLine = (r: any) => r?.kind === 'settlement_without_order' && !!r.settlement_row_id
+    && (profile?.role === 'owner' || (profile?.role === 'manager' && !!r.store_id && myAssignedStores.has(String(r.store_id))));
 
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState('');
@@ -237,6 +244,12 @@ const TikTokImportPage: React.FC = () => {
   const [leftOutSel, setLeftOutSel] = useState<Record<string, boolean>>({});
   const [includeReason, setIncludeReason] = useState('');
   const [includeErr, setIncludeErr] = useState<string | null>(null);
+  // Reconciliation: settled lines with no imported order ticked to be marked
+  // reviewed (by settlement line id), the reason, and what the last save said.
+  const [reviewSel, setReviewSel] = useState<Record<string, boolean>>({});
+  const [reviewReason, setReviewReason] = useState('');
+  const [reviewErr, setReviewErr] = useState<string | null>(null);
+  const [reviewNote, setReviewNote] = useState<string | null>(null);
   // Bumped after an include, so the list, the month's figures and the
   // transactions under them are all read again.
   const [settleReload, setSettleReload] = useState(0);
@@ -481,6 +494,34 @@ const TikTokImportPage: React.FC = () => {
       setLeftOut({ rows: res.rows, error: null, loading: false });
     })();
   }, [pageTab, effectiveStore, reportMonth, settleReload]);
+
+  // The Reconciliation tab's lines this login may mark reviewed, and the ticked ones.
+  const reviewable = pageTab === 'recon' ? tabRows.filter(canReviewLine) : [];
+  const reviewPicked = reviewable.filter(r => reviewSel[String(r.settlement_row_id)]);
+  const reviewPickedTotal = reviewPicked.reduce((sum, r) => sum + Number(r.amount ?? 0), 0);
+  // Lines that could be marked reviewed by someone (a database before 427
+  // sends no line id, and then nothing is offered or said).
+  const reviewOffered = pageTab === 'recon' && tabRows.some(r => r?.kind === 'settlement_without_order' && !!r.settlement_row_id);
+  useEffect(() => { setReviewSel({}); setReviewErr(null); setReviewNote(null); }, [pageTab, effectiveStore]);
+
+  const markReviewed = async () => {
+    const ids = reviewPicked.map(r => String(r.settlement_row_id));
+    const reason = reviewReason.trim();
+    if (ids.length === 0 || !reason) return;
+    if (!confirm(`Mark ${ids.length} settled line${ids.length === 1 ? '' : 's'} as reviewed? No stock will be taken off for `
+      + `${ids.length === 1 ? 'it' : 'them'}, and this cannot be undone.`)) return;
+    setBusy('review'); setReviewErr(null); setReviewNote(null);
+    const { data, error } = await supabase.rpc('review_tiktok_settlement_without_order', { p_row_ids: ids, p_reason: reason });
+    setBusy(null);
+    if (error) { setReviewErr(error.message); return; }
+    const res = (data ?? {}) as any;
+    const done = Number(res.reviewed ?? 0);
+    const already = Number(res.already_reviewed ?? 0);
+    setReviewNote(`Marked reviewed: ${done} line${done === 1 ? '' : 's'}.`
+      + (already > 0 ? ` ${already} had already been reviewed.` : '') + ' No stock was taken off.');
+    setReviewSel({}); setReviewReason('');
+    setTabReload(n => n + 1);   // the list is read again: the reviewed lines leave it
+  };
 
   const leftOutPicked = leftOut.rows.filter(r => leftOutSel[leftOutId(r)]);
   const leftOutPickedTotal = leftOutPicked.reduce((sum, r) => sum + leftOutNet(r), 0);
@@ -1276,13 +1317,21 @@ const TikTokImportPage: React.FC = () => {
               <h3 style={{ fontSize: 14.5, marginBottom: 4 }}>Reconciliation</h3>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Orders without settlement, settlements without order, and Settlement ≠ Revenue + Fees differences (±$0.01).</p>
               {/* "Fully reconciled" only when the check ran and found nothing. */}
-              {tabBody('The reconciliation check', () => (
+              {tabBody('The reconciliation check', () => (<>
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>Kind</th><th>Store</th><th>Order ID</th><th>Detail</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+                    <thead><tr>
+                      {reviewable.length > 0 && <th><input type="checkbox" aria-label="Tick every line to mark reviewed" style={{ width: 'auto' }}
+                        checked={reviewPicked.length === reviewable.length}
+                        onChange={e => setReviewSel(Object.fromEntries(reviewable.map(r => [String(r.settlement_row_id), e.target.checked])))} /></th>}
+                      <th>Kind</th><th>Store</th><th>Order ID</th><th>Detail</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
                     <tbody>{tabRows.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>Fully reconciled — no exceptions</td></tr>
                       : tabRows.map((r, i) => (
-                      <tr key={i}>
+                      <tr key={r.settlement_row_id ? `${r.kind}:${r.settlement_row_id}` : i}>
+                        {reviewable.length > 0 && <td>{canReviewLine(r) && (
+                          <input type="checkbox" aria-label={`Mark reviewed: ${r.order_id ?? 'line'}`} style={{ width: 'auto' }}
+                            checked={!!reviewSel[String(r.settlement_row_id)]}
+                            onChange={e => setReviewSel(x => ({ ...x, [String(r.settlement_row_id)]: e.target.checked }))} />)}</td>}
                         <td><span className={`badge ${r.kind === 'reconciliation_difference' ? 'badge-danger' : 'badge-warning'}`}>{String(r.kind ?? '—').replace(/_/g, ' ')}</span></td>
                         <td style={{ fontSize: 12 }}>{r.store_name}</td>
                         <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{r.order_id}</td>
@@ -1292,7 +1341,39 @@ const TikTokImportPage: React.FC = () => {
                     ))}</tbody>
                   </table>
                 </div>
-              ))}
+                {/* 427: a settled line with no imported order that needs no stock taken off. */}
+                {reviewable.length > 0 ? (
+                  <div data-testid="mark-reviewed" style={{ marginTop: 12 }}>
+                    <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                      <strong>Settlement without order:</strong> TikTok paid these out, but no order file brought their order in,
+                      so their stock was never taken off. If no stock needs to come off (for example, sold before the app
+                      tracked TikTok stock), tick them, say why and press Mark reviewed. They then leave this list and the
+                      Dashboard alert. If an order was missed, import its order file instead: that takes its stock off.
+                    </p>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                      <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                        <label htmlFor="review-reason">Reason <span style={{ color: 'var(--danger)' }}>*</span></label>
+                        <input id="review-reason" value={reviewReason} maxLength={2000} onChange={e => setReviewReason(e.target.value)}
+                          placeholder="e.g. sold before the app tracked TikTok stock" />
+                      </div>
+                      <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                        {reviewPicked.length} selected · S${reviewPickedTotal.toFixed(2)}
+                      </span>
+                      <button className="btn btn-primary btn-sm" disabled={busy !== null || reviewPicked.length === 0 || !reviewReason.trim()}
+                        onClick={() => void markReviewed()}>
+                        <CheckCircle2 size={13} /> {busy === 'review' ? 'Saving…' : 'Mark reviewed'}
+                      </button>
+                    </div>
+                  </div>
+                ) : reviewOffered && (
+                  <p data-testid="mark-reviewed-who" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.5 }}>
+                    A settlement without order that needs no stock taken off can be marked reviewed by an Owner, or by a
+                    Manager at its store.
+                  </p>
+                )}
+              </>))}
+              {reviewErr && <div className="alert alert-danger" role="alert" data-testid="review-error" style={{ marginTop: 8 }}>Not marked reviewed: {reviewErr}</div>}
+              {reviewNote && <div className="alert alert-info" role="status" data-testid="review-note" style={{ marginTop: 8 }}>{reviewNote}</div>}
             </div>
           )}
 

@@ -376,7 +376,7 @@ declare
   -- stock_history_*(), user_admin_role() and the like (inventory of 9 Oct 2026).
   c_filtered constant text[] := array[
       'credit_lot_allows_category(uuid,text)', 'credit_lot_policy_for(uuid)',
-      'customer_stock_loans(uuid)', 'daily_payments_by_method(date,date,uuid)',
+      'customer_stock_loans(uuid)',
       'dashboard_sales(text,date,date,uuid)', 'dashboard_sales_by_store(text,date,date)',
       'events_list()', 'health_survey_detail(uuid)',
       'invite_user_begin(text,text,text,user_role,text,text,text,uuid[])',
@@ -385,7 +385,7 @@ declare
       'invoice_effective_affiliate(uuid)', 'invoice_events(uuid[])', 'invoice_list_goods_out(uuid[])',
       'invoice_list_page(text,text,text,date,date,uuid,text,text,integer,integer)',
       'invoice_rentals_awaiting_return(uuid)', 'invoice_sales_ledger()',
-      'invoice_stock_component_evidence(uuid)', 'payment_methods_in_range(date,date,uuid)',
+      'invoice_stock_component_evidence(uuid)',
       'purchased_therapy_units(uuid,uuid,boolean)', 'referrer_list()', 'report_affiliates()',
       'report_discounts()', 'report_exchange_invoices(uuid,date,date)',
       'report_foc_lines(date,date,uuid)', 'report_foc_summary(date,date,uuid)', 'report_pricing()',
@@ -525,6 +525,13 @@ begin
     ('credit spend',           'all',    true,  false, 'select public.dashboard_credit_spend(''day'', null, null, null)::text'),
     ('transfer alerts',        'all~',   true,  false, 'select public.transfer_receipt_alerts()::text'),
     ('summary cards',          'mup',    true,  false, 'select public.dashboard_summary()::text'),
+    -- 427: the Payment Summary's takings refuse a login that is not staff, and
+    -- a store the caller does not work at; a settled TikTok line is reviewed
+    -- by an Owner or Manager
+    ('daily takings',          'all',    true,  false, 'select count(*)::text from public.daily_payments_by_method(null, null, null)'),
+    ('takings, store B',       'b',      true,  false, 'select count(*)::text from public.daily_payments_by_method(null, null, @store_b@)'),
+    ('takings methods',        'all',    true,  false, 'select count(*)::text from public.payment_methods_in_range(null, null, null)'),
+    ('review TikTok line',     'om',     false, false, 'select public.review_tiktok_settlement_without_order(array[gen_random_uuid()], ''SOFX'')::text'),
     -- Customers
     ('customer view',          'all',    true,  true,  'select public.customer_overview(@c1@)::text || (select full_name from public.customers where id = @c1@)'),
     ('customer search',        'all~',   true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.search_customers(''SOFX'', null, 25, 0, null, null, null) x'),

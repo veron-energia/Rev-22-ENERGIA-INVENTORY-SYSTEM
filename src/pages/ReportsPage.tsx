@@ -55,6 +55,29 @@ async function fetchReportRows(build: () => any, orderBy = ['id']): Promise<any[
 
 type SalesEvent = { invoice_id: string; event_id: string; sales_date: string; amount: number; event_kind: string };
 
+// Only the customers the reports name (the buyers on the invoices and the
+// referrers and buyers on the commissions), and only the columns they show
+// (427, REPORTS-9: every customer, every column, about 7 MB, was read each
+// time Reports opened). 200 ids a request, five requests at a time; a failed
+// request fails the whole load, so a partial list never passes for a full one.
+// A customer the table no longer returns has been deleted ('Deleted customer').
+const REPORT_CUSTOMER_COLUMNS = 'id,full_name,phone,date_of_birth,gender,gender_other,occupation';
+async function fetchReportCustomers(ids: (string | null | undefined)[]): Promise<any[]> {
+  const wanted = Array.from(new Set(ids.filter(Boolean).map(String))).sort();
+  const chunks: string[][] = [];
+  for (let i = 0; i < wanted.length; i += 200) chunks.push(wanted.slice(i, i + 200));
+  const out: any[] = [];
+  for (let i = 0; i < chunks.length; i += 5) {
+    const answers = await Promise.all(chunks.slice(i, i + 5).map(chunk =>
+      supabase.from('customers').select(REPORT_CUSTOMER_COLUMNS).in('id', chunk)));
+    for (const { data, error } of answers) {
+      if (error) throw new Error(error.message);
+      out.push(...((data as any[]) ?? []));
+    }
+  }
+  return out;
+}
+
 // Receipts follow discounted line weights. Refunds follow the recorded refund
 // lines, including when the outcome is stored on another payment-source row.
 function buildLineSales(items: any[], events: SalesEvent[], refunds: any[]) {
@@ -207,12 +230,11 @@ const ReportsPage: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [inv, st, pr, co, cu, wh, wi, si, it, vc, pm, ss, re, sp, prof, rf, events] = await Promise.all([
+      const [inv, st, pr, co, wh, wi, si, it, vc, pm, ss, re, sp, prof, rf, events] = await Promise.all([
         fetchReportRows(() => supabase.from('invoices').select('*').is('deleted_at', null)),
         fetchReportRows(() => supabase.from('stores').select('*')),
         fetchReportRows(() => supabase.from('products').select('*')),
         fetchReportRows(() => supabase.from('commissions').select('*')),
-        fetchReportRows(() => supabase.from('customers').select('*')),
         fetchReportRows(() => supabase.from('warehouses').select('*')),
         fetchReportRows(() => supabase.from('warehouse_inventory').select('*')),
         fetchReportRows(() => supabase.from('store_inventory').select('*')),
@@ -225,6 +247,10 @@ const ReportsPage: React.FC = () => {
         fetchReportRows(() => supabase.from('profiles').select('id,full_name,role')),
         fetchReportRows(() => supabase.from('invoice_refunds').select('id,invoice_id,request_id,amount,credit_returned,outcome')),
         fetchReportRows(() => supabase.rpc('invoice_sales_ledger'), ['sales_date', 'event_id']),
+      ]);
+      const cu = await fetchReportCustomers([
+        ...inv.map((i: any) => i.customer_id),
+        ...co.map((c: any) => c.referrer_customer_id), ...co.map((c: any) => c.buyer_customer_id),
       ]);
       setInvoices(inv as Invoice[]); setStores(st as Store[]); setProducts(pr as Product[]);
       setCommissions(co as Commission[]); setCustomers(cu as Customer[]); setWarehouses(wh as Warehouse[]);
@@ -298,7 +324,13 @@ const ReportsPage: React.FC = () => {
   const repAffiliate = affiliatesLoad.data, repTherapy = therapyLoad.data, repSources = sourcesLoad.data;
   const ttSummary = ttSummaryLoad.data, ttRows = ttRowsLoad.data;
 
+  // The period reports start once the invoice records have answered (loaded or
+  // failed), so they run once when the page opens, not once before the records
+  // and again after them; Refresh (refreshKey) and the Period run them again
+  // (427, REPORTS-9).
+  const coreFinished = coreLoaded || !!salesError;
   useEffect(() => {
+    if (!coreFinished) return;
     let cancelled = false;
     const dated = (name: string) => {
       let query = supabase.rpc(name);
@@ -333,7 +365,7 @@ const ReportsPage: React.FC = () => {
     };
     loadPeriodReports();
     return () => { cancelled = true; };
-  }, [dFrom, dTo, salesEvents]);
+  }, [dFrom, dTo, refreshKey, coreFinished]);
 
   // Lookups by id, so no report scans a whole list for every row. Everything
   // derived below is memoised on its data and the period: switching tabs
@@ -638,9 +670,13 @@ const ReportsPage: React.FC = () => {
   // What each tab's table shows, cell for cell, so the Excel sheet carries the
   // same headings, columns and order as the screen.
   const ttMatch = (r: any) => r.match_status === 'matched' ? 'Matched' : r.match_status === 'no_match_needed' ? 'No match needed' : 'Pending';
-  const pricingDate = (r: any) => r.paid_date ? r.paid_date.split('-').reverse().join('/') : 'Date pending review';
-  const focDate = (r: any) => r.settled_at ? singaporeDate(r.settled_at).split('-').reverse().join('/') : 'Date pending review';
-  const dobText = (r: any) => r.dob ? new Date(r.dob).toLocaleDateString() : '—';
+  // Every row the two reports return has its date (427: the "Date pending
+  // review" text could never show); a missing one reads as a dash.
+  const pricingDate = (r: any) => r.paid_date ? r.paid_date.split('-').reverse().join('/') : '—';
+  const focDate = (r: any) => r.settled_at ? singaporeDate(r.settled_at).split('-').reverse().join('/') : '—';
+  // A date of birth as stored, day first: read as a Date it would be a day
+  // early west of UTC, and in the device's own format.
+  const dobText = (r: any) => dateOnly(r.dob);
   const eligibility = (r: any) => r.affiliate_state === 'active' ? 'Eligible' : (r.block_reason ?? r.affiliate_state);
   const staffName = (r: any) => `${r.name}${r.is_active ? '' : ' · inactive'}`;
   const orDash = (n: number, show: (n: number) => number | string) => n > 0 ? show(n) : null;

@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { Download } from 'lucide-react';
 import { Modal } from './ui';
 import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
+import { sortExportRows } from '../lib/excelSort.mjs';
 
 /**
  * Shared Excel export.
@@ -18,6 +19,12 @@ export interface ExcelColumn<T> {
   header: string;
   /** Cell value for a row. Return a number for numeric cells. */
   value: (row: T) => string | number | null | undefined;
+  /**
+   * What the rows are sorted by when this column is chosen, when that is not
+   * the cell itself: the raw date behind a date written as text, say. Without
+   * it the cell's value is sorted, a day-first date (12/08/2026) as a date.
+   */
+  sortValue?: (row: T) => string | number | Date | null | undefined;
 }
 
 export interface ExcelExportProps<T> {
@@ -48,12 +55,6 @@ export interface ExcelExportProps<T> {
    *  opens, even without a date range. Off by default, so existing exports are
    *  unchanged. */
   selectableColumns?: boolean;
-}
-
-function toDate(v: string | Date | null | undefined): Date | null {
-  if (!v) return null;
-  const d = v instanceof Date ? v : new Date(v);
-  return isNaN(d.getTime()) ? null : d;
 }
 
 export function ExcelExportButton<T>({
@@ -90,36 +91,12 @@ export function ExcelExportButton<T>({
   const write = (data: T[]) => {
     const cols = activeColumns.length > 0 ? activeColumns : columns;
 
-    // Sort by the chosen column. Values are compared as numbers or dates where
-    // they clearly are one, so "10" does not land before "9" and a date is not
-    // ordered by the text of "12/08/2026". Blanks always sink to the bottom,
-    // whichever direction is chosen, so a missing value never buries real data
-    // at the top of the sheet.
+    // Sort by the chosen column (lib/excelSort): numbers and dates by value,
+    // so "10" does not land before "9" and "12/08/2026" is 12 August (427:
+    // it was read as 8 December); the column's sortValue when it has one.
+    // Blanks always sink to the bottom, whichever direction is chosen.
     const sortCol = cols.find(c => c.header === sortBy);
-    const sorted = sortCol ? [...data].sort((a, b) => {
-      const av = sortCol.value(a);
-      const bv = sortCol.value(b);
-      const aBlank = av == null || av === '';
-      const bBlank = bv == null || bv === '';
-      if (aBlank && bBlank) return 0;
-      if (aBlank) return 1;
-      if (bBlank) return -1;
-
-      let cmp: number;
-      const an = typeof av === 'number' ? av : Number(String(av).replace(/[,\s]/g, ''));
-      const bn = typeof bv === 'number' ? bv : Number(String(bv).replace(/[,\s]/g, ''));
-      if (Number.isFinite(an) && Number.isFinite(bn)) {
-        cmp = an - bn;
-      } else {
-        const ad = toDate(av as any)?.getTime();
-        const bd = toDate(bv as any)?.getTime();
-        cmp = (ad != null && bd != null)
-          ? ad - bd
-          // localeCompare with numeric:true keeps "Item 2" before "Item 10".
-          : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
-      }
-      return sortDir === 'asc' ? cmp : -cmp;
-    }) : data;
+    const sorted = sortCol ? sortExportRows(data, sortCol.sortValue ?? sortCol.value, sortDir) : data;
 
     const body = sorted.map(r => {
       const o: Record<string, any> = {};
@@ -139,7 +116,8 @@ export function ExcelExportButton<T>({
     });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31));
-    const stamp = new Date().toISOString().slice(0, 10);
+    // Today in Singapore (427): before 8 am the UTC date is still yesterday.
+    const stamp = calendarDate(new Date(), 'Asia/Singapore');
     XLSX.writeFile(wb, `${filename}-${stamp}.xlsx`);
   };
 

@@ -7,31 +7,46 @@ import { ROLE_LABELS, isManagerOrAbove } from '../types';
 import { singaporeToday } from '../lib/invoices/business';
 import { focSnapshot, focWindowStart, type FocSnapshot } from '../lib/dashboard/focSnapshot.mjs';
 import { dashboardCommissionFigures } from '../lib/affiliatePayoutPresentation';
-import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, TrendingUp, Clock, Ban, Sparkles, Users } from 'lucide-react';
+import { Package, Warehouse, Store, CreditCard, AlertTriangle, ArrowLeftRight, Star, Ticket, KeyRound, CalendarClock, Clock, Ban, Sparkles, Users } from 'lucide-react';
 
+// null: the count could not be read (the tile shows "—", 427).
 interface Counts {
-  products: number;
-  warehouses: number;
-  stores: number;
-  paymentMethods: number;
+  products: number | null;
+  warehouses: number | null;
+  stores: number | null;
 }
 
-const StatCard: React.FC<{ icon: React.ReactNode; label: string; value: number | string; tint: string }> = ({ icon, label, value, tint }) => (
+const StatCard: React.FC<{ icon: React.ReactNode; label: string; value: number | string; tint: string; sub?: string }> = ({ icon, label, value, tint, sub }) => (
   <div className="card" style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 16 }}>
     <div style={{ width: 46, height: 46, borderRadius: 11, background: tint, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
       {icon}
     </div>
-    <div>
+    <div style={{ minWidth: 0 }}>
       <div style={{ fontSize: 26, fontWeight: 700, fontFamily: 'var(--font-display)', lineHeight: 1 }}>{value}</div>
       <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 3 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 2 }}>{sub}</div>}
     </div>
   </div>
 );
 
+const sgd = (n: unknown) => `S$${Number(n ?? 0).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A failed read is shown, never mistaken for "nothing there" (427, REPORTS-5).
+const failure = (label: string, error: any) => `${label}: ${error?.message || 'could not be loaded'}`;
+// A day the server sends as YYYY-MM-DD (already Singapore's), as "1 Aug 2026".
+// Read as text, never through Date, so no time zone can move it.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dayLabel = (d: unknown): string | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d ?? ''));
+  return m && Number(m[2]) >= 1 && Number(m[2]) <= 12 ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : null;
+};
+
 const DashboardPage: React.FC = () => {
   const { profile } = useAuth();
-  const [counts, setCounts] = useState<Counts>({ products: 0, warehouses: 0, stores: 0, paymentMethods: 0 });
+  const [counts, setCounts] = useState<Counts>({ products: null, warehouses: null, stores: null });
   const [loading, setLoading] = useState(true);
+  // What could not be counted for the tiles (427). Kept apart from
+  // alertsError, which the alerts effect sets on its own.
+  const [countsError, setCountsError] = useState('');
 
   // ── Phase 2: low stock alerts + pending approvals ──
   const [lowStock, setLowStock] = useState<{ name: string; sku: string; loc: string; qty: number; threshold: number }[]>([]);
@@ -49,6 +64,10 @@ const DashboardPage: React.FC = () => {
   const [creditByStore, setCreditByStore] = useState<any[]>([]);
   const [salesBusy, setSalesBusy] = useState(false);
   const [byStore, setByStore] = useState<any[]>([]);
+  // Why the Sales card has no figures (the sales read failed, or a custom
+  // range the server refuses), and what else in it could not be read.
+  const [salesError, setSalesError] = useState('');
+  const [salesNote, setSalesNote] = useState('');
 
   useEffect(() => {
     // A custom range is only queried once both ends are set, so the panel does
@@ -59,39 +78,52 @@ const DashboardPage: React.FC = () => {
       setSales(null);
       setCredit(null);
       setCreditByStore([]);
+      setSalesError('');
+      setSalesNote('');
       setSalesBusy(false);
       return;
     }
     let cancelled = false;
     setSalesBusy(true);
     (async () => {
-      const args = {
-        p_period: period,
-        p_from: period === 'custom' ? rangeFrom : null,
-        p_to: period === 'custom' ? (rangeTo || rangeFrom) : null,
-        p_store_id: periodStore || null,
-      };
-      const [{ data: s1 }, { data: s2 }, { data: c1 }, { data: c2 }] = await Promise.all([
-        supabase.rpc('dashboard_sales', args),
-        supabase.rpc('dashboard_sales_by_store', {
-          p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
-        supabase.rpc('dashboard_credit_spend', args),
-        supabase.rpc('dashboard_credit_by_store', {
-          p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
-      ]);
-      if (cancelled) return;
-      setSales(s1 ?? null);
-      setByStore((s2 as any[]) ?? []);
-      setCredit(c1 ?? null);
-      setCreditByStore((c2 as any[]) ?? []);
-      setSalesBusy(false);
+      try {
+        const args = {
+          p_period: period,
+          p_from: period === 'custom' ? rangeFrom : null,
+          p_to: period === 'custom' ? (rangeTo || rangeFrom) : null,
+          p_store_id: periodStore || null,
+        };
+        const [s1, s2, c1, c2] = await Promise.all([
+          supabase.rpc('dashboard_sales', args),
+          supabase.rpc('dashboard_sales_by_store', {
+            p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
+          supabase.rpc('dashboard_credit_spend', args),
+          supabase.rpc('dashboard_credit_by_store', {
+            p_period: args.p_period, p_from: args.p_from, p_to: args.p_to }),
+        ]);
+        if (cancelled) return;
+        // The sales figure itself failed (a custom range ending before it
+        // starts, say): say so in the card, never an empty card.
+        setSalesError(s1.error ? s1.error.message || 'The sales figures could not be loaded.' : '');
+        setSales(s1.error ? null : s1.data ?? null);
+        setByStore(s2.error ? [] : (s2.data as any[]) ?? []);
+        setCredit(c1.error ? null : c1.data ?? null);
+        setCreditByStore(c2.error ? [] : (c2.data as any[]) ?? []);
+        setSalesNote(s1.error ? '' : [s2.error && failure('Sales by store', s2.error),
+          c1.error && failure('Settled from credit', c1.error), c2.error && failure('Credit by store', c2.error)]
+          .filter(Boolean).join(' · '));
+      } catch (error: any) {
+        if (cancelled) return;
+        setSales(null); setCredit(null); setCreditByStore([]); setByStore([]); setSalesNote('');
+        setSalesError(error?.message || 'The sales figures could not be loaded.');
+      } finally {
+        if (!cancelled) setSalesBusy(false);
+      }
     })();
     return () => { cancelled = true; };
   }, [period, rangeFrom, rangeTo, periodStore]);
   const [todayCount, setTodayCount] = useState(0);
   // 5G-2 additions (Manager+ only — the underlying tables are RLS-gated)
-  const [unpaidCommission, setUnpaidCommission] = useState(0);
-  const [redemptionCount, setRedemptionCount] = useState(0);
   const [activeRentals, setActiveRentals] = useState(0);
   const [overdueRentals, setOverdueRentals] = useState(0);
   const [summary, setSummary] = useState<any>(null);
@@ -105,127 +137,164 @@ const DashboardPage: React.FC = () => {
   // Phase 18 — operations alerts + FOC snapshot.
   const [alerts, setAlerts] = useState<any>(null);
   const [foc, setFoc] = useState<FocSnapshot | null>(null);
+  // What could not be read for the cards below the Sales panel (427).
+  const [alertsError, setAlertsError] = useState('');
 
   useEffect(() => {
+    let cancelled = false;
+    // Each part loads on its own: one failing never stops the others, and
+    // every failure is listed in one notice above the cards.
+    const problems: string[] = [];
+    const part = async (label: string, run: () => Promise<void>) => {
+      try { await run(); } catch (error: any) { problems.push(failure(label, error)); }
+    };
+    const must = <T,>(r: { data: T; error: any }) => { if (r.error) throw r.error; return r.data; };
+    const manager = isManagerOrAbove(profile?.role);
     (async () => {
-      // Pending transfer approvals (RLS shows only what the user can see).
-      // Pending transfer approvals + invoice actions + adjustments.
-      const [transferPending, otherPending] = await Promise.all([
-        supabase.from('transfer_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabase.from('approval_requests').select('id', { count: 'exact', head: true })
-          .in('request_type', ['invoice_refund', 'invoice_cancel', 'adjustment']).eq('status', 'pending'),
+      await Promise.all([
+        // Pending transfer approvals + invoice actions + adjustments (RLS shows
+        // only what the user can see).
+        part('Pending approvals', async () => {
+          const [transferPending, otherPending] = await Promise.all([
+            supabase.from('transfer_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+            supabase.from('approval_requests').select('id', { count: 'exact', head: true })
+              .in('request_type', ['invoice_refund', 'invoice_cancel', 'adjustment']).eq('status', 'pending'),
+          ]);
+          if (transferPending.error) throw transferPending.error;
+          if (otherPending.error) throw otherPending.error;
+          if (!cancelled) setPendingApprovals((transferPending.count ?? 0) + (otherPending.count ?? 0));
+        }),
+        // Phase 8: the summary cards, for the roles that see them (406 answers
+        // Owners, Admins and Managers only).
+        part('Summary cards', async () => {
+          const sum = manager ? must(await supabase.rpc('dashboard_summary')) : null;
+          if (!cancelled) setSummary(sum ?? null);
+        }),
+        // Phase 11: transfer receipt / overdue / discrepancy alerts.
+        part('Transfers', async () => {
+          const ta = must(await supabase.rpc('transfer_receipt_alerts'));
+          if (!cancelled) setTransferAlerts((ta as any) ?? null);
+        }),
+        part('Customer sources', async () => {
+          const srcs = must(await supabase.rpc('report_customer_sources', { p_from: null, p_to: null }));
+          if (!cancelled) setTopSources((((srcs as any[]) ?? []).filter(r => Number(r.customers_count) > 0 || Number(r.surveys_count) > 0)
+            .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
+        }),
+        part('Negative TikTok stock', async () => {
+          const neg = must(await supabase.rpc('tiktok_negative_stock_alerts'));
+          if (!cancelled) setNegStock(((neg as any[]) ?? []).filter(n => Number(n.current_qty) < 0));
+        }),
+        part('Operations alerts', async () => {
+          const al = must(await supabase.rpc('dashboard_alerts_summary'));
+          if (!cancelled) setAlerts(al ?? null);
+        }),
+        // The FOC card: the last 30 days of the FOC report (the stores this login
+        // may see, settled invoices, by invoice date), its total and breakdown
+        // read from the same rows. The report returns store_id and foc_value.
+        part('FOC', async () => {
+          const focToday = singaporeToday();
+          const [lines, focStores] = await Promise.all([
+            supabase.rpc('report_foc_lines', { p_from: focWindowStart(focToday), p_to: focToday, p_store_id: null }),
+            supabase.from('stores').select('id,name'),
+          ]);
+          const fl = must(lines), st = must(focStores);
+          if (!cancelled) setFoc(focSnapshot((fl as any[]) ?? [], new Map(((st as any[]) ?? []).map(s => [s.id, s.name]))));
+        }),
+        // Same eligible-receipt basis as the period charts and sales reports.
+        part("Today's sales", async () => {
+          const todaySummary: any = must(await supabase.rpc('dashboard_sales', { p_period: 'day' }));
+          if (!cancelled) { setTodaySales(Number(todaySummary?.sales ?? 0)); setTodayCount(Number(todaySummary?.invoice_count ?? 0)); }
+        }),
+        // Rentals out and overdue (Managers and above). Overdue is against
+        // today in Singapore (427): before 8 am the UTC date is still yesterday.
+        part('Rentals', async () => {
+          if (!manager) return;
+          const rents = await fetchAllFrom<any>('rentals', 'id,status,expected_return_date', q => q.in('status', ['paid', 'active']));
+          const today = singaporeToday();
+          if (!cancelled) {
+            setActiveRentals(rents.length);
+            setOverdueRentals(rents.filter(r => r.expected_return_date && r.expected_return_date < today).length);
+          }
+        }),
+        // Low stock across warehouse + store inventory. Inventory and products
+        // are joined in the browser, so a truncated read would silently drop
+        // products out of the low-stock list instead of erroring: paged.
+        part('Low stock', async () => {
+          const [wh, st, prods, whs, sts] = await Promise.all([
+            fetchAllFrom<any>('warehouse_inventory'),
+            fetchAllFrom<any>('store_inventory'),
+            fetchAllFrom<any>('products', 'id,name,sku'),
+            fetchAllFrom<any>('warehouses', 'id,name'),
+            fetchAllFrom<any>('stores', 'id,name'),
+          ]);
+          const pMap = new Map(prods.map((p: any) => [p.id, p]));
+          const whMap = new Map(whs.map((w: any) => [w.id, w.name]));
+          const stMap = new Map(sts.map((s: any) => [s.id, s.name]));
+          const low: typeof lowStock = [];
+          wh.forEach((i: any) => {
+            if (i.low_stock_threshold > 0 && i.current_qty <= i.low_stock_threshold) {
+              const p = pMap.get(i.product_id);
+              if (p) low.push({ name: p.name, sku: p.sku, loc: `🏭 ${whMap.get(i.warehouse_id) ?? ''}`, qty: i.current_qty, threshold: i.low_stock_threshold });
+            }
+          });
+          st.forEach((i: any) => {
+            if (i.low_stock_threshold > 0 && i.current_qty <= i.low_stock_threshold) {
+              const p = pMap.get(i.product_id);
+              if (p) low.push({ name: p.name, sku: p.sku, loc: `🏪 ${stMap.get(i.store_id) ?? ''}`, qty: i.current_qty, threshold: i.low_stock_threshold });
+            }
+          });
+          if (!cancelled) setLowStock(low);
+        }),
       ]);
-      setPendingApprovals((transferPending.count ?? 0) + (otherPending.count ?? 0));
-
-      // Phase 8: the summary cards, for the roles that see them (406 answers
-      // Owners, Admins and Managers only).
-      let summaryNow: any = null;
-      if (isManagerOrAbove(profile?.role)) {
-        const { data: sum } = await supabase.rpc('dashboard_summary');
-        summaryNow = sum ?? null;
-        setSummary(summaryNow);
-      } else {
-        setSummary(null);
-      }
-
-      // Phase 11: transfer receipt / overdue / discrepancy alerts.
-      const { data: ta } = await supabase.rpc('transfer_receipt_alerts');
-      const { data: srcs } = await supabase.rpc('report_customer_sources', { p_from: null, p_to: null });
-      const { data: neg } = await supabase.rpc('tiktok_negative_stock_alerts');
-      const { data: al } = await supabase.rpc('dashboard_alerts_summary');
-      setAlerts(al ?? null);
-      // The FOC card: the last 30 days of the FOC report (the stores this login
-      // may see, settled invoices, by invoice date), its total and breakdown
-      // read from the same rows. The report returns store_id and foc_value.
-      const focToday = singaporeToday();
-      const [{ data: fl }, { data: focStores }] = await Promise.all([
-        supabase.rpc('report_foc_lines', { p_from: focWindowStart(focToday), p_to: focToday, p_store_id: null }),
-        supabase.from('stores').select('id,name'),
-      ]);
-      setFoc(focSnapshot((fl as any[]) ?? [], new Map(((focStores as any[]) ?? []).map(s => [s.id, s.name]))));
-      setNegStock(((neg as any[]) ?? []).filter(n => Number(n.current_qty) < 0));
-      setTopSources((((srcs as any[]) ?? []).filter(r => Number(r.customers_count) > 0 || Number(r.surveys_count) > 0)
-        .sort((a, b) => Number(b.customers_count) - Number(a.customers_count)).slice(0, 5)));
-      setTransferAlerts((ta as any) ?? null);
-
-      // Same eligible-receipt basis as the period charts and sales reports.
-      const { data: todaySummary } = await supabase.rpc('dashboard_sales', { p_period: 'day' });
-      setTodaySales(Number(todaySummary?.sales ?? 0));
-      setTodayCount(Number(todaySummary?.invoice_count ?? 0));
-
-      // 5G-2 stats: unpaid commission, voucher redemptions, rentals.
-      if (isManagerOrAbove(profile?.role)) {
-        // Summed, so a truncated read under-reports money owed rather than
-        // failing — page all of it.
-        // 414: the server sends what affiliates are still owed (their months
-        // netted, as the Commissions page shows it); only a database without
-        // 414 leaves the page to add up the earned rows itself.
-        const [comm, redemp, rent] = await Promise.all([
-          dashboardCommissionFigures(summaryNow, 0).fromServer ? Promise.resolve([] as any[])
-            : fetchAllFrom<any>('commissions', 'id,commission_amount', q => q.eq('status', 'earned')),
-          supabase.from('voucher_redemptions').select('id', { count: 'exact', head: true }),
-          fetchAllFrom<any>('rentals', 'id,status,expected_return_date', q => q.in('status', ['paid', 'active'])),
-        ]);
-        setUnpaidCommission(comm.reduce((s, x) => s + Number(x.commission_amount), 0));
-        setRedemptionCount(redemp.count ?? 0);
-        const rents = rent;
-        setActiveRentals(rents.length);
-        const today = new Date().toISOString().slice(0, 10);
-        setOverdueRentals(rents.filter(r => r.expected_return_date < today).length);
-      }
-
-      // Low stock across warehouse + store inventory.
-      // Inventory and products are joined in the browser, so a truncated read
-      // silently drops products out of the low-stock list instead of erroring.
-      const [wh, st, prods, whs, sts] = await Promise.all([
-        fetchAllFrom<any>('warehouse_inventory'),
-        fetchAllFrom<any>('store_inventory'),
-        fetchAllFrom<any>('products', 'id,name,sku'),
-        fetchAllFrom<any>('warehouses', 'id,name'),
-        fetchAllFrom<any>('stores', 'id,name'),
-      ]);
-      const pMap = new Map(prods.map((p: any) => [p.id, p]));
-      const whMap = new Map(whs.map((w: any) => [w.id, w.name]));
-      const stMap = new Map(sts.map((s: any) => [s.id, s.name]));
-      const alerts: typeof lowStock = [];
-      wh.forEach((i: any) => {
-        if (i.low_stock_threshold > 0 && i.current_qty <= i.low_stock_threshold) {
-          const p = pMap.get(i.product_id);
-          if (p) alerts.push({ name: p.name, sku: p.sku, loc: `🏭 ${whMap.get(i.warehouse_id) ?? ''}`, qty: i.current_qty, threshold: i.low_stock_threshold });
-        }
-      });
-      st.forEach((i: any) => {
-        if (i.low_stock_threshold > 0 && i.current_qty <= i.low_stock_threshold) {
-          const p = pMap.get(i.product_id);
-          if (p) alerts.push({ name: p.name, sku: p.sku, loc: `🏪 ${stMap.get(i.store_id) ?? ''}`, qty: i.current_qty, threshold: i.low_stock_threshold });
-        }
-      });
-      setLowStock(alerts);
+      if (!cancelled) setAlertsError(problems.join(' · '));
     })();
+    return () => { cancelled = true; };
   }, [profile?.role]);
 
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const [p, w, s, pm] = await Promise.all([
-        supabase.from('products').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-        supabase.from('warehouses').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-        supabase.from('stores').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-        supabase.from('payment_methods').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      ]);
-      setCounts({
-        products: p.count ?? 0,
-        warehouses: w.count ?? 0,
-        stores: s.count ?? 0,
-        paymentMethods: pm.count ?? 0,
-      });
-      setLoading(false);
+      try {
+        const [p, w, s] = await Promise.all([
+          supabase.from('products').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+          supabase.from('warehouses').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+          supabase.from('stores').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+        ]);
+        // A count that could not be read shows "—" and is named in the
+        // notice, never 0 (427, REPORTS-5).
+        const reads = [['Active products', p], ['Warehouses', w], ['Stores', s]] as const;
+        if (!cancelled) {
+          setCounts({
+            products: p.error ? null : p.count ?? 0,
+            warehouses: w.error ? null : w.count ?? 0,
+            stores: s.error ? null : s.count ?? 0,
+          });
+          setCountsError(reads.filter(([, r]) => r.error).map(([label, r]) => failure(label, r.error)).join(' · '));
+        }
+      } catch (error: any) {
+        if (!cancelled) setCountsError(failure('Counts', error));
+      } finally {
+        // The tiles stop showing "—" whatever happened (427).
+        if (!cancelled) setLoading(false);
+      }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   // "Unpaid commission": what affiliates are still owed, as the Commissions
   // page nets it (414); what is still to be recovered from them beside it.
-  const unpaidTile = dashboardCommissionFigures(summary, unpaidCommission);
+  const unpaidTile = dashboardCommissionFigures(summary, 0);
+  // The Transfers card shows when there is something to receive or resolve.
+  const transferCard = !!transferAlerts && (transferAlerts.awaiting_receipt > 0 || transferAlerts.open_discrepancies > 0);
+  // The alert cards show whenever any of them has something to show (427:
+  // they showed only beside a pending approval, low stock or a transfer).
+  const showAlerts = pendingApprovals > 0 || lowStock.length > 0 || transferCard || !!alerts
+    || negStock.length > 0 || topSources.length > 0;
+  const heldSales: string[] = alerts?.sales?.invoice_nos ?? [];
+  // 427 (the Owner, 18 Oct 2026): the server counts only the customers added
+  // since this day, and the tile says so.
+  const noSourceSince = dayLabel(alerts?.surveys?.customers_without_source_since);
 
   return (
     <div>
@@ -237,7 +306,7 @@ const DashboardPage: React.FC = () => {
       </div>
 
       {/* ---- Sales for a chosen period ---- */}
-      <div className="card" style={{ marginBottom: 20 }}>
+      <div className="card" data-testid="sales-card" style={{ marginBottom: 20, padding: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                       flexWrap: 'wrap', gap: 12,
                       paddingBottom: 14, marginBottom: 18,
@@ -259,12 +328,12 @@ const DashboardPage: React.FC = () => {
             background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)',
             padding: '12px 14px', marginBottom: 18,
           }}>
-            <div style={{ flex: '0 0 170px' }}>
+            <div style={{ flex: '1 1 150px', maxWidth: 200, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4,
                             textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>From</div>
               <input type="date" value={rangeFrom} onChange={e => setRangeFrom(e.target.value)} />
             </div>
-            <div style={{ flex: '0 0 170px' }}>
+            <div style={{ flex: '1 1 150px', maxWidth: 200, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4,
                             textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>To</div>
               <input type="date" value={rangeTo} min={rangeFrom}
@@ -289,7 +358,13 @@ const DashboardPage: React.FC = () => {
 
         {salesBusy && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading…</div>}
 
-        {!salesBusy && !sales && period === 'custom' && (
+        {!salesBusy && salesError && (
+          <div role="alert" className="alert alert-danger" style={{ marginBottom: 0 }}>
+            The sales figures could not be loaded: {salesError}
+          </div>
+        )}
+
+        {!salesBusy && !salesError && !sales && period === 'custom' && (
           <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '10px 0' }}>
             Pick a start date above to see the figures for that range.
           </div>
@@ -302,12 +377,12 @@ const DashboardPage: React.FC = () => {
                 than as one figure with context. */}
             <div style={{ display: 'flex', alignItems: 'stretch',
                           gap: 0, flexWrap: 'wrap' }}>
-              <div style={{ minWidth: 200, paddingRight: 32 }}>
+              <div style={{ minWidth: 0, paddingRight: 32 }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase',
                               letterSpacing: '0.06em', fontWeight: 600 }}>{sales.label}</div>
                 <div style={{ fontSize: 38, fontWeight: 700, lineHeight: 1.05,
                               letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
-                  S${Number(sales.sales).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {sgd(sales.sales)}
                 </div>
                 {sales.change_percent != null ? (
                   <div style={{ fontSize: 12, marginTop: 2 }}>
@@ -329,14 +404,14 @@ const DashboardPage: React.FC = () => {
               </div>
 
               {/* Supporting figures, separated so they read as a set */}
-              <div style={{ display: 'flex', gap: 34, flexWrap: 'wrap',
+              <div style={{ display: 'flex', gap: 34, flexWrap: 'wrap', minWidth: 0,
                             alignItems: 'flex-end', paddingBottom: 4,
                             borderLeft: '1px solid var(--border)', paddingLeft: 32 }}>
                 {([
                   ['Invoices', String(sales.invoice_count)],
-                  ['Average', `S$${Number(sales.average_invoice).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+                  ['Average', sgd(sales.average_invoice)],
                   ['Items sold', String(sales.items_sold)],
-                  ['Discounts', `S$${Number(sales.discount_total).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+                  ['Discounts', sgd(sales.discount_total)],
                 ] as [string, string][]).map(([label, value]) => (
                   <div key={label}>
                     <div style={{ fontSize: 10.5, color: 'var(--text-muted)', textTransform: 'uppercase',
@@ -347,6 +422,12 @@ const DashboardPage: React.FC = () => {
                 ))}
               </div>
             </div>
+
+            {salesNote && (
+              <div role="alert" className="alert alert-warning" style={{ marginTop: 12, marginBottom: 0 }}>
+                Not all of this period could be loaded: {salesNote}
+              </div>
+            )}
 
             {/* Credit settled in this period. Kept apart from the sales figure
                 above, which deliberately excludes it — the money arrived when
@@ -361,7 +442,7 @@ const DashboardPage: React.FC = () => {
                     </div>
                     <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.15,
                                   fontVariantNumeric: 'tabular-nums', color: 'var(--warning)' }}>
-                      S${Number(credit.credit_spent).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {sgd(credit.credit_spent)}
                     </div>
                   </div>
                   <div>
@@ -371,13 +452,10 @@ const DashboardPage: React.FC = () => {
                       {credit.invoices}
                     </div>
                   </div>
-                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', paddingBottom: 3, flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', paddingBottom: 3, flex: '1 1 200px', minWidth: 0 }}>
                     Not counted in sales above — it was counted when the credit was purchased.
                     Invoices totalled{' '}
-                    <strong>
-                      S${(Number(sales?.sales ?? 0) + Number(credit.credit_spent))
-                        .toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </strong>{' '}
+                    <strong>{sgd(Number(sales?.sales ?? 0) + Number(credit.credit_spent))}</strong>{' '}
                     including it.
                   </div>
                 </div>
@@ -385,14 +463,14 @@ const DashboardPage: React.FC = () => {
                 {creditByStore.length > 1 && !periodStore && (
                   <div style={{ marginTop: 10 }}>
                     {creditByStore.map((r: any) => (
-                      <div key={r.store_id} style={{ display: 'flex', gap: 10, alignItems: 'center',
+                      <div key={r.store_id} data-testid="credit-store-row" style={{ display: 'flex', gap: 10, alignItems: 'center',
                                                      fontSize: 12.5, marginBottom: 3 }}>
-                        <span style={{ flex: '0 0 170px', overflow: 'hidden',
+                        <span style={{ flex: '1 1 120px', minWidth: 0, overflow: 'hidden',
                                        textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.store_name}</span>
-                        <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
-                          S${Number(r.credit_spent).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        <span style={{ flex: '0 0 auto', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                          {sgd(r.credit_spent)}
                         </span>
-                        <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
+                        <span style={{ flex: '0 0 auto', color: 'var(--text-muted)', fontSize: 11.5 }}>
                           {r.invoices} invoice{r.invoices === 1 ? '' : 's'}
                         </span>
                       </div>
@@ -408,17 +486,17 @@ const DashboardPage: React.FC = () => {
                 {byStore.map(b => {
                   const top = Math.max(...byStore.map(x => Number(x.sales)), 1);
                   return (
-                    <div key={b.store_id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <div style={{ flex: '0 0 170px', fontSize: 12.5, overflow: 'hidden',
+                    <div key={b.store_id} data-testid="store-row" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <div style={{ flex: '1 1 120px', minWidth: 0, fontSize: 12.5, overflow: 'hidden',
                                     textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.store_name}</div>
-                      <div style={{ flex: 1, background: 'var(--surface-2)', borderRadius: 3, height: 8 }}>
+                      <div style={{ flex: '1 1 40px', minWidth: 40, background: 'var(--surface-2)', borderRadius: 3, height: 8 }}>
                         <div style={{ width: `${Number(b.sales) / top * 100}%`, background: 'var(--primary)',
                                       height: 8, borderRadius: 3 }} />
                       </div>
-                      <div style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5, fontWeight: 600 }}>
+                      <div style={{ flex: '0 0 auto', textAlign: 'right', fontSize: 12.5, fontWeight: 600 }}>
                         S${Number(b.sales).toFixed(2)}
                       </div>
-                      <div style={{ flex: '0 0 60px', textAlign: 'right', fontSize: 11.5, color: 'var(--text-muted)' }}>
+                      <div style={{ flex: '0 0 auto', textAlign: 'right', fontSize: 11.5, color: 'var(--text-muted)' }}>
                         {b.invoice_count} inv
                       </div>
                     </div>
@@ -430,6 +508,12 @@ const DashboardPage: React.FC = () => {
         )}
       </div>
 
+      {(alertsError || countsError) && (
+        <div role="alert" className="alert alert-danger" data-testid="alerts-error" style={{ marginBottom: 20 }}>
+          Some of the Dashboard could not be loaded, so it may show less than there is. {[alertsError, countsError].filter(Boolean).join(' · ')}. Refresh the page to try again.
+        </div>
+      )}
+
       {isManagerOrAbove(profile?.role) && summary && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 20 }}>
           <StatCard icon={<Ban size={20} color="var(--danger)" />} label="Blocked commission" value={`S$${Number(summary.blocked_commission).toFixed(0)}`} tint="var(--danger-light)" />
@@ -440,25 +524,31 @@ const DashboardPage: React.FC = () => {
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 28 }}>
         <StatCard icon={<CreditCard size={22} color="var(--success)" />} label={`Today's sales (${todayCount} paid)`} value={loading ? '—' : `S$${todaySales.toFixed(0)}`} tint="var(--success-light)" />
-        <StatCard icon={<Package size={22} color="var(--primary)" />} label="Active products" value={loading ? '—' : counts.products} tint="var(--primary-light)" />
-        <StatCard icon={<Warehouse size={22} color="#b45309" />} label="Warehouses" value={loading ? '—' : counts.warehouses} tint="var(--accent-light)" />
-        <StatCard icon={<Store size={22} color="var(--primary)" />} label="Stores" value={loading ? '—' : counts.stores} tint="var(--primary-light)" />
+        <StatCard icon={<Package size={22} color="var(--primary)" />} label="Active products" value={loading || counts.products == null ? '—' : counts.products} tint="var(--primary-light)" />
+        <StatCard icon={<Warehouse size={22} color="#b45309" />} label="Warehouses" value={loading || counts.warehouses == null ? '—' : counts.warehouses} tint="var(--accent-light)" />
+        <StatCard icon={<Store size={22} color="var(--primary)" />} label="Stores" value={loading || counts.stores == null ? '—' : counts.stores} tint="var(--primary-light)" />
       </div>
 
       {isManagerOrAbove(profile?.role) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 28 }}>
-          <StatCard icon={<Star size={22} color="var(--primary)" />} label={unpaidTile.deductions > 0 ? `Unpaid commission · S$${unpaidTile.deductions.toFixed(2)} owed back` : 'Unpaid commission'} value={loading ? '—' : `S$${unpaidTile.unpaid.toFixed(2)}`} tint="var(--primary-light)" />
-          <StatCard icon={<Ticket size={22} color="var(--success)" />} label="Voucher redemptions" value={loading ? '—' : redemptionCount} tint="var(--success-light)" />
+          {/* What affiliates are still owed and, under it, what is still to
+              be recovered from them, as the Commissions page shows both. */}
+          <StatCard icon={<Star size={22} color="var(--primary)" />} label="Unpaid commission"
+            value={!summary ? '—' : sgd(unpaidTile.unpaid)}
+            sub={summary && unpaidTile.deductions > 0 ? `To recover ${sgd(unpaidTile.deductions)}` : undefined}
+            tint="var(--primary-light)" />
+          {/* Counted as the Reports page's Vouchers tab counts uses (427). */}
+          <StatCard icon={<Ticket size={22} color="var(--success)" />} label="Voucher uses this month"
+            value={!summary || summary.voucher_uses_month == null ? '—' : Number(summary.voucher_uses_month)} tint="var(--success-light)" />
           <StatCard icon={<KeyRound size={22} color="#b45309" />} label="Rentals out (paid/active)" value={loading ? '—' : activeRentals} tint="var(--accent-light)" />
           <StatCard icon={<CalendarClock size={22} color="var(--danger)" />} label="Overdue rentals" value={loading ? '—' : overdueRentals} tint="var(--danger-light)" />
         </div>
       )}
 
       {/* Phase 2 + Phase 11 alerts */}
-      {(pendingApprovals > 0 || lowStock.length > 0 ||
-        (transferAlerts && (transferAlerts.awaiting_receipt > 0 || transferAlerts.open_discrepancies > 0))) && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginBottom: 28 }}>
-          {transferAlerts && (transferAlerts.awaiting_receipt > 0 || transferAlerts.open_discrepancies > 0) && (
+      {showAlerts && (
+        <div data-testid="alerts-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))', gap: 16, marginBottom: 28 }}>
+          {transferCard && transferAlerts && (
             <div className="card" style={{ padding: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                 <ArrowLeftRight size={18} color="var(--primary)" />
@@ -473,27 +563,40 @@ const DashboardPage: React.FC = () => {
             </div>
           )}
           {alerts && (
-            <div className="card" style={{ padding: 20 }}>
+            <div className="card" data-testid="operations-alerts" style={{ padding: 20 }}>
               <h3 style={{ fontSize: 15, marginBottom: 10 }}>Operations Alerts</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+                {/* Transfers are counted once, on the Transfers card (427). */}
                 {([
-                  ['Transfers awaiting receipt', alerts.transfers?.awaiting_receipt, '/transfers'],
-                  ['Transfers overdue > 7 days', alerts.transfers?.overdue_7d, '/transfers'],
-                  ['Open transfer discrepancies', alerts.transfers?.open_discrepancies, '/transfers'],
                   ['TikTok imported orders', alerts.tiktok?.imported_orders, '/tiktok-import'],
                   ['TikTok unmatched SKUs', alerts.tiktok?.unmatched_skus, '/tiktok-import'],
                   ['TikTok awaiting confirmation', alerts.tiktok?.staged_batches, '/tiktok-import'],
                   ['Orders awaiting settlement', alerts.tiktok?.orders_awaiting_settlement, '/tiktok-import'],
+                  // 427: paid out by TikTok, but no order file took their stock off.
+                  ['Settled with no imported order', alerts.tiktok?.settled_without_order, '/tiktok-import'],
                   ['Settlement mismatches', alerts.tiktok?.settlement_mismatches, '/tiktok-import'],
                   ['Awaiting physical return', alerts.tiktok?.awaiting_physical_return, '/tiktok-import'],
                   ['Negative stock alerts', alerts.tiktok?.negative_stock, '/tiktok-import'],
-                  ['Customers without source', alerts.surveys?.customers_without_source, '/customers'],
+                  [noSourceSince ? `Customers without source (added since ${noSourceSince})` : 'Customers without source',
+                    alerts.surveys?.customers_without_source, '/customers'],
                 ] as [string, number, string][]).map(([label, v, to]) => (
-                  <div key={label} onClick={() => navigate(to)} style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', borderLeft: Number(v) > 0 && !label.includes('imported orders') ? '3px solid var(--warning, #d97706)' : undefined }}>
+                  <div key={label} data-testid="alert-tile" onClick={() => navigate(to)} style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', borderLeft: Number(v) > 0 && !label.includes('imported orders') ? '3px solid var(--warning, #d97706)' : undefined }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
                     <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{v ?? 0}</div>
                   </div>
                 ))}
+                {/* 427 (the Owner, 9 Oct 2026): refunded or cancelled sales that
+                    still hold credit that can be spent, or rewards and
+                    vouchers still to be claimed. */}
+                <div data-testid="alert-tile" onClick={() => navigate('/invoices')} style={{ cursor: 'pointer', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', borderLeft: Number(alerts.sales?.holding_benefits) > 0 ? '3px solid var(--danger)' : undefined }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Refunded or cancelled sales still holding credit or rewards</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{alerts.sales?.holding_benefits ?? 0}</div>
+                  {heldSales.length > 0 && (
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 4, overflowWrap: 'anywhere' }}>
+                      {heldSales.join(', ')}{Number(alerts.sales?.holding_benefits) > heldSales.length ? ' and more' : ''}
+                    </div>
+                  )}
+                </div>
                 <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>FOC value (30 days)</div>
                   <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--font-display)' }}>S${(foc?.total ?? 0).toFixed(2)}</div>
@@ -568,30 +671,6 @@ const DashboardPage: React.FC = () => {
           )}
         </div>
       )}
-
-      <div className="card" style={{ padding: 24 }}>
-        <h3 style={{ fontSize: 16, marginBottom: 10 }}>System Complete — All Phases Live</h3>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 16, maxWidth: 640 }}>
-          The full inventory and sales platform is in place: authentication and roles, warehouse
-          and store inventory with approval-driven transfers, the sales engine with split payments
-          and affiliate commission, and the controls layer — refunds, cancellations, inventory
-          adjustments, audit log, and reports.
-        </p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-          {[
-            { phase: 'Phase 1', title: 'Foundation', detail: 'Auth · Roles · Products · Warehouses · Stores · Payment methods' },
-            { phase: 'Phase 2', title: 'Inventory', detail: 'Warehouse & store stock · Stock-in · Transfers · Approvals' },
-            { phase: 'Phase 3', title: 'Sales', detail: 'Customers · Affiliates · Price lists · Invoices · Payments' },
-            { phase: 'Phase 4', title: 'Controls', detail: 'Refunds · Adjustments · Audit log · Reports' },
-          ].map(p => (
-            <div key={p.phase} style={{ padding: 14, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--primary-light)' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary)', letterSpacing: '0.05em' }}>{p.phase} · LIVE</div>
-              <div style={{ fontWeight: 600, fontSize: 14, margin: '4px 0 5px' }}>{p.title}</div>
-              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>{p.detail}</div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 };

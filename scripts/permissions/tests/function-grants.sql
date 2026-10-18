@@ -167,7 +167,12 @@ declare
                              -- 431: the module an audit entry is filed under, the trigger that
                              -- files an entry saved with none, and write_audit_ex, which saves
                              -- any audit entry it is given (service role only, like write_audit)
-                             'audit_module','trg_audit_logs_fill_module','write_audit_ex'];
+                             'audit_module','trg_audit_logs_fill_module','write_audit_ex',
+                             -- 427: a settled TikTok line reviewed as needing no stock taken off,
+                             -- for a named Owner or Manager (the page function
+                             -- review_tiktok_settlement_without_order reaches it as the caller,
+                             -- the one-off repair as a named Owner)
+                             'tiktok_settlement_review_record'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

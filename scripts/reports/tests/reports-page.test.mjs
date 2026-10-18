@@ -280,10 +280,11 @@ function createBackend(fx) {
     is(col, v) { this.filters.push(r => (r[col] ?? null) === v); return this; }
     gte(col, v) { this.filters.push(r => r[col] != null && r[col] >= v); return this; }
     lte(col, v) { this.filters.push(r => r[col] != null && r[col] <= v); return this; }
+    in(col, vals) { (this.ins ??= []).push([col, vals]); this.filters.push(r => vals.includes(r[col])); return this; }
     order(col) { this.orders.push(col); return this; }
     range(a, z) { this.rangeV = [a, z]; return this; }
     async exec() {
-      b.calls.push({ name: this.name, args: this.args, orders: this.orders, range: this.rangeV, cols: this.cols });
+      b.calls.push({ name: this.name, args: this.args, orders: this.orders, range: this.rangeV, cols: this.cols, ins: this.ins ?? [] });
       if (b.held.has(this.name)) await new Promise(r => b.waiters.push(r));
       await Promise.resolve();
       if (b.failures.has(this.name)) return { data: null, error: { message: b.failures.get(this.name) } };
@@ -787,4 +788,79 @@ test('396: Sales by Service Staff counts rental late fees in revenue, credits th
   assert.ok(!/Press Refresh/.test(t), 'no "press Refresh" warning: revenue equals the headline');
   assert.ok(!/away from revenue/.test(t), 'no difference alert');
   assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+// ── 427 (REPORTS-9, REPORTS-16, REPORTS-13) ──────────────────────────────────
+test('427: only the customers the reports name are read, and only the columns they show', async () => {
+  await mount({ fixture: makeFixture({ extraCustomers: 1000 }) });
+  const reads = callsOf('customers');
+  assert.ok(reads.length > 0, 'customers are read');
+  for (const c of reads) {
+    assert.equal(c.cols, 'id,full_name,phone,date_of_birth,gender,gender_other,occupation', 'only the columns the reports show');
+    assert.equal(c.ins.length, 1, 'by id');
+    assert.ok(c.ins[0][1].length <= 200, 'at most 200 ids a request');
+  }
+  const asked = new Set(reads.flatMap(c => c.ins[0][1]));
+  const fx = makeFixture();
+  const named = new Set([...fx.invoices.map(i => i.customer_id), ...fx.commissions.map(c => c.referrer_customer_id)].filter(Boolean));
+  assert.deepEqual([...asked].sort(), [...named].sort(), 'the buyers and referrers, not the 1,006 customers');
+  await selectTab('Customers');
+  assert.equal(dataRows(0).length, 6);
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'Customer 02').slice(1, 3), ['+65 9123 0002', '15/01/1990'],
+    'the phone, and the date of birth as stored, day first (no shift west of UTC)');
+  await selectTab('Commission');
+  assert.ok(dataRows(0).some(r => r[0] === 'Deleted customer'), 'a referrer the table no longer returns is still "Deleted customer"');
+});
+
+test('427: a failed customer read fails the load; it is never a partial list', async () => {
+  await mount({ setup: b => b.failures.set('customers', 'customers failed') });
+  assert.equal(headline(), 'unavailable');
+  assert.ok(alerts().some(a => a.includes('customers failed')));
+});
+
+test('427: the period reports load once when the page opens, again on Refresh and on a new period', async () => {
+  await mount();
+  for (const rpc of ['report_pricing', 'report_discounts', 'report_foc_lines', 'report_foc_summary', 'report_sales_reconciliation',
+                     'report_sales_by_service_staff']) {
+    assert.equal(callsOf(rpc).length, 1, `${rpc} is read once at open, after the invoice records`);
+  }
+  await click(button('Refresh')); await tick();
+  assert.equal(callsOf('report_pricing').length, 2, 'Refresh reads them again');
+  await setDate(0, '2026-09-01');
+  assert.equal(callsOf('report_pricing').length, 3, 'a new period reads them again');
+});
+
+test('427: while the invoice records load the period reports wait; if they fail the period tabs say so', async () => {
+  await mount({ setup: b => b.held.add('invoice_sales_ledger') });
+  assert.equal(callsOf('report_pricing').length, 0, 'nothing period-based is read before the invoice records answer');
+  backend.release(); await tick();
+  assert.equal(callsOf('report_pricing').length, 1);
+  await mount({ setup: b => b.failures.set('invoice_sales_ledger', 'ledger failed') });
+  await selectTab('Pricing');
+  assert.ok(!spinning(), 'no spinner forever');
+  assert.ok(text().includes('The complete report is unavailable'));
+});
+
+test('427: a date the report does not have reads as a dash, not "Date pending review"', async () => {
+  const fx = makeFixture();
+  await mount({ fixture: fx, setup: b => { const orig = b.client.rpc; b.client.rpc = (name, args) => {
+    const q = orig(name, args);
+    if (name === 'report_pricing') { const exec = q.exec.bind(q); q.exec = async () => { const r = await exec(); return { ...r, data: (r.data ?? []).map(x => ({ ...x, paid_date: null })) }; }; }
+    return q; }; } });
+  await selectTab('Pricing');
+  assert.equal(dataRows(0)[0][1], '—');
+  assert.ok(!text().includes('Date pending review'));
+});
+
+test('427: an export file is stamped with today in Singapore, not the UTC date', async () => {
+  await mount();
+  const RealDate = globalThis.Date;
+  // 01:30 on 10 Oct 2026 in Singapore is still 9 Oct in UTC (and in Los Angeles).
+  const fixed = RealDate.parse('2026-10-09T17:30:00Z');
+  class FrozenDate extends RealDate { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } }
+  globalThis.Date = FrozenDate;
+  try {
+    const exported = await exportWith(pageExport());
+    assert.match(exported.filename, /-2026-10-10\.xlsx$/, exported.filename);
+  } finally { globalThis.Date = RealDate; }
 });

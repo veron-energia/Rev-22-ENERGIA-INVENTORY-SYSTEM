@@ -48,17 +48,53 @@ export function csvCell(value) {
 }
 
 /**
+ * The text columns. A file opened in Excel before it is imported would run a
+ * cell that starts with =, +, - or @ as a formula, so these are guarded
+ * (guardCsvText). The amounts, quantities and dates are never touched: a
+ * negative amount must keep its '-'.
+ */
+export const XERO_TEXT_HEADERS = [
+  '*ContactName', 'EmailAddress',
+  'POAddressLine1', 'POAddressLine2', 'POAddressLine3', 'POAddressLine4',
+  'POCity', 'PORegion', 'POPostalCode', 'POCountry',
+  'Reference', '*Description', 'InventoryItemCode',
+  'TrackingName1', 'TrackingOption1', 'TrackingName2', 'TrackingOption2',
+  'BrandingTheme',
+];
+
+/**
+ * A text cell that a spreadsheet would read as a formula (it starts with =,
+ * +, -, @, a tab or a carriage return) gets a leading apostrophe, so it is
+ * shown as the text it is. Anything else is returned as it was.
+ */
+export function guardCsvText(value) {
+  if (value === null || value === undefined) return value;
+  const s = String(value);
+  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+}
+
+/** An email address, or blank when the field holds something else (a phone typed into it, say). */
+export function xeroEmail(value) {
+  const s = value === null || value === undefined ? '' : String(value).trim();
+  return /^[^\s@=+\-][^\s@]*@[^\s@]+\.[^\s@]+$/.test(s) ? s : '';
+}
+
+/**
  * Rows to a CSV document, always in the template's column order and always with
  * the full header row — including for an empty result, so an export with no
  * invoices still opens as a valid, recognisable template rather than a blank file.
+ * Text columns are guarded against spreadsheet formulas, and an email address
+ * that is not one is left blank (427).
  *
  * CRLF line endings: that is what the CSV convention specifies, and what Excel
  * and Xero both handle without complaint.
  */
 export function toXeroCsv(rows, headers = XERO_SALES_INVOICE_HEADERS) {
+  const text = new Set(XERO_TEXT_HEADERS);
+  const cell = (h, v) => csvCell(h === 'EmailAddress' ? xeroEmail(v) : text.has(h) ? guardCsvText(v) : v);
   const lines = [headers.map(csvCell).join(',')];
   for (const row of rows ?? []) {
-    lines.push(headers.map(h => csvCell(row?.[h])).join(','));
+    lines.push(headers.map(h => cell(h, row?.[h])).join(','));
   }
   return lines.join('\r\n') + '\r\n';
 }

@@ -3,6 +3,8 @@ import * as XLSX from 'xlsx';
 import { CalendarRange } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Modal } from './ui';
+import { singaporeToday } from '../lib/invoices/business';
+import { buildPaymentSummary, paymentSummaryDefaultRange } from '../lib/paymentSummary.mjs';
 
 /**
  * Daily takings by payment method, as a cross-tab: one row per day, one column
@@ -11,7 +13,10 @@ import { Modal } from './ui';
  *
  * The figures come from a single database aggregate rather than from whatever
  * the page happens to have loaded, so the sheet covers every payment in the
- * range instead of only the current page of invoices.
+ * range instead of only the current page of invoices. Payments on deleted
+ * invoices are left out (427). The Total is the money taken: wallet credit
+ * spent is shown after it, in its own columns with its own total, and every
+ * day of the range has a row (lib/paymentSummary).
  */
 export const PaymentSummaryExport: React.FC<{
   stores: { id: string; name: string }[];
@@ -23,8 +28,6 @@ export const PaymentSummaryExport: React.FC<{
   const [storeId, setStoreId] = useState(defaultStoreId);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
   const run = async () => {
     if (!from || !to) { setErr('Choose both a start and an end date.'); return; }
@@ -61,43 +64,9 @@ export const PaymentSummaryExport: React.FC<{
       return;
     }
 
-    // Pivot: date -> method -> amount.
-    const byDate = new Map<string, Record<string, number>>();
-    for (const r of rows) {
-      const d = String(r.pay_date);
-      if (!byDate.has(d)) byDate.set(d, {});
-      byDate.get(d)![r.method_name] = Number(r.amount) || 0;
-    }
-
-    const dates = [...byDate.keys()].sort();
-    const headers = ['Date', ...methods.map((m: any) => m.method_name), 'Total'];
-    const columnTotals: Record<string, number> = {};
-    let grand = 0;
-
-    const body = dates.map(d => {
-      const cells = byDate.get(d) ?? {};
-      const o: Record<string, any> = {
-        // Written as text in the local format so a spreadsheet does not
-        // reinterpret it as an American date.
-        Date: new Date(`${d}T00:00:00`).toLocaleDateString('en-GB'),
-      };
-      let rowTotal = 0;
-      for (const m of methods) {
-        const v = money(cells[m.method_name] ?? 0);
-        o[m.method_name] = v;
-        rowTotal += v;
-        columnTotals[m.method_name] = money((columnTotals[m.method_name] ?? 0) + v);
-      }
-      o.Total = money(rowTotal);
-      grand = money(grand + rowTotal);
-      return o;
-    });
-
-    // The total row along the bottom.
-    const totalRow: Record<string, any> = { Date: 'TOTAL' };
-    for (const m of methods) totalRow[m.method_name] = money(columnTotals[m.method_name] ?? 0);
-    totalRow.Total = grand;
-    body.push(totalRow);
+    // One row per day of the range (zeroes where nothing was taken), the
+    // money taken and its Total, then the wallet credit used, apart.
+    const { headers, body } = buildPaymentSummary({ methods, rows, from, to });
 
     const ws = XLSX.utils.json_to_sheet(body, { header: headers });
     ws['!cols'] = headers.map(h => ({ wch: h === 'Date' ? 14 : Math.max(12, h.length + 2) }));
@@ -110,11 +79,12 @@ export const PaymentSummaryExport: React.FC<{
   };
 
   const openDialog = () => {
-    // Default to the month so far, which is what this is usually wanted for.
-    const now = new Date();
-    const first = new Date(now.getFullYear(), now.getMonth(), 1);
-    setFrom(first.toISOString().slice(0, 10));
-    setTo(now.toISOString().slice(0, 10));
+    // Default to the month so far, which is what this is usually wanted for:
+    // the 1st to today, in Singapore (427: it opened on the last day of the
+    // previous month, and before 8 am To was yesterday).
+    const range = paymentSummaryDefaultRange(singaporeToday());
+    setFrom(range.from);
+    setTo(range.to);
     setStoreId(defaultStoreId);
     setErr(null);
     setOpen(true);
@@ -138,7 +108,8 @@ export const PaymentSummaryExport: React.FC<{
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
               One row per day, one column per payment method, with totals down the right and
               along the bottom. Dated by <strong>when the payment was taken</strong>, so a
-              settled balance counts on the day the money arrived.
+              settled balance counts on the day the money arrived. Payments on deleted invoices
+              are left out.
             </div>
 
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}>
@@ -164,8 +135,9 @@ export const PaymentSummaryExport: React.FC<{
             </div>
 
             <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-              Days with no takings are included as zeroes, so a gap is visible rather than
-              missing. Refunds are not deducted — this reports what was collected.
+              Every day in the range has a row; a day with no takings shows zeroes. The Total is
+              the money taken. Wallet credit spent is not money taken: it is shown after the
+              Total, with its own total. Refunds are not deducted; this reports what was collected.
             </div>
           </div>
         </Modal>
