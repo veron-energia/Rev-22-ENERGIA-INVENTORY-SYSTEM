@@ -5,8 +5,23 @@
 -- protection against the same creation arriving twice, because a lost response
 -- and a second click are the same thing from the server's side.
 --
--- Disposable database only; everything is rolled back.
+-- 418: the Customers page's Add uses this too. It starts with the 406 staff
+-- check (require_active_staff: Owners, Managers, Staff and the old Admin
+-- role; not Inventory Managers, the Owner, 9 Oct 2026, tested in
+-- scripts/customers/tests/customer-edits.sql), and a new customer is no
+-- longer marked a referrer (the page used to set is_referrer on every save,
+-- which made the flag meaningless).
+--
+-- Disposable database only; everything is rolled back. 418 is applied inside
+-- this transaction, so run it against a database with production's schema
+-- (406 to 414 in; 418 refuses without 414, so on a copy of production from
+-- before 414 pass -v prelude=/path/to/414.sql).
+\set ON_ERROR_STOP on
 begin;
+\if :{?prelude}
+\i :prelude
+\endif
+\ir ../../../supabase/418_customer_edits_audited_and_phone_search.sql
 do $$
 declare own uuid:=gen_random_uuid(); aff_uid uuid:=gen_random_uuid();
  r jsonb; c1 uuid; c2 uuid; c3 uuid; deleted_id uuid; rq uuid:=gen_random_uuid(); n int;
@@ -21,8 +36,8 @@ begin
  if c1 is null then raise exception 'No customer was created'; end if;
  if (select full_name from customers where id=c1)<>'Ada Lovelace' then
   raise exception 'The full name was not derived from the parts'; end if;
- if not (select is_referrer from customers where id=c1) then
-  raise exception 'is_referrer was not set the way the Customers page sets it'; end if;
+ if (select is_referrer from customers where id=c1) then
+  raise exception 'A new customer was marked a referrer (418: never on creation)'; end if;
 
  -- ---- the same request id again returns the same customer -----------------
  r:=create_customer_quick('Ada','Lovelace','+6591234501',null,null,null,null,null,null,null,rq);
@@ -82,12 +97,14 @@ begin
   if sqlerrm not like '%Phone number is required%' then raise; end if; end;
 
  -- ---- a login with no staff profile is refused ----------------------------
+ -- (as a browser sends it: the role authenticated; 406's check)
  perform set_config('request.jwt.claim.sub',aff_uid::text,true);
+ perform set_config('request.jwt.claim.role','authenticated',true);
  begin
   perform create_customer_quick('Not','Staff','+6591234598',null,null,null,null,null,null,null,gen_random_uuid());
   raise exception 'A non-staff login created a customer';
- exception when others then
-  if sqlerrm not like '%do not have permission%' then raise; end if; end;
+ exception when insufficient_privilege then
+  if sqlerrm not like '%Only active Energia staff%' then raise; end if; end;
  begin
   perform customer_match_candidates('+6591234501',null);
   raise exception 'A non-staff login searched customers';

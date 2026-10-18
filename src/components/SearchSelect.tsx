@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, ChevronDown, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { searchCatalogueOptions } from '../lib/cataloguePriceSearch';
+import { phoneSearchFilters } from '../lib/customers/phoneSearch.mjs';
 
 export type SearchOption = {
   value: string;
@@ -160,10 +161,13 @@ export const CustomerSearchSelect: React.FC<{
       .then(({ data }) => setSelected(data ?? null));
   }, [value]);
 
-  // Debounced server search.
+  // Debounced server search. Only the newest search's answer is shown: an
+  // older one that arrives late is dropped.
+  const searchSeq = useRef(0);
   useEffect(() => {
     if (!open) return;
     const handle = setTimeout(async () => {
+      const seq = ++searchSeq.current;
       setBusy(true);
       const raw = query.trim().replace(/[,()]/g, ' ');
       let q = supabase.from('customers').select('id, full_name, phone, email, notes')
@@ -171,9 +175,13 @@ export const CustomerSearchSelect: React.FC<{
       if (raw) {
         const like = `%${raw}%`;
         const idFilter = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw) ? `,id.eq.${raw}` : '';
-        q = q.or(`full_name.ilike.${like},phone.ilike.${like},email.ilike.${like},notes.ilike.${like}${idFilter}`);
+        // 418: a phone typed with spaces or "+65" also matches on its digits,
+        // as the Customers list does (phones are stored as +<digits>).
+        const phone = phoneSearchFilters(query).map(f => `,${f}`).join('');
+        q = q.or(`full_name.ilike.${like},phone.ilike.${like},email.ilike.${like},notes.ilike.${like}${idFilter}${phone}`);
       }
       const { data } = await q;
+      if (seq !== searchSeq.current) return;
       setRows(((data as any[]) ?? []).filter(c => c.id !== excludeId));
       setBusy(false);
     }, 220);

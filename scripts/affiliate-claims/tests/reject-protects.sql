@@ -51,10 +51,12 @@
 --      do), when it rejects and when it takes over, and changes nothing in
 --      it.
 --   P12 Nobody signed in can change a customer's id (staff, Manager or
---      Owner, directly under RLS): "A customer's id cannot be changed." So a
---      protected customer whose rejected claim was deleted cannot shed the
---      protection by being given a new id, and sign-up still parks a claim
---      for them. Ordinary edits (name, phone, email) still work for staff, and
+--      Owner): "A customer's id cannot be changed." Since 418 no login
+--      writes the customers table at all ("permission denied"), and
+--      update_customer takes no id. So a protected customer whose rejected
+--      claim was deleted cannot shed the protection by being given a new id,
+--      and sign-up still parks a claim for them. Ordinary edits (name, phone,
+--      email) still work for staff (through update_customer since 418), and
 --      the service role (no signed-in user) is not affected.
 --   G  Each patched function keeps its grants; the trigger function is no
 --      endpoint.
@@ -684,11 +686,12 @@ select pg_temp.run('del_R', format('select public.delete_affiliate_account_claim
 select pg_temp.check(pg_temp.tx('rej_R') = 'ok' and pg_temp.tx('del_R') = 'ok' and pg_temp.claim_status('kR1') is null
     and not exists (select 1 from affiliate_account_claims where candidate_customer_id = pg_temp.fx('cR')),
   'P12 (setup) an Owner rejects the claim suggesting Rex and a Manager deletes it: no claim refers to him');
--- Staff, a Manager and an Owner, signed in, give Rex (protected) and Kim (not)
--- a new id directly, as the API would let them (RLS lets them update a
--- customer).
+-- Staff, a Manager and an Owner, signed in, try to give Rex (protected) and
+-- Kim (not) a new id: directly (refused: since 418 no login writes the
+-- table; before 418 the trigger refused it in its own words) and through
+-- update_customer (which takes no id).
 do $$
-declare n int; got text := ''; who text; u uuid;
+declare n int; got text := ''; via text := ''; who text; u uuid;
   rex uuid := pg_temp.fx('cR'); kim uuid := pg_temp.fx('cK');
 begin
   foreach who in array array['s','m','o'] loop
@@ -703,38 +706,68 @@ begin
       update public.customers set id = gen_random_uuid(), notes = 'New id' where id = kim;
       get diagnostics n = row_count; got := got || who || ':changed ' || n || ' ';
     exception when others then got := got || who || ':' || sqlerrm || ' '; end;
+    if to_regprocedure('public.update_customer(uuid,jsonb,text,timestamptz)') is not null then
+      begin
+        perform public.update_customer(rex, jsonb_build_object('id', gen_random_uuid()), 'New id', null);
+        via := via || who || ':changed ';
+      exception when others then via := via || who || ':' || sqlerrm || ' '; end;
+    end if;
     execute 'reset role';
   end loop;
-  insert into tx values ('rekey', got);
+  insert into tx values ('rekey', got), ('rekey_fn', via);
 end $$;
-select pg_temp.check(pg_temp.tx('rekey') = replace('s:M s:M m:M m:M o:M o:M ', 'M', pg_temp.tx('id_msg'))
+select pg_temp.check(pg_temp.tx('rekey') in (replace('s:M s:M m:M m:M o:M o:M ', 'M', pg_temp.tx('id_msg')),
+                                             replace('s:M s:M m:M m:M o:M o:M ', 'M', 'permission denied for table customers'))
+    and pg_temp.tx('rekey_fn') in ('', replace('s:M m:M o:M ', 'M', 'The field "id" cannot be changed here'))
     and exists (select 1 from customers where id = pg_temp.fx('cR') and full_name = 'Rex Rejtest')
     and exists (select 1 from customers where id = pg_temp.fx('cK') and notes is distinct from 'New id'),
-  'P12 staff, a Manager and an Owner cannot change a customer''s id, protected or not, in those words: ' || pg_temp.tx('rekey'));
+  'P12 staff, a Manager and an Owner cannot change a customer''s id, protected or not: '
+    || pg_temp.tx('rekey') || ' / ' || pg_temp.tx('rekey_fn'));
 -- Ordinary edits still work for staff, as the Customers page makes them
--- (and an update that sets the id to itself, as an upsert does).
+-- (through update_customer since 418; directly under the table rules
+-- before it), and an update that sets the id to itself is fine for the
+-- trigger (since 418 only functions write the table, so that runs as the
+-- table owner with staff still signed in).
 do $$
 declare n1 int; n2 int; got text := ''; kim uuid := pg_temp.fx('cK'); sfx text := pg_temp.tx('sfx'); u uuid := pg_temp.fx('s');
+  v418 boolean := to_regprocedure('public.update_customer(uuid,jsonb,text,timestamptz)') is not null;
 begin
   perform set_config('request.jwt.claim.sub', u::text, true);
   execute 'set local role authenticated';
   begin
-    update public.customers
-       set first_name = 'Kimberly', last_name = 'Rejtest', full_name = 'Kimberly Rejtest',
-           email = 's379-kim-' || sfx || '@tests.invalid', phone = '+6583790218', notes = 'Moved house'
-     where id = kim;
-    get diagnostics n1 = row_count;
+    if v418 then
+      perform public.update_customer(kim,
+        jsonb_build_object('first_name', 'Kimberly', 'last_name', 'Rejtest',
+                           'email', 's379-kim-' || sfx || '@tests.invalid', 'phone', '+65 8379 0218', 'notes', 'Moved house'),
+        'Moved house', (select updated_at from public.customers where id = kim));
+      n1 := 1;
+    else
+      update public.customers
+         set first_name = 'Kimberly', last_name = 'Rejtest', full_name = 'Kimberly Rejtest',
+             email = 's379-kim-' || sfx || '@tests.invalid', phone = '+6583790218', notes = 'Moved house'
+       where id = kim;
+      get diagnostics n1 = row_count;
+    end if;
+    got := n1::text;
+  exception when others then got := sqlerrm; end;
+  if v418 then
+    execute 'reset role';
+  end if;
+  begin
     update public.customers set id = id, notes = 'Moved house again' where id = kim;
     get diagnostics n2 = row_count;
-    got := n1 || ',' || n2;
-  exception when others then got := sqlerrm; end;
+    got := got || ',' || n2;
+  exception when others then got := got || ',' || sqlerrm; end;
   execute 'reset role';
-  insert into tx values ('edit', got);
+  insert into tx values ('edit', got), ('edit_418', v418::text);
 end $$;
 select pg_temp.check(pg_temp.tx('edit') = '1,1'
     and exists (select 1 from customers where id = pg_temp.fx('cK') and full_name = 'Kimberly Rejtest'
                    and email = 's379-kim-' || pg_temp.tx('sfx') || '@tests.invalid'
-                   and public.normalize_customer_phone(phone) = '+6583790218' and notes = 'Moved house again'),
+                   and public.normalize_customer_phone(phone) = '+6583790218' and notes = 'Moved house again')
+    and (pg_temp.tx('edit_418') = 'false'
+         or (exists (select 1 from customer_phone_history h where h.customer_id = pg_temp.fx('cK') and h.reason = 'Moved house')
+             and exists (select 1 from audit_logs a where a.record_id = pg_temp.fx('cK') and a.action = 'customer_updated'))),
   'P12 staff still edit a customer''s name, email and phone (and an update naming the same id is fine): ' || pg_temp.tx('edit'));
 -- So the protection stays on Rex: a login whose email, phone and name match
 -- him still only parks a claim.

@@ -16,6 +16,15 @@
 \set ON_ERROR_STOP on
 begin;
 
+-- 418 is applied here only where it is not in yet: the Owner's rename below
+-- goes through update_customer. It runs before the grants below, so its own
+-- checks of the table grants do not see this test's grants.
+select to_regprocedure('public.update_customer(uuid,jsonb,text,timestamptz)') is not null as t418_in \gset
+\if :t418_in
+\else
+\ir ../../../supabase/418_customer_edits_audited_and_phone_search.sql
+\endif
+
 -- What Supabase gives these roles on a public table, applied here so the test
 -- reaches the policies instead of stopping at a missing grant.
 grant usage on schema public to authenticated, anon;
@@ -98,19 +107,27 @@ begin
       blocked := blocked || t || ' (an Owner sees no rows) '; end if;
   end loop;
 
+  -- 418: customers are edited through update_customer (audited), not by
+  -- writing the table; the write rules on customers are gone.
   begin
-    execute format('update public.customers set full_name = %L where id = %L', 'Renamed by an Owner', cust);
-    get diagnostics n = row_count;
-    if n <> 1 then blocked := blocked || 'an Owner could not rename a customer '; end if;
+    perform public.update_customer(cust, jsonb_build_object('first_name', 'Renamed', 'last_name', 'by an Owner'));
+    if (select full_name from public.customers where id = cust) is distinct from 'Renamed by an Owner' then
+      blocked := blocked || 'an Owner could not rename a customer '; end if;
   exception when others then
     get stacked diagnostics v_msg = message_text;
     blocked := blocked || 'an Owner could not rename a customer (' || v_msg || ') ';
+  end;
+  begin
+    execute format('update public.customers set full_name = %L where id = %L', 'Renamed directly', cust);
+    get diagnostics n = row_count;
+    if n > 0 then blocked := blocked || 'a customer can still be written directly (418) '; end if;
+  exception when insufficient_privilege then null;
   end;
   execute 'reset role';
 
   if blocked <> '' then
     raise exception 'FAIL: the tightened policies cost staff access to: %', blocked; end if;
 
-  raise notice 'PASS: an affiliate session reaches none of the % protected tables, cannot create its own Owner profile and cannot rewrite a customer; an Owner still reads and writes everything it did', array_length(closed,1);
+  raise notice 'PASS: an affiliate session reaches none of the % protected tables, cannot create its own Owner profile and cannot rewrite a customer; an Owner still reads everything it did and edits a customer through update_customer (418), not the table', array_length(closed,1);
 end $$;
 rollback;

@@ -146,7 +146,10 @@ declare
                              -- 415: which passes the website may sell (the edge function asks it)
                              'web_order_tickets',
                              -- 432: how affiliate sign-up compares names and emails
-                             'customer_name_words','customer_names_match','customer_email_match_key'];
+                             'customer_name_words','customer_names_match','customer_email_match_key',
+                             -- 418: the date-of-birth rule, called inside update_customer and
+                             -- the survey's Edit details (which run as the owner)
+                             'assert_customer_dob_change'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

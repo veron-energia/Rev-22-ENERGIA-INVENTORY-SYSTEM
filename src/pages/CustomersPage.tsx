@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -11,8 +11,9 @@ import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown
 import { CustomerSearchSelect } from '../components/SearchSelect';
 import { CoverageLine } from '../components/therapy/coverage';
 import DownlineModal from '../components/referrals/DownlineModal';
-import { visitFilterArgs, visitFilterActive, sgDate } from '../lib/referral/campaign.mjs';
+import { visitFilterArgs, visitFilterActive, sgDate, sgDayOf } from '../lib/referral/campaign.mjs';
 import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
+import { canEditCustomers } from '../lib/customers/customerRoles.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
 
 // join_person_name() in the database: the two parts, trimmed, single-spaced,
@@ -20,6 +21,9 @@ import CustomerLoans from '../components/stock-loans/CustomerLoans';
 // shows is the name that gets stored.
 export const joinPersonName = (first?: string | null, last?: string | null) =>
   [String(first ?? '').trim(), String(last ?? '').trim()].filter(Boolean).join(' ');
+
+/** A date or a moment from the database, as a Singapore day (dd/mm/yyyy). */
+const showDate = (v?: string | null) => (v ? sgDayOf(v) : '—');
 
 const blank = (c?: Customer) => ({
   // Existing records were split by migration 92 — first word, then the rest —
@@ -31,12 +35,55 @@ const blank = (c?: Customer) => ({
   notes: c?.notes ?? '', is_active: c?.is_active ?? true,
   referred_by: c?.referred_by ?? '',
 });
+type CustomerForm = ReturnType<typeof blank>;
+
+/** The form as update_customer stores it: trimmed, blanks as null, the
+ *  gender description only beside Other. */
+const formValues = (f: CustomerForm): Record<string, string | boolean | null> => ({
+  first_name: f.first_name.trim() || null,
+  last_name: f.last_name.trim() || null,
+  phone: f.phone.trim() || null,
+  email: f.email.trim() || null,
+  date_of_birth: f.date_of_birth || null,
+  gender: f.gender || null,
+  gender_other: f.gender === 'other' ? (f.gender_other.trim() || null) : null,
+  occupation: f.occupation.trim() || null,
+  notes: f.notes.trim() || null,
+  is_active: f.is_active,
+  referred_by: f.referred_by || null,
+});
+
+/** 418: only the fields that changed are sent, so an edit never writes back
+ *  a value someone else changed meanwhile, and the history shows exactly
+ *  what was changed. */
+export const changedFields = (before: CustomerForm, after: CustomerForm) => {
+  const a = formValues(before), b = formValues(after);
+  const out: Record<string, string | boolean | null> = {};
+  for (const k of Object.keys(b)) if (a[k] !== b[k]) out[k] = b[k];
+  return out;
+};
+
+type Candidate = { id: string; full_name: string; phone_tail: string; name_matches: boolean };
+
+/** Why a list or a customer could not be loaded, in plain words. The app's
+ *  own functions already raise plain messages (P0001, and 406's staff check);
+ *  anything else (a timeout, a lost connection, a database message) is not
+ *  shown to staff, only written to the console. */
+export const plainLoadError = (e?: { message?: string; code?: string } | null) => {
+  const m = String(e?.message ?? '').trim();
+  if (m && (e?.code === 'P0001' || (e?.code === '42501' && !/^permission denied/i.test(m)))) return m;
+  if (m) console.error(m);
+  return 'Please try again. If it keeps failing, tell the Owner.';
+};
 
 const CustomersPage: React.FC = () => {
   const { profile } = useAuth();
   const canComplete = isOwnerOrManager(profile?.role);   // complete profile view: Owner/Manager only
+  // 418: Add, Edit, Change phone and Source are for Owners, Managers and
+  // Staff (and the old Admin role). Inventory Managers still find and view
+  // customers; the database refuses their changes too.
+  const canEdit = canEditCustomers(profile?.role);
   const [showDeleted, setShowDeleted] = useState(false);
-  const [originalPhone, setOriginalPhone] = useState('');
   const [rows, setRows] = useState<Customer[]>([]);
   const [delFor, setDelFor] = useState<Customer | null>(null);
   const [delName, setDelName] = useState('');
@@ -47,8 +94,11 @@ const CustomersPage: React.FC = () => {
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [phoneHistory, setPhoneHistory] = useState<{ customer_id: string; phone: string; reason: string | null; created_at: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  // CUSTOMERS-14: a failed search says so, with Retry, rather than "No customers yet".
+  const [listErr, setListErr] = useState<string | null>(null);
+  // CUSTOMERS-13: only the newest list request's answer is shown.
+  const loadSeq = useRef(0);
   const [search, setSearch] = useState('');
   // Phase 14 — customer source: filter + staff correction.
   const [sourceFilter, setSourceFilter] = useState('');
@@ -70,11 +120,40 @@ const CustomersPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blank());
+  // 418: the customer as read when Edit opened, and when it was last saved,
+  // so only changed fields are sent and an older copy is refused.
+  const [originalForm, setOriginalForm] = useState(blank());
+  const [editAt, setEditAt] = useState<string | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
+  // The latest details could not be read when Edit opened: nothing can be
+  // saved (there is no updated_at to check against) until Retry reads them.
+  const [editLoadErr, setEditLoadErr] = useState<string | null>(null);
+  const [editReason, setEditReason] = useState('');
+  const editIdRef = useRef<string | null>(null);
+  const editCustomerRef = useRef<Customer | null>(null);
+  // First Name takes the cursor once the latest details are in (the fields
+  // are locked until then, so autoFocus alone finds it locked).
+  const firstNameRef = useRef<HTMLInputElement>(null);
+  const focusAfterLoad = useRef(false);
+  // Add: one request id per window, so a retry returns the customer the first
+  // try made; and who already uses the phone (customer_match_candidates).
+  const addRequestId = useRef<string>('');
+  const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [capacity, setCapacity] = useState<{ used: number; remaining: number } | null>(null);
+  const [checkingPhone, setCheckingPhone] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [profileFor, setProfileFor] = useState<Customer | null>(null);
+  const [profileErr, setProfileErr] = useState<string | null>(null);
+  // Phone history, read for the customer whose Profile is open (CUSTOMERS-19).
+  const [profilePhones, setProfilePhones] = useState<{ phone: string; reason: string | null; created_at: string }[] | null>(null);
+  const profileIdRef = useRef<string | null>(null);
   const [overviewFor, setOverviewFor] = useState<Customer | null>(null);
   const [overview, setOverview] = useState<any>(null);
+  const [ovErr, setOvErr] = useState<string | null>(null);
+  // CUSTOMERS-13: the customer whose View is open. An answer for anyone else
+  // (a slow one, for the customer opened before) is dropped.
+  const overviewIdRef = useRef<string | null>(null);
   const [credit, setCredit] = useState<any>(null);
   const [creditRows, setCreditRows] = useState<any[]>([]);
   const [creditForm, setCreditForm] = useState<any>(null);
@@ -102,10 +181,12 @@ const CustomersPage: React.FC = () => {
   };
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const seq = ++loadSeq.current;
+    setLoading(true); setListErr(null);
     // Searching and paging happen in the database. The customer table is far
     // too large to hold in the browser, so only one page is ever fetched.
-    const [cust, ph, srcs] = await Promise.all([
+    // Phone history is read per customer, when their Profile opens.
+    const [cust, srcs] = await Promise.all([
       supabase.rpc('search_customers', {
         p_query: debouncedSearch.trim() || null,
         p_source: sourceFilter || null,
@@ -113,14 +194,20 @@ const CustomersPage: React.FC = () => {
         p_offset: page * PAGE_SIZE,
         ...visitArgs,
       }),
-      supabase.from('customer_phone_history').select('customer_id,phone,reason,created_at'),
       supabase.rpc('active_customer_source_options'),
     ]);
-    const list = (cust.data as any[]) ?? [];
-    setRows(list as Customer[]);
-    setTotalCount(list.length > 0 ? Number(list[0].total_count) : 0);
-    setPhoneHistory((ph.data as any[]) ?? []);
-    setSourceOpts((srcs.data as any[]) ?? []);
+    // A newer search (typing, paging, a filter) has been sent since: its
+    // answer is the one to show, whichever arrives last.
+    if (seq !== loadSeq.current) return;
+    if (cust.error) {
+      setRows([]); setTotalCount(0);
+      setListErr(plainLoadError(cust.error));
+    } else {
+      const list = (cust.data as any[]) ?? [];
+      setRows(list as Customer[]);
+      setTotalCount(list.length > 0 ? Number(list[0].total_count) : 0);
+    }
+    if (!srcs.error) setSourceOpts((srcs.data as any[]) ?? []);
     setLoading(false);
   }, [debouncedSearch, sourceFilter, page, visitArgs]);
 
@@ -132,21 +219,32 @@ const CustomersPage: React.FC = () => {
   useEffect(() => { setPage(0); }, [sourceFilter, visitArgs]);
 
   const openOverview = async (c: Customer) => {
-    setOverviewFor(c); setOverview(null); setOvLoading(true);
-    const { data } = await supabase.rpc('customer_overview', { p_customer_id: c.id });
-    setOverview(data ?? null); setOvLoading(false);
+    overviewIdRef.current = c.id;
+    // CUSTOMERS-13: the previous customer's wallet goes at once, not when the
+    // new one arrives.
+    setOverviewFor(c); setOverview(null); setOvErr(null); setOvLoading(true);
+    setCredit(null); setCreditRows([]);
+    const { data, error } = await supabase.rpc('customer_overview', { p_customer_id: c.id });
+    if (overviewIdRef.current !== c.id) return;
+    setOvLoading(false);
+    // CUSTOMERS-14: a failed View says so, with Retry, rather than "Loading…".
+    if (error) { setOvErr(plainLoadError(error)); return; }
+    setOverview(data ?? {});
     void loadCredit(c.id);
   };
+  const closeOverview = () => { overviewIdRef.current = null; setOverviewFor(null); };
 
   const loadCredit = async (customerId: string) => {
     if (creditStores.length === 0) {
       const { data: st } = await supabase.from('stores').select('id,name').is('deleted_at', null).order('name');
       setCreditStores((st as any[]) ?? []);
     }
-    const { data: bal } = await supabase.rpc('customer_credit_balances', { p_customer_id: customerId });
-    setCredit(bal ?? null);
+    const { data: bal, error: balErr } = await supabase.rpc('customer_credit_balances', { p_customer_id: customerId });
+    if (overviewIdRef.current !== customerId) return;
+    setCredit(balErr ? null : bal ?? null);
     const { data: st } = await supabase.rpc('customer_credit_statement',
       { p_customer_id: customerId, p_from: null, p_to: null });
+    if (overviewIdRef.current !== customerId) return;
     setCreditRows((st as any[]) ?? []);
   };
 
@@ -154,12 +252,15 @@ const CustomersPage: React.FC = () => {
     if (!creditForm || !overviewFor) return;
     setCreditBusy(true); setCreditErr(null);
     let error: any = null;
+    // 418: the window's request id goes with every press of Confirm, so a
+    // second press after a lost answer returns the entry the first one made.
     if (creditForm.mode === 'legacy') {
       ({ error } = await supabase.rpc('add_legacy_credit', {
         p_customer_id: overviewFor.id, p_category: creditForm.category,
         p_amount: Number(creditForm.amount), p_original_purchase_date: creditForm.purchase_date || null,
         p_store_id: creditForm.store_id || null, p_reference_no: creditForm.reference_no || null,
         p_note: creditForm.note, p_effective_date: creditForm.effective_date || null,
+        p_request_id: creditForm.request_id,
       }));
     } else {
       ({ error } = await supabase.rpc('adjust_customer_credit', {
@@ -168,6 +269,7 @@ const CustomersPage: React.FC = () => {
         p_reason: creditForm.reason, p_reference_no: creditForm.reference_no || null,
         p_effective_date: creditForm.effective_date || null, p_note: creditForm.note || null,
         p_store_id: creditForm.store_id || null,
+        p_request_id: creditForm.request_id,
       }));
     }
     setCreditBusy(false);
@@ -175,18 +277,59 @@ const CustomersPage: React.FC = () => {
     setCreditForm(null); await loadCredit(overviewFor.id);
   };
   const openProfile = async (c: Customer) => {
+    profileIdRef.current = c.id;
     setProfileFor(c); setProfileStats(null); setTimeline(null); setExpandedInv({});
+    setProfilePhones(null); setProfileErr(null);
     // The figures are for Owners and Managers (406); the others see the
     // limited view and ask for nothing.
     if (!canComplete) { setProfileStats({}); return; }
-    const { data } = await supabase.rpc('customer_profile_stats', { p_customer_id: c.id });
-    setProfileStats(data ?? {});
-    const { data: tl } = await supabase.rpc('customer_purchase_timeline', { p_customer_id: c.id });
-    setTimeline((tl as any[]) ?? []);
+    const [stats, tl, ph] = await Promise.all([
+      supabase.rpc('customer_profile_stats', { p_customer_id: c.id }),
+      supabase.rpc('customer_purchase_timeline', { p_customer_id: c.id }),
+      supabase.from('customer_phone_history').select('phone,reason,created_at')
+        .eq('customer_id', c.id).order('created_at', { ascending: false }),
+    ]);
+    if (profileIdRef.current !== c.id) return;
+    if (stats.error) setProfileErr('The figures could not be loaded. ' + plainLoadError(stats.error));
+    setProfileStats(stats.data ?? {});
+    setTimeline((tl.data as any[]) ?? []);
+    setProfilePhones((ph.data as any[]) ?? []);
   };
+  const closeProfile = () => { profileIdRef.current = null; setProfileFor(null); };
 
-  const openAdd = () => { setForm(blank()); setOriginalPhone(''); setEditId(null); setOrigReferrer(''); setErr(null); setModalOpen(true); };
-  const openEdit = (c: Customer) => { setForm(blank(c)); setOriginalPhone(c.phone); setEditId(c.id); setOrigReferrer((c as any)?.referred_by ?? ''); setErr(null); setModalOpen(true); };
+  const resetPhoneCheck = () => { setCandidates(null); setCapacity(null); setCheckingPhone(false); };
+  const openAdd = () => {
+    editIdRef.current = null;
+    addRequestId.current = crypto.randomUUID();
+    const f = blank();
+    setForm(f); setOriginalForm(f); setEditId(null); setEditAt(null); setEditLoading(false); setEditLoadErr(null); setEditReason('');
+    setOrigReferrer(''); setErr(null); resetPhoneCheck(); setModalOpen(true);
+  };
+  // The row is read again when Edit opens: the list may be minutes old, and
+  // its updated_at is what update_customer checks. The fields stay locked
+  // until it arrives, so nothing typed meanwhile is replaced.
+  const openEdit = async (c: Customer) => {
+    editIdRef.current = c.id;
+    editCustomerRef.current = c;
+    const f = blank(c);
+    setForm(f); setOriginalForm(f); setEditId(c.id); setEditAt(null); setEditLoadErr(null); setEditReason('');
+    setOrigReferrer(c.referred_by ?? ''); setErr(null); resetPhoneCheck(); setEditLoading(true); setModalOpen(true);
+    const { data, error } = await supabase.from('customers').select('*').eq('id', c.id).maybeSingle();
+    if (editIdRef.current !== c.id) return;
+    setEditLoading(false);
+    if (error || !data) {
+      setEditLoadErr(error ? plainLoadError(error) : 'This customer is no longer on the list.');
+      return;
+    }
+    const fresh = blank(data as Customer);
+    setForm(fresh); setOriginalForm(fresh); setOrigReferrer((data as any).referred_by ?? '');
+    setEditAt((data as any).updated_at ?? null);
+    focusAfterLoad.current = true;
+  };
+  useEffect(() => {
+    if (focusAfterLoad.current && !editLoading && editAt) { focusAfterLoad.current = false; firstNameRef.current?.focus(); }
+  }, [editLoading, editAt]);
+  const closeForm = () => { editIdRef.current = null; setModalOpen(false); };
 
   // Correct-referrer (Owner/Manager, audited) — first valid referral otherwise wins.
   const [origReferrer, setOrigReferrer] = useState('');
@@ -204,39 +347,95 @@ const CustomersPage: React.FC = () => {
     setFixBusy(false);
     if (error) { setFixErr(error.message); return; }
     setOrigReferrer(fixVal); setForm(f => ({ ...f, referred_by: fixVal }));
+    // The correction changed the row: take its new updated_at and referrer, so
+    // the edit still open is not refused as made on an older copy.
+    const { data } = await supabase.from('customers').select('updated_at,referred_by').eq('id', editId).maybeSingle();
+    if (data) {
+      setEditAt((data as any).updated_at ?? null);
+      setOriginalForm(f => ({ ...f, referred_by: (data as any).referred_by ?? '' }));
+    }
     setFixOpen(false); setFixReason(''); load();
   };
 
+  // 418: the date-of-birth rule (the Owner, 9 Oct 2026). Staff may fill in a
+  // missing date; changing or clearing one already filled in is for an Owner
+  // or Manager, with a reason. A phone change needs a reason too.
+  const phoneChanged = !!editId && form.phone !== originalForm.phone;
+  const dobLocked = !!editId && !!originalForm.date_of_birth && !canComplete;
+  const dobChanged = !!editId && !!originalForm.date_of_birth && form.date_of_birth !== originalForm.date_of_birth;
+  const needsReason = phoneChanged || dobChanged;
+
+  // Add: who already uses this phone (as on the Invoices page's Add a customer).
+  useEffect(() => {
+    if (!modalOpen || (editId && !phoneChanged) || !isPhoneValid(form.phone)) { resetPhoneCheck(); return; }
+    let live = true;
+    const t = setTimeout(async () => {
+      setCheckingPhone(true);
+      const { data, error } = await supabase.rpc('customer_match_candidates',
+        { p_phone: form.phone, p_name: joinPersonName(form.first_name, form.last_name) || null });
+      if (!live) return;
+      setCheckingPhone(false);
+      if (error) { setCandidates(null); setCapacity(null); return; }
+      const d = data as any;
+      setCandidates(((d?.candidates ?? []) as Candidate[]).filter(c => c.id !== editId));
+      setCapacity({ used: Number(d?.used ?? 0), remaining: Number(d?.remaining ?? 3) });
+    }, 400);
+    return () => { live = false; clearTimeout(t); };
+  }, [modalOpen, editId, phoneChanged, form.phone, form.first_name, form.last_name]);
+
   const handleSave = async () => {
+    // 418: without the latest details there is no updated_at to send, and the
+    // check for an older copy would be skipped. Save waits for Retry.
+    if (editId && !editAt) { setErr('This customer could not be loaded. Press Retry, or close the window and try again.'); return; }
     // A first name is required, matching update_survey_particulars(), which
     // raises 'A first name is required'. A last name is optional — plenty of
     // customers give only one name.
     if (!form.first_name.trim()) { setErr('First name is required.'); return; }
-    if ((!editId || form.phone !== originalPhone) && !form.phone.trim()) { setErr('Phone number is required. Up to 3 non-deleted customers may share a number.'); return; }
-    if ((!editId || form.phone !== originalPhone) && !isPhoneValid(form.phone)) { setErr('Please enter a valid mobile/phone number.'); return; }
-    setSaving(true); setErr(null);
-    const payload = {
-      first_name: form.first_name.trim(),
-      last_name: form.last_name.trim() || null,
-      // Derived, never typed separately, so it cannot drift from the parts.
-      full_name: joinPersonName(form.first_name, form.last_name),
-      phone: editId && form.phone === originalPhone ? originalPhone : form.phone.trim(),
-      email: form.email.trim() || null,
-      date_of_birth: form.date_of_birth || null,
-      gender: form.gender || null,
-      gender_other: form.gender === 'other' ? (form.gender_other.trim() || null) : null,
-      occupation: form.occupation.trim() || null,
-      notes: form.notes.trim() || null, is_active: form.is_active,
-      referred_by: form.referred_by || null, is_referrer: true,
-    };
-    const res = editId
-      ? await supabase.from('customers').update(payload).eq('id', editId)
-      : await supabase.from('customers').insert(payload);
-    if (res.error) {
-      setErr(phoneErrorMessage(res.error.message));
-      setSaving(false); return;
+    if ((!editId || phoneChanged) && !form.phone.trim()) { setErr('Phone number is required. Up to 3 non-deleted customers may share a number.'); return; }
+    if ((!editId || phoneChanged) && !isPhoneValid(form.phone)) { setErr('Please enter a valid mobile/phone number.'); return; }
+    if (editId) {
+      // 418: Edit goes through update_customer, which records the old and the
+      // new value of every field it changes. Staff no longer write the table.
+      const changes = changedFields(originalForm, form);
+      if (Object.keys(changes).length === 0) { closeForm(); return; }
+      if (needsReason && !editReason.trim()) {
+        setErr(phoneChanged ? 'Give a reason for the new phone number.' : 'Give a reason for changing the date of birth.');
+        return;
+      }
+      setSaving(true); setErr(null);
+      const { error } = await supabase.rpc('update_customer', {
+        p_customer_id: editId, p_changes: changes,
+        p_reason: editReason.trim() || null, p_expected_updated_at: editAt,
+      });
+      if (error && /STALE_CUSTOMER/.test(error.message)) {
+        // The row changed after it was read. That may be this window's own
+        // last Save, whose answer was lost: if the customer already holds
+        // every change, it is saved.
+        const { data: now } = await supabase.from('customers').select('*').eq('id', editId).maybeSingle();
+        setSaving(false);
+        if (editIdRef.current !== editId) return;
+        const stored = now ? formValues(blank(now as Customer)) : null;
+        if (stored && Object.entries(changes).every(([k, v]) => stored[k] === v)) { closeForm(); load(); return; }
+        setErr('This customer was changed after you opened it. Close this window and open it again.');
+        return;
+      }
+      setSaving(false);
+      if (error) { setErr(phoneErrorMessage(error.message)); return; }
+    } else {
+      // Add: create_customer_quick, as on the Invoices page. Its request id
+      // makes a second press after a lost answer return the same customer.
+      setSaving(true); setErr(null);
+      const { error } = await supabase.rpc('create_customer_quick', {
+        p_first_name: form.first_name, p_last_name: form.last_name || null, p_phone: form.phone,
+        p_email: form.email || null, p_date_of_birth: form.date_of_birth || null,
+        p_gender: form.gender || null, p_gender_other: form.gender === 'other' ? (form.gender_other || null) : null,
+        p_occupation: form.occupation || null, p_notes: form.notes || null,
+        p_referred_by: form.referred_by || null, p_request_id: addRequestId.current,
+      });
+      setSaving(false);
+      if (error) { setErr(phoneErrorMessage(error.message)); return; }
     }
-    setSaving(false); setModalOpen(false); load();
+    closeForm(); load();
   };
 
   // Deleting now goes through delete_customer(), which checks the role, matches
@@ -263,12 +462,6 @@ const CustomersPage: React.FC = () => {
     setDelFor(null);
     load();
   };
-
-  const histByPhone = useMemo(() => {
-    const m = new Map<string, string[]>();
-    phoneHistory.forEach(h => { const a = m.get(h.customer_id) ?? []; a.push(h.phone); m.set(h.customer_id, a); });
-    return m;
-  }, [phoneHistory]);
 
   // The database has already applied the search and the source filter.
   const filtered = rows;
@@ -303,7 +496,7 @@ const CustomersPage: React.FC = () => {
               { header: 'Email', value: (c: any) => c.email ?? '' },
               { header: 'Customer ID', value: (c: any) => (String(c.notes ?? '').match(/CUST-\d+/i) || [''])[0] },
               { header: 'Source', value: (c: any) => c.source_label ?? '' },
-              { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
+              { header: 'Created', value: (c: any) => c.created_at ? sgDayOf(c.created_at) : '' },
               { header: 'First Visit', value: (c: any) => c.first_visit_on ? sgDate(c.first_visit_on) : '' },
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
@@ -325,7 +518,7 @@ const CustomersPage: React.FC = () => {
               { header: 'Customer ID', value: (c: any) => (String(c.notes ?? '').match(/CUST-\d+/i) || [''])[0] },
               { header: 'Source', value: (c: any) => c.source_label ?? '' },
               { header: 'Source Details', value: (c: any) => c.source_details ?? '' },
-              { header: 'Date of Birth', value: (c: any) => c.date_of_birth ? new Date(c.date_of_birth).toLocaleDateString('en-GB') : '' },
+              { header: 'Date of Birth', value: (c: any) => c.date_of_birth ? sgDate(c.date_of_birth) : '' },
               { header: 'Gender', value: (c: any) => c.gender ?? '' },
               { header: 'Occupation', value: (c: any) => c.occupation ?? '' },
               { header: 'Address', value: (c: any) => c.address ?? '' },
@@ -333,15 +526,19 @@ const CustomersPage: React.FC = () => {
               // would print blanks for referrers who are not on screen. The id
               // is exported instead: always correct, and joinable in the sheet.
               { header: 'Referred By (ID)', value: (c: any) => c.referred_by ?? '' },
+              // 418 (the Owner, 9 Oct 2026): has referred a customer who is not
+              // deleted, or has an affiliate record that is not deleted.
+              // search_customers works it out; the stored flag was set on
+              // every save.
               { header: 'Is Referrer', value: (c: any) => c.is_referrer ? 'Yes' : 'No' },
               { header: 'Notes', value: (c: any) => c.notes ?? '' },
-              { header: 'Created', value: (c: any) => c.created_at ? new Date(c.created_at).toLocaleDateString('en-GB') : '' },
+              { header: 'Created', value: (c: any) => c.created_at ? sgDayOf(c.created_at) : '' },
               { header: 'First Visit', value: (c: any) => c.first_visit_on ? sgDate(c.first_visit_on) : '' },
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canComplete && <button className="btn btn-secondary" onClick={() => setShowDeleted(true)}>Deleted Customers</button>}
-          <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Customer</button>
+          {canEdit && <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Customer</button>}
         </div>
       </div>
 
@@ -379,6 +576,13 @@ const CustomersPage: React.FC = () => {
       <div className="card">
         <div className="table-wrap">
           {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
+          : listErr ? (
+            <div className="empty-state" role="alert">
+              <p style={{ fontWeight: 600, marginTop: 8 }}>The customer list could not be loaded.</p>
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{listErr}</p>
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => void load()}><RefreshCw size={13} /> Retry</button>
+            </div>
+          )
           : filtered.length === 0 ? <div className="empty-state"><Users size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>{debouncedSearch || sourceFilter || visitFiltered ? 'No customers match this search' : 'No customers yet'}</p></div>
           : (
             <table>
@@ -401,15 +605,17 @@ const CustomersPage: React.FC = () => {
                       {/* 398: Owner/Manager, as customer_downline_visits checks. */}
                       {canComplete && <button className="btn btn-secondary btn-sm btn-icon" title="Downline: Tier 1 and Tier 2, with visits"
                         aria-label={`Downline of ${c.full_name}`} onClick={() => setDownlineFor(c)}><Users size={13} /></button>}
-                      <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
-                      <button className="btn btn-secondary btn-sm" title="Change customer source (old surveys keep their snapshot)"
-                        onClick={() => { setSrcFor(c); setSrcOptId((c as any).source_option_id ?? ''); setSrcDetails((c as any).source_details ?? ''); setSrcReason(''); setSrcErr(null); }}>Source</button>
-                      <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(c)}><Pencil size={13} /></button>
+                      {canEdit && <>
+                        <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" aria-label="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
+                        <button className="btn btn-secondary btn-sm" title="Change customer source (old surveys keep their snapshot)"
+                          onClick={() => { setSrcFor(c); setSrcOptId((c as any).source_option_id ?? ''); setSrcDetails((c as any).source_details ?? ''); setSrcReason(''); setSrcErr(null); }}>Source</button>
+                        <button className="btn btn-secondary btn-sm btn-icon" title="Edit customer" aria-label="Edit customer" onClick={() => void openEdit(c)}><Pencil size={13} /></button>
+                      </>}
                       {/* canComplete is Owner/Manager, matching delete_customer's
                           own check — staff should not be offered a button that
                           the database will refuse. */}
                       {canComplete && <button className="btn btn-danger btn-sm btn-icon"
-                        title="Delete customer" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>}
+                        title="Delete customer" aria-label="Delete customer" onClick={() => handleDelete(c)}><Trash2 size={13} /></button>}
                     </div></td>
                   </tr>
                 ))}
@@ -488,17 +694,29 @@ const CustomersPage: React.FC = () => {
       })()}
 
       {modalOpen && (
-        <Modal title={editId ? 'Edit Customer' : 'Add Customer'} maxWidth={460} confirmClose onClose={() => setModalOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
+        <Modal title={editId ? 'Edit Customer' : 'Add Customer'} maxWidth={460} confirmClose onClose={closeForm}
+          footer={<><button className="btn btn-secondary" onClick={closeForm}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving || editLoading || (!!editId && !editAt)}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+            {editLoading && <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Loading the latest details…</div>}
+            {editLoadErr && (
+              <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span>
+                <div>This customer could not be loaded. {editLoadErr}
+                  <div><button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 6 }}
+                    onClick={() => { if (editCustomerRef.current) void openEdit(editCustomerRef.current); }}><RefreshCw size={13} /> Retry</button></div>
+                </div>
+              </div>
+            )}
+            {/* The fields are locked until the latest details are in. */}
+            <fieldset className="form-grid" disabled={editLoading || (!!editId && !editAt)}
+              style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div className="form-grid-2">
               {/* Two fields, matching the health survey exactly, so a name
                   entered here needs no splitting to sync across. */}
               <div className="form-grid-2">
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>First Name *</label>
-                  <input value={form.first_name} autoFocus
+                  <input value={form.first_name} autoFocus ref={firstNameRef}
                     onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} />
                 </div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
@@ -515,11 +733,36 @@ const CustomersPage: React.FC = () => {
                   Will be shown as <strong>{joinPersonName(form.first_name, form.last_name)}</strong>
                 </div>
               )}
-              <div className="form-group"><label>Phone * (up to 3 customers)</label><PhoneInput value={form.phone} onChange={(e164) => setForm(f => ({ ...f, phone: e164 }))} /></div>
+              <div className="form-group"><label>Phone * (up to 3 customers)</label><PhoneInput value={form.phone} onChange={(e164) => setForm(f => ({ ...f, phone: e164 }))} />
+                {/* Who already uses this number, as on the Invoices page's Add a customer. */}
+                {checkingPhone && <span style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>Checking who is already on this number…</span>}
+                {!checkingPhone && capacity && (
+                  <span style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>
+                    {capacity.used === 0 ? 'Nobody is on file with this number.'
+                      : `${capacity.used} of 3 customers already use this number. ${capacity.remaining} left.`}
+                  </span>
+                )}
+                {!checkingPhone && candidates && candidates.length > 0 && (
+                  <div style={{ fontSize: 12, marginTop: 4 }} aria-label="Already on this number">
+                    <div style={{ fontWeight: 600 }}>Already on this number</div>
+                    {candidates.map(c => (
+                      <div key={c.id} style={{ color: 'var(--text-secondary)' }}>
+                        {c.full_name}{c.name_matches ? ' (same name)' : ''} · ending {c.phone_tail}
+                      </div>
+                    ))}
+                    {!editId && <div style={{ color: 'var(--text-muted)' }}>If this is one of them, close this and search the list instead of adding them again.</div>}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
-              <div className="form-group"><label>Date of Birth</label><input type="date" value={form.date_of_birth} onChange={e => setForm(f => ({ ...f, date_of_birth: e.target.value }))} /></div>
+              <div className="form-group"><label>Date of Birth</label><input type="date" value={form.date_of_birth} disabled={dobLocked}
+                aria-describedby={dobLocked ? 'dob-locked' : undefined}
+                onChange={e => setForm(f => ({ ...f, date_of_birth: e.target.value }))} />
+                {/* 418: the Owner's rule. The Birthday discount reads this date. */}
+                {dobLocked && <span id="dob-locked" style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>Only an Owner or Manager can change a date of birth that is already filled in.</span>}
+              </div>
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Gender</label>
@@ -557,9 +800,24 @@ const CustomersPage: React.FC = () => {
                 </>
               )}
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
-            </label>
+            {/* The Owner, 9 Oct 2026: Add has no Active box. A new customer
+                starts active; Active is changed by Edit. */}
+            {editId && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
+              </label>
+            )}
+            {needsReason && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label htmlFor="edit-reason">Reason for this change *</label>
+                <input id="edit-reason" value={editReason} onChange={e => setEditReason(e.target.value)}
+                  placeholder={phoneChanged ? 'Why is the number changing?' : 'Why is the date of birth changing?'} />
+                <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
+                  Kept in the history with the old and the new value.
+                </span>
+              </div>
+            )}
+            </fieldset>
           </div>
         </Modal>
       )}
@@ -585,9 +843,15 @@ const CustomersPage: React.FC = () => {
       )}
 
       {overviewFor && (
-        <Modal title={`${overviewFor.full_name}`} maxWidth={640} onClose={() => setOverviewFor(null)}
-          footer={<button className="btn btn-secondary" onClick={() => setOverviewFor(null)}>Close</button>}>
-          {ovLoading || !overview ? <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>Loading…</div> : (
+        <Modal title={`${overviewFor.full_name}`} maxWidth={640} onClose={closeOverview}
+          footer={<button className="btn btn-secondary" onClick={closeOverview}>Close</button>}>
+          {ovErr ? (
+            <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span>
+              <div>This customer could not be loaded. {ovErr}
+                <div><button className="btn btn-secondary btn-sm" style={{ marginTop: 6 }} onClick={() => void openOverview(overviewFor)}><RefreshCw size={13} /> Retry</button></div>
+              </div>
+            </div>
+          ) : ovLoading || !overview ? <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>Loading…</div> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 }}>
               {credit && (
                 <section>
@@ -595,8 +859,8 @@ const CustomersPage: React.FC = () => {
                     <div style={{ fontWeight: 700 }}>Credit wallet</div>
                     {isOwnerOrManager(profile?.role) && (
                       <div style={{ display: 'flex', gap: 6 }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'legacy', category: 'legacy', amount: '', purchase_date: '', store_id: '', reference_no: '', note: '', effective_date: '' }); }}>Opening balance</button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'adjust', category: 'paid', direction: 'increase', amount: '', reason: '', reference_no: '', note: '', effective_date: '', store_id: '' }); }}>Adjust</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'legacy', category: 'legacy', amount: '', purchase_date: '', store_id: '', reference_no: '', note: '', effective_date: '', request_id: crypto.randomUUID() }); }}>Opening balance</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'adjust', category: 'paid', direction: 'increase', amount: '', reason: '', reference_no: '', note: '', effective_date: '', store_id: '', request_id: crypto.randomUUID() }); }}>Adjust</button>
                       </div>
                     )}
                   </div>
@@ -623,7 +887,7 @@ const CustomersPage: React.FC = () => {
                         <tbody>
                           {creditRows.map(r => (
                             <tr key={r.entry_seq}>
-                              <td>{r.entry_date ? new Date(r.entry_date).toLocaleDateString('en-GB') : '—'}</td>
+                              <td>{showDate(r.entry_date)}</td>
                               <td>{r.description}{r.reference_no ? <div style={{ color: 'var(--text-muted)' }}>{r.reference_no}</div> : null}</td>
                               <td style={{ textTransform: 'capitalize' }}>{r.category}</td>
                               <td style={{ textAlign: 'right', color: 'var(--success)' }}>{r.credit_added != null ? Number(r.credit_added).toFixed(2) : ''}</td>
@@ -659,12 +923,12 @@ const CustomersPage: React.FC = () => {
                       : t.offers_choice && !t.benefit ? 'not claimed yet — therapy or vouchers'
                       : String(t.status).replace('_', ' ')}
                     {t.benefit !== 'voucher' && t.expiry && !['cancelled', 'refunded', 'expired'].includes(t.status)
-                      ? ` · expires ${new Date(t.expiry).toLocaleDateString('en-GB')}` : ''}
+                      ? ` · expires ${showDate(t.expiry)}` : ''}
                     {/* What an open unlimited period covers, and each service's own limit. */}
                     {t.benefit !== 'voucher' && !['cancelled', 'refunded', 'expired'].includes(t.status) && (t.covers ?? []).length > 0 && (
                       <CoverageLine services={t.covers}
                         lead={t.expiry && ['active', 'scheduled'].includes(t.status)
-                          ? `Unlimited until ${new Date(t.expiry).toLocaleDateString('en-GB')}:` : 'Covers'} />)}
+                          ? `Unlimited until ${showDate(t.expiry)}:` : 'Covers'} />)}
                   </div>)}
                 </section>
               )}
@@ -677,7 +941,7 @@ const CustomersPage: React.FC = () => {
               {overview.deleted_invoices?.length > 0 && (
                 <section>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>Deleted invoice history</div>
-                  {overview.deleted_invoices.map((iv: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{iv.invoice} · S${Number(iv.total).toFixed(2)} · deleted {new Date(iv.deleted_at).toLocaleDateString('en-GB')}</div>)}
+                  {overview.deleted_invoices.map((iv: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{iv.invoice} · S${Number(iv.total).toFixed(2)} · deleted {showDate(iv.deleted_at)}</div>)}
                 </section>
               )}
             </div>
@@ -805,10 +1069,12 @@ const CustomersPage: React.FC = () => {
       )}
 
       {profileFor && (
-        <Modal title={`Profile — ${profileFor.full_name}`} maxWidth={460} onClose={() => setProfileFor(null)}
-          footer={<button className="btn btn-secondary" onClick={() => setProfileFor(null)}>Close</button>}>
+        <Modal title={`Profile — ${profileFor.full_name}`} maxWidth={460} onClose={closeProfile}
+          footer={<button className="btn btn-secondary" onClick={closeProfile}>Close</button>}>
           {!profileStats ? <div className="empty-state"><RefreshCw size={22} className="spin" style={{ opacity: 0.4 }} /></div> : (
             <div className="form-grid">
+              {profileErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span>
+                <div>{profileErr} <button className="btn btn-secondary btn-sm" onClick={() => void openProfile(profileFor)}>Retry</button></div></div>}
               {canComplete ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
@@ -836,7 +1102,7 @@ const CustomersPage: React.FC = () => {
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
                 <span>Phone: {profileFor.phone}</span>
                 {profileFor.email && <span>· {profileFor.email}</span>}
-                {profileFor.date_of_birth && <span>· DOB: {new Date(profileFor.date_of_birth).toLocaleDateString()}</span>}
+                {profileFor.date_of_birth && <span>· DOB: {sgDate(profileFor.date_of_birth)}</span>}
                 {profileFor.gender && <span>· {profileFor.gender === 'other' ? (profileFor.gender_other || 'Other') : (profileFor.gender.charAt(0).toUpperCase() + profileFor.gender.slice(1))}</span>}
                 {profileFor.occupation && <span>· {profileFor.occupation}</span>}
                 {profileFor.first_visit_on !== undefined && <span>· First visit: {profileFor.first_visit_on ? sgDate(profileFor.first_visit_on) : 'not yet'}</span>}
@@ -844,7 +1110,7 @@ const CustomersPage: React.FC = () => {
               {/* 401: stock lent to this customer or affiliate (the stores the viewer works in). */}
               <CustomerLoans customerId={profileFor.id} />
               {canComplete && (() => {
-                const hist = phoneHistory.filter(h => h.customer_id === profileFor.id).sort((a, b) => b.created_at.localeCompare(a.created_at));
+                const hist = profilePhones ?? [];
                 return hist.length > 0 ? (
                   <div>
                     <label>Phone history</label>
@@ -852,7 +1118,7 @@ const CustomersPage: React.FC = () => {
                       {hist.map((h, i) => (
                         <div key={i} style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 3 }}>
                           <span style={{ fontFamily: 'var(--font-display)' }}>{h.phone}</span>
-                          <span style={{ color: 'var(--text-muted)' }}>{h.reason || '—'} · {new Date(h.created_at).toLocaleDateString()}</span>
+                          <span style={{ color: 'var(--text-muted)' }}>{h.reason || '—'} · {showDate(h.created_at)}</span>
                         </div>
                       ))}
                     </div>
@@ -874,7 +1140,7 @@ const CustomersPage: React.FC = () => {
                               {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                               <span style={{ fontWeight: 600, fontSize: 13 }}>{inv.invoice_no}</span>
                               {inv.is_topup && <span className="badge badge-muted" style={{ fontSize: 10 }}>top-up</span>}
-                              <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{inv.date ? new Date(inv.date).toLocaleDateString('en-GB') : '—'}</span>
+                              <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{showDate(inv.date)}</span>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                               <span className={`badge ${statusCls}`} style={{ fontSize: 10, textTransform: 'capitalize' }}>{inv.status}</span>

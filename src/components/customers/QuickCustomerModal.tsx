@@ -3,6 +3,8 @@ import { AlertTriangle, UserPlus } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import PhoneInput, { isPhoneValid } from '../PhoneInput';
 import { phoneErrorMessage } from '../../lib/customer-phones/normalize.mjs';
+import { canEditCustomers, CUSTOMER_EDIT_REFUSED } from '../../lib/customers/customerRoles.mjs';
+import { useAuth } from '../../context/AuthContext';
 import './quick-customer.css';
 
 type Candidate = {
@@ -36,6 +38,10 @@ export const QuickCustomerModal: React.FC<{
   onPickedExisting: (customerId: string) => void;
   onClose: () => void;
 }> = ({ initialName = '', onCreated, onPickedExisting, onClose }) => {
+  // 418: Inventory Managers do not add customers (the Owner, 9 Oct 2026);
+  // create_customer_quick refuses them too. They can still pick one.
+  const { profile } = useAuth();
+  const mayAdd = canEditCustomers(profile?.role);
   const [f, setF] = useState({ ...empty, first_name: initialName });
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
   const [capacity, setCapacity] = useState<{ used: number; remaining: number } | null>(null);
@@ -83,6 +89,7 @@ export const QuickCustomerModal: React.FC<{
   }, [f.phone, lookFor]);
 
   const save = async () => {
+    if (!mayAdd) { setError(CUSTOMER_EDIT_REFUSED); return; }
     if (!f.first_name.trim()) {
       setFieldError('first_name'); setError('Enter a first name.'); firstRef.current?.focus(); return;
     }
@@ -129,6 +136,11 @@ export const QuickCustomerModal: React.FC<{
             The customer is saved on their own as soon as you add them, so they stay on file even
             if you do not finish this invoice.
           </p>
+          {!mayAdd && (
+            <p className="qc-error" role="alert">
+              <AlertTriangle size={14} aria-hidden="true" /> {CUSTOMER_EDIT_REFUSED}
+            </p>
+          )}
 
           <div className="qc-grid">
             <label className="qc-field">First name <span aria-hidden="true">*</span>
@@ -214,7 +226,7 @@ export const QuickCustomerModal: React.FC<{
 
         <div className="quick-customer-foot">
           <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" disabled={saving} onClick={save}>
+          <button type="button" className="btn btn-primary" disabled={saving || !mayAdd} onClick={save}>
             {saving ? 'Adding…' : 'Add customer'}
           </button>
         </div>
