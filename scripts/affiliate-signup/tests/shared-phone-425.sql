@@ -4,7 +4,9 @@
 --
 --   W  The same person: a name with the same words as the customer who has
 --      the phone (432's rule) is "already registered" and makes nothing; the
---      referrer's own name in another order is "You cannot refer yourself".
+--      referrer's own name in another order is "You cannot refer yourself"
+--      (since 442: told what someone already registered is told, word for
+--      word, and the try is a 'self_known' event).
 --   F  Another name on a phone a customer has (a family member, or the same
 --      person written differently): the customer is made, as before, the
 --      person sees the same answer as any new sign-up, the event is
@@ -145,8 +147,15 @@ select pg_temp.check(pg_temp.rx('w1')->>'outcome' = 'already_registered' and pg_
     and (select outcome from public.referral_signup_events where normalized_phone = '+61491570157' order by created_at desc limit 1) = 'duplicate',
   'W1 "Koh Ann Lee T425" on Ann Lee Koh''s phone: the same words, so already registered, nothing made');
 select pg_temp.signup('w2', 'T425RITA', 'Lim', 'T425 Rita', '+61491570006');
-select pg_temp.check(pg_temp.rx('w2')->>'message' = 'You cannot refer yourself.' and pg_temp.fx('w2') is null,
-  'W2 the referrer''s own name in another order on their own phone: "You cannot refer yourself"');
+-- (Since 442 a self match is told, word for word, what someone already registered is told, and
+-- the try is an event: here her own record, on file, so 'self_known', which the phone's limit
+-- counts, as it counts 'duplicate'.)
+select pg_temp.check(case when strpos(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure), '442:') > 0
+                          then pg_temp.rx('w2') = pg_temp.rx('w1')
+                               and (select array_agg(outcome) from public.referral_signup_events where normalized_phone = '+61491570006') = array['self_known']
+                          else pg_temp.rx('w2')->>'message' = 'You cannot refer yourself.' end
+    and pg_temp.fx('w2') is null,
+  'W2 the referrer''s own name in another order on their own phone: herself, nothing made ("You cannot refer yourself"; since 442 the answer someone already registered gets)');
 
 -- ═════ F Another name on a phone a customer has ═════
 select pg_temp.signup('mary', 'T425RITA', 'Mary', 'Tan T425', '+61491570157');

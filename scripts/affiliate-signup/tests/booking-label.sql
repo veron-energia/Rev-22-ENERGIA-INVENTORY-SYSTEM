@@ -91,8 +91,11 @@ begin
   if (r->>'ok')::boolean or r ? 'affiliate_label' then
     raise exception 'FAIL: a suspended link answered %', r; end if;
 
+  -- A self-referral: refused, naming nobody ("You cannot refer yourself."; since 442 what someone
+  -- already registered is told).
   r := affiliate_referral_signup(code, 'Jane (intern)', 'Tan', '+6591392001', null, null);
-  if (r->>'ok')::boolean or r ? 'affiliate_label' then
+  if r ? 'affiliate_label' or r->>'outcome' is not distinct from 'registered'
+     or ((r->>'ok')::boolean and r->>'outcome' is distinct from 'already_registered') then
     raise exception 'FAIL: a self-referral answered %', r; end if;
 
   -- A referrer whose notes are all there is: no label, and the registration still succeeds.
@@ -115,12 +118,13 @@ begin
   end;
   execute 'reset role';
 
-  -- ── Installed as the migration says (392's, or 425's built on it, or 440's built on 425's) ─
+  -- ── Installed as the migration says (392's, or 425's built on it, or 440's built on 425's, or 442's on 440's) ─
   if md5(pg_get_functiondef('affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure))
-       not in ('5b8363a3f87a4c89f2866f3ba0f32b55', '35def9a1a663d6180d15ab8ea049de35', 'a3deac154f5144cffb34fab871f076c6')
+       not in ('5b8363a3f87a4c89f2866f3ba0f32b55', '35def9a1a663d6180d15ab8ea049de35', 'a3deac154f5144cffb34fab871f076c6',
+               'c76573912de0a4ded29e81e5c56c96d3')
      or md5(pg_get_functiondef('affiliate_calendar_label(text)'::regprocedure))
        <> 'af4eecdcf978c19b3effb6af3a897165' then
-    raise exception 'FAIL: the functions are not the versions 392 records (or 425''s, or 440''s)'; end if;
+    raise exception 'FAIL: the functions are not the versions 392 records (or 425''s, 440''s or 442''s)'; end if;
 
   raise notice 'PASS: a new registration names its referrer without bracketed notes; every other reply names nobody; the label is no endpoint';
 end $$;

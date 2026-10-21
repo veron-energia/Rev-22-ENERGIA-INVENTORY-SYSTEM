@@ -40,7 +40,11 @@
 --      affiliate whose record staff changed away from what her login signed
 --      up with: her record, as before; her login's name (also in another
 --      order), its phone, its email inbox (in other case): each "You cannot
---      refer yourself.", the very answer her record gives, nothing written; a
+--      refer yourself.", the very answer her record gives, nothing written
+--      (since 442: each told what someone already registered is told, the
+--      very answer her record gives, and one event per try, 'self', or
+--      'self_known' for her record, which the sign-up limits count; still no
+--      customer and no referral); a
 --      family member who shares nothing is referred as before; someone on her
 --      record's phone under another name: 425's check, as before; after she
 --      edits her metadata and her email, her login's name is still her and
@@ -146,6 +150,16 @@ $$ select count(*)::int from public.referral_signup_events where normalized_phon
 create function pg_temp.made_on(p text) returns public.customers language sql as
 $$ select c.* from public.referral_signup_events e join public.customers c on c.id = e.new_customer_id
     where e.normalized_phone = p and e.new_customer_id is not null limit 1 $$;
+-- What a self match answers: "You cannot refer yourself." (425, 440), or, once 442 is in, word for
+-- word what someone already registered is told (442: the Owner, 21 Oct 2026: a vaguer answer, and
+-- the try counted, as a 'self' event, by the sign-up limits).
+create function pg_temp.has442() returns boolean language sql as
+$$ select strpos(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure), '442:') > 0 $$;
+create function pg_temp.self_answer() returns jsonb language sql as
+$$ select case when pg_temp.has442()
+               then jsonb_build_object('ok', true, 'outcome', 'already_registered', 'message',
+                      'This phone number is already registered with Energia, so no new registration was created. Nothing about your existing record has changed.')
+               else jsonb_build_object('ok', false, 'message', 'You cannot refer yourself.') end $$;
 
 -- ═════ P0 ═════
 do $$ begin insert into tx values ('sfx', lower(substr(md5(random()::text || clock_timestamp()::text), 1, 6))); end $$;
@@ -273,8 +287,8 @@ update auth.users set raw_user_meta_data = raw_user_meta_data || jsonb_build_obj
 select pg_temp.ref('b6a', pg_temp.tx('code_bacc'), 'Bea', 'Testbackfill', '+61491570535', pg_temp.mail('b6a'));
 select pg_temp.ref('b6b', pg_temp.tx('code_bacc'), 'Kim', 'Friend', '+61491570530', pg_temp.mail('b6b'));
 select pg_temp.ref('b6c', pg_temp.tx('code_bacc'), 'Bo', 'Otheredit', '+61491570538', pg_temp.mail('b6c'));
-select pg_temp.check(pg_temp.r('b6a') = jsonb_build_object('ok', false, 'message', 'You cannot refer yourself.')
-    and pg_temp.r('b6b') = jsonb_build_object('ok', false, 'message', 'You cannot refer yourself.')
+select pg_temp.check(pg_temp.r('b6a') = pg_temp.self_answer()
+    and pg_temp.r('b6b') = pg_temp.self_answer()
     and pg_temp.r('b6c')->>'outcome' = 'registered'
     and (pg_temp.made_on('+61491570538')).referred_by = pg_temp.fx('cBacc'),
   'B6 a backfilled login that edits her metadata: her backfilled name and phone are still herself at /r/; what she edited in is someone else, referred: '
@@ -327,8 +341,8 @@ select pg_temp.check(pg_temp.copies('bPend2') = 0
   'B7 and nothing else: a pending claim made after the first run is not copied, every other copy is as it was, no function changes, every affiliate login has a copy');
 select pg_temp.ref('b7b', pg_temp.tx('code_late'), 'Lia', 'Testlate', '+61491570527', pg_temp.mail('b7b'));
 select pg_temp.ref('b7c', pg_temp.tx('code_late'), 'Max', 'Friend', '+61 491 570 546', pg_temp.mail('b7c'));
-select pg_temp.check(pg_temp.r('b7b') = jsonb_build_object('ok', false, 'message', 'You cannot refer yourself.')
-    and pg_temp.r('b7c') = jsonb_build_object('ok', false, 'message', 'You cannot refer yourself.')
+select pg_temp.check(pg_temp.r('b7b') = pg_temp.self_answer()
+    and pg_temp.r('b7c') = pg_temp.self_answer()
     and pg_temp.on_phone('+61491570527') = 0,
   'B7 then /r/ knows her: her login''s name, and its phone, are herself: ' || pg_temp.r('b7b')::text || ' ' || pg_temp.r('b7c')::text);
 do $$ begin insert into tx values ('snap_b7b', pg_temp.snapshot()::text); end $$;
@@ -508,8 +522,8 @@ do $$ begin
   update customers set full_name = 'Georgina Testrecord', phone = '+61491570511', email = null where id = pg_temp.fx('cGina');
 end $$;
 select pg_temp.ref('r0', pg_temp.tx('code_gina'), 'Georgina', 'Testrecord', '+61491570511', pg_temp.mail('r0'));
-select pg_temp.check(pg_temp.r('r0') = jsonb_build_object('ok', false, 'message', 'You cannot refer yourself.'),
-  'R0 her record through her own link: herself, as before (425): ' || pg_temp.r('r0')::text);
+select pg_temp.check(pg_temp.r('r0') = pg_temp.self_answer(),
+  'R0 her record through her own link: herself, as before (425; since 442 told what someone already registered is told): ' || pg_temp.r('r0')::text);
 select pg_temp.ref('r1', pg_temp.tx('code_gina'), 'Gina', 'Testlogin', '+61491570513', pg_temp.mail('r1'));
 select pg_temp.ref('r1b', pg_temp.tx('code_gina'), 'TESTLOGIN', 'gina', '+61491570517', pg_temp.mail('r1b'));
 select pg_temp.ref('r2', pg_temp.tx('code_gina'), 'Kurt', 'Friend', '+61 491 570 510', pg_temp.mail('r2'));
@@ -524,10 +538,19 @@ select pg_temp.check(pg_temp.r('r3') = pg_temp.r('r0'),
   'R3 her login''s email inbox (in capitals) under another name on another phone: herself (the email alone): ' || pg_temp.r('r3')::text);
 select pg_temp.check(pg_temp.on_phone('+61491570513') + pg_temp.on_phone('+61491570517') + pg_temp.on_phone('+61491570510')
                        + pg_temp.on_phone('+61491570516') = 0
-    and pg_temp.events_on('+61491570513') + pg_temp.events_on('+61491570517') + pg_temp.events_on('+61491570510')
-          + pg_temp.events_on('+61491570516') + pg_temp.events_on('+61491570511') = 0
+    and (select count(*) from referral_signup_events
+          where normalized_phone in ('+61491570513', '+61491570517', '+61491570510', '+61491570516', '+61491570511')
+            and outcome not in ('self', 'self_known')) = 0
+    and (select count(*) from referral_signup_events
+          where normalized_phone in ('+61491570513', '+61491570517', '+61491570510', '+61491570516')
+            and outcome = 'self' and new_customer_id is null and referrer_customer_id = pg_temp.fx('cGina'))
+        = case when pg_temp.has442() then 4 else 0 end
+    and (select count(*) from referral_signup_events
+          where normalized_phone = '+61491570511'
+            and outcome = 'self_known' and new_customer_id is null and referrer_customer_id = pg_temp.fx('cGina'))
+        = case when pg_temp.has442() then 1 else 0 end
     and not exists (select 1 from customers c where c.referred_by = pg_temp.fx('cGina')),
-  'R1-3 as for her record: nothing written (no customer, no referral event, no referral)');
+  'R1-3 as for her record: no customer, no referral, no referral event (before 442 no event at all; since 442 one event per try, which the phone''s limit counts: ''self'' for each of her login''s, which the link''s limit counts too, ''self_known'' for her record, which is on file)');
 select pg_temp.ref('r4', pg_temp.tx('code_gina'), 'Tom', 'Testfamily', '+61491570514', pg_temp.mail('r4'));
 select pg_temp.check(pg_temp.r('r4') = jsonb_build_object('ok', true, 'outcome', 'registered', 'message', 'Registration successful.',
                                                           'affiliate_label', pg_temp.r('r4')->>'affiliate_label')
@@ -751,10 +774,11 @@ select pg_temp.check(not has_function_privilege('anon', 'public.complete_affilia
     and has_function_privilege('authenticated', 'public.affiliate_referral_signup(text,text,text,text,text,text)', 'execute'),
   'G2 the sign-up stays the signed-in login''s; /r/ stays the anon key''s');
 select pg_temp.check(md5(pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure)) = '43084deab54968eacaf1793c470fd08f'
-    and md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure)) = 'a3deac154f5144cffb34fab871f076c6'
+    and md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure))
+          in ('a3deac154f5144cffb34fab871f076c6', 'c76573912de0a4ded29e81e5c56c96d3')
     and md5(pg_get_functiondef('public.affiliate_login_signup_details(uuid)'::regprocedure)) = '71e6d6f9ab2b474450b5c00f60f14bb4'
     and md5(pg_get_functiondef('public.trg_affiliate_signup_identity_kept()'::regprocedure)) = 'b8c77a682d1a99783bfa708471c9f27e',
-  'G3 the functions have 440''s AFTER md5s');
+  'G3 the functions have 440''s AFTER md5s (affiliate_referral_signup: 440''s, or 442''s built on it)');
 select pg_temp.check((select relrowsecurity from pg_class where oid = 'public.affiliate_signup_identities'::regclass)
     and not exists (select 1 from pg_policy where polrelid = 'public.affiliate_signup_identities'::regclass)
     and (select relacl::text from pg_class where oid = 'public.affiliate_signup_identities'::regclass) = '{postgres=arwdDxtm/postgres,service_role=r/postgres}'
