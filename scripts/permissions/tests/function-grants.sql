@@ -191,6 +191,10 @@ declare
                              'affiliate_session_from_email_link','affiliate_email_verification_needed',
                              -- 437: what a sign-up's fresh record has done as an affiliate
                              'affiliate_signup_fresh_history',
+                             -- 440: what an affiliate login signed up with (the server's own
+                             -- copy, which the no-self-referral checks read) and the trigger
+                             -- that keeps the copy from being changed
+                             'affiliate_login_signup_details','trg_affiliate_signup_identity_kept',
                              -- 418: the date-of-birth rule, called inside update_customer and
                              -- the survey's Edit details (which run as the owner)
                              'assert_customer_dob_change',
@@ -374,9 +378,22 @@ begin
           or has_table_privilege('authenticated', 'public.affiliate_signup_matches', 'select,insert,update,delete,truncate,references,trigger')) then
     raise exception 'FAIL: affiliate_signup_matches is open to a client role'; end if;
 
+  -- 14. What each affiliate login signed up with (440) is the server's own
+  --     copy: no client role holds the table (a signed-in affiliate could
+  --     otherwise rewrite what the no-self-referral checks compare), the
+  --     service role may only read it, and its UPDATE trigger is on.
+  if to_regclass('public.affiliate_signup_identities') is not null then
+    if has_table_privilege('anon', 'public.affiliate_signup_identities', 'select,insert,update,delete,truncate,references,trigger')
+       or has_table_privilege('authenticated', 'public.affiliate_signup_identities', 'select,insert,update,delete,truncate,references,trigger')
+       or has_table_privilege('service_role', 'public.affiliate_signup_identities', 'insert,update,delete,truncate,references,trigger')
+       or not exists (select 1 from pg_trigger t where t.tgrelid = to_regclass('public.affiliate_signup_identities')
+                        and t.tgname = 'affiliate_signup_identities_kept' and t.tgenabled = 'O') then
+      raise exception 'FAIL: affiliate_signup_identities is open to a client role, writable by the service role, or its UPDATE trigger is off'; end if;
+  end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, and no client role holds the sign-up list', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy', n;
 end $$;

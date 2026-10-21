@@ -779,7 +779,11 @@ begin
   foreach t in array array['customers', 'health_surveys', 'consultant_notes', 'invoices', 'invoice_items',
                            'invoice_revisions', 'invoice_promotion_selections', 'invoice_refunds',
                            'invoice_credit_splits', 'profiles', 'audit_logs', 'document_sends', 'approval_requests',
-                           'staff_commissions', 'staff_commission_payouts', 'transfer_requests'] loop
+                           'staff_commissions', 'staff_commission_payouts', 'transfer_requests',
+                           -- 440: what each affiliate login signed up with (no client role
+                           -- holds it, staff included; read through the server's checks)
+                           'affiliate_signup_identities'] loop
+    continue when t = 'affiliate_signup_identities' and to_regclass('public.affiliate_signup_identities') is null;  -- before 440
     foreach v_who in array array['affiliate', 'nostaff', 'inactive', 'pending', 'cancelled'] loop
       v_out := pg_temp.sof_try(v_who, format('select count(*)::text from public.%I where id <> %L', t,
                                              coalesce(pg_temp.sof_id(v_who), gen_random_uuid())));

@@ -8,7 +8,9 @@
 -- their claims the way people did: by signing up. So on a database with 437
 -- they include this file first, inside their own transaction, which puts the
 -- 432 sign-up back (production's text of 20 Oct 2026, md5 ff59dd1f...) until
--- their rollback. On a database without 437 it changes nothing.
+-- their rollback. On a database without 437 it changes nothing. With 440 in
+-- (437's sign-up that also keeps the copy of what the login signed up with)
+-- it does the same: the 432 text writes no copy, which those suites never read.
 --
 -- Included by scripts/affiliate-claims/tests/staff-claims.sql,
 -- scripts/affiliate-claims/tests/reject-protects.sql and
@@ -17,6 +19,7 @@
 do $before437$
 declare
   c_437 constant text := '88ee10799d1c93ce93d0056740f05e01';  -- 437's AFTER (21 Oct 2026, AFF-SIGNUP-18)
+  c_440 constant text := '43084deab54968eacaf1793c470fd08f';  -- 440's AFTER (21 Oct 2026; 437's, patched)
   c_432 constant text := 'ff59dd1f8a6ca7397efea5880c6a87a7';
   c_def constant text := $def$CREATE OR REPLACE FUNCTION public.complete_affiliate_onboarding(p_first_name text, p_last_name text, p_phone text, p_agree boolean DEFAULT false)
  RETURNS jsonb
@@ -256,7 +259,7 @@ $def$;
 begin
   if md5(c_def) <> c_432 then raise exception 'sign-up-before-437: the 432 text is not the one read (md5 %)', md5(c_def); end if;
   if d = c_432 then return; end if;
-  if d <> c_437 then raise exception 'sign-up-before-437: complete_affiliate_onboarding is neither 432''s nor 437''s (md5 %)', d; end if;
+  if d not in (c_437, c_440) then raise exception 'sign-up-before-437: complete_affiliate_onboarding is neither 432''s, nor 437''s, nor 440''s (md5 %)', d; end if;
   execute c_def;
   if md5(pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure)) <> c_432 then
     raise exception 'sign-up-before-437: the 432 sign-up did not go back as read'; end if;
