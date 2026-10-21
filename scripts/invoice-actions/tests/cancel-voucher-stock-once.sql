@@ -49,18 +49,35 @@
 --      where the vouchers are and their stock is taken.
 --  12b. (416 only) The same move, then cancelled, reopened, the FOC taken
 --      off and paid: the friend keeps the 2 vouchers, as in 12c (the FOC
---      off 18 with the friend's 2 held, paid 18, cancelled 20, not 22).
---      416 must count any voucher of the invoice another customer holds as
---      moved, whatever its source. 416's file of 10 Oct (md5 f79dc285...)
---      counts only an Owner's move ('invoice_benefit_transfer'), so after a
---      cancel and reopen the friend's vouchers (now 'invoice_reopen') were
---      taken back and the payment gave them to the buyer. That is B02's to
---      change in 416. While 416 has that text, this prints a KNOWN FAULT
---      notice and checks the old figures (the FOC off 20 and 0 held, paid
---      18 with 2 held, cancelled 20).
+--      off 10 and 8 with the friend's 2 held at the other store, paid 10
+--      and 8, cancelled 10 and 10, not 22 in all), and the summary before
+--      the save lists them as moved to another customer. 434 (the Owner,
+--      18 Oct 2026) counts a voucher of the invoice as moved when it is an
+--      Owner's move or the voucher a reopening gave again in its place, and
+--      an Owner moved one of the invoice's vouchers to the customer holding
+--      it, who is not the invoice's customer; with 434 in, this is a hard
+--      check. Without it (416 as live since 16
+--      Oct), only the Owner's move itself ('invoice_benefit_transfer')
+--      counts, so after a cancel and reopen the friend's vouchers (now
+--      'invoice_reopen') are taken back and the payment gives them to the
+--      buyer: this then prints a KNOWN FAULT notice and checks the old
+--      figures (the summary takes them back, the FOC off 20 and 0 held,
+--      paid 18 with 2 held, cancelled 20). 434 is known by its comments in
+--      correct_invoice and preview_invoice_correction. With 434, a line
+--      refund of the paid line is refused (the friend's voucher carries no
+--      paid value), as in 12c; this checks the refusal so a change is
+--      noticed (an Owner question; Cancel gives the money back).
 --  12c. (416 only) The same move, then the FOC taken off (the moved
 --      vouchers stay with the friend), paid and cancelled: 18, then 20
---      (not 22).
+--      (not 22). Before the cancel, a line refund of the paid line is
+--      refused, as in 12b.
+--  12e. (416 only) Cancelled and reopened (the buyer holds the 2 again),
+--      then, still FOC, the invoice's customer changed to a third customer
+--      with 'transfer' (417's move carries only sale and promotion
+--      vouchers, so the buyer keeps the reopening's 2), then the FOC taken
+--      off and paid: no Owner moved a voucher of it to the buyer, so the
+--      summary and the save take the 2 back (10/10) and the payment gives
+--      them to the third customer (8/10), as before 434; cancelled 10/10.
 --  12d. A completed FOC of 2 vouchers on two lines, one moved to another
 --      store, cancelled and reopened: 9 and 9 each time it is reopened,
 --      and the reopening records one unit at each store, where each
@@ -74,6 +91,28 @@
 --  13b. (416 only) The FOC taken off and the invoice moved to another
 --      customer and store in one save, then paid, cancelled, reopened and
 --      cancelled: 10 and 10, 10 and 8 (not 8 and 12).
+--  13c. (416 only) The FOC taken off in a save that also changes the
+--      invoice's customer, or after a save that did, summary and save:
+--      (a) lowered to 1 and moved to the friend at the other store
+--      ('transfer'): the 2 taken back (10/10), the payment gives 1 (10/9);
+--      (b) an Owner moved it to the friend, then one save makes the friend
+--      the invoice's customer ('keep'): with 434 taken back and given again
+--      at the invoice's store when paid (9/10), like a move to the
+--      customer's own other store; before 434 the friend kept it at the
+--      other store (10/9), which this then checks; (c) the buyer left
+--      holding it by an earlier 'keep', then moved to a third customer by
+--      this save ('transfer'): taken back, given to the third when paid;
+--      (d) the buyer left holding 2 by an earlier 'keep', then the FOC
+--      taken off: taken back (10), the payment gives them to the invoice's
+--      customer (8), as before 434; (e) two lines, one an Owner moved to
+--      the buyer's other store, an earlier 'keep' to the friend, then the
+--      FOC off and moved to a third customer ('transfer'): the line this
+--      save moves is taken back, the one the Owner moved stays with the
+--      buyer (10/9), the summary says the same, the payment gives the
+--      third 1 (9/9); (f) the same up to the earlier 'keep', then the FOC
+--      off with no change of customer: the buyer keeps only the voucher the
+--      Owner moved; the other line's (a sale's, never moved) is taken back
+--      (10/9) and the payment gives it to the friend (9/9), as before 434.
 --  14. (416 only) A completed FOC cancelled, reopened, its vouchers then
 --      moved to another store, the FOC taken off, paid and cancelled: 18,
 --      then 20 (not 22). 416 counts its 'Taken at Confirm FOC' rows by
@@ -112,11 +151,17 @@
 -- reopening counts units already given again; at 12d when the reopening
 -- records all its units at one store; at 13 store by store when
 -- the correction moves no stock; at 17 to 21 when the units issued stop at
--- what the lines hold). Install 416 in the same
+-- what the lines hold; with 434's comments in, at 12b when the friend's
+-- vouchers are taken back, at 13c-b when a voucher the save gives to the
+-- invoice's new customer is kept, in summary or save; at 12e when a
+-- voucher held by a customer no Owner moved one to is kept, in summary or
+-- save; at 13c-e and 13c-f when a sale's voucher held by a customer an
+-- Owner moved another one to is kept, in summary or save). Install
+-- 416 in the same
 -- transaction, before or after 417, so a completed FOC invoice gives its
 -- vouchers as it will; without 416, cases 6, 7, 12, 12d and 19 call the same
 -- issuing function themselves, case 8 checks the stock only, and cases 9,
--- 11, 12b, 12c, 13b, 14, 15 and 15b are skipped.
+-- 11, 12b, 12c, 12e, 13b, 13c, 14, 15 and 15b are skipped.
 -- Disposable database only; everything is rolled back. Every name, code and
 -- amount is invented (@tests.invalid); the phones are numbers kept for
 -- fiction (ACMA).
@@ -223,9 +268,56 @@ end $f$;
 create function pg_temp.tvs_show(p_voucher text) returns text language sql as $f$
   select pg_temp.tvs_at(p_voucher, 'store') || '/' || coalesce(pg_temp.tvs_at(p_voucher, 'store2')::text, '-')
          || ' held ' || pg_temp.tvs_held(p_voucher) $f$;
+-- The units of p_voucher p_customer holds at p_store ('customer', 'friend',
+-- 'third'; 'store', 'store2').
+create function pg_temp.tvs_holds(p_voucher text, p_customer text, p_store text) returns int language sql as $f$
+  select coalesce(sum(quantity), 0)::int from customer_reward_vouchers
+   where voucher_id = pg_temp.tvs_id(p_voucher) and status = 'held'
+     and customer_id = pg_temp.tvs_id(p_customer) and store_id = pg_temp.tvs_id(p_store) $f$;
+-- The voucher lines of an invoice at S$40 each, as Edit Invoice sends them:
+-- FOC on every unit (p_foc) or none.
+create function pg_temp.tvs_lines(p_inv uuid, p_foc boolean) returns jsonb language sql as $f$
+  select jsonb_agg(jsonb_build_object('invoice_item_id', it.id, 'kind', 'voucher', 'voucher_id', it.voucher_id,
+           'quantity', it.quantity, 'unit_price', 40)
+         || case when p_foc then jsonb_build_object('foc_quantity', it.quantity, 'foc_reason', it.foc_reason)
+                 else jsonb_build_object('foc_quantity', 0) end order by it.id)
+    from invoice_items it where it.invoice_id = p_inv $f$;
+-- The vouchers part of the summary before a save that takes the FOC off
+-- (preview_invoice_correction), with the header p_header.
+create function pg_temp.tvs_preview(p_inv uuid, p_header jsonb) returns jsonb language plpgsql as $f$
+declare r jsonb;
+begin
+  r := preview_invoice_correction(p_inv, jsonb_build_object('items', pg_temp.tvs_lines(p_inv, false),
+         'expected_edit_count', (select edit_count from invoices where id = p_inv)) || p_header);
+  return (select e from jsonb_array_elements(r->'effects') e where e->>'area' = 'vouchers' limit 1);
+end $f$;
+-- A line refund of the paid voucher line, with the voucher still held: it
+-- must be refused because that voucher carries no paid value (12b, 12c).
+-- Refused today; if it goes through, the suite stops so the case and the
+-- hand-off are looked at again.
+create function pg_temp.tvs_line_refund_refused(p_inv uuid, p_amount numeric, p_label text) returns void language plpgsql as $f$
+declare b record; v_err text;
+begin
+  select bv.* into b from invoice_benefit_values bv join customer_reward_vouchers v on v.id = bv.reward_voucher_id
+   where bv.invoice_id = p_inv and v.status = 'held' order by bv.id limit 1;
+  begin
+    perform refund_invoice_recorded(p_inv,
+      jsonb_build_array(jsonb_build_object('invoice_item_id', b.invoice_item_id, 'amount', p_amount,
+        'benefits', jsonb_build_array(jsonb_build_object('benefit_id', b.id, 'amount', p_amount)))),
+      jsonb_build_array(jsonb_build_object('payment_id', (select id from invoice_payments where invoice_id = p_inv order by id limit 1),
+        'amount', p_amount)),
+      '[]', 'TVS ' || p_label || ' line refund', gen_random_uuid());
+  exception when others then v_err := sqlerrm;
+  end;
+  if v_err is null then
+    raise exception 'FAIL % a line refund of the paid line now goes through (the friend''s voucher, paid value %): look at this case and the Owner question again',
+      p_label, b.paid_value; end if;
+  if v_err not like 'Refund exceeds the unused paid value of this voucher%' then
+    raise exception 'FAIL % the line refund was refused for another reason: %', p_label, v_err; end if;
+end $f$;
 
 do $$
-declare own uuid := gen_random_uuid(); st uuid; st2 uuid; c uuid; c2 uuid; pm uuid; v uuid; promo uuid; k text;
+declare own uuid := gen_random_uuid(); st uuid; st2 uuid; c uuid; c2 uuid; c3 uuid; pm uuid; v uuid; promo uuid; k text;
 begin
   insert into auth.users(id, email) values (own, 'tvs-own@tests.invalid');
   insert into profiles(id, full_name, email, role, is_active) values (own, 'TVS Owner', 'tvs-own@tests.invalid', 'owner', true);
@@ -235,22 +327,24 @@ begin
   insert into stores(name, code, country_code) values ('TVS Store 2', 'TVS2', 'SG') returning id into st2;
   insert into customers(full_name, phone) values ('TVS Buyer', '+61491570006') returning id into c;
   insert into customers(full_name, phone) values ('TVS Friend', '+61491570156') returning id into c2;
+  insert into customers(full_name, phone) values ('TVS Third', '+61491577644') returning id into c3;
   insert into payment_methods(name, is_active) values ('TVS PayNow', true) returning id into pm;
-  insert into tvs values ('own', own), ('store', st), ('store2', st2), ('customer', c), ('friend', c2), ('pm', pm);
+  insert into tvs values ('own', own), ('store', st), ('store2', st2), ('customer', c), ('friend', c2), ('third', c3), ('pm', pm);
   -- One limited voucher per case, 10 in stock each, S$40; v13 to v19 and
-  -- v26 to v28 also have 10 at the second store.
+  -- v26 to v35 also have 10 at the second store.
   foreach k in array array['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13',
                            'v14', 'v15', 'v16', 'v17', 'v18', 'v19', 'v20', 'v21', 'v22', 'v23', 'v24',
-                           'v25', 'v26', 'v27', 'v28'] loop
+                           'v25', 'v26', 'v27', 'v28', 'v29', 'v30', 'v31', 'v32', 'v33', 'v34', 'v35'] loop
     insert into vouchers(name, code, voucher_kind, selling_price, qty_type, is_active)
       values ('TVS ' || k, 'TVS-' || upper(k), 'normal', 40, 'limited', true) returning id into v;
     insert into voucher_store_stock(voucher_id, store_id, current_qty) values (v, st, 10);
-    if k in ('v13', 'v14', 'v15', 'v16', 'v17', 'v18', 'v19', 'v26', 'v27', 'v28') then
+    if k in ('v13', 'v14', 'v15', 'v16', 'v17', 'v18', 'v19', 'v26', 'v27', 'v28', 'v29', 'v30', 'v31', 'v32', 'v33', 'v34', 'v35') then
       insert into voucher_store_stock(voucher_id, store_id, current_qty) values (v, st2, 10);
     end if;
     insert into voucher_store_prices(voucher_id, store_id, selling_price, available_at_store) values (v, st, 40, true);
-    -- v26 is sold at the second store once its invoice moves there (13b).
-    if k = 'v26' then
+    -- v26 and v29 are sold at the second store once their invoices move
+    -- there (13b, 13c-a).
+    if k in ('v26', 'v29') then
       insert into voucher_store_prices(voucher_id, store_id, selling_price, available_at_store) values (v, st2, 40, true);
     end if;
     insert into tvs values (k, v);
@@ -657,51 +751,88 @@ end $$;
 
 -- ===== 12b. (416 only) Moved, cancelled, reopened, the FOC taken off, paid =====
 do $$
-declare inv uuid; r jsonb; v_old boolean;
+declare inv uuid; r jsonb; x jsonb; v_434 boolean;
 begin
   if not pg_temp.tvs_416() then
     raise notice 'SKIP 12b: needs 416 (taking the FOC off a completed FOC invoice)'; return; end if;
-  -- 416's file of 10 Oct counts only an Owner's move as moved (B02's to change).
-  v_old := pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)
-           ~ 'crv\.source_type = ''invoice_benefit_transfer''\s+and crv\.customer_id is distinct from i\.customer_id';
+  -- 434 (the Owner, 18 Oct 2026): the voucher a reopening gave again in
+  -- place of an Owner's move stays with the customer it was moved to, as
+  -- the move itself does; known by its comments. Without it, 416 counts
+  -- only the Owner's move itself ('invoice_benefit_transfer') as moved.
+  v_434 := pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)
+             like '%-- 434: moved to another customer when%'
+           or pg_get_functiondef('public.preview_invoice_correction(uuid,jsonb)'::regprocedure)
+             like '%-- 434: as in the save:%';
   inv := pg_temp.tvs_foc('v14', 2, 'TVS 12b confirm');
   perform pg_temp.tvs_move(inv, 'TVS 12b for a friend at the other store');
   perform pg_temp.tvs_check(pg_temp.tvs_at('v14', 'store') = 10 and pg_temp.tvs_at('v14', 'store2') = 8, '12b fixture: moved');
   perform cancel_invoice_recorded(inv, 'TVS 12b cancel', gen_random_uuid());
-  perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 20 and pg_temp.tvs_held('v14') = 0,
-    '12b cancelled: ' || pg_temp.tvs_both('v14') || ' in the two stores, ' || pg_temp.tvs_held('v14') || ' held, not 20 and 0');
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v14', 'store') = 10 and pg_temp.tvs_at('v14', 'store2') = 10 and pg_temp.tvs_held('v14') = 0,
+    '12b cancelled: ' || pg_temp.tvs_show('v14') || ', not 10/10 held 0');
   perform reopen_invoice(inv, 'TVS 12b reopen', gen_random_uuid());
-  perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 18 and pg_temp.tvs_held('v14') = 2,
-    '12b reopened: ' || pg_temp.tvs_both('v14') || ' and ' || pg_temp.tvs_held('v14') || ' held, not 18 and 2');
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v14', 'store') = 10 and pg_temp.tvs_at('v14', 'store2') = 8
+      and (select sum(quantity) from customer_reward_vouchers where voucher_id = pg_temp.tvs_id('v14') and status = 'held'
+            and customer_id = pg_temp.tvs_id('friend') and store_id = pg_temp.tvs_id('store2') and source_type = 'invoice_reopen') = 2,
+    '12b reopened: ' || pg_temp.tvs_show('v14') || ', not 10/8 with the friend''s 2 given again at the other store');
   perform pg_temp.tvs_check(pg_temp.tvs_rows(inv) = 'store2:2',
     '12b the reopening recorded its row at "' || pg_temp.tvs_rows(inv) || '", not at the other store ("store2:2")');
+  -- The summary before the save (preview_invoice_correction).
+  select jsonb_agg(jsonb_build_object('invoice_item_id', it.id, 'kind', 'voucher', 'voucher_id', it.voucher_id,
+           'quantity', 2, 'unit_price', 40, 'foc_quantity', 0)) into x
+    from invoice_items it where it.invoice_id = inv;
+  r := preview_invoice_correction(inv, jsonb_build_object('items', x, 'expected_edit_count', (select edit_count from invoices where id = inv)));
+  if v_434 then
+    perform pg_temp.tvs_check(r->'effects' @> '[{"area":"vouchers","items":[{"kind":"voucher","what":"TVS v14 × 2","why":"moved to another customer; it stays with them"}]}]'
+        and r->'effects' @> '[{"area":"vouchers","detail":"Removing the FOC takes back no voucher: the vouchers it gave have been used or moved to another customer."}]',
+      '12b the summary: ' || coalesce((r->'effects')::text, '<none>') || ', not the friend''s 2 as moved to another customer');
+  else
+    perform pg_temp.tvs_check(exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'area' = 'vouchers'
+        and e->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v14 × 2).%'),
+      '12b the summary (before 434): ' || coalesce((r->'effects')::text, '<none>') || ', not the friend''s 2 taken back');
+  end if;
   r := pg_temp.tvs_foc_off(inv, 2, 'TVS 12b not a giveaway');
   perform pg_temp.tvs_check((select status from invoices where id = inv) = 'unpaid', '12b the FOC came off');
-  if v_old then
-    -- The old figures: the friend's vouchers taken back, then given to the buyer.
-    perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 20 and pg_temp.tvs_held('v14') = 0,
-      '12b the FOC off (416 of 10 Oct): ' || pg_temp.tvs_both('v14') || ' and ' || pg_temp.tvs_held('v14') || ' held, not 20 and 0');
-  else
-    -- The friend keeps them, as with no cancel and reopen first (12c).
-    perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 18
+  if v_434 then
+    -- The friend keeps them, as with no cancel and reopen first (12c), and
+    -- their stock stays out at the other store.
+    perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":[],"kept_used":["TVS v14 × 2 — moved to another customer; it stays with them"]}'::jsonb,
+      '12b the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ', not the friend''s 2 kept as moved');
+    perform pg_temp.tvs_check(pg_temp.tvs_at('v14', 'store') = 10 and pg_temp.tvs_at('v14', 'store2') = 8
+        and pg_temp.tvs_held('v14') = 2
         and (select sum(quantity) from customer_reward_vouchers where voucher_id = pg_temp.tvs_id('v14') and status = 'held'
               and customer_id = pg_temp.tvs_id('friend') and store_id = pg_temp.tvs_id('store2')) = 2,
-      '12b the FOC off: ' || pg_temp.tvs_show('v14') || ', not 18 with the friend''s 2 held');
+      '12b the FOC off: ' || pg_temp.tvs_show('v14') || ', not 10/8 with the friend''s 2 held');
+  else
+    -- The old figures: the friend's vouchers taken back, then given to the buyer.
+    perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 20 and pg_temp.tvs_held('v14') = 0,
+      '12b the FOC off (before 434): ' || pg_temp.tvs_both('v14') || ' and ' || pg_temp.tvs_held('v14') || ' held, not 20 and 0');
   end if;
   perform pay_invoice(inv, jsonb_build_array(jsonb_build_object('payment_method_id', pg_temp.tvs_id('pm'), 'amount', 80)));
   perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 18 and pg_temp.tvs_held('v14') = 2,
     '12b paid: ' || pg_temp.tvs_both('v14') || ' in the two stores with ' || pg_temp.tvs_held('v14') || ' held, not 18 and 2'
     || case when pg_temp.tvs_both('v14') = 20 then ' (vouchers given, no stock taken)' else '' end);
-  perform pg_temp.tvs_check(v_old or (select sum(quantity) from customer_reward_vouchers where voucher_id = pg_temp.tvs_id('v14')
-                                       and status = 'held' and customer_id = pg_temp.tvs_id('friend')) = 2,
-    '12b paid: the friend no longer holds the 2 vouchers');
+  if v_434 then
+    -- Counted as still out: nothing given to the buyer, no stock taken.
+    perform pg_temp.tvs_check(pg_temp.tvs_at('v14', 'store') = 10 and pg_temp.tvs_at('v14', 'store2') = 8
+        and (select sum(quantity) from customer_reward_vouchers where voucher_id = pg_temp.tvs_id('v14') and status = 'held'
+              and customer_id = pg_temp.tvs_id('friend') and store_id = pg_temp.tvs_id('store2')) = 2
+        and not exists (select 1 from customer_reward_vouchers where voucher_id = pg_temp.tvs_id('v14')
+                         and customer_id = pg_temp.tvs_id('customer') and status <> 'revoked'),
+      '12b paid: ' || pg_temp.tvs_show('v14') || ', not 10/8 with the friend''s 2 held and none given to the buyer');
+    -- A line refund of the paid line is refused: the friend's voucher (the
+    -- reopening's) carries no paid value, as on 12c's path. Cancel gives the
+    -- money back. An Owner question; this notices when it changes.
+    perform pg_temp.tvs_line_refund_refused(inv, 80, '12b');
+  end if;
   perform cancel_invoice_recorded(inv, 'TVS 12b cancel again', gen_random_uuid());
   perform pg_temp.tvs_check(pg_temp.tvs_both('v14') = 20 and pg_temp.tvs_held('v14') = 0,
     '12b cancelled again: ' || pg_temp.tvs_both('v14') || ' and ' || pg_temp.tvs_held('v14') || ' held, not 20 and 0');
-  if v_old then
-    raise notice 'KNOWN FAULT 12b (416, B02''s to change): after a cancel and reopen, taking the FOC off takes back the vouchers moved to the friend and the payment gives them to the buyer; stock stays right (20, 18, 20)';
+  perform pg_temp.tvs_check(not v_434 or (pg_temp.tvs_at('v14', 'store') = 10 and pg_temp.tvs_at('v14', 'store2') = 10),
+    '12b cancelled again: ' || pg_temp.tvs_show('v14') || ', not 10/10');
+  if v_434 then
+    raise notice 'PASS 12b: moved, cancelled 10/10, reopened 10/8, the summary and the FOC off keep the friend''s 2 (10/8), paid 10/8 (none to the buyer), a line refund refused, cancelled 10/10 (not 22 in all)';
   else
-    raise notice 'PASS 12b: moved, cancelled 20, reopened 18, the FOC off 18 (the friend keeps them), paid 18, cancelled 20 (not 22)';
+    raise notice 'KNOWN FAULT 12b (before 434): after a cancel and reopen, taking the FOC off takes back the vouchers moved to the friend and the payment gives them to the buyer; stock stays right (20, 18, 20)';
   end if;
 end $$;
 
@@ -721,10 +852,13 @@ begin
   perform pay_invoice(inv, jsonb_build_array(jsonb_build_object('payment_method_id', pg_temp.tvs_id('pm'), 'amount', 80)));
   perform pg_temp.tvs_check(pg_temp.tvs_both('v15') = 18 and pg_temp.tvs_held('v15') = 2,
     '12c paid: ' || pg_temp.tvs_both('v15') || ' and ' || pg_temp.tvs_held('v15') || ' held, not 18 and 2');
+  -- A line refund of the paid line is refused: the friend's voucher carries
+  -- no paid value (the same in 12b with 434). Cancel gives the money back.
+  perform pg_temp.tvs_line_refund_refused(inv, 80, '12c');
   perform cancel_invoice_recorded(inv, 'TVS 12c cancel', gen_random_uuid());
   perform pg_temp.tvs_check(pg_temp.tvs_both('v15') = 20 and pg_temp.tvs_held('v15') = 0,
     '12c cancelled: ' || pg_temp.tvs_both('v15') || ' and ' || pg_temp.tvs_held('v15') || ' held, not 20 and 0');
-  raise notice 'PASS 12c: moved, the FOC off (the friend keeps them), paid 18, cancelled 20 (not 22)';
+  raise notice 'PASS 12c: moved, the FOC off (the friend keeps them), paid 18, a line refund refused, cancelled 20 (not 22)';
 end $$;
 
 -- ===== 12d. Two vouchers of a completed FOC, one moved to another store =====
@@ -758,6 +892,50 @@ begin
       '12d reopened (' || k || '): the rows are "' || pg_temp.tvs_rows(inv) || '", not one unit at each store');
   end loop;
   raise notice 'PASS 12d: one of two moved to another store: cancelled 10/10, reopened 9/9 with one unit recorded at each store, twice';
+end $$;
+
+-- ===== 12e. (416 only) Reopened, moved to a third customer while FOC ('transfer'), the FOC taken off, paid =====
+do $$
+declare inv uuid; r jsonb;
+begin
+  if not pg_temp.tvs_416() then
+    raise notice 'SKIP 12e: needs 416 (taking the FOC off a completed FOC invoice)'; return; end if;
+  inv := pg_temp.tvs_foc('v32', 2, 'TVS 12e confirm');
+  perform cancel_invoice_recorded(inv, 'TVS 12e cancel', gen_random_uuid());
+  perform reopen_invoice(inv, 'TVS 12e reopen', gen_random_uuid());
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v32', 'store') = 8 and pg_temp.tvs_at('v32', 'store2') = 10
+      and pg_temp.tvs_holds('v32', 'customer', 'store') = 2,
+    '12e reopened: ' || pg_temp.tvs_show('v32') || ', not 8/10 with the buyer''s 2');
+  -- Still FOC, the invoice's customer changed to the third with 'transfer':
+  -- 417's move carries only sale and promotion vouchers, so the buyer keeps
+  -- the reopening's 2.
+  perform correct_invoice(inv, pg_temp.tvs_lines(inv, true),
+    jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+      'customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'),
+    'TVS 12e the wrong customer', gen_random_uuid());
+  perform pg_temp.tvs_check((select status from invoices where id = inv) = 'completed_foc'
+      and (select customer_id from invoices where id = inv) = pg_temp.tvs_id('third')
+      and pg_temp.tvs_holds('v32', 'customer', 'store') = 2 and pg_temp.tvs_at('v32', 'store') = 8,
+    '12e fixture: ' || pg_temp.tvs_show('v32') || ', not still FOC for the third with the buyer''s 2 (8/10)');
+  -- The FOC taken off: no Owner moved a voucher of it to the buyer, so the
+  -- summary and the save take the buyer's 2 back, as before 434.
+  r := pg_temp.tvs_preview(inv, '{}');
+  perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v32 × 2).%'
+      and jsonb_array_length(r->'items') = 0,
+    '12e the summary: ' || coalesce(r::text, '<none>') || ', not the buyer''s 2 taken back');
+  r := pg_temp.tvs_foc_off(inv, 2, 'TVS 12e not a giveaway');
+  perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v32 × 2"],"kept_used":[]}'::jsonb
+      and pg_temp.tvs_at('v32', 'store') = 10 and pg_temp.tvs_at('v32', 'store2') = 10 and pg_temp.tvs_held('v32') = 0,
+    '12e the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v32')
+    || ', not the buyer''s 2 taken back (10/10 held 0)');
+  perform pay_invoice(inv, jsonb_build_array(jsonb_build_object('payment_method_id', pg_temp.tvs_id('pm'), 'amount', 80)));
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v32', 'store') = 8 and pg_temp.tvs_at('v32', 'store2') = 10
+      and pg_temp.tvs_holds('v32', 'third', 'store') = 2 and pg_temp.tvs_held('v32') = 2,
+    '12e paid: ' || pg_temp.tvs_show('v32') || ', not 8/10 with the third''s 2');
+  perform cancel_invoice_recorded(inv, 'TVS 12e cancel again', gen_random_uuid());
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v32', 'store') = 10 and pg_temp.tvs_at('v32', 'store2') = 10 and pg_temp.tvs_held('v32') = 0,
+    '12e cancelled again: ' || pg_temp.tvs_show('v32') || ', not 10/10 held 0');
+  raise notice 'PASS 12e: reopened, moved to the third (the buyer keeps the reopening''s 2), the summary and the FOC off take them back (10/10), paid: the third holds 2 (8/10), cancelled 10/10';
 end $$;
 
 -- ===== 13. A paid sale corrected to another customer and store =====
@@ -835,6 +1013,197 @@ begin
   perform pg_temp.tvs_check(pg_temp.tvs_at('v26', 'store') = 10 and pg_temp.tvs_at('v26', 'store2') = 10 and pg_temp.tvs_held('v26') = 0,
     '13b cancelled again: ' || pg_temp.tvs_show('v26') || ', not 10/10 held 0');
   raise notice 'PASS 13b: the FOC off and moved in one save, paid 10/8, cancelled 10/10 (not 8/12), reopened 10/8, cancelled 10/10';
+end $$;
+
+-- ===== 13c. (416 only) The FOC taken off in a save that also changes the customer, or after one that did =====
+do $$
+declare inv uuid; x jsonb; r jsonb; v_434 boolean;
+begin
+  if not pg_temp.tvs_416() then
+    raise notice 'SKIP 13c: needs 416 (taking the FOC off a completed FOC invoice)'; return; end if;
+  v_434 := pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)
+             like '%-- 434: moved to another customer when%'
+           or pg_get_functiondef('public.preview_invoice_correction(uuid,jsonb)'::regprocedure)
+             like '%-- 434: as in the save:%';
+
+  -- (a) The FOC off, lowered to 1, and moved to the friend at the other
+  -- store ('transfer'): the 2 this save moves are the new customer's, so
+  -- taken back; the payment gives the 1 paid for.
+  inv := pg_temp.tvs_foc('v29', 2, 'TVS 13c-a confirm');
+  select jsonb_agg(jsonb_build_object('invoice_item_id', it.id, 'kind', 'voucher', 'voucher_id', it.voucher_id,
+           'quantity', 1, 'unit_price', 40, 'foc_quantity', 0)) into x from invoice_items it where it.invoice_id = inv;
+  r := correct_invoice(inv, x, jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+         'customer_id', pg_temp.tvs_id('friend'), 'store_id', pg_temp.tvs_id('store2'), 'benefit_action', 'transfer'),
+       'TVS 13c-a', gen_random_uuid());
+  perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v29 × 2"],"kept_used":[]}'::jsonb
+      and pg_temp.tvs_at('v29', 'store') = 10 and pg_temp.tvs_at('v29', 'store2') = 10 and pg_temp.tvs_held('v29') = 0,
+    '13c-a the FOC off and moved: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v29')
+    || ', not the 2 taken back and 10/10 held 0');
+  perform pg_temp.tvs_pay_rest(inv);
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v29', 'store2') = 9 and pg_temp.tvs_held('v29') = 1
+      and pg_temp.tvs_holds('v29', 'friend', 'store2') = 1,
+    '13c-a paid: ' || pg_temp.tvs_show('v29') || ', not 10/9 with the friend''s 1 (paid for 1)');
+
+  -- (b) An Owner moved it to the friend at the other store, then one save
+  -- takes the FOC off and makes the friend the invoice's customer ('keep').
+  -- With 434 the friend is the invoice's customer after the save, so not
+  -- "another customer": taken back and given again at the invoice's store
+  -- when paid. Before 434 the friend kept it at the other store.
+  inv := pg_temp.tvs_foc('v30', 1, 'TVS 13c-b confirm');
+  perform pg_temp.tvs_move(inv, 'TVS 13c-b for a friend at the other store');
+  r := pg_temp.tvs_preview(inv, jsonb_build_object('customer_id', pg_temp.tvs_id('friend'), 'benefit_action', 'keep'));
+  if v_434 then
+    perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v30 × 1).%'
+        and jsonb_array_length(r->'items') = 0,
+      '13c-b the summary: ' || coalesce(r::text, '<none>') || ', not the friend''s 1 taken back');
+  else
+    perform pg_temp.tvs_check(r->'items' = '[{"kind":"voucher","what":"TVS v30 × 1","why":"moved to another customer; it stays with them"}]'::jsonb,
+      '13c-b the summary (before 434): ' || coalesce(r::text, '<none>') || ', not the friend''s 1 as moved');
+  end if;
+  r := correct_invoice(inv, pg_temp.tvs_lines(inv, false),
+         jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+           'customer_id', pg_temp.tvs_id('friend'), 'benefit_action', 'keep'), 'TVS 13c-b', gen_random_uuid());
+  if v_434 then
+    perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v30 × 1"],"kept_used":[]}'::jsonb
+        and pg_temp.tvs_at('v30', 'store') = 10 and pg_temp.tvs_at('v30', 'store2') = 10 and pg_temp.tvs_held('v30') = 0,
+      '13c-b the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v30') || ', not taken back, 10/10 held 0');
+    perform pg_temp.tvs_pay_rest(inv);
+    perform pg_temp.tvs_check(pg_temp.tvs_at('v30', 'store') = 9 and pg_temp.tvs_at('v30', 'store2') = 10
+        and pg_temp.tvs_holds('v30', 'friend', 'store') = 1 and pg_temp.tvs_held('v30') = 1,
+      '13c-b paid: ' || pg_temp.tvs_show('v30') || ', not 9/10 with the friend''s 1 at the invoice''s store');
+  else
+    perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":[],"kept_used":["TVS v30 × 1 — moved to another customer; it stays with them"]}'::jsonb
+        and pg_temp.tvs_at('v30', 'store') = 10 and pg_temp.tvs_at('v30', 'store2') = 9,
+      '13c-b the FOC off (before 434): ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v30') || ', not kept, 10/9');
+    perform pg_temp.tvs_pay_rest(inv);
+    perform pg_temp.tvs_check(pg_temp.tvs_at('v30', 'store') = 10 and pg_temp.tvs_at('v30', 'store2') = 9
+        and pg_temp.tvs_holds('v30', 'friend', 'store2') = 1 and pg_temp.tvs_held('v30') = 1,
+      '13c-b paid (before 434): ' || pg_temp.tvs_show('v30') || ', not 10/9 with the friend''s 1 at the other store');
+  end if;
+
+  -- (c) The buyer left holding it by an earlier 'keep' (the friend is the
+  -- invoice's customer), then the FOC off and moved to the third by this
+  -- save ('transfer'): the summary and the save take it back.
+  inv := pg_temp.tvs_foc('v31', 1, 'TVS 13c-c confirm');
+  perform correct_invoice(inv, pg_temp.tvs_lines(inv, true),
+    jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+      'customer_id', pg_temp.tvs_id('friend'), 'benefit_action', 'keep'), 'TVS 13c-c keep', gen_random_uuid());
+  perform pg_temp.tvs_check((select status from invoices where id = inv) = 'completed_foc'
+      and pg_temp.tvs_holds('v31', 'customer', 'store') = 1, '13c-c fixture: still FOC, the buyer keeps the voucher');
+  r := pg_temp.tvs_preview(inv, jsonb_build_object('customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'));
+  perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v31 × 1).%'
+      and jsonb_array_length(r->'items') = 0,
+    '13c-c the summary: ' || coalesce(r::text, '<none>') || ', not the voucher taken back');
+  r := correct_invoice(inv, pg_temp.tvs_lines(inv, false),
+         jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+           'customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'), 'TVS 13c-c', gen_random_uuid());
+  perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v31 × 1"],"kept_used":[]}'::jsonb
+      and pg_temp.tvs_held('v31') = 0 and pg_temp.tvs_at('v31', 'store') = 10,
+    '13c-c the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v31') || ', not taken back, 10 held 0');
+  perform pg_temp.tvs_pay_rest(inv);
+  perform pg_temp.tvs_check(pg_temp.tvs_holds('v31', 'third', 'store') = 1 and pg_temp.tvs_held('v31') = 1
+      and pg_temp.tvs_at('v31', 'store') = 9,
+    '13c-c paid: ' || pg_temp.tvs_show('v31') || ', not 9 with the third''s 1');
+
+  -- (d) The buyer left holding 2 by an earlier 'keep' (the friend is the
+  -- invoice's customer), then the FOC off: no Owner moved a voucher of it to
+  -- the buyer, so taken back, and the payment gives them to the friend, as
+  -- before 434.
+  inv := pg_temp.tvs_foc('v34', 2, 'TVS 13c-d confirm');
+  perform correct_invoice(inv, pg_temp.tvs_lines(inv, true),
+    jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+      'customer_id', pg_temp.tvs_id('friend'), 'benefit_action', 'keep'), 'TVS 13c-d keep', gen_random_uuid());
+  perform pg_temp.tvs_check((select status from invoices where id = inv) = 'completed_foc'
+      and pg_temp.tvs_holds('v34', 'customer', 'store') = 2, '13c-d fixture: still FOC, the buyer keeps the 2');
+  r := pg_temp.tvs_preview(inv, '{}');
+  perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v34 × 2).%'
+      and jsonb_array_length(r->'items') = 0,
+    '13c-d the summary: ' || coalesce(r::text, '<none>') || ', not the buyer''s 2 taken back');
+  r := pg_temp.tvs_foc_off(inv, 2, 'TVS 13c-d not a giveaway');
+  perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v34 × 2"],"kept_used":[]}'::jsonb
+      and pg_temp.tvs_at('v34', 'store') = 10 and pg_temp.tvs_held('v34') = 0,
+    '13c-d the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v34') || ', not the buyer''s 2 taken back, 10 held 0');
+  perform pg_temp.tvs_pay_rest(inv);
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v34', 'store') = 8 and pg_temp.tvs_holds('v34', 'friend', 'store') = 2
+      and pg_temp.tvs_held('v34') = 2,
+    '13c-d paid: ' || pg_temp.tvs_show('v34') || ', not 8 with the friend''s 2');
+
+  -- (e) Two lines; an Owner moved one line's voucher to the buyer's other
+  -- store; an earlier 'keep' made the friend the invoice's customer (the
+  -- buyer holds both); then the FOC off and moved to the third ('transfer').
+  -- The save moves the other line's voucher (a sale's) to the third, so it
+  -- is taken back; the one the Owner moved stays with the buyer, as before
+  -- 434; the summary, which sees the buyer still holding both, says the
+  -- same before the save.
+  inv := create_invoice(pg_temp.tvs_id('store'), pg_temp.tvs_id('customer'), null,
+    jsonb_build_array(
+      jsonb_build_object('kind', 'voucher', 'voucher_id', pg_temp.tvs_id('v33'), 'quantity', 1, 'foc_quantity', 1, 'foc_reason', 'TVS goodwill'),
+      jsonb_build_object('kind', 'voucher', 'voucher_id', pg_temp.tvs_id('v33'), 'quantity', 1, 'foc_quantity', 1, 'foc_reason', 'TVS goodwill')));
+  perform confirm_foc_invoice(inv, 'TVS 13c-e confirm');
+  perform transfer_invoice_unused_benefit(
+    (select b.id from invoice_benefit_values b join customer_reward_vouchers v on v.id = b.reward_voucher_id
+      where b.invoice_id = inv and v.status = 'held' order by b.id limit 1),
+    pg_temp.tvs_id('customer'), pg_temp.tvs_id('store2'), 'TVS 13c-e one to the buyer''s other store', gen_random_uuid());
+  perform correct_invoice(inv, pg_temp.tvs_lines(inv, true),
+    jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+      'customer_id', pg_temp.tvs_id('friend'), 'benefit_action', 'keep'), 'TVS 13c-e keep', gen_random_uuid());
+  perform pg_temp.tvs_check((select status from invoices where id = inv) = 'completed_foc'
+      and pg_temp.tvs_holds('v33', 'customer', 'store') = 1 and pg_temp.tvs_holds('v33', 'customer', 'store2') = 1
+      and pg_temp.tvs_at('v33', 'store') = 9 and pg_temp.tvs_at('v33', 'store2') = 9,
+    '13c-e fixture: ' || pg_temp.tvs_show('v33') || ', not still FOC with the buyer''s 1 at each store (9/9)');
+  r := pg_temp.tvs_preview(inv, jsonb_build_object('customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'));
+  perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v33 × 1).%'
+      and r->'items' = '[{"kind":"voucher","what":"TVS v33 × 1","why":"moved to another customer; it stays with them"}]'::jsonb,
+    '13c-e the summary: ' || coalesce(r::text, '<none>') || ', not one taken back and the moved one staying');
+  r := correct_invoice(inv, pg_temp.tvs_lines(inv, false),
+         jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+           'customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'), 'TVS 13c-e', gen_random_uuid());
+  perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v33 × 1"],"kept_used":["TVS v33 × 1 — moved to another customer; it stays with them"]}'::jsonb
+      and pg_temp.tvs_at('v33', 'store') = 10 and pg_temp.tvs_at('v33', 'store2') = 9
+      and pg_temp.tvs_holds('v33', 'customer', 'store2') = 1 and pg_temp.tvs_held('v33') = 1,
+    '13c-e the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v33')
+    || ', not one taken back and the buyer''s moved one kept (10/9)');
+  perform pg_temp.tvs_pay_rest(inv);
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v33', 'store') = 9 and pg_temp.tvs_at('v33', 'store2') = 9
+      and pg_temp.tvs_holds('v33', 'third', 'store') = 1 and pg_temp.tvs_holds('v33', 'customer', 'store2') = 1,
+    '13c-e paid: ' || pg_temp.tvs_show('v33') || ', not 9/9 with the third''s 1 and the buyer''s moved 1');
+
+  -- (f) As (e) up to the earlier 'keep', then the FOC off with no change of
+  -- customer: the buyer, whom an Owner moved one of the invoice's vouchers
+  -- to, keeps only that one; the other line's (a sale's, never moved) is
+  -- taken back, and the payment gives it to the friend, as before 434.
+  inv := create_invoice(pg_temp.tvs_id('store'), pg_temp.tvs_id('customer'), null,
+    jsonb_build_array(
+      jsonb_build_object('kind', 'voucher', 'voucher_id', pg_temp.tvs_id('v35'), 'quantity', 1, 'foc_quantity', 1, 'foc_reason', 'TVS goodwill'),
+      jsonb_build_object('kind', 'voucher', 'voucher_id', pg_temp.tvs_id('v35'), 'quantity', 1, 'foc_quantity', 1, 'foc_reason', 'TVS goodwill')));
+  perform confirm_foc_invoice(inv, 'TVS 13c-f confirm');
+  perform transfer_invoice_unused_benefit(
+    (select b.id from invoice_benefit_values b join customer_reward_vouchers v on v.id = b.reward_voucher_id
+      where b.invoice_id = inv and v.status = 'held' order by b.id limit 1),
+    pg_temp.tvs_id('customer'), pg_temp.tvs_id('store2'), 'TVS 13c-f one to the buyer''s other store', gen_random_uuid());
+  perform correct_invoice(inv, pg_temp.tvs_lines(inv, true),
+    jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
+      'customer_id', pg_temp.tvs_id('friend'), 'benefit_action', 'keep'), 'TVS 13c-f keep', gen_random_uuid());
+  perform pg_temp.tvs_check((select status from invoices where id = inv) = 'completed_foc'
+      and pg_temp.tvs_holds('v35', 'customer', 'store') = 1 and pg_temp.tvs_holds('v35', 'customer', 'store2') = 1
+      and pg_temp.tvs_at('v35', 'store') = 9 and pg_temp.tvs_at('v35', 'store2') = 9,
+    '13c-f fixture: ' || pg_temp.tvs_show('v35') || ', not still FOC with the buyer''s 1 at each store (9/9)');
+  r := pg_temp.tvs_preview(inv, '{}');
+  perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v35 × 1).%'
+      and r->'items' = '[{"kind":"voucher","what":"TVS v35 × 1","why":"moved to another customer; it stays with them"}]'::jsonb,
+    '13c-f the summary: ' || coalesce(r::text, '<none>') || ', not the sale''s taken back and the moved one staying');
+  r := pg_temp.tvs_foc_off(inv, 1, 'TVS 13c-f not a giveaway');
+  perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v35 × 1"],"kept_used":["TVS v35 × 1 — moved to another customer; it stays with them"]}'::jsonb
+      and pg_temp.tvs_at('v35', 'store') = 10 and pg_temp.tvs_at('v35', 'store2') = 9
+      and pg_temp.tvs_holds('v35', 'customer', 'store') = 0 and pg_temp.tvs_holds('v35', 'customer', 'store2') = 1,
+    '13c-f the FOC off: ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v35')
+    || ', not the sale''s taken back and the buyer''s moved one kept (10/9)');
+  perform pg_temp.tvs_pay_rest(inv);
+  perform pg_temp.tvs_check(pg_temp.tvs_at('v35', 'store') = 9 and pg_temp.tvs_at('v35', 'store2') = 9
+      and pg_temp.tvs_holds('v35', 'friend', 'store') = 1 and pg_temp.tvs_holds('v35', 'customer', 'store2') = 1,
+    '13c-f paid: ' || pg_temp.tvs_show('v35') || ', not 9/9 with the friend''s 1 and the buyer''s moved 1');
+  raise notice 'PASS 13c: (a) moved by this save: taken back, paid for 1, 1 given; (b) an Owner''s move to the new customer: %; (c) left by an earlier keep and moved by this save: taken back; (d) left by an earlier keep: taken back, given to the invoice''s customer; (e) the line this save moves taken back, the Owner''s move kept (summary and save); (f) no customer change: the sale''s taken back, the Owner''s move kept',
+    case when v_434 then 'taken back and given again at the invoice''s store (434)' else 'kept at the other store (before 434)' end;
 end $$;
 
 -- ===== 14. Cancelled, reopened, then moved, the FOC taken off, paid, cancelled =====

@@ -15,7 +15,8 @@
 -- its "begin;":
 --   psql -X -v ON_ERROR_STOP=1 -v prelude=scripts/invoices/tests/before-416-prelude.sql -f <suite>
 -- On a database without 416 it changes nothing. Each function must be 416's
--- version or already the one before it; anything else is refused. The
+-- version (for correct_invoice, 416's or 434's) or already the one before
+-- it; anything else is refused. The
 -- texts are production's of 9 Oct 2026, before 416. Everything is undone
 -- with the suite's own rollback. Never run this outside a test transaction.
 do $b416$
@@ -406,15 +407,17 @@ $def$;
 begin
   -- Read and compared with public alone on the search path, as 416 reads them.
   perform set_config('search_path', 'public', true);
+  -- 434 changes correct_invoice again (422682d6...): it is put back the same way.
   for r in select * from (values
-    ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', '5f3f317dfb226be09055142dc44bdec7', '8a126ade5710d340378ac4e75931b05b', c_correct_invoice),
-    ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '63efea7ed4721721b598f2e1237b8f6c', 'f3c96d9916a95a68a9202cdb25d8017b', c_correct_invoice_payment),
-    ('record_invoice_payment(uuid,jsonb,uuid)', '95a02a1685af524ecf0201b4ed7f9a67', 'c3da81f28d5a24a1c5f336527cfc33a4', c_record_invoice_payment)
+    ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', '5f3f317dfb226be09055142dc44bdec7',
+     array['8a126ade5710d340378ac4e75931b05b', '422682d6e1ada0e5d98053e74ab9f007'], c_correct_invoice),
+    ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '63efea7ed4721721b598f2e1237b8f6c', array['f3c96d9916a95a68a9202cdb25d8017b'], c_correct_invoice_payment),
+    ('record_invoice_payment(uuid,jsonb,uuid)', '95a02a1685af524ecf0201b4ed7f9a67', array['c3da81f28d5a24a1c5f336527cfc33a4'], c_record_invoice_payment)
   ) x(fn, before_md5, after_md5, def)
   loop
     v := md5(pg_get_functiondef(to_regprocedure('public.' || r.fn)));
     if v = r.before_md5 then continue; end if;
-    if v <> r.after_md5 then
+    if not (v = any(r.after_md5)) then
       raise exception 'before-416 prelude: public.% is neither 416''s version nor the one before it (md5 %)', r.fn, v; end if;
     if md5(r.def) <> r.before_md5 then
       raise exception 'before-416 prelude: the text kept for public.% is not the one before 416', r.fn; end if;
