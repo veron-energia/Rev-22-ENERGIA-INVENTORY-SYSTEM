@@ -87,8 +87,10 @@ begin
   raise exception 'The duplicate''s lot was not drawn down'; end if;
  if (select customer_id from customer_credit_lots where id=lot)<>dup then
   raise exception 'The original lot was repointed instead of reissued'; end if;
+ -- 445: the replacement keeps the lot's own source and names the lot it
+ -- replaces (reassigned_from_lot_id); before 445 it was 'customer_merge'.
  if (select coalesce(sum(remaining_amount),0) from customer_credit_lots
-      where customer_id=keep and source_type='customer_merge')<>300 then
+      where customer_id=keep and (source_type='customer_merge' or reassigned_from_lot_id=lot))<>300 then
   raise exception 'The replacement credit is wrong'; end if;
  if (select count(*) from customer_reward_vouchers where customer_id=dup)<>0 then
   raise exception 'A voucher stayed with the duplicate'; end if;
@@ -100,7 +102,7 @@ begin
  if (select count(*) from customer_credit_ledger where customer_id=dup)=0 then
   raise exception 'The historical ledger entries were rewritten'; end if;
  if (select wallet_id from customer_credit_lots
-       where customer_id=keep and source_type='customer_merge')<>keep_wallet then
+       where customer_id=keep and (source_type='customer_merge' or reassigned_from_lot_id=lot))<>keep_wallet then
   raise exception 'The replacement is not in the surviving wallet'; end if;
  if (select coalesce(sum(remaining_amount),0) from customer_credit_lots
       where customer_id=keep and status='active')<>400 then
