@@ -5,7 +5,7 @@ import { Modal } from '../ui';
 import { CustomerSearchSelect } from '../SearchSelect';
 import {
   EventWebExtras, Guest, HOLD_REASON_LABELS, HoldCandidate, RegistrationHold, candidateGuestText, candidateMergedText, doubleVipWarning, fmtDateTime,
-  fmtDayList, pickedCustomerCandidate,
+  fmtDayList, holdVipBadge, pickedCustomerCandidate, vipCheckoutCloseNote,
 } from './model';
 
 /*
@@ -39,6 +39,12 @@ import {
  * that kept it, with "Merged from <name>, who had this phone" (the kept record may not have that phone itself);
  * linking it links the kept record, and a new customer still waits for the check where the retired record's phone
  * or email made them.
+ *
+ * 444 (the owner, 21 Oct 2026: "Staff can close it"): a HitPay checkout they opened and left without paying says
+ * "Online payment started, not paid (until HH:MM)", not "VIP payment waiting", and does not stop an Owner or Manager
+ * closing the registration: the checkout closes with it (if HitPay reports a payment for it later, it waits on Website
+ * orders for a refund). A payment taken or a transfer sent still waits on Website orders first, and the refusal says
+ * what to do there.
  */
 
 /** R6-4: the warning for an affiliate_name hold, naming the affiliate (the server's name, else the candidate with her name). */
@@ -49,11 +55,20 @@ export function affiliateHoldWarning(h: RegistrationHold): string | null {
 }
 
 /** The server's refusal, in words staff can act on here. */
-const explain = (message: string) =>
-  /CUSTOMER_PHONE_LIMIT/.test(message)
-    ? 'This phone number already belongs to 3 customers, so no new customer can be made with it. '
-      + 'Attach the person to one of them, or ask an Owner or Manager to close the registration.'
-    : message;
+export const explain = (message: string) => {
+  if (/CUSTOMER_PHONE_LIMIT/.test(message)) {
+    return 'This phone number already belongs to 3 customers, so no new customer can be made with it. '
+      + 'Attach the person to one of them, or ask an Owner or Manager to close the registration.';
+  }
+  // 444: a VIP payment that took money, or a transfer sent, still waits on Website orders (an unpaid checkout no longer does).
+  const vip = /^A VIP payment for (.+) is waiting: deal with it on Website orders first\.?$/.exec(message);
+  if (vip) {
+    return `${vip[1]} has a VIP payment on Website orders that was paid, or a transfer they sent, so the registration `
+      + 'cannot be closed yet. On Website orders, create its invoices, or close it as refunded once the money is back '
+      + '(dismiss a transfer that never arrived); then close the registration.';
+  }
+  return message;
+};
 /** Someone else dealt with it meanwhile: the list is out of date. */
 const stale = (message: string) => /not waiting to be matched|already closed/.test(message);
 
@@ -103,10 +118,15 @@ export const RegistrationHoldsPanel: React.FC<{
     const vipText = vip.map(v => v.status === 'invoiced'
       ? ` Their VIP payment ${v.order_id} is now invoiced.`
       : ` Their VIP payment ${v.order_id} still waits: ${v.review_reason ?? v.status}.`).join('');
+    // 444: their unpaid checkouts closed with the registration.
+    const closedCheckouts = Array.isArray((res.data as any)?.checkouts_closed)
+      ? ((res.data as any).checkouts_closed as { order_id: string; people?: number }[]) : [];
+    const checkoutText = closedCheckouts.map(c => ` Their unpaid online checkout ${c.order_id} was closed too`
+      + `${(c.people ?? 1) > 1 ? ` (for all ${c.people} people on it)` : ''}.`).join('');
     setDone(action.kind === 'attach'
       ? `${h.full_name} is now linked to ${action.customer?.full_name ?? 'the customer you chose'}.${vipText}`
       : action.kind === 'create' ? `A new customer was made for ${h.full_name}.${vipText}`
-      : `${h.full_name}'s registration was closed.`);
+      : `${h.full_name}'s registration was closed.${checkoutText}`);
     setAction(null);
     onChanged();
   };
@@ -136,7 +156,15 @@ export const RegistrationHoldsPanel: React.FC<{
           <div className="events-hold-top">
             <div>
               <strong>{h.full_name}</strong>
-              {h.vip_waiting && <> <span className="badge badge-accent">VIP payment waiting</span></>}
+              {holdVipBadge(h) && (
+                <> <span className={holdVipBadge(h)!.kind === 'payment' ? 'badge badge-accent' : 'badge badge-muted'}
+                  data-hold-vip={holdVipBadge(h)!.kind}
+                  title={holdVipBadge(h)!.kind === 'checkout'
+                    ? 'They opened the online payment (HitPay) and did not pay. It does not stop closing the registration.'
+                    : 'A VIP payment of theirs waits on Website orders until they are matched'}>
+                  {holdVipBadge(h)!.text}
+                </span></>
+              )}
               <div className="events-sub">
                 {[h.phone, h.email].filter(Boolean).join(' · ')}{h.days.length ? ` · ${fmtDayList(h.days)}` : ''}
                 {' · '}{h.registration_id} · {h.position} of {h.group_size}{h.held_at ? ` · ${fmtDateTime(h.held_at)}` : ''}
@@ -247,6 +275,9 @@ export const RegistrationHoldsPanel: React.FC<{
               <p style={{ margin: 0, fontSize: 13.5 }}>
                 For a registration that is not a real one (a test, sent twice). They come off the guest list and this list.
               </p>
+            )}
+            {action.kind === 'close' && action.hold.vip_checkout && (
+              <p style={{ margin: 0, fontSize: 13.5 }} data-close-checkout>{vipCheckoutCloseNote(action.hold.vip_checkout)}</p>
             )}
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>{action.kind === 'close' ? 'Reason' : action.kind === 'attach' ? 'How did you confirm it is them?' : 'Note (optional)'}</label>

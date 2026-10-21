@@ -587,6 +587,39 @@ export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   // 436 (the owner, 21 Oct 2026): through an affiliate's link, her name on a phone and email not on her record.
   affiliate_name: 'Their name is the affiliate\'s (whose link was used), on a phone and email not on her record.',
 };
+/**
+ * 444 (the owner, 21 Oct 2026: "Staff can close it"): a HitPay checkout opened and left without paying (HitPay has
+ * reported no payment for it), still open until expires_at. The page says "Online payment started, not paid (until
+ * HH:MM)", not "VIP payment waiting"; an Owner or Manager closing the registration closes it too, and Website orders
+ * closes it on its own.
+ */
+export interface VipCheckout {
+  order_id: string; opened_at: string | null; expires_at: string | null;
+  /** How many people the checkout is for (it closes for all of them); null when the server did not say. */
+  people: number | null;
+}
+export const ONLINE_PAYMENT_NOT_PAID = 'Online payment started, not paid';
+/** "Online payment started, not paid (until 14:35)" (Singapore time), or null when there is none. */
+export function vipCheckoutText(c: VipCheckout | null | undefined): string | null {
+  if (!c) return null;
+  const until = fmtTime(c.expires_at);
+  return until ? `${ONLINE_PAYMENT_NOT_PAID} (until ${until})` : ONLINE_PAYMENT_NOT_PAID;
+}
+function normalizeVipCheckout(v: any): VipCheckout | null {
+  if (!v || typeof v !== 'object' || !v.order_id) return null;
+  return { order_id: String(v.order_id), opened_at: str(v.opened_at), expires_at: str(v.expires_at), people: numOrNull(v.people) };
+}
+/** 444: "It is one checkout for 3 people: …" when a checkout is for more than one person, else ''. */
+export function vipCheckoutGroupText(people: number | null | undefined): string {
+  return people != null && people > 1
+    ? ` It is one checkout for ${people} people: it closes for all of them (the others stay registered and can start a new one).`
+    : '';
+}
+/** 444: what closing a registration does to their unpaid checkout, for the Close dialog under To match. */
+export function vipCheckoutCloseNote(c: VipCheckout): string {
+  return `${vipCheckoutText(c)}: their HitPay checkout ${c.order_id} is closed too${c.people == null ? ' (for everyone on it)' : ''}.`
+    + `${vipCheckoutGroupText(c.people)} If HitPay reports a payment for it later, it waits on Website orders to be refunded.`;
+}
 /** The perks a VIP gets, as the guest list and the door show them (the owner, 20 Oct 2026). */
 export const VIP_PERKS = 'Priority for the free therapies · personalised seating · VIP name tag · dinner with the founder, Ms Veronica';
 
@@ -606,6 +639,8 @@ export interface GuestExtra {
   vip_invoice_no: string | null;
   /** A VIP payment of theirs waiting for a Manager (Website orders), by its provider. */
   vip_waiting: VipProvider | null;
+  /** 444: an online payment started and not paid (a HitPay checkout still open), else null (and before 444). */
+  vip_checkout: VipCheckout | null;
   hold: { reason: HoldReason; held_at: string | null } | null;
   closed: boolean;
   /** note: the plain note on the referral: the affiliate themself (not referred, no commission); an existing customer
@@ -642,6 +677,10 @@ export interface RegistrationHold {
   days: string[]; vip_waiting: boolean; candidates: HoldCandidate[];
   /** Round 8: a VIP payment of theirs (paid, or a transfer sent) waits for them to be matched (not a checkout left unpaid). */
   vip_payment: boolean;
+  /** 444: an online payment started and not paid (a HitPay checkout still open), else null. */
+  vip_checkout: VipCheckout | null;
+  /** 444: the server says which checkouts are open (false before 444: vip_waiting alone, which counts a checkout). */
+  vip_checkout_known: boolean;
   /** Set when they came through an affiliate's link and are that affiliate (not referred), or share the affiliate's
    *  phone or email under another name (what linking or making a customer does). */
   referral_note: string | null;
@@ -681,7 +720,7 @@ export function normalizeWebExtras(v: any): EventWebExtras {
       guest_id: String(g.guest_id), person_id: str(g.person_id), website: bool(g.website), is_test: bool(g.is_test),
       registration_id: str(g.registration_id), position: numOrNull(g.position), group_size: numOrNull(g.group_size),
       parked: bool(g.parked), vip: vipState(g.vip), vip_guest: bool(g.vip_guest), vip_invoice_no: str(g.vip_invoice_no),
-      vip_waiting: vipProvider(g.vip_waiting),
+      vip_waiting: vipProvider(g.vip_waiting), vip_checkout: normalizeVipCheckout(g.vip_checkout),
       hold: g.hold && typeof g.hold === 'object' ? { reason: g.hold.reason as HoldReason, held_at: str(g.hold.held_at) } : null,
       closed: bool(g.closed),
       referral: g.referral && typeof g.referral === 'object' ? {
@@ -717,6 +756,8 @@ export function normalizeWebExtras(v: any): EventWebExtras {
       })).filter(c => c.customer_id),
       // An older 436 (before round 8) has no vip_payment: its vip_waiting stands in.
       vip_payment: h?.vip_payment === undefined ? bool(h?.vip_waiting) : bool(h?.vip_payment),
+      // 444: absent before 444.
+      vip_checkout: normalizeVipCheckout(h?.vip_checkout), vip_checkout_known: typeof h === 'object' && h !== null && 'vip_checkout' in h,
       referral_note: str(h?.referral_note),
       affiliate_name: str(h?.affiliate_name),
     })).filter(h => h.person_id),
@@ -741,6 +782,18 @@ export function normalizeVipDoubles(v: unknown): VipDouble[] {
 export function vipHeldText(vips: VipHeld[]): string {
   return vips.map(v => v.state === 'paid' ? `VIP paid${v.invoice_no ? ` (${v.invoice_no})` : ''}`
     : `VIP payment waiting${v.invoice_no ? ` (${v.invoice_no})` : ''}`).join(' + ');
+}
+/**
+ * 444: the To match badge: "VIP payment waiting" for a payment taken or a transfer sent; "Online payment started, not
+ * paid (until HH:MM)" for a checkout left unpaid; nothing for one that expired. Before 444 the server could not tell
+ * them apart, so its vip_waiting says "VIP payment waiting" as it did.
+ */
+export function holdVipBadge(h: Pick<RegistrationHold, 'vip_waiting' | 'vip_payment' | 'vip_checkout' | 'vip_checkout_known'>):
+  { kind: 'payment' | 'checkout'; text: string } | null {
+  if (h.vip_payment) return { kind: 'payment', text: 'VIP payment waiting' };
+  if (h.vip_checkout) return { kind: 'checkout', text: vipCheckoutText(h.vip_checkout)! };
+  if (!h.vip_checkout_known && h.vip_waiting) return { kind: 'payment', text: 'VIP payment waiting' };
+  return null;
 }
 /** A To match candidate already on this event's guest list: "Already a guest: <days> · VIP paid (INV-…)". */
 export function candidateGuestText(c: HoldCandidate): string | null {
@@ -1013,8 +1066,20 @@ export const vipOrderCanInvoice = (o: Pick<VipOrder, 'status' | 'is_test'>) =>
 /** A transfer or a test is set aside with a reason; a HitPay payment took money and never is. */
 export const vipOrderCanDismiss = (o: Pick<VipOrder, 'status' | 'is_test' | 'provider'>) =>
   (o.provider !== 'hitpay' || o.is_test) && ['recorded', 'needs_review', 'test'].includes(o.status);
-export const vipOrderCanRestore = (o: Pick<VipOrder, 'status' | 'review_reason'>) =>
-  o.status === 'dismissed' && !vipOrderClosedRefunded(o);
+/**
+ * 444 (the owner, 21 Oct 2026): a HitPay checkout opened and not paid (HitPay has reported nothing of a payment for
+ * it), open or expired: an Owner or Manager closes it with a reason (event_vip_order_dismiss; the owner, 22 Oct 2026:
+ * not an Admin).
+ */
+export const vipOrderUnpaidCheckout = (o: Pick<VipOrder, 'provider' | 'status' | 'hitpay_payment_id' | 'hitpay_payment_request_id' | 'paid_at' | 'amount_paid'>) =>
+  o.provider === 'hitpay' && o.status === 'pending' && !o.hitpay_payment_id && !o.hitpay_payment_request_id && !o.paid_at
+  && o.amount_paid == null;
+export const VIP_CHECKOUT_CLOSED_PREFIX = 'Checkout closed: ';
+/** 444: a checkout closed by staff (it is never restored: the person starts a new one). */
+export const vipOrderCheckoutClosed = (o: Pick<VipOrder, 'provider' | 'status' | 'review_reason'>) =>
+  o.provider === 'hitpay' && o.status === 'dismissed' && (o.review_reason ?? '').startsWith(VIP_CHECKOUT_CLOSED_PREFIX);
+export const vipOrderCanRestore = (o: Pick<VipOrder, 'status' | 'review_reason' | 'provider'>) =>
+  o.status === 'dismissed' && !vipOrderClosedRefunded(o) && !vipOrderCheckoutClosed(o);
 /** 415's rule: an order still waiting with money taken is closed as refunded outside the app (Owner or Manager). */
 export const vipOrderCanClose = (o: Pick<VipOrder, 'status' | 'livemode' | 'amount_paid'>) =>
   o.status === 'recorded' || o.status === 'needs_review' || (o.status === 'refused' && o.livemode === true && (o.amount_paid ?? 0) > 0);

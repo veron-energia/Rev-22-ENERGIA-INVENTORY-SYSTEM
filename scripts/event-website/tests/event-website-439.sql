@@ -310,16 +310,17 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
                                      ('public.event_web_referral_note(uuid)', false), ('public.event_web_new_customer(uuid)', false),
                                      ('public.event_web_guest_extras(uuid)', true), ('public.event_registration_attach(uuid,uuid,text)', true)) x(f, page)),
   'G2 the six changed functions keep 436''s grants (the page''s two signed-in staff''s, the four others the service role''s)');
--- (440, where it is applied, patched two of them: their AFTER is 439's or 440's.)
+-- (440, where it is applied, patched two of them: their AFTER is 439's or 440's. 444, where it is applied, added the
+-- unpaid checkout to event_web_guest_extras: 439's or 444's.)
 select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_web_kept_customer(uuid)', 'cb0720c1088df9209da45e46b91601f4'),
                                      ('public.event_web_affiliate_contact(uuid)', 'e4adbd007d847daee24e8d5d28b96b75 3c81727e93dc5b73ca1d8833d95f75bb'),
                                      ('public.event_web_check_self_referral(uuid,uuid)', '11475114504d5bab79981ed8bb8c12b0 2a5ab36c3d878197c21221a9a1ff193f'),
                                      ('public.event_web_referral_note(uuid)', 'd68893db63938cc774b157708bd341f1'),
                                      ('public.event_web_new_customer(uuid)', 'a253f76a9db721212a9c110bc41ff483'),
-                                     ('public.event_web_guest_extras(uuid)', '18b56a28bb4965b2188cd73dde056209'),
+                                     ('public.event_web_guest_extras(uuid)', '18b56a28bb4965b2188cd73dde056209 369914bd689e9aa1d34e8e2d887b1d43'),
                                      ('public.event_registration_attach(uuid,uuid,text)', 'b31be4d82d20000df026e7cfa9b24095')) x(f, m)),
-  'G3 the seven functions have 439''s AFTER md5s (440''s for the two it patched, where it is applied)');
+  'G3 the seven functions have 439''s AFTER md5s (440''s for the two it patched, 444''s for the guest extras, where applied)');
 select pg_temp.check((select bool_and(pg_get_functiondef(x.f::regprocedure) ~ E'\nbegin\n  perform public\\.require_active_staff\\(')
                         from (values ('public.event_web_guest_extras(uuid)'), ('public.event_registration_attach(uuid,uuid,text)')) x(f)),
   'G4 the two page functions still call require_active_staff first');

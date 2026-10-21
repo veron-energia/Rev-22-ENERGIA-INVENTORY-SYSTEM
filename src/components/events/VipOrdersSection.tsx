@@ -7,8 +7,9 @@ import { Modal, ReasonModal } from '../ui';
 import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import {
   EventRow, VIP_ORDER_STATUS_BADGE, VIP_ORDER_STATUS_LABELS, VIP_PROVIDER_LABELS, VipOrder, VipOrderList, WEB_ORDER_MODE_BADGE,
-  WEB_ORDER_MODE_LABELS, fmtDate, fmtDateTime, money, normalizeVipOrderList, sgStamp, slug, vipOrderCanClose,
-  vipOrderCanDismiss, vipOrderCanInvoice, vipOrderCanRestore, vipOrderClosedRefunded, vipOrderRefundOpen,
+  WEB_ORDER_MODE_LABELS, fmtDate, fmtDateTime, money, normalizeVipOrderList, sgStamp, slug, vipCheckoutText, vipOrderCanClose,
+  vipOrderCanDismiss, vipOrderCanInvoice, vipOrderCanRestore, vipOrderCheckoutClosed, vipOrderClosedRefunded, vipOrderRefundOpen,
+  vipCheckoutGroupText, vipOrderUnpaidCheckout,
 } from './model';
 
 /*
@@ -25,16 +26,28 @@ import {
  * invoices are cancelled or refunded here, with the app's own refund flow, or
  * that much is recorded as refunded on them (a part refund an Owner or
  * Manager records when a VIP voucher was already used, 436 round 3).
+ *
+ * 444 (the owner, 21 Oct 2026: "Staff can close it"): a HitPay checkout opened
+ * and left without paying is shown by default while it is open ("Online
+ * payment started, not paid (until HH:MM)"), and an Owner or Manager closes
+ * it with a reason ("Close unpaid checkout"; it is not restored: the person
+ * starts a new one). The owner, 22 Oct 2026: not an Admin, so an Admin is not
+ * shown the button (the server refuses them too). If HitPay reports a payment for a closed checkout
+ * later, it waits here (needs review) to be refunded or invoiced by hand.
  */
 
 type Filter = 'current' | 'waiting' | 'all';
 const FILTERS: { value: Filter; label: string }[] = [
-  { value: 'current', label: 'All but dismissed and open checkouts' },
+  { value: 'current', label: 'All but dismissed and expired checkouts' },
   { value: 'waiting', label: 'Waiting for invoices' },
-  { value: 'all', label: 'All, open checkouts too' },
+  { value: 'all', label: 'All, dismissed and expired too' },
 ];
+// 444: an open checkout is shown by default, so it can be closed.
 const shown = (o: VipOrder, f: Filter) =>
-  f === 'all' || (f === 'waiting' ? vipOrderCanInvoice(o) : o.status !== 'dismissed' && o.status !== 'pending');
+  f === 'all' || (f === 'waiting' ? vipOrderCanInvoice(o) : o.status !== 'dismissed' && !(o.status === 'pending' && o.expired));
+/** 444: "Online payment started, not paid (until 14:35)", or that it expired. */
+const unpaidText = (o: VipOrder) => (o.expired ? 'Not paid: the checkout expired'
+  : vipCheckoutText({ order_id: o.order_id, opened_at: o.checkout_opened_at, expires_at: o.expires_at, people: o.quantity }));
 
 const paidText = (o: VipOrder) => (o.provider === 'hitpay'
   ? (o.paid_at ? fmtDateTime(o.paid_at) : null)
@@ -80,6 +93,7 @@ export const VipOrdersSection: React.FC<{
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<VipOrder | null>(null);
   const [closing, setClosing] = useState<VipOrder | null>(null);
+  const [closingCheckout, setClosingCheckout] = useState<VipOrder | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // The latest callback, so a parent's inline function does not reload the list.
   const loaded = useRef(onLoaded);
@@ -154,6 +168,16 @@ export const VipOrdersSection: React.FC<{
     return null;
   };
   const restore = async (o: VipOrder) => { const f = await setDismissed(o, false, null); if (f) setErr(f); };
+  // 444: closing an unpaid checkout is event_vip_order_dismiss on it (the server checks nothing was paid).
+  const closeCheckout = async (o: VipOrder, reason: string): Promise<string | null> => {
+    const f = await setDismissed(o, true, reason);
+    if (!f) {
+      setNotice(`${o.order_id}'s unpaid checkout is closed. If HitPay reports a payment for it later, it waits here to be refunded.`);
+      // The guest list and To match say "Online payment started, not paid" until they are read again.
+      onInvoiced();
+    }
+    return f;
+  };
   const reopen = async (o: VipOrder) => { const f = await setClosed(o, false, null); if (f) setErr(f); };
 
   const waiting = orders.filter(vipOrderCanInvoice).length;
@@ -221,11 +245,14 @@ export const VipOrdersSection: React.FC<{
                       {o.amount_paid != null && o.amount_paid !== o.amount_total && <div className="events-sub">paid {money(o.amount_paid)}</div>}
                     </td>
                     <td>
-                      {paidText(o) ?? <span className="events-muted">{o.status === 'pending' ? (o.expired ? 'Checkout expired' : 'Checkout open') : '—'}</span>}
+                      {paidText(o) ?? <span className="events-muted" data-unpaid>{o.status === 'pending' ? unpaidText(o) : '—'}</span>}
                       {o.provider !== 'hitpay' && o.reference && <div className="events-sub">ref {o.reference}</div>}
                     </td>
                     <td className="events-web-status">
-                      <span className={`${VIP_ORDER_STATUS_BADGE[o.status]} events-status-badge`}>{VIP_ORDER_STATUS_LABELS[o.status]}</span>
+                      <span className={`${VIP_ORDER_STATUS_BADGE[o.status]} events-status-badge`}>
+                        {vipOrderCheckoutClosed(o) ? 'Checkout closed'
+                          : o.status === 'pending' && o.expired ? 'Checkout expired' : VIP_ORDER_STATUS_LABELS[o.status]}
+                      </span>
                       {o.review_reason && o.status !== 'invoiced' && <div className="events-sub">{o.review_reason}</div>}
                       {o.test_note && <div className="events-sub">{o.test_note}</div>}
                       {vipOrderRefundOpen(o) && (
@@ -240,6 +267,12 @@ export const VipOrdersSection: React.FC<{
                       <div className="events-actions events-web-actions">
                         {vipOrderCanInvoice(o) && (
                           <button className="btn btn-primary btn-sm" disabled={busyId === o.id} onClick={() => openConfirm(o)}>Create invoices</button>
+                        )}
+                        {canClose && vipOrderUnpaidCheckout(o) && (
+                          <button className="btn btn-secondary btn-sm" disabled={busyId === o.id} data-close-checkout={o.order_id}
+                            onClick={() => setClosingCheckout(o)}>
+                            <XCircle size={13} /> Close unpaid checkout
+                          </button>
                         )}
                         {vipOrderCanDismiss(o) && (
                           <button className="btn btn-secondary btn-sm" disabled={busyId === o.id} onClick={() => setDismissing(o)}>
@@ -320,6 +353,12 @@ export const VipOrdersSection: React.FC<{
         <ReasonModal title={`Dismiss ${dismissing.order_id}`} label="Why is it set aside?" confirmLabel="Dismiss" minLength={3}
           placeholder="e.g. Sent twice, never paid" onClose={() => setDismissing(null)}
           onSubmitAsync={reason => setDismissed(dismissing, true, reason)} />
+      )}
+      {closingCheckout && (
+        <ReasonModal title={`Close ${closingCheckout.order_id}'s unpaid checkout`}
+          label={`Why is it closed?${vipCheckoutGroupText(closingCheckout.quantity)} If HitPay reports a payment for it later, it waits here to be refunded.`}
+          confirmLabel="Close checkout" minLength={3} placeholder="e.g. Pressed back, not paying online"
+          onClose={() => setClosingCheckout(null)} onSubmitAsync={reason => closeCheckout(closingCheckout, reason)} />
       )}
       {closing && (
         <ReasonModal title={`Close ${closing.order_id} as refunded`} label="How was it refunded?" confirmLabel="Close as refunded"

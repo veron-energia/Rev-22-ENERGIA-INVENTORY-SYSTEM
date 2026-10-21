@@ -7,10 +7,11 @@ import { GuestModal, GuestSaved } from './GuestModal';
 import { RegistrationHoldsPanel } from './RegistrationHoldsPanel';
 import { GuestPlanningModal } from './GuestPlanningModal';
 import {
-  DayLoad, EventPlanning, EventRow, EventWebExtras, Guest, GuestExtra, PLAN_BADGE_CLASS, PlanningState, StaffOption, TWO_VIP_PAYMENTS, VIP_PERKS,
+  DayLoad, EventPlanning, EventRow, EventWebExtras, Guest, GuestExtra, ONLINE_PAYMENT_NOT_PAID, PLAN_BADGE_CLASS, PlanningState, StaffOption,
+  TWO_VIP_PAYMENTS, VIP_PERKS,
   VIP_PROVIDER_LABELS, accessCell, allergyCell, answersUpdatedCell, dayLabel, extraOf, fmtDayMonth, fmtTime, fmtWeekday, foodCell,
   guestDay, heardFromCell, invoiceStatusLabel, isVipDouble, isVipGuest, normalizeGuestRestored, paymentLabel, paymentTone, planningBadges,
-  planningOf, slug, talksCell, timingCell, vipLink,
+  planningOf, slug, talksCell, timingCell, vipCheckoutText, vipLink,
 } from './model';
 
 type TypeFilter = 'all' | 'ticket' | 'free';
@@ -69,7 +70,9 @@ export function guestExportColumns(event: EventRow, extras: EventWebExtras | nul
   planning: EventPlanning | null = null, planningState: PlanningState = 'none'): ExcelColumn<Guest>[] {
   // 436: with the event's website, who is VIP, where they registered, their gift and the link they came by.
   const web: ExcelColumn<Guest>[] = extras?.settings ? [
-    { header: 'VIP', value: g => (isVipGuest(g, extraOf(extras, g)) ? 'Y' : extraOf(extras, g)?.vip_waiting ? 'Waiting' : '') },
+    // 444: a checkout opened and not paid is not a payment waiting.
+    { header: 'VIP', value: g => (isVipGuest(g, extraOf(extras, g)) ? 'Y' : extraOf(extras, g)?.vip_waiting ? 'Waiting'
+      : extraOf(extras, g)?.vip_checkout && g.status === 'registered' ? ONLINE_PAYMENT_NOT_PAID : '') },
     { header: 'Registration', value: g => { const x = extraOf(extras, g); return x?.registration_id ? `${x.registration_id} · ${x.position} of ${x.group_size}` : ''; } },
     { header: 'Gift', value: g => { const x = extraOf(extras, g); return x?.gift ? `${x.gift.product_name} · ${x.gift.use_no ?? ''}` : ''; } },
     { header: 'Referral code', value: g => extraOf(extras, g)?.referral?.code ?? '' },
@@ -318,6 +321,13 @@ export const GuestsTab: React.FC<{
                           {!vip && x?.vip_waiting && (
                             <span className="badge badge-accent" title="A VIP payment of theirs waits on Website orders">
                               VIP waiting · {VIP_PROVIDER_LABELS[x.vip_waiting]}
+                            </span>
+                          )}
+                          {/* 444 (the owner, 21 Oct 2026): a HitPay checkout opened and left without paying */}
+                          {!vip && !x?.vip_waiting && x?.vip_checkout && g.status === 'registered' && (
+                            <span className="badge badge-muted" data-vip-checkout
+                              title="They opened the online payment (HitPay) for VIP and have not paid. An Owner or Manager may still close the registration; the checkout closes with it.">
+                              {vipCheckoutText(x.vip_checkout)}
                             </span>
                           )}
                           {x?.hold && <span className="badge badge-danger" title="Waiting for staff to link them to a customer">To match</span>}

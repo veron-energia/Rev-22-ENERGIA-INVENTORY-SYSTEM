@@ -35,6 +35,18 @@
 //     what arrived); a transfer is dismissed and restored; an Owner or Manager (not an
 //     Admin) closes an order as refunded; without a channel the channel part
 //     is left out.
+//   * 444 (the owner, 21 Oct 2026: "Staff can close it"): a HitPay checkout
+//     opened and left without paying says "Online payment started, not paid
+//     (until HH:MM)" on the guest and on To match, not "VIP payment waiting"
+//     (a payment taken still says that; a server before 444 too); closing such
+//     a registration says the checkout closes with it (for all of a group
+//     when it is for several people), and after it that it did; the 436 refusal for a payment taken reads as what to do on Website
+//     orders. Website orders shows open checkouts by default (not expired
+//     ones), with "Close unpaid checkout" for an Owner or Manager (a reason;
+//     the server's dismiss; it says when the checkout is for several people);
+//     not for an Admin (the owner, 22 Oct 2026), even when the server's
+//     can_close is wrong; none on a payment; a closed checkout says so and
+//     cannot be restored.
 //   * The contract shown is the recorded version (its md5); the tab says
 //     which days and hours the website shows (the event's own, 9 am to 7 pm).
 //
@@ -799,6 +811,160 @@ test('website orders: a transfer is dismissed with a reason; an Owner or Manager
   await setValue(modal().querySelector('textarea'), 'Refunded in HitPay');
   await click(button('Close as refunded', modal()));
   assert.deepEqual(callsOf('event_vip_order_close_refunded').at(-1).args, { p_order_id: 'vo-3', p_reason: 'Refunded in HitPay', p_close: true });
+});
+
+// ── 444: an online payment started and not paid ───────────────────────────
+// Its checkout closes at 06:35 UTC: 14:35 in Singapore (the page's clock), whatever the browser's time zone.
+const CHECKOUT = { order_id: 'VIP-20261021-0000000C', opened_at: '2026-10-21T05:25:00Z', expires_at: '2026-10-21T06:35:00Z', people: 1 };
+const withCheckout = (b, { known = true, payment = false, people = 1 } = {}) => {
+  b.handlers.event_web_guest_extras = () => {
+    const x = makeFixture().extras;
+    const held = x.guests.find(g => g.guest_id === 'g-held');
+    const checkout = { ...CHECKOUT, people };
+    Object.assign(held, { vip: 'pending', vip_checkout: known ? checkout : undefined });
+    if (!known) delete held.vip_checkout;
+    Object.assign(x.holds[0], { vip_waiting: true, vip_payment: payment, vip_checkout: payment ? null : checkout });
+    if (!known) delete x.holds[0].vip_checkout;
+    return x;
+  };
+};
+
+test('444: an open unpaid checkout says "Online payment started, not paid (until HH:MM)", not "VIP payment waiting"', async () => {
+  await mount({ role: 'manager', setup: b => withCheckout(b) });
+  const panel = document.querySelector('[data-holds]');
+  const badge = panel.querySelector('[data-hold="p-3"] [data-hold-vip]');
+  assert.equal(badge.textContent.trim(), 'Online payment started, not paid (until 14:35)');
+  assert.equal(badge.dataset.holdVip, 'checkout');
+  assert.ok(!panel.textContent.includes('VIP payment waiting'), 'not a payment waiting');
+  assert.equal(row('g-held').querySelector('[data-vip-checkout]').textContent.trim(), 'Online payment started, not paid (until 14:35)',
+    'the guest row says the same');
+  assert.equal(row('g-free').querySelector('[data-vip-checkout]'), null, 'a transfer waiting still says VIP waiting · PayNow');
+  assert.ok(row('g-free').textContent.includes('VIP waiting · PayNow'));
+  globalThis.__exports = [];
+  await click(button('Export Excel'));
+  const body = globalThis.__exports.at(-1).sheet.ws.body;
+  assert.equal(body.find(r => r.Name === 'Hana Held').VIP, 'Online payment started, not paid');
+  assert.equal(body.find(r => r.Name === 'Fred Free').VIP, 'Waiting');
+
+  // A payment taken (or a transfer sent) still waits: "VIP payment waiting".
+  await mount({ role: 'manager', setup: b => withCheckout(b, { payment: true }) });
+  assert.equal(document.querySelector('[data-hold="p-3"] [data-hold-vip]').textContent.trim(), 'VIP payment waiting');
+  // A server before 444 (no vip_checkout): its vip_waiting says "VIP payment waiting", as before.
+  await mount({ role: 'manager', setup: b => withCheckout(b, { known: false }) });
+  assert.equal(document.querySelector('[data-hold="p-3"] [data-hold-vip]').textContent.trim(), 'VIP payment waiting');
+  assert.equal(row('g-held').querySelector('[data-vip-checkout]'), null);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('444: closing a registration with an unpaid checkout says it closes too (for how many people), and that it did', async () => {
+  // A checkout for one person: no word of a group.
+  await mount({ role: 'manager', setup: b => withCheckout(b) });
+  await click(document.querySelector('[data-close="p-3"]'));
+  assert.equal(modal().querySelector('[data-close-checkout]').textContent.replace(/\s+/g, ' ').trim(),
+    'Online payment started, not paid (until 14:35): their HitPay checkout VIP-20261021-0000000C is closed too. '
+    + 'If HitPay reports a payment for it later, it waits on Website orders to be refunded.');
+
+  // One checkout for two people: it closes for both, and the dialog says so.
+  await mount({ role: 'manager', setup: b => {
+    withCheckout(b, { people: 2 });
+    b.handlers.event_registration_close = () => ({ ok: true, checkouts_closed: [{ order_id: CHECKOUT.order_id, people: 2, open: true }] });
+  } });
+  await click(document.querySelector('[data-close="p-3"]'));
+  assert.equal(modal().querySelector('[data-close-checkout]').textContent.replace(/\s+/g, ' ').trim(),
+    'Online payment started, not paid (until 14:35): their HitPay checkout VIP-20261021-0000000C is closed too. '
+    + 'It is one checkout for 2 people: it closes for all of them (the others stay registered and can start a new one). '
+    + 'If HitPay reports a payment for it later, it waits on Website orders to be refunded.');
+  await setValue(modal().querySelector('textarea'), 'Pressed back, not coming');
+  await click(modal().querySelector('[data-confirm]'));
+  assert.deepEqual(callsOf('event_registration_close').at(-1).args, { p_person_id: 'p-3', p_reason: 'Pressed back, not coming' });
+  assert.ok(text().includes('Hana Held\'s registration was closed. Their unpaid online checkout VIP-20261021-0000000C was closed too (for all 2 people on it).'),
+    text());
+
+  // Without a checkout, no note; a payment taken: the 436 refusal reads as what to do on Website orders.
+  await mount({ role: 'manager', setup: b => {
+    b.handlers.event_registration_close = () => ({ __error: 'A VIP payment for Hana Held is waiting: deal with it on Website orders first.' });
+  } });
+  await click(document.querySelector('[data-close="p-3"]'));
+  assert.equal(modal().querySelector('[data-close-checkout]'), null);
+  await setValue(modal().querySelector('textarea'), 'Duplicate');
+  await click(modal().querySelector('[data-confirm]'));
+  assert.ok(modal().querySelector('.alert-danger').textContent.includes(
+    'Hana Held has a VIP payment on Website orders that was paid, or a transfer they sent, so the registration cannot be closed yet. '
+    + 'On Website orders, create its invoices, or close it as refunded once the money is back (dismiss a transfer that never arrived); '
+    + 'then close the registration.'), modal().textContent);
+});
+
+const vipCheckoutOrders = b => {
+  b.handlers.event_vip_orders_list = () => {
+    const v = makeFixture().vip;
+    const base = { provider: 'hitpay', is_test: false, livemode: true, unit_amount: 72, quantity: 1, amount_total: 72, amount_paid: null,
+      payer_email: 'olive@example.com', payer_phone: null, paid_at: null, paid_on: null, reference: null,
+      hitpay_payment_request_id: null, hitpay_payment_id: null, refusal: null, waiting_for_match: false, test_note: null,
+      test_would: null, refunded_total: 0, refund_noted_at: null, refund_covered: false, created_at: '2026-10-21T05:25:00Z',
+      people: [{ person_id: 'p-3', position: 1, name: 'Hana Held', phone: null, email: null, match: 'held', hold_reason: 'phone_in_use',
+        customer_id: null, customer_name: null, days: [D2], invoice_id: null, invoice_no: null, invoice_status: null }] };
+    v.orders.push(
+      { ...base, id: 'vo-open', order_id: 'VIP-20261021-0000000C', status: 'pending', payer_name: 'Olive Open', quantity: 2, amount_total: 144,
+        checkout_opened_at: CHECKOUT.opened_at, expires_at: CHECKOUT.expires_at, expired: false, review_reason: null },
+      { ...base, id: 'vo-old', order_id: 'VIP-20261021-0000000D', status: 'pending', payer_name: 'Otto Old',
+        checkout_opened_at: '2026-10-21T01:00:00Z', expires_at: '2026-10-21T02:10:00Z', expired: true, review_reason: null },
+      { ...base, id: 'vo-shut', order_id: 'VIP-20261021-0000000E', status: 'dismissed', payer_name: 'Sue Shut',
+        checkout_opened_at: '2026-10-21T01:00:00Z', expires_at: '2026-10-21T02:10:00Z', expired: false,
+        review_reason: 'Checkout closed: Pressed back' });
+    return { ...v, can_close: true };
+  };
+};
+
+test('444: Website orders shows an open unpaid checkout by default, and an Owner or Manager closes it with a reason', async () => {
+  await mount({ role: 'manager', setup: vipCheckoutOrders });
+  await click(tab('Website orders'));
+  const open = vipRow('VIP-20261021-0000000C');
+  assert.ok(open, 'an open checkout is shown by default');
+  assert.equal(open.querySelector('[data-unpaid]').textContent.trim(), 'Online payment started, not paid (until 14:35)');
+  assert.equal(vipRow('VIP-20261021-0000000D'), null, 'an expired one is not');
+  assert.equal(vipRow('VIP-20261021-0000000E'), null, 'nor a closed one');
+  assert.ok(!button('Close unpaid checkout', vipRow('VIP-20261020-00000003')), 'a HitPay payment is never closed as a checkout');
+  assert.ok(!button('Dismiss', open), 'nor dismissed');
+  const extrasBefore = callsOf('event_web_guest_extras').length;
+  await click(button('Close unpaid checkout', open));
+  assert.ok(modal().textContent.includes('Why is it closed? It is one checkout for 2 people: it closes for all of them (the others stay '
+    + 'registered and can start a new one). If HitPay reports a payment for it later, it waits here to be refunded.'), modal().textContent);
+  await setValue(modal().querySelector('textarea'), 'Pressed back, not paying online');
+  await click(button('Close checkout', modal()));
+  assert.deepEqual(callsOf('event_vip_order_dismiss').at(-1).args,
+    { p_order_id: 'vo-open', p_reason: 'Pressed back, not paying online', p_dismiss: true });
+  assert.ok(text().includes('VIP-20261021-0000000C\'s unpaid checkout is closed.'), text());
+  assert.ok(callsOf('event_web_guest_extras').length > extrasBefore, 'the guest list and To match are read again');
+
+  await setValue(document.querySelector('select[aria-label="VIP order status"]'), 'all');
+  const old = vipRow('VIP-20261021-0000000D');
+  assert.equal(old.querySelector('[data-unpaid]').textContent.trim(), 'Not paid: the checkout expired');
+  assert.equal(old.querySelector('.events-status-badge').textContent.trim(), 'Checkout expired', 'not "Checkout open"');
+  assert.ok(button('Close unpaid checkout', old), 'an expired one may be closed too');
+  const shut = vipRow('VIP-20261021-0000000E');
+  assert.ok(shut.textContent.includes('Checkout closed') && shut.textContent.includes('Checkout closed: Pressed back'));
+  assert.deepEqual(buttons(shut).map(b => b.textContent.trim()), [], 'a closed checkout is not restored');
+  assert.deepEqual(globalThis.__renderErrors, []);
+
+  await mount({ role: 'owner', setup: vipCheckoutOrders });
+  await click(tab('Website orders'));
+  assert.ok(button('Close unpaid checkout', vipRow('VIP-20261021-0000000C')), 'an Owner closes one too');
+});
+
+test('444: an Admin sees an open unpaid checkout but is not offered Close unpaid checkout (the owner, 22 Oct 2026)', async () => {
+  // The fixture's can_close is true: the page checks the Admin's role itself.
+  await mount({ role: 'admin', setup: vipCheckoutOrders });
+  await click(tab('Website orders'));
+  const open = vipRow('VIP-20261021-0000000C');
+  assert.ok(open, 'an open checkout is shown by default');
+  assert.equal(open.querySelector('[data-unpaid]').textContent.trim(), 'Online payment started, not paid (until 14:35)');
+  assert.ok(!button('Close unpaid checkout', open), 'an Admin does not close an unpaid checkout');
+  assert.ok(!button('Dismiss', open), 'nor dismisses it');
+  await setValue(document.querySelector('select[aria-label="VIP order status"]'), 'all');
+  assert.ok(!button('Close unpaid checkout', vipRow('VIP-20261021-0000000D')), 'nor an expired one');
+  assert.equal(document.querySelector('[data-close-checkout]'), null);
+  assert.ok(button('Dismiss', vipRow('VIP-20261020-00000001')), 'an Admin still dismisses a transfer (436)');
+  assert.deepEqual(globalThis.__renderErrors, []);
 });
 
 // ── The contract ───────────────────────────────────────────────────────────
