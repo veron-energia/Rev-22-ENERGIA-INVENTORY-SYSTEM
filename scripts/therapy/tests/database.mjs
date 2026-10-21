@@ -523,10 +523,28 @@ const purchased = (customer, months, status, activation, expiry, country = null)
      wrongTier !== null && /not an alternative/.test(wrongTier));
 
   // A claim date must not be in the past, so the closure is placed relative to
-  // today and the expected answer is derived, not written down.
+  // the start and the expected answer is derived, not written down. ORPH above
+  // gave the same customer a month of unlimited therapy from today, so this
+  // claim starts the day after the customer's last running or scheduled
+  // period ends: since 422 a Legacy claim that overlaps asks first and claims
+  // nothing.
   const today = sql(`select public.sg_today();`);
-  const start = sql(`select ('${today}'::date + 3)::text;`);
-  const holiday = sql(`select ('${today}'::date + 10)::text;`);
+  const start = sql(`select (greatest('${today}'::date + 2,
+      (select max(expiry_date) from public.therapy_entitlements
+        where customer_id = '${B}' and status in ('active', 'scheduled')),
+      (select max(expiry_date) from public.purchased_therapy_entitlements
+        where customer_id = '${B}' and status in ('active', 'scheduled'))) + 1)::text;`);
+  const holiday = sql(`select ('${start}'::date + 7)::text;`);
+  // Where 422 is applied, the overlap is asked about first.
+  if (sql(`select to_regprocedure('public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)') is not null;`) === 't') {
+    const asked = json(`select public.claim_legacy_therapy('${hist}', ('${today}'::date + 3), '${unlimitedRule}', null, 'SG');`);
+    ok('a Legacy claim on top of a running period asks first and claims nothing (422)',
+       asked.requires_confirmation === true && asked.claimed === false
+         && sql(`select status from public.therapy_entitlements where id='${hist}';`) === 'pending_activation',
+       JSON.stringify({ requires_confirmation: asked.requires_confirmation, suggested_start: asked.suggested_start }));
+  } else {
+    console.log('SKIP: the overlap question (422 is not applied on this database)');
+  }
   // Move it off a Sunday, which would correctly earn nothing.
   const eligible = sql(`select case when extract(dow from '${holiday}'::date) = 0
                                     then ('${holiday}'::date + 1)::text else '${holiday}' end;`);

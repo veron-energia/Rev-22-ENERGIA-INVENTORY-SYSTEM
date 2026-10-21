@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Store, Customer, UnlimitedTherapyPackage, UnlimitedTherapyStorePrice, PurchasedTherapyEntitlement, isOwnerOrManager } from '../types';
+import { Store, UnlimitedTherapyPackage, PurchasedTherapyEntitlement, isOwnerOrManager } from '../types';
 import { Modal, DateModal, ReasonModal } from '../components/ui';
 import { RefreshCw, Plus, Sparkles, Search, CalendarClock, Play, Ban, Archive, Pencil } from 'lucide-react';
 import StorePriceEditor from '../components/StorePriceEditor';
@@ -17,10 +17,16 @@ import { RecalculationPreview, RewardMappingPreview } from '../components/therap
 import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
 import '../components/therapy/therapy.css';
 import { purchasedStatusOn, legacyStatusOn } from '../lib/therapy/status';
+import { addDays, isDateOnly } from '../lib/therapy/expiry.mjs';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
 const sgToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
+// The last day of the customer's running or scheduled unlimited therapy: the
+// day before the first free day the server gives (therapy_next_available_start).
+const dayBefore = (s?: string | null) => (s && isDateOnly(s) ? addDays(s, -1) : null);
+// 422: the lists never send a deleted customer's name or phone (rule 9).
+const customerLabel = (e: { customer_name?: string | null }) => e.customer_name ?? 'Deleted customer';
 
 const PSTATUS: Record<string, { cls: string; label: string }> = {
   pending_activation: { cls: 'badge-accent', label: 'Pending Activation' },
@@ -30,6 +36,24 @@ const PSTATUS: Record<string, { cls: string; label: string }> = {
   cancelled: { cls: 'badge-danger', label: 'Cancelled' },
   refunded: { cls: 'badge-danger', label: 'Refunded' },
 };
+
+// 422: the Purchased and Legacy lists are read a page at a time from the
+// server (therapy_list_page), searched and filtered there, with the figures
+// worked out there: names, what was claimed and is left, days left, the sale.
+type ListTab = 'purchased' | 'legacy';
+const LIST_PAGE = 50;
+const LIST_STATUSES: Record<ListTab, [string, string][]> = {
+  purchased: [['all', 'All'], ['open', 'Not ended'], ['pending_activation', 'Not claimed'], ['scheduled', 'Scheduled'],
+              ['active', 'Active'], ['expired', 'Expired'], ['closed', 'Cancelled or refunded']],
+  legacy: [['open', 'All but cancelled'], ['all', 'All'], ['pending_activation', 'Not claimed'], ['scheduled', 'Scheduled'],
+           ['active', 'Active'], ['expired', 'Expired'], ['cancelled', 'Cancelled']],
+};
+type ListQuery = { search: string; applied: string; status: string; page: number };
+type ListState = { rows: any[]; total: number; loading: boolean; error: string | null };
+const emptyList: ListState = { rows: [], total: 0, loading: false, error: null };
+
+// What a credit package's credit buys, in words (credit_spendable_categories).
+const categoryLabel = (c: string) => c.replace(/_/g, ' ');
 
 const TherapyPage: React.FC = () => {
   const { profile } = useAuth();
@@ -45,15 +69,19 @@ const TherapyPage: React.FC = () => {
   // Claim, as on Legacy Therapy: choose and start, or choose and collect, in one window.
   const [claimFor, setClaimFor] = useState<PurchasedTherapyEntitlement | null>(null);
   const [tab, setTab] = useState<'purchased' | 'legacy' | 'packages' | 'qualification' | 'credit' | 'bundles'>('purchased');
-  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [ents, setEnts] = useState<PurchasedTherapyEntitlement[]>([]);
-  const [legacy, setLegacy] = useState<any[]>([]);
+  const [lists, setLists] = useState<Record<ListTab, ListState>>({ purchased: emptyList, legacy: emptyList });
+  const [queries, setQueries] = useState<Record<ListTab, ListQuery>>({
+    purchased: { search: '', applied: '', status: 'all', page: 0 },
+    legacy: { search: '', applied: '', status: 'open', page: 0 },
+  });
+  const queriesRef = useRef(queries);
+  queriesRef.current = queries;
+  // A late answer for an older search is dropped, per list.
+  const listToken = useRef<Record<ListTab, number>>({ purchased: 0, legacy: 0 });
   const [packages, setPackages] = useState<UnlimitedTherapyPackage[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [search, setSearch] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
   // package modal
@@ -83,7 +111,10 @@ const TherapyPage: React.FC = () => {
   const [priceFor, setPriceFor] = useState<{ id: string; name: string } | null>(null);
   const [reschedEnt, setReschedEnt] = useState<PurchasedTherapyEntitlement | null>(null);
   const [reschedDate, setReschedDate] = useState<string | null>(null);   // step 1 result -> step 2 asks reason
-  const [refundEnt, setRefundEnt] = useState<PurchasedTherapyEntitlement | null>(null);
+  // THERAPY-9: "Cancel package (no money back)" closes a package; money goes
+  // back only through the invoice's Refund / Cancel.
+  const [cancelEnt, setCancelEnt] = useState<any | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
 
   // Same-day qualification rules (Phase 22).
   const [rules, setRules] = useState<any[]>([]);
@@ -135,13 +166,16 @@ const TherapyPage: React.FC = () => {
     is_active: true, effective_from: '', effective_to: '', commission_classification: 'third_party',
     staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', reward_qualifying_amount: '',
     store_ids: [] as string[], voucher_ids: [] as string[],
-    // Phase 30: which categories this package's Paid Credit may buy, and the
-    // Bonus Credit it issues alongside.
+    // The allow_* flags are no longer shown (the Owner, 9 Oct 2026, Q15 A):
+    // the till follows the package's spending rules (Rules), never these. They
+    // are sent back as they were read, so a save changes nothing about them.
     allow_product: false, allow_voucher: true, allow_promotion: false, allow_therapy: false,
     allow_rental: false, allow_event: false, allow_special_product: false,
     bonus_enabled: false, bonus_mode: 'fixed' as 'fixed' | 'percentage', bonus_value: '' };
   const [pkgForm, setPkgForm] = useState<typeof emptyPkg | null>(null);
-  const [, setNoticeTick] = useState(0);
+  // What the package's credit really buys at the till, read-only on the form.
+  const [pkgRules, setPkgRules] = useState<{ paid: string[]; bonus: string[]; source?: string } | null>(null);
+  const [pkgRulesErr, setPkgRulesErr] = useState<string | null>(null);
   const [pkgBusy, setPkgBusy] = useState(false);
   const [pkgErr, setPkgErr] = useState<string | null>(null);
   const saveCreditPkg = async () => {
@@ -228,78 +262,103 @@ const TherapyPage: React.FC = () => {
     setRuleForm(null); load();
   };
 
-  const load = useCallback(async () => {
-    setLoading(true); setErr(null);
-    const [pe, le, pk, st, ru, claims, units] = await Promise.all([
-      supabase.from('purchased_therapy_entitlements').select('*').order('created_at', { ascending: false }),
-      supabase.from('therapy_entitlements').select('*').order('created_at', { ascending: false }),
+  // The catalogues the tabs and windows need, read at once (THERAPY-19).
+  const loadCatalogues = useCallback(async () => {
+    const [pk, st, ru, setup, cp, pb, vc, ts, pls, plv] = await Promise.all([
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).order('duration_months'),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      // The customers table is deliberately absent. It was read whole here, and
-      // capped at a thousand rows, to supply names the by-id lookup below
-      // already supplies for every entitlement on the page.
       supabase.from('therapy_package_rules').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
-      // Claimed quantity is the sum of the claim events, never a stored column,
-      // so the two can never drift apart.
-      supabase.from('voucher_claims').select('entitlement_id, quantity'),
-      // The unit view carries the benefit choice and live voucher figures,
-      // which the raw table cannot: claimed is derived, never stored.
-      supabase.rpc('purchased_therapy_units', { p_store_id: null, p_customer_id: null, p_pending_only: false }),
-    ]);
-    if (pe.error && !/relation.*does not exist/.test(pe.error.message)) setErr(pe.error.message);
-    const unitById = new Map<string, any>();
-    for (const u of ((units.data as any[] | null) ?? [])) unitById.set(u.purchased_id, u);
-    setEnts((((pe.data as any[]) ?? []).map(e => ({ ...e, unit: unitById.get(e.id) ?? null })) as PurchasedTherapyEntitlement[]) ?? []);
-    const claimedBy = new Map<string, number>();
-    for (const row of ((claims.data as any[] | null) ?? [])) {
-      claimedBy.set(row.entitlement_id, (claimedBy.get(row.entitlement_id) ?? 0) + Number(row.quantity || 0));
-    }
-    setLegacy(((le.data as any[]) ?? []).map(e => ({ ...e, claimed_qty: claimedBy.get(e.id) ?? 0 })));
-    setPackages((pk.data as UnlimitedTherapyPackage[]) ?? []);
-    setStores((st.data as Store[]) ?? []);
-    // Exactly the customers these entitlements name. Awaited rather than left
-    // running behind the render: the search box filters on customer name, so a
-    // search run before these landed would have missed rows that do match.
-    const named = await fetchCustomersByIds([
-      ...((pe.data as any[]) ?? []).map(x => x.customer_id),
-      ...((le.data as any[]) ?? []).map(x => x.customer_id),
-    ]);
-    setCustomers(cur => mergeCustomers(cur, named));
-    setRules((ru.data as any[]) ?? []);
-    const { data: st2 } = await supabase.rpc('legacy_setup_status');
-    setSetupStatus(st2 ?? null);
-    const { data: cp } = await supabase.from('credit_packages').select('*').is('deleted_at', null).order('customer_price');
-    setCreditPkgs((cp as any[]) ?? []);
-    const { data: pb } = await supabase.from('premium_bundles').select('*').is('deleted_at', null).order('customer_payment_amount', { ascending: false });
-    setBundles((pb as any[]) ?? []);
-    const { data: vc } = await supabase.from('vouchers').select('id,name,code,voucher_kind,reward_eligible').is('deleted_at', null).eq('is_active', true).order('name');
-    setAllVouchers((vc as any[]) ?? []);
-    // service_code, not code — asking for the wrong column made PostgREST
-    // return 400 and left the eligible-services picker permanently empty.
-    // Archived services are loaded too: a unit sold while one was offered still
-    // covers it, and its name has to resolve. The picker leaves them out.
-    const { data: ts, error: tsErr } = await supabase
-      .from('therapy_services')
-      .select('id,name,service_code,is_active,deleted_at,frequency_kind,frequency_max_per_period,frequency_interval_hours')
-      .order('name');
-    if (tsErr) setErr(tsErr.message);
-    setTherapyServices((ts as any[]) ?? []);
-    const [pls, plv] = await Promise.all([
+      supabase.rpc('legacy_setup_status'),
+      supabase.from('credit_packages').select('*').is('deleted_at', null).order('customer_price'),
+      supabase.from('premium_bundles').select('*').is('deleted_at', null).order('customer_payment_amount', { ascending: false }),
+      supabase.from('vouchers').select('id,name,code,voucher_kind,reward_eligible').is('deleted_at', null).eq('is_active', true).order('name'),
+      // service_code, not code — asking for the wrong column made PostgREST
+      // return 400 and left the eligible-services picker permanently empty.
+      // Archived services are loaded too: a unit sold while one was offered still
+      // covers it, and its name has to resolve. The picker leaves them out.
+      supabase.from('therapy_services')
+        .select('id,name,service_code,is_active,deleted_at,frequency_kind,frequency_max_per_period,frequency_interval_hours')
+        .order('name'),
       supabase.from('therapy_package_services').select('package_id,service_id'),
       supabase.from('therapy_package_vouchers').select('package_id,voucher_id'),
     ]);
+    const failed = [pk, st, ru, cp, pb, vc, ts].find(r => r.error);
+    if (failed?.error) setErr(failed.error.message);
+    setPackages((pk.data as UnlimitedTherapyPackage[]) ?? []);
+    setStores((st.data as Store[]) ?? []);
+    setRules((ru.data as any[]) ?? []);
+    setSetupStatus(setup.data ?? null);
+    setCreditPkgs((cp.data as any[]) ?? []);
+    setBundles((pb.data as any[]) ?? []);
+    setAllVouchers((vc.data as any[]) ?? []);
+    setTherapyServices((ts.data as any[]) ?? []);
     const group = (rows: any[] | null, key: string) => {
       const out: Record<string, string[]> = {};
       for (const r of rows ?? []) (out[r.package_id] ??= []).push(r[key]);
       return out;
     };
     setPkgLinks({ services: group(pls.data as any[], 'service_id'), vouchers: group(plv.data as any[], 'voucher_id') });
-    setLoading(false);
   }, []);
-  useEffect(() => { load(); }, [load]);
 
-  const cName = (id: string) => customers.find(c => c.id === id)?.full_name ?? '—';
-  const cPhone = (id: string) => customers.find(c => c.id === id)?.phone ?? '';
+  // One page of the Purchased or Legacy list, from the server (THERAPY-19).
+  // Each row carries its customer's name and phone, so no customer list is read.
+  const loadList = useCallback(async (which: ListTab) => {
+    const q = queriesRef.current[which];
+    const token = ++listToken.current[which];
+    setLists(cur => ({ ...cur, [which]: { ...cur[which], loading: true, error: null } }));
+    const { data, error } = await supabase.rpc('therapy_list_page', {
+      p_tab: which, p_search: q.applied.trim() || null, p_status: q.status,
+      p_limit: LIST_PAGE, p_offset: q.page * LIST_PAGE,
+    });
+    if (token !== listToken.current[which]) return;
+    if (error) {
+      setLists(cur => ({ ...cur, [which]: { ...cur[which], loading: false, error: error.message } }));
+      return;
+    }
+    const res = (data as any) ?? {};
+    const rows = Array.isArray(res.rows) ? res.rows : [];
+    const total = Number(res.total ?? 0);
+    setLists(cur => ({ ...cur, [which]: { rows, total, loading: false, error: null } }));
+    // A page past the end (a claim or Cancel package took the last row of the
+    // last page): step back to the last page there is. The change of page
+    // reads the list again.
+    if (rows.length === 0 && total > 0 && q.page > 0) {
+      const last = Math.max(0, Math.ceil(total / LIST_PAGE) - 1);
+      if (last !== q.page) setQueries(cur => ({ ...cur, [which]: { ...cur[which], page: last } }));
+    }
+  }, []);
+
+  // Refresh: the catalogues and both lists, names included.
+  const load = useCallback(async () => {
+    setErr(null);
+    await Promise.all([loadCatalogues(), loadList('purchased'), loadList('legacy')]);
+  }, [loadCatalogues, loadList]);
+  useEffect(() => { void loadCatalogues(); }, [loadCatalogues]);
+  // Read again when what is asked for changes: the applied search, the status
+  // filter or the page. Typing in the search box does not read; Search does.
+  const { applied: pApplied, status: pStatus, page: pPage } = queries.purchased;
+  const { applied: lApplied, status: lStatus, page: lPage } = queries.legacy;
+  useEffect(() => { void loadList('purchased'); }, [loadList, pApplied, pStatus, pPage]);
+  useEffect(() => { void loadList('legacy'); }, [loadList, lApplied, lStatus, lPage]);
+
+  // The credit package form shows the package's real spending rules (Q15 A).
+  const pkgFormKey = pkgForm ? (pkgForm.id ?? 'new') : null;
+  useEffect(() => {
+    if (!pkgFormKey) return;
+    let live = true;
+    setPkgRules(null); setPkgRulesErr(null);
+    void supabase.rpc('credit_package_effective_rules', { p_package_id: pkgFormKey === 'new' ? null : pkgFormKey })
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) { setPkgRulesErr(error.message); return; }
+        const r = (data as any) ?? {};
+        setPkgRules({ paid: Array.isArray(r.paid) ? r.paid : [], bonus: Array.isArray(r.bonus) ? r.bonus : [], source: r.source });
+      });
+    return () => { live = false; };
+  }, [pkgFormKey]);
+
+  const setQuery = (which: ListTab, patch: Partial<ListQuery>) =>
+    setQueries(cur => ({ ...cur, [which]: { ...cur[which], ...patch } }));
 
   const doReschedule = (e: PurchasedTherapyEntitlement) => { setReschedEnt(e); setReschedDate(null); };
   const submitReschedule = async (e: PurchasedTherapyEntitlement, newDate: string, reason: string) => {
@@ -308,16 +367,22 @@ const TherapyPage: React.FC = () => {
     setBusy(null);
     setReschedEnt(null); setReschedDate(null);
     if (error) { setErr(error.message); return; }
-    load();
+    void loadList('purchased');
   };
-  const doRefund = (e: PurchasedTherapyEntitlement) => setRefundEnt(e);
-  const submitRefund = async (e: PurchasedTherapyEntitlement, reason: string) => {
+  const doCancel = (e: any) => { setCancelEnt(e); setCancelReason(''); };
+  const submitCancel = async () => {
+    if (!cancelEnt || !cancelReason.trim()) return;
+    const e = cancelEnt;
     setBusy(e.id);
-    const { error } = await supabase.rpc('refund_purchased_therapy', { p_entitlement_id: e.id, p_reason: reason });
+    // refund_purchased_therapy closes the package as refunded. It moves no
+    // money, so it leaves commission alone (422: commission follows the money).
+    const { error } = await supabase.rpc('refund_purchased_therapy', { p_entitlement_id: e.id, p_reason: cancelReason.trim() });
     setBusy(null);
-    setRefundEnt(null);
+    setCancelEnt(null);
     if (error) { setErr(error.message); return; }
-    load();
+    // The Legacy list too: closing a package also cancels the voucher
+    // allowance it gave, which shows on the Legacy tab.
+    void loadList('purchased'); void loadList('legacy');
   };
   // Claiming a Legacy entitlement: pick the start date, then it runs for its
   // duration (or is simply claimed, for a voucher reward).
@@ -329,10 +394,16 @@ const TherapyPage: React.FC = () => {
   const [claimRegion, setClaimRegion] = useState<string | null>(null);
 
   const openClaim = async (e: any) => {
-    setClaimEnt(e); setClaimDate(sgToday()); setClaimDone(null);
+    // THERAPY-M2: start on the first free day, the day after the customer's
+    // running or scheduled unlimited therapy (the server works it out), when
+    // that is still within the claim deadline; otherwise today, and the claim
+    // asks before it overlaps.
+    const free: string | null = e.next_free_start ?? null;
+    const start = free && free > sgToday() && (!e.activation_deadline || free <= e.activation_deadline) ? free : sgToday();
+    setClaimEnt(e); setClaimDate(start); setClaimDone(null);
     // The phone only ever supplies a default. It is not proof of residence, so
     // it fills the field in and can be changed before the claim freezes it.
-    const suggested = suggestCountryFromPhone(cPhone(e.customer_id));
+    const suggested = suggestCountryFromPhone(e.customer_phone ?? '');
     setClaimCountry(suggested.country); setClaimRegion(null);
     if (holidayCountries.length === 0) {
       const { data: hc } = await supabase.from('therapy_holiday_countries').select('*').order('name');
@@ -429,27 +500,59 @@ const TherapyPage: React.FC = () => {
     </div>
   );
 
-  const filteredEnts = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    if (!s) return ents;
-    return ents.filter(e => cName(e.customer_id).toLowerCase().includes(s) || cPhone(e.customer_id).includes(s) || e.entitlement_no.toLowerCase().includes(s) || e.package_name.toLowerCase().includes(s));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ents, search, customers]);
+  // The search box, status filter and pages of one list (THERAPY-19).
+  const listControls = (which: ListTab, placeholder: string) => {
+    const q = queries[which];
+    const l = lists[which];
+    const pages = Math.max(1, Math.ceil(l.total / LIST_PAGE));
+    return (
+      <div className="therapy-filters">
+        <div className="therapy-search">
+          <Search size={15} className="therapy-search-icon" aria-hidden="true" />
+          <input type="search" aria-label={`Search ${which === 'purchased' ? 'purchased packages' : 'Legacy rewards'}`}
+            value={q.search} placeholder={placeholder}
+            onChange={e => setQuery(which, { search: e.target.value })}
+            onKeyDown={e => { if (e.key === 'Enter') setQuery(which, { applied: q.search, page: 0 }); }} />
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={() => setQuery(which, { applied: q.search, page: 0 })}>
+          <Search size={13} aria-hidden="true" /> Search
+        </button>
+        <select aria-label="Show" value={q.status} style={{ width: 'auto' }}
+          onChange={e => setQuery(which, { status: e.target.value, page: 0 })}>
+          {LIST_STATUSES[which].map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+        <span className="therapy-remaining-hint" aria-live="polite">
+          {l.loading ? 'Loading…' : `${l.total} found`}
+        </span>
+        {pages > 1 && (
+          <span className="therapy-filter-group">
+            <button className="btn btn-secondary btn-sm" disabled={q.page === 0}
+              onClick={() => setQuery(which, { page: Math.max(0, q.page - 1) })}>Previous</button>
+            <span className="therapy-remaining-hint">Page {q.page + 1} of {pages}</span>
+            <button className="btn btn-secondary btn-sm" disabled={q.page + 1 >= pages}
+              onClick={() => setQuery(which, { page: q.page + 1 })}>Next</button>
+          </span>
+        )}
+      </div>
+    );
+  };
+  // A row of either list carries its own name and phone (therapy_list_page).
+  const purchasedRows = lists.purchased.rows.map(r => ({ ...r, unit: r }));
+  const legacyRows = lists.legacy.rows;
 
   return (
     <div>
       <div className="page-header">
         <div><h2>Therapy</h2><p>Unlimited Therapy packages are purchased on an invoice. Qualification rewards are still earned and still claimable: an unclaimed entitlement can be claimed as unlimited therapy <em>or</em> as vouchers, whichever its tier offers.</p></div>
-        <button className="btn btn-secondary" onClick={load}><RefreshCw size={16} /> Refresh</button>
+        <button className="btn btn-secondary" onClick={() => void load()}><RefreshCw size={16} /> Refresh</button>
       </div>
       {err && <div className="alert alert-danger"><span>⚠</span><div>{err}</div></div>}
 
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
+      {/* THERAPY-11: the tabs wrap onto a second line on a phone. */}
+      <div className="therapy-tabs therapy-tabs-wrap" role="tablist">
         {([['purchased', 'Purchased'], ['legacy', 'Legacy Therapy'], ...(canManage ? [['qualification', 'Qualification'], ['credit', 'Credit Packages'], ['bundles', 'Premium Bundles'], ['packages', 'Packages']] : [])] as [typeof tab, string][]).map(([v, l]) => (
-          <button key={v} onClick={() => setTab(v)}
-            style={{ padding: '8px 16px', background: 'none', border: 'none', display: 'inline-flex', alignItems: 'center', gap: 6,
-              borderBottom: tab === v ? '2px solid var(--primary)' : '2px solid transparent',
-              color: tab === v ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: tab === v ? 700 : 500, cursor: 'pointer', marginBottom: -1 }}>
+          <button key={v} role="tab" aria-selected={tab === v} className={`therapy-tab${tab === v ? ' active' : ''}`}
+            onClick={() => setTab(v)}>
             {v === 'legacy' && <Archive size={13} />}{l}
           </button>
         ))}
@@ -473,48 +576,53 @@ const TherapyPage: React.FC = () => {
           <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 8 }}>
             Unlimited therapy packages sold on an invoice — what was sold, rather than what is left.
           </p>
-          <div style={{ position: 'relative', marginBottom: 12, maxWidth: 380 }}>
-            <Search size={15} style={{ position: 'absolute', left: 10, top: 10, opacity: 0.4 }} />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customer, phone, no. or package…" style={{ paddingLeft: 32 }} />
-          </div>
+          {listControls('purchased', 'Customer, phone, no., package or invoice')}
           <div className="card">
-            {loading ? <div style={{ textAlign: 'center', padding: 40 }}><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
-            : filteredEnts.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><Sparkles size={30} style={{ opacity: 0.3 }} /><p style={{ marginTop: 10 }}>No purchased therapy yet. Sell an Unlimited Therapy package on an invoice.</p></div>
+            {lists.purchased.error ? <div className="alert alert-danger" role="alert" style={{ margin: 12 }}><span>⚠</span><div>The list could not be loaded: {lists.purchased.error}</div></div>
+            : lists.purchased.loading && purchasedRows.length === 0 ? <div style={{ textAlign: 'center', padding: 40 }}><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
+            : purchasedRows.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><Sparkles size={30} style={{ opacity: 0.3 }} /><p style={{ marginTop: 10 }}>{queries.purchased.applied || queries.purchased.status !== 'all' ? 'Nothing matches.' : 'No purchased therapy yet. Sell an Unlimited Therapy package on an invoice.'}</p></div>
             : (
               <div className="table-wrap">
                 <table>
                   <thead><tr><th>No.</th><th>Customer</th><th>Package / unit</th><th>Invoice</th><th>Benefit</th><th>Deadline</th><th>Activation</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
                   <tbody>
-                    {filteredEnts.map(e => {
+                    {purchasedRows.map(e => {
                       // 410: the status by its dates, as the server's checks read it:
                       // a start date already reached has started, even before the
                       // nightly refresh has stored it.
                       const now = purchasedStatusOn(e, sgToday());
                       const stt = PSTATUS[now] ?? { cls: 'badge-muted', label: now };
                       const u = (e as any).unit as any | null;
+                      // THERAPY-20: a package whose sale was refunded, cancelled or
+                      // deleted is not claimed, chosen or moved; it is closed.
+                      const closedReason: string | null = u?.invoice_closed_reason ?? null;
                       // Therapy actions only belong on a unit that took therapy.
                       const isTherapy = !u || u.benefit_choice === 'unlimited';
-                      const canAct = isTherapy && (now === 'pending_activation' || now === 'scheduled');
+                      const notStarted = now === 'pending_activation' || now === 'scheduled';
+                      const canAct = isTherapy && notStarted;
                       // Once a start date is set, moving it is a new Claim, which works
                       // the expiry out again; Reschedule would change only the date shown.
-                      const canReschedule = canAct && !e.activation_date;
+                      const canReschedule = canAct && !e.activation_date && !closedReason;
                       // Claim covers what Choose benefit, Activate and Claim
                       // vouchers used to do separately, as on Legacy Therapy.
                       // A scheduled unit can be claimed again to start it now
                       // or move its start, as Activate could.
                       const open = !['cancelled', 'refunded', 'expired', 'active'].includes(now);
-                      const canClaim = open && (!u
+                      const canClaim = open && !closedReason && (!u
                         ? true
                         : now === 'scheduled' ? (u.benefit_choice === 'unlimited' || u.choice_pending)
                         : u.choice_pending ? !u.choice_deadline_passed
                         : u.benefit_choice === 'unlimited' ? true
                         : u.benefit_choice === 'voucher' ? (u.voucher_remaining ?? 0) > 0 && !u.choice_deadline_passed
                         : false);
+                      // THERAPY-9: closing a package moves no money. Owners and
+                      // Managers; and any package not started on a closed sale.
+                      const canCancel = canManage && (canAct || (!!closedReason && notStarted));
                       const covers = coveredFrom((e as any).eligible_service_ids, therapyServices);
                       return (
                         <tr key={e.id}>
                           <td style={{ fontWeight: 600 }}>{e.entitlement_no}</td>
-                          <td><div>{cName(e.customer_id)}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{cPhone(e.customer_id)}</div></td>
+                          <td><div>{customerLabel(e)}</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.customer_phone ?? ''}</div></td>
                           <td>{e.package_name}
                             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                               {u && u.unit_count > 1 ? `Unit ${u.unit_index} of ${u.unit_count} · ` : ''}
@@ -536,13 +644,20 @@ const TherapyPage: React.FC = () => {
                                   : <><span className="badge badge-primary benefit-badge">Unlimited therapy</span>
                                       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                                         {e.duration_months} mo
-                                        {u.days_remaining != null ? ` · ${u.days_remaining} days left` : ''}
+                                        {/* THERAPY-15: today counts; a unit not started yet counts from its start. */}
+                                        {u.days_remaining != null
+                                          ? (now === 'scheduled' ? ` · ${u.days_remaining} days from start` : ` · ${u.days_remaining} days left`)
+                                          : ''}
                                       </div></>}
                           </td>
                           <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}</td>
                           <td style={{ fontSize: 12 }}>{d(e.activation_date ?? e.scheduled_date)}</td>
                           <td style={{ fontSize: 12 }}>{d(e.expiry_date)}</td>
-                          <td><span className={`badge ${stt.cls}`}>{stt.label}</span></td>
+                          <td><span className={`badge ${stt.cls}`}>{stt.label}</span>
+                            {closedReason && notStarted && (
+                              <div className="therapy-cell-sub" style={{ color: 'var(--danger)' }} data-closed-sale="">
+                                {closedReason}. {canManage ? 'Close this package with Cancel package.' : 'Ask an Owner or Manager to close this package.'}
+                              </div>)}</td>
                           <td>
                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                               {canClaim && (
@@ -550,10 +665,11 @@ const TherapyPage: React.FC = () => {
                                   <Play size={12} /> Claim
                                 </button>)}
                               {/* Viewing a made choice, and switching it (Owner or Manager), stay where they were. */}
-                              {u && u.offers_choice && !u.choice_pending && (
+                              {u && u.offers_choice && !u.choice_pending && !closedReason && (
                                 <button className="btn btn-secondary btn-sm" onClick={() => setBenefitFor(e.id)}>Benefit</button>)}
                               {canReschedule && <button className="btn btn-secondary btn-sm" disabled={busy === e.id} onClick={() => doReschedule(e)} title="Reschedule"><CalendarClock size={12} /></button>}
-                              {canManage && canAct && <button className="btn btn-danger btn-sm" disabled={busy === e.id} onClick={() => doRefund(e)}><Ban size={12} /> Refund</button>}
+                              {canCancel && <button className="btn btn-danger btn-sm" disabled={busy === e.id} onClick={() => doCancel(e)}
+                                title="Closes the package. No money is paid back here."><Ban size={12} /> Cancel package (no money back)</button>}
                             </div>
                           </td>
                         </tr>
@@ -568,48 +684,65 @@ const TherapyPage: React.FC = () => {
       )}
 
       {tab === 'legacy' && (
-        <div className="card">
-          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 12.5, color: 'var(--text-muted)' }}>
-            Legacy therapy entitlements. Same-day qualification earns these automatically when a customer's paid invoices at a store reach the qualifying amount on one Singapore day. Pending entitlements can be activated within their deadline. Set the threshold and reward under the Qualification tab.
-          </div>
-          {loading ? <div style={{ textAlign: 'center', padding: 40 }}><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
-          : legacy.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><Archive size={30} style={{ opacity: 0.3 }} /><p style={{ marginTop: 10 }}>No legacy therapy entitlements.</p></div>
-          : (
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Qualified</th><th>Vouchers</th><th>Claim by</th><th>Runs</th><th>Status</th><th></th></tr></thead>
-                <tbody>
-                  {legacy.map(e => {
-                    const canActivate = e.status === 'pending_activation' && sgToday() <= e.activation_deadline;
-                    const expired = e.status === 'pending_activation' && sgToday() > e.activation_deadline;
-                    return (
-                      <tr key={e.id}>
-                        <td style={{ fontWeight: 600 }}>{e.entitlement_no}</td>
-                        <td>{cName(e.customer_id)}{e.earner_kind === 'affiliate' && <div><span className="badge badge-accent" style={{ fontSize: 10 }}>Affiliate</span></div>}</td>
-                        <td>{e.package_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.entitlement_kind}{e.duration_months ? ` · ${e.duration_months} mo` : ''}</div></td>
-                        <td style={{ fontSize: 12 }}>{money(e.qualified_value)}</td>
-                        <td style={{ fontSize: 12 }}>{e.entitlement_kind === 'voucher'
-                          ? <span>{(e.voucher_qty ?? 0) - (e.claimed_qty ?? 0) - (e.revoked_qty ?? 0)} of {e.voucher_qty ?? 0} left</span>
-                          : '—'}</td>
-                        <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}{expired && <span style={{ color: 'var(--danger)', fontSize: 11 }}> · passed</span>}</td>
-                        <td style={{ fontSize: 12 }}>{e.activation_date ? `${d(e.activation_date)} → ${e.expiry_date ? d(e.expiry_date) : '—'}` : '—'}</td>
-                        {/* 410: by its dates, as the nightly refresh will store it */}
-                        <td>{(() => { const ls = legacyStatusOn(e, sgToday()); return <span className={`badge ${ls === 'active' ? 'badge-success' : ls === 'pending_activation' ? 'badge-accent' : 'badge-muted'}`}>{String(ls).replace('_',' ')}</span>; })()}</td>
-                        <td>{e.entitlement_kind === 'voucher'
-                          ? <button className="btn btn-secondary btn-sm" onClick={() => setClaimVouchersFor(e.id)}>
-                              <Play size={12} /> Vouchers</button>
-                          : canActivate
-                          ? <button className="btn btn-primary btn-sm" onClick={() => openClaim(e)}><Play size={12} /> Claim</button>
-                          : e.status === 'pending_activation' ? <span style={{ fontSize: 11, color: 'var(--danger)' }}>deadline passed</span>
-                          : null}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+        <>
+          {listControls('legacy', 'Customer, phone, no., package or invoice')}
+          <div className="card">
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 12.5, color: 'var(--text-muted)' }}>
+              Legacy therapy entitlements. Same-day qualification earns these automatically when a customer's paid invoices at a store reach the qualifying amount on one Singapore day. Pending entitlements can be activated within their deadline. Set the threshold and reward under the Qualification tab.
             </div>
-          )}
-        </div>
+            {lists.legacy.error ? <div className="alert alert-danger" role="alert" style={{ margin: 12 }}><span>⚠</span><div>The list could not be loaded: {lists.legacy.error}</div></div>
+            : lists.legacy.loading && legacyRows.length === 0 ? <div style={{ textAlign: 'center', padding: 40 }}><RefreshCw size={20} className="spin" style={{ opacity: 0.4 }} /></div>
+            : legacyRows.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><Archive size={30} style={{ opacity: 0.3 }} /><p style={{ marginTop: 10 }}>{queries.legacy.applied || queries.legacy.status !== 'open' ? 'Nothing matches.' : 'No legacy therapy entitlements.'}</p></div>
+            : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Qualified</th><th>Vouchers</th><th>Claim by</th><th>Runs</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    {legacyRows.map(e => {
+                      const isVoucher = e.entitlement_kind === 'voucher';
+                      const cancelled = e.status === 'cancelled';
+                      const canActivate = e.status === 'pending_activation' && sgToday() <= e.activation_deadline;
+                      const expired = e.status === 'pending_activation' && sgToday() > e.activation_deadline;
+                      const ls = legacyStatusOn(e, sgToday());
+                      return (
+                        <tr key={e.id}>
+                          <td style={{ fontWeight: 600 }}>{e.entitlement_no}</td>
+                          <td>{customerLabel(e)}{e.earner_kind === 'affiliate' && <div><span className="badge badge-accent" style={{ fontSize: 10 }}>Affiliate</span></div>}</td>
+                          <td>{e.package_name}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{e.entitlement_kind}{e.duration_months ? ` · ${e.duration_months} mo` : ''}</div></td>
+                          <td style={{ fontSize: 12 }}>{money(e.qualified_value)}</td>
+                          {/* THERAPY-5: claimed and left come from the server, which counts
+                              vouchers handed over before claim documents existed too. */}
+                          <td style={{ fontSize: 12 }}>{!isVoucher ? '—'
+                            : cancelled ? <span className="badge badge-muted">cancelled</span>
+                            : <span>{e.remaining ?? 0} of {e.voucher_qty ?? 0} left
+                                {Number(e.claimed_qty ?? 0) > 0 && <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{e.claimed_qty} handed over</span>}
+                              </span>}
+                            {e.blocked_reason && !cancelled && <div className="therapy-cell-sub" style={{ color: 'var(--danger)' }}>{e.blocked_reason}</div>}
+                            {/* 422: no sale and no voucher list, so an Owner or Manager hands it over. */}
+                            {e.owner_or_manager_only && !cancelled && !e.blocked_reason && Number(e.remaining ?? 0) > 0 && (
+                              <div className="therapy-cell-sub" data-owner-or-manager="">An Owner or Manager hands these over.</div>)}</td>
+                          <td style={{ fontSize: 12 }}>{d(e.activation_deadline)}{expired && <span style={{ color: 'var(--danger)', fontSize: 11 }}> · passed</span>}</td>
+                          <td style={{ fontSize: 12 }}>{e.activation_date ? `${d(e.activation_date)} → ${e.expiry_date ? d(e.expiry_date) : '—'}` : '—'}
+                            {e.days_remaining != null && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{ls === 'scheduled' ? `${e.days_remaining} days from start` : `${e.days_remaining} days left`}</div>}</td>
+                          {/* 410: by its dates, as the nightly refresh will store it */}
+                          <td><span className={`badge ${ls === 'active' ? 'badge-success' : ls === 'pending_activation' ? 'badge-accent' : 'badge-muted'}`}>{String(ls).replace('_',' ')}</span></td>
+                          <td>{isVoucher
+                            ? (cancelled ? null
+                              : <button className="btn btn-secondary btn-sm" onClick={() => setClaimVouchersFor(e.id)}>
+                                  <Play size={12} /> Vouchers</button>)
+                            : canActivate
+                            ? <button className="btn btn-primary btn-sm" onClick={() => openClaim(e)}><Play size={12} /> Claim</button>
+                            : e.status === 'pending_activation' ? <span style={{ fontSize: 11, color: 'var(--danger)' }}>deadline passed</span>
+                            : null}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {tab === 'packages' && canManage && (
@@ -617,6 +750,8 @@ const TherapyPage: React.FC = () => {
           <div style={{ marginBottom: 12 }}><button className="btn btn-primary" onClick={() => openPkg('new')}><Plus size={16} /> New Package</button></div>
           <div className="card">
             {packages.length === 0 ? <div className="empty-state" style={{ padding: 40 }}><p>No packages yet.</p></div> : (
+              // THERAPY-11: the table scrolls inside its own frame on a phone.
+              <div className="table-wrap">
               <table>
                 <thead><tr><th>Name</th><th>SKU</th><th>Grants</th><th>Duration</th><th>Description</th><th>Active</th><th></th></tr></thead>
                 <tbody>
@@ -653,6 +788,7 @@ const TherapyPage: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </>
@@ -679,7 +815,7 @@ const TherapyPage: React.FC = () => {
           footer={<button className="btn btn-secondary" onClick={() => setClaimEnt(null)}>Close</button>}>
           <div className="form-grid">
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              {cName(claimEnt.customer_id)} · qualified {money(claimEnt.qualified_value)}
+              {customerLabel(claimEnt)} · qualified {money(claimEnt.qualified_value)}
               {claimEnt.earner_kind === 'affiliate' &&
                 <span className="badge badge-accent" style={{ marginLeft: 6 }}>Affiliate reward</span>}
             </div>
@@ -693,12 +829,27 @@ const TherapyPage: React.FC = () => {
                 A future start date schedules it; today starts it immediately. Used only for an
                 unlimited-therapy reward — claiming vouchers starts no therapy period.
               </div>
+              {claimEnt.next_free_start && claimEnt.next_free_start > sgToday() && (
+                claimEnt.activation_deadline && claimEnt.next_free_start > claimEnt.activation_deadline ? (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }} data-next-free="after-deadline">
+                    This customer's unlimited therapy runs until {d(dayBefore(claimEnt.next_free_start))}. The
+                    first free day, {d(claimEnt.next_free_start)}, is after the claim deadline,
+                    {' '}{d(claimEnt.activation_deadline)}, so it is not filled in. If the day you choose overlaps,
+                    you will be asked first.
+                  </div>
+                ) : claimDate === claimEnt.next_free_start ? (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }} data-next-free="">
+                    This customer's unlimited therapy runs until {d(dayBefore(claimEnt.next_free_start))}. The
+                    first free day, {d(claimEnt.next_free_start)}, is filled in. You can choose another day. If
+                    it overlaps, you will be asked first.
+                  </div>
+                ) : null)}
             </div>
 
             {/* The holiday calendar is frozen onto the entitlement when it is
                 claimed, so a later phone change cannot move the expiry. */}
             <HolidayCountryField countries={holidayCountries} value={claimCountry} region={claimRegion}
-                                 phone={cPhone(claimEnt.customer_id)}
+                                 phone={claimEnt.customer_phone ?? ''}
                                  onChange={(c, r) => { setClaimCountry(c); setClaimRegion(r); }} />
 
             <RewardChoice
@@ -707,7 +858,8 @@ const TherapyPage: React.FC = () => {
               holidayCountry={claimCountry}
               holidayRegion={claimRegion}
               canManage={canManage}
-              onClaimed={(result) => { setClaimDone(result); setClaimEnt(null); load(); }} />
+              onUseDate={setClaimDate}
+              onClaimed={(result) => { setClaimDone(result); setClaimEnt(null); void loadList('legacy'); }} />
 
             <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span>
               <div>Must be claimed on or before {d(claimEnt.activation_deadline)}.</div>
@@ -887,30 +1039,13 @@ const TherapyPage: React.FC = () => {
 
       {tab === 'credit' && canManage && (
         <>
-          {!sessionStorage.getItem('energia.p30.noticeSeen') && (
-            <div className="alert alert-warning" style={{ marginBottom: 12 }}>
-              <span>⚠</span>
-              <div>
-                <strong>Credit Packages changed.</strong> Packages created before this update were
-                migrated as <strong>Vouchers only</strong> with <strong>no Bonus Credit</strong> —
-                exactly how they behaved before, so nothing changed for customers. Open a package to
-                widen what its credit may buy or to add a bonus. Editing a package does
-                <strong> not</strong> change credit already issued.
-                <div style={{ marginTop: 6 }}>
-                  <button className="btn btn-secondary btn-sm"
-                    onClick={() => { sessionStorage.setItem('energia.p30.noticeSeen', '1'); setNoticeTick(t => t + 1); }}>
-                    Got it
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
           <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)', maxWidth: 640 }}>
-              A customer pays for a Credit Package and receives Paid Credit spendable on the
-              categories you choose, optional Bonus Credit, and one free reward unit for every whole
-              reward threshold of the <strong>customer price</strong>. The package line itself can
-              never be paid with wallet credit.
+              A customer pays for a Credit Package and receives Paid Credit, optional Bonus Credit,
+              and one free reward unit for every whole reward threshold of the{' '}
+              <strong>customer price</strong>. What the credit buys at the till is set in each
+              package's <strong>Rules</strong>, which only the Owner changes. The package line itself
+              can never be paid with wallet credit.
             </div>
             <button className="btn btn-primary" onClick={() => { setPkgForm({ ...emptyPkg }); setPkgErr(null); }}><Plus size={16} /> New Package</button>
           </div>
@@ -998,39 +1133,34 @@ const TherapyPage: React.FC = () => {
               </div>
             </div>
 
-            {/* ---- What this package's Paid Credit may buy ---- */}
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label>Paid Credit may be spent on *</label>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 6, marginTop: 4 }}>
-                {([
-                  ['allow_product', 'Normal Products'],
-                  ['allow_voucher', 'Vouchers'],
-                  ['allow_promotion', 'Promotions'],
-                  ['allow_therapy', 'Purchasable Therapy'],
-                  ['allow_rental', 'Rentals'],
-                  ['allow_event', 'Events'],
-                  ['allow_special_product', 'Special Products'],
-                ] as const).map(([key, label]) => (
-                  <label key={key} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-                    <input type="checkbox" style={{ width: 'auto' }}
-                      checked={(pkgForm as any)[key]}
-                      onChange={e => setPkgForm(f => f && ({ ...f, [key]: e.target.checked }))} />
-                    {label}
-                  </label>
-                ))}
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
-                Ticking <strong>Vouchers</strong> allows every active sellable voucher — you do not
-                pick them individually. Paid Credit can never buy another Credit Package or a
-                Premium Bundle.
-              </div>
-              {!(pkgForm.allow_product || pkgForm.allow_voucher || pkgForm.allow_promotion
-                 || pkgForm.allow_therapy || pkgForm.allow_rental || pkgForm.allow_event
-                 || pkgForm.allow_special_product) && (
-                <div className="alert alert-warning" style={{ marginTop: 6, marginBottom: 0 }}>
-                  <span>⚠</span><div>With no category selected this credit cannot buy anything.</div>
+            {/* ---- What this package's credit buys: the till's rules, read-only ----
+                The Owner, 9 Oct 2026 (Q15 A): the till is right. The tick boxes
+                that were here never decided anything; the package's spending
+                rules do, and only the Owner changes them, with Rules. */}
+            <div className="form-group" style={{ marginBottom: 0 }} data-credit-rules="">
+              <label>What this package's credit buys</label>
+              {pkgRulesErr ? (
+                <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}>
+                  <span>⚠</span><div>The rules could not be loaded: {pkgRulesErr}</div>
+                </div>
+              ) : !pkgRules ? (
+                <div className="therapy-remaining-hint">Loading the rules…</div>
+              ) : (
+                <div className="therapy-definition-current" style={{ marginTop: 0 }}>
+                  <div><strong>Paid Credit:</strong> {pkgRules.paid.length ? pkgRules.paid.map(categoryLabel).join(', ') : <em>nothing</em>}</div>
+                  <div><strong>Bonus Credit:</strong> {pkgRules.bonus.length ? pkgRules.bonus.map(categoryLabel).join(', ') : <em>nothing</em>}</div>
+                  <div className="therapy-remaining-hint" style={{ marginTop: 4 }}>
+                    {pkgRules.source === 'configured' ? 'Set for this package.' : 'The standard rule, used by every package with no rule of its own.'}
+                  </div>
                 </div>
               )}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
+                The till follows these rules. {isOwner
+                  ? (pkgForm.id ? 'To change them, close this form and press Rules beside this package.'
+                                : 'Save the package first, then press Rules beside it to change them.')
+                  : 'Only the Owner changes them, with Rules beside each package.'}
+                {' '}Credit can never buy another Credit Package or a Premium Bundle.
+              </div>
             </div>
 
             {/* ---- Bonus Credit ---- */}
@@ -1068,7 +1198,7 @@ const TherapyPage: React.FC = () => {
               )}
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
                 A percentage is taken from the <strong>customer price</strong>, not the credit issued.
-                Bonus Credit buys every normal category and is always spent before Paid Credit.
+                Bonus Credit is always spent before Paid Credit; what it buys is shown above.
               </div>
             </div>
 
@@ -1083,15 +1213,11 @@ const TherapyPage: React.FC = () => {
                       ? price * Number(pkgForm.bonus_value || 0) / 100
                       : Number(pkgForm.bonus_value || 0));
                 const thr = Number(pkgForm.reward_qualifying_amount || 0);
-                const cats = ([
-                  [pkgForm.allow_product, 'Products'], [pkgForm.allow_voucher, 'Vouchers'],
-                  [pkgForm.allow_promotion, 'Promotions'], [pkgForm.allow_therapy, 'Therapy'],
-                  [pkgForm.allow_rental, 'Rentals'], [pkgForm.allow_event, 'Events'],
-                  [pkgForm.allow_special_product, 'Special Products'],
-                ] as [boolean, string][]).filter(([on]) => on).map(([, l]) => l);
+                const spendable = (cats?: string[]) => !pkgRules ? <em>see the rules above</em>
+                  : cats && cats.length ? cats.map(categoryLabel).join(', ') : <em>nothing</em>;
                 return (<>
-                  <div>Paid Credit <strong>S${paid.toFixed(2)}</strong>, spendable on {cats.length ? cats.join(', ') : <em>nothing yet</em>}</div>
-                  <div>Bonus Credit <strong>S${bonus.toFixed(2)}</strong>, spendable on all normal categories</div>
+                  <div>Paid Credit <strong>S${paid.toFixed(2)}</strong>, spendable on {spendable(pkgRules?.paid)}</div>
+                  <div>Bonus Credit <strong>S${bonus.toFixed(2)}</strong>, spendable on {spendable(pkgRules?.bonus)}</div>
                   <div>
                     Reward units{' '}
                     <strong>{thr > 0 ? Math.floor(price / thr) : '—'}</strong>
@@ -1152,7 +1278,7 @@ const TherapyPage: React.FC = () => {
                   </label>
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>The package's credit can only be spent on these vouchers.</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>The free reward vouchers are chosen from these. They do not change what the credit buys.</div>
             </div>
             <div>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
@@ -1473,11 +1599,40 @@ const TherapyPage: React.FC = () => {
           confirmLabel="Save" onClose={() => { setReschedEnt(null); setReschedDate(null); }}
           onSubmit={(reason) => submitReschedule(reschedEnt, reschedDate, reason)} />
       )}
-      {refundEnt && (
-        <ReasonModal title={`Refund — ${refundEnt.entitlement_no}`} label="Refund reason"
-          placeholder="Why is this being refunded? (allowed only before activation)"
-          confirmLabel="Refund" onClose={() => setRefundEnt(null)}
-          onSubmit={(reason) => submitRefund(refundEnt, reason)} />
+      {cancelEnt && (
+        // THERAPY-9: closing a package moves no money. The invoice's Refund /
+        // Cancel is where money goes back, so the window says so and links to it.
+        <Modal title={`Cancel package — ${cancelEnt.entitlement_no}`} maxWidth={460} onClose={() => setCancelEnt(null)}
+          confirmClose={!!cancelReason.trim()}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setCancelEnt(null)}>Keep the package</button>
+            <button className="btn btn-danger" disabled={!cancelReason.trim() || busy === cancelEnt.id}
+              onClick={() => void submitCancel()}>Cancel package</button>
+          </>}>
+          <div className="form-grid" data-cancel-package="">
+            <div className="alert alert-warning" style={{ marginBottom: 0 }}>
+              <span>⚠</span>
+              <div>
+                <strong>No money is paid back here.</strong> This only closes the package, so it can no
+                longer be claimed. The invoice stays as it is, and so does any commission on it:
+                commission follows the money.
+                {cancelEnt.invoice_id
+                  ? <> To give money back, use Refund / Cancel on the invoice:{' '}
+                      <a href={`/invoices?review=${cancelEnt.invoice_id}`}>open {cancelEnt.invoice_no ?? 'the invoice'}</a>.</>
+                  : <> To give money back, use Refund / Cancel on the invoice.</>}
+              </div>
+            </div>
+            {cancelEnt.invoice_closed_reason && (
+              <div className="therapy-remaining-hint">{cancelEnt.invoice_closed_reason}, so this package should be closed.</div>
+            )}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label htmlFor="cancel-package-reason">Why is this package being closed? *</label>
+              <textarea id="cancel-package-reason" rows={3} value={cancelReason} autoFocus
+                placeholder="For example: the sale was refunded on the invoice"
+                onChange={e => setCancelReason(e.target.value)} />
+            </div>
+          </div>
+        </Modal>
       )}
       {priceFor && (
         <StorePriceEditor kind="therapy" targetId={priceFor.id} targetName={priceFor.name}
@@ -1489,27 +1644,30 @@ const TherapyPage: React.FC = () => {
       )}
       {claimFor && (
         <PurchasedClaimPanel purchasedId={claimFor.id}
-          customerName={cName(claimFor.customer_id)} customerPhone={cPhone(claimFor.customer_id)}
+          customerName={customerLabel(claimFor as any)} customerPhone={(claimFor as any).customer_phone ?? ''}
           // Anyone at the counter hands a purchase's vouchers over, as anyone
           // can when claiming a Legacy entitlement as vouchers (owner's
           // decision, 25 Sep 2026). Switching stays Owner/Manager.
           canCollectVouchers canSwitch={canManage}
-          onDone={() => { void load(); }}
+          onDone={() => { void loadList('purchased'); void loadList('legacy'); }}
           onSwitch={() => { const id = claimFor.id; setClaimFor(null); setBenefitFor(id); }}
           onClose={() => setClaimFor(null)} />
       )}
       {benefitFor && (
         <BenefitChoicePanel purchasedId={benefitFor} canSwitch={canManage}
-          onDone={() => { void load(); }}
+          onDone={() => { void loadList('purchased'); void loadList('legacy'); }}
           onClose={() => setBenefitFor(null)} />
       )}
       {claimVouchersFor && (
         <VoucherClaimPanel entitlementId={claimVouchersFor}
-          // A purchase's voucher allowance is also listed on the Legacy tab; it
-          // follows the purchase's rule there too. Other voucher rewards (credit
-          // packages, premium bundles) stay Owner/Manager, as before.
-          canClaim={canManage || legacy.find(l => l.id === claimVouchersFor)?.claim_source_type === 'therapy_package'}
-          onClaimed={() => { void load(); }}
+          // Any staff member of the reward's store hands its vouchers over:
+          // purchased packages, Legacy rewards, credit packages and premium
+          // bundles alike (the Owner, 25 Sep and 9 Oct 2026, Q16 A). The server
+          // checks the store and stops more going out than the reward allows.
+          // A reward with no sale and no voucher list waits for an Owner or
+          // Manager (the Owner, 9 Oct 2026).
+          canClaim canManage={canManage}
+          onClaimed={() => { void loadList('legacy'); void loadList('purchased'); }}
           onClose={() => setClaimVouchersFor(null)} />
       )}
     </div>

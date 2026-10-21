@@ -30,6 +30,14 @@ export interface RewardOption {
   availability: 'available' | 'retired' | 'as_earned';
 }
 
+/** 'YYYY-MM-DD' as "9 Oct 2026". */
+const readable = (iso?: string | null) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? '');
+  if (!m) return iso ?? '—';
+  const month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1];
+  return `${Number(m[3])} ${month} ${m[1]}`;
+};
+
 /** Radio values must be strings; the snapshot has no rule id to use as one. */
 const SNAPSHOT = '__as_earned__';
 const optionKey = (o: RewardOption) => o.rule_id ?? SNAPSHOT;
@@ -39,13 +47,16 @@ type LoadState = 'idle' | 'loading' | 'ready' | 'failed';
 
 export const RewardChoice: React.FC<{
   entitlement: { id: string; store_id: string | null; entitlement_no?: string;
-                 package_name?: string; entitlement_kind?: string; voucher_qty?: number | null };
+                 package_name?: string; entitlement_kind?: string; voucher_qty?: number | null;
+                 activation_deadline?: string | null };
   claimDate: string;
   holidayCountry?: string | null;
   holidayRegion?: string | null;
   onClaimed: (result: any) => void;
+  /** Use another start date: the free day an overlap suggests (THERAPY-M2). */
+  onUseDate?: (date: string) => void;
   canManage: boolean;
-}> = ({ entitlement, claimDate, holidayCountry, holidayRegion, onClaimed, canManage }) => {
+}> = ({ entitlement, claimDate, holidayCountry, holidayRegion, onClaimed, onUseDate, canManage }) => {
   const [state, setState] = useState<LoadState>('idle');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [options, setOptions] = useState<RewardOption[]>([]);
@@ -55,6 +66,10 @@ export const RewardChoice: React.FC<{
   const [basket, setBasket] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  // 422: the server asks before a second unlimited period starts on top of
+  // one the customer already has. Nothing has been claimed while this shows.
+  const [overlap, setOverlap] = useState<any | null>(null);
+  useEffect(() => { setOverlap(null); }, [claimDate, chosen]);
 
   const load = useCallback(async () => {
     setState('loading'); setLoadError(null);
@@ -85,14 +100,15 @@ export const RewardChoice: React.FC<{
   const short = required - picked;
 
   const setQty = (id: string, q: number, available: number | null) => {
-    const capped = Math.max(0, Math.min(q, available ?? Number.MAX_SAFE_INTEGER));
+    const capped = Math.max(0, Math.min(Math.floor(q) || 0, available ?? Number.MAX_SAFE_INTEGER));
     setBasket(b => ({ ...b, [id]: capped }));
   };
 
-  const submit = async () => {
+  const submit = async (allowOverlap = false) => {
     setBusy(true); setClaimError(null);
+    // Whole numbers of at least one only: the server refuses anything else.
     const selections = Object.entries(basket)
-      .filter(([, q]) => q > 0).map(([voucher_id, quantity]) => ({ voucher_id, quantity }));
+      .filter(([, q]) => Number.isInteger(q) && q > 0).map(([voucher_id, quantity]) => ({ voucher_id, quantity }));
     const { data, error } = await supabase.rpc('claim_legacy_therapy', {
       p_entitlement_id: entitlement.id,
       p_activation_date: claimDate || null,
@@ -102,9 +118,12 @@ export const RewardChoice: React.FC<{
       p_voucher_selections: selections.length ? selections : null,
       p_holiday_country: holidayCountry || null,
       p_holiday_region: holidayRegion || null,
+      p_allow_overlap: allowOverlap,
     });
     setBusy(false);
     if (error) { setClaimError(error.message); return; }
+    if ((data as any)?.requires_confirmation) { setOverlap(data); return; }
+    setOverlap(null);
     onClaimed(data);
   };
 
@@ -220,6 +239,45 @@ export const RewardChoice: React.FC<{
         </div>
       )}
 
+      {overlap && (
+        <div className="alert alert-warning" role="status" style={{ marginTop: 10 }} data-overlap="">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <div>
+            <strong>Nothing has been claimed.</strong> {overlap.reason}
+            {Array.isArray(overlap.existing) && overlap.existing.length > 0 && (
+              <ul style={{ margin: '6px 0 0 18px', fontSize: 12 }}>
+                {overlap.existing.map((x: any, i: number) => (
+                  <li key={i}>{x.entitlement_no} — {String(x.status).replace('_', ' ')}, runs to {readable(x.expiry_date)}</li>
+                ))}
+              </ul>
+            )}
+            {/* The first free day can be after the claim deadline; the claim
+                would then be refused, so it is not offered. */}
+            {overlap.suggested_start && entitlement.activation_deadline
+              && overlap.suggested_start > entitlement.activation_deadline && (
+              <div style={{ fontSize: 12, marginTop: 6 }} data-free-after-deadline="">
+                The first free day, {readable(overlap.suggested_start)}, is after the claim
+                deadline, {readable(entitlement.activation_deadline)}. Start anyway, overlapping,
+                or choose another day.
+              </div>)}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              {overlap.suggested_start && onUseDate
+                && (!entitlement.activation_deadline || overlap.suggested_start <= entitlement.activation_deadline) && (
+                <button className="btn btn-primary btn-sm" disabled={busy}
+                        onClick={() => { onUseDate(overlap.suggested_start); setOverlap(null); }}>
+                  Start on {readable(overlap.suggested_start)} instead
+                </button>)}
+              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void submit(true)}>
+                Start anyway, overlapping
+              </button>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 6 }}>
+              Overlapping means the customer has two periods covering the same days.
+            </div>
+          </div>
+        </div>
+      )}
+
       {claimError && (
         <div className="alert alert-danger" role="alert" style={{ marginTop: 10 }}>
           <AlertTriangle size={15} aria-hidden="true" />
@@ -228,7 +286,7 @@ export const RewardChoice: React.FC<{
       )}
 
       <button className="btn btn-primary" style={{ marginTop: 12 }}
-              disabled={busy || !chosen || (selected?.entitlement_kind === 'voucher' && short !== 0)}
+              disabled={busy || !chosen || !!overlap || (selected?.entitlement_kind === 'voucher' && short !== 0)}
               onClick={() => void submit()}>
         {busy ? 'Claiming…'
           : selected?.entitlement_kind === 'voucher'

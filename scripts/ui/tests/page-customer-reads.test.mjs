@@ -11,8 +11,9 @@
  * `?.email`, so Send-by-email was disabled on every row regardless.
  *
  * On Therapy the by-id lookup already covered every entitlement, so the read
- * was waste; it is gone, and the lookup is now awaited because the search box
- * filters on customer name.
+ * was waste; it is gone. Since 422 the Therapy lists come a page at a time from
+ * therapy_list_page, each row with its customer's name and phone, and the
+ * search runs on the server, so the page reads no customer at all.
  *
  * Source assertions, because the thing worth protecting is an absence: no test
  * of a rendered page can prove a request was not made on a table larger than
@@ -37,19 +38,27 @@ for (const [name, source] of [['SpecialPage', special], ['TherapyPage', therapy]
     assert.deepEqual(wholeTableReads(source), [],
       `a whole-table customer read is back in ${name}`);
   });
-
-  test(`${name} resolves names by id`, () => {
-    assert.match(source, /fetchCustomersByIds\(/,
-      `${name} must look its customers up by id`);
-  });
-
-  test(`${name} names its rows before showing them, not a moment after`, () => {
-    // Left running behind the render, rows appear as dashes and fill in later —
-    // and on Therapy a search typed in that window misses rows that do match.
-    assert.doesNotMatch(source, /void \(async \(\) => \{[\s\S]{0,400}?fetchCustomersByIds/,
-      `${name} must await its customer lookup inside load`);
-  });
 }
+
+test('SpecialPage resolves names by id', () => {
+  assert.match(special, /fetchCustomersByIds\(/, 'SpecialPage must look its customers up by id');
+});
+
+test('SpecialPage names its rows before showing them, not a moment after', () => {
+  // Left running behind the render, rows appear as dashes and fill in later.
+  assert.doesNotMatch(special, /void \(async \(\) => \{[\s\S]{0,400}?fetchCustomersByIds/,
+    'SpecialPage must await its customer lookup inside load');
+});
+
+test('TherapyPage takes its names with its rows, from the server (422)', () => {
+  // therapy_list_page returns each row with customer_name and customer_phone,
+  // and searches on the server, so no name arrives after the row.
+  assert.match(therapy, /rpc\('therapy_list_page'/, 'the lists come from therapy_list_page');
+  assert.match(therapy, /customer_name/, 'rows are named from the server');
+  assert.doesNotMatch(therapy, /from\('customers'\)/, 'the Therapy page reads no customer itself');
+  assert.doesNotMatch(therapy, /from\('purchased_therapy_entitlements'\)|from\('therapy_entitlements'\)/,
+    'nor the entitlement tables whole');
+});
 
 test('Special & Rentals fetches the columns its row actions actually read', () => {
   // The page reads ?.email and ?.phone for the WhatsApp and email buttons.

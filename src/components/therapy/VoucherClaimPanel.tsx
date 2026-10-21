@@ -13,6 +13,10 @@ type State = {
   claim_deadline: string | null; deadline_passed: boolean; status: string;
   cancelled: boolean;
   eligible: Eligible[]; snapshot_present: boolean;
+  /** 422: why nothing can be handed over: the sale was refunded, cancelled or deleted. */
+  blocked_reason?: string | null;
+  /** 422: no sale and no voucher list are recorded, so an Owner or Manager hands it over. */
+  owner_or_manager_only?: boolean;
 };
 
 const readable = (iso?: string | null) => {
@@ -32,15 +36,23 @@ const readable = (iso?: string | null) => {
  *
  * The choices offered are the ones snapshotted when the purchase happened, not
  * whatever the package lists today — a customer who bought in January is owed
- * what they were sold. One that predates the snapshot says so instead of
- * silently offering everything.
+ * what they were sold. One that predates the snapshot offers the free-session
+ * reward vouchers the server accepts, and says so (422, THERAPY-8).
+ *
+ * Any staff member of the reward's store may hand vouchers over (the Owner,
+ * 9 Oct 2026); the server stops more going out than the reward allows, and
+ * nothing goes out on a sale that was refunded, cancelled or deleted. A
+ * reward that records no sale and no voucher list waits for an Owner or
+ * Manager (the Owner, 9 Oct 2026); the server refuses anyone else.
  */
 export const VoucherClaimPanel: React.FC<{
   entitlementId: string;
   canClaim: boolean;
+  /** An Owner or Manager: may also hand over a reward with no sale and no voucher list. */
+  canManage?: boolean;
   onClaimed?: (result: any) => void;
   onClose: () => void;
-}> = ({ entitlementId, canClaim, onClaimed, onClose }) => {
+}> = ({ entitlementId, canClaim: canClaimProp, canManage = false, onClaimed, onClose }) => {
   const [state, setState] = useState<State | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [basket, setBasket] = useState<Record<string, number>>({});
@@ -66,6 +78,11 @@ export const VoucherClaimPanel: React.FC<{
   }, [entitlementId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 422: a reward with no sale and no voucher list is handed over by an
+  // Owner or Manager only. Others see it, and why.
+  const waitsForManager = !!state?.owner_or_manager_only && !canManage;
+  const canClaim = canClaimProp && !waitsForManager;
 
   const picked = Object.values(basket).reduce((n, q) => n + (q || 0), 0);
   const remaining = state?.remaining ?? 0;
@@ -93,7 +110,8 @@ export const VoucherClaimPanel: React.FC<{
 
   const setQty = (id: string, q: number, available: number | null) => {
     const ceiling = Math.min(remaining, available ?? Number.MAX_SAFE_INTEGER);
-    setBasket(b => ({ ...b, [id]: Math.max(0, Math.min(q, ceiling)) }));
+    // Whole numbers only: the server refuses 1.5 (422).
+    setBasket(b => ({ ...b, [id]: Math.max(0, Math.min(Math.floor(q) || 0, ceiling)) }));
   };
 
   const submit = async () => {
@@ -153,10 +171,18 @@ export const VoucherClaimPanel: React.FC<{
                 </p>
               )}
 
-              {!state.snapshot_present && (
+              {!state.snapshot_present && !waitsForManager && (
                 <p className="credit-rules-warn">
                   This entitlement predates the record of which vouchers it was sold with, so any
-                  reward voucher can be chosen. Check it against the original purchase first.
+                  free-session reward voucher can be chosen. Check it against the original purchase first.
+                </p>
+              )}
+
+              {state.owner_or_manager_only && !state.cancelled && !state.blocked_reason && !state.deadline_passed
+                && state.remaining > 0 && (
+                <p className={waitsForManager ? 'credit-rules-warn' : 'credit-rules-hint'} role="status" data-owner-or-manager="">
+                  No sale and no voucher list are recorded for this reward, so an Owner or Manager hands it over.
+                  {waitsForManager && ' Ask an Owner or Manager.'}
                 </p>
               )}
 
@@ -165,11 +191,15 @@ export const VoucherClaimPanel: React.FC<{
                   This entitlement was cancelled, so nothing can be claimed against it. The
                   entitled figure is shown for reference only.
                 </p>
+              ) : state.blocked_reason ? (
+                <p className="credit-rules-warn" role="status">
+                  {state.blocked_reason}, so nothing can be handed over on this reward.
+                </p>
               ) : state.deadline_passed ? (
                 <p className="credit-rules-warn">The claim deadline has passed. Nothing can be claimed.</p>
               ) : state.remaining <= 0 ? (
                 <p className="credit-rules-hint">Nothing left to claim on this entitlement.</p>
-              ) : step === 'quantity' ? (
+              ) : waitsForManager ? null : step === 'quantity' ? (
                 <>
                   <h4 className="vc-step-title">How many vouchers would you like to collect today?</h4>
                   <dl className="vc-facts">
@@ -238,7 +268,7 @@ export const VoucherClaimPanel: React.FC<{
 
         <div className="credit-rules-foot">
           <button type="button" className="btn" onClick={onClose}>Close</button>
-          {canClaim && state && !state.cancelled && !state.deadline_passed && state.remaining > 0 && (
+          {canClaim && state && !state.cancelled && !state.blocked_reason && !state.deadline_passed && state.remaining > 0 && (
             step === 'quantity' ? (
               <button type="button" className="btn btn-primary" onClick={goForward}>
                 Choose vouchers

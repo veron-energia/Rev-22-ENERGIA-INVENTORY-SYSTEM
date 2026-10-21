@@ -95,8 +95,8 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
     <div className="therapy-detail therapy-scope">
       <div className="therapy-detail-grid">
         <section>
-          <h4 style={{ fontSize: 12.5, marginBottom: 6 }}>Usable now</h4>
-          {usable.length === 0 && <p className="therapy-remaining-hint">Nothing currently usable.</p>}
+          <h4 style={{ fontSize: 12.5, marginBottom: 6 }}>Held now</h4>
+          {usable.length === 0 && <p className="therapy-remaining-hint">Nothing held now.</p>}
           {usable.map((v: any, i: number) => (
             <div className="therapy-kv" key={`${v.voucher_id}-${v.source_ref ?? i}`}>
               <span className="k">
@@ -111,7 +111,7 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
         </section>
 
         <section>
-          <h4 style={{ fontSize: 12.5, marginBottom: 6 }}>Used, expired, revoked or refunded</h4>
+          <h4 style={{ fontSize: 12.5, marginBottom: 6 }}>Withdrawn, expired or refunded</h4>
           {notUsable.length === 0 && <p className="therapy-remaining-hint">Nothing.</p>}
           {notUsable.map((v: any, i: number) => (
             <div className="therapy-kv" key={`${v.voucher_id}-x-${v.source_ref ?? i}`}>
@@ -234,7 +234,7 @@ export const CustomerTherapySummary: React.FC = () => {
         </button>
         <label className="therapy-inline" style={{ fontSize: 12.5, alignItems: 'center' }}>
           <input type="checkbox" checked={onlyActive} onChange={e => { setPage(0); setOnlyActive(e.target.checked); }} />
-          <span>Only customers with something usable</span>
+          <span>Only customers who hold something now</span>
         </label>
         <button className="btn btn-secondary btn-sm" onClick={() => void load()} disabled={loading}>
           <RefreshCw size={13} aria-hidden="true" /> {loading ? 'Loading…' : 'Refresh'}
@@ -253,6 +253,11 @@ export const CustomerTherapySummary: React.FC = () => {
           : `Showing ${rows.length} of ${total} customer${total === 1 ? '' : 's'}`}
         {needsReview > 0 && <> · <strong>{needsReview}</strong> on this page need a holiday country</>}
       </p>
+      <p className="therapy-remaining-hint" data-not-enforced="">
+        Issued is every voucher handed over; Held is what the customer still has. The app does not
+        record a voucher or a session being used yet, so it cannot show what was used, and it does
+        not check how often a customer visits.
+      </p>
 
       {/* Desktop */}
       <div className="table-wrap therapy-desktop-only">
@@ -261,16 +266,18 @@ export const CustomerTherapySummary: React.FC = () => {
             <tr>
               <th scope="col">Customer</th>
               <th scope="col">Phone</th>
+              {/* THERAPY-16: the app does not record a voucher being used yet, so
+                  there is no "Used" figure: Issued is everything handed over,
+                  Held is what the customer still has (withdrawn ones excluded). */}
               <th scope="col" className="therapy-num">Therapy issued</th>
-              <th scope="col" className="therapy-num">Used</th>
-              <th scope="col" className="therapy-num">Remaining</th>
-              <th scope="col" className="therapy-num">Money vouchers</th>
+              <th scope="col" className="therapy-num">Held</th>
+              <th scope="col" className="therapy-num">Money vouchers held</th>
               <th scope="col">Unlimited therapy</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && !loading && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
                 No customers match.
               </td></tr>
             )}
@@ -289,13 +296,12 @@ export const CustomerTherapySummary: React.FC = () => {
                   </td>
                   <td style={{ fontSize: 12 }}>{r.customer_phone}</td>
                   <td className="therapy-num">{r.therapy_vouchers_issued}</td>
-                  <td className="therapy-num">{r.therapy_vouchers_redeemed}</td>
                   <td className="therapy-num"><strong>{r.therapy_vouchers_remaining}</strong></td>
                   <td className="therapy-num">{r.money_vouchers_remaining}</td>
                   <td><UnlimitedStatus r={r} /></td>
                 </tr>
                 {expanded === r.customer_id && (
-                  <tr><td colSpan={7} style={{ padding: 0 }}><Detail customerId={r.customer_id} /></td></tr>
+                  <tr><td colSpan={6} style={{ padding: 0 }}><Detail customerId={r.customer_id} /></td></tr>
                 )}
               </React.Fragment>
             ))}
@@ -314,8 +320,8 @@ export const CustomerTherapySummary: React.FC = () => {
               </div>
             </div>
             <div className="therapy-card-stats">
-              <span className="therapy-chip">{r.therapy_vouchers_remaining} therapy left</span>
-              <span className="therapy-chip">{r.therapy_vouchers_redeemed} used</span>
+              <span className="therapy-chip">{r.therapy_vouchers_issued} issued</span>
+              <span className="therapy-chip">{r.therapy_vouchers_remaining} held</span>
               {r.money_vouchers_remaining > 0 && <span className="therapy-chip">{r.money_vouchers_remaining} money</span>}
               {r.needs_review && <span className="therapy-chip therapy-chip-warn">No holiday country</span>}
             </div>

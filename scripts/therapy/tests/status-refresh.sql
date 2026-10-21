@@ -19,6 +19,8 @@
 -- correct_invoice among them, with what they call), run right after the
 -- begin below:
 --   psql -X -v ON_ERROR_STOP=1 -v prelude=/path/to/prod_prelude.sql -f ...
+-- On a database that has 422 (which needs 410 first), 410 is not applied
+-- again: its guards would refuse the functions 422 changed.
 -- pg_cron installs only in the database cron.database_name names; elsewhere
 -- a stand-in for cron.schedule and cron.job is created (and rolled back).
 -- Every name and number is invented; the phones are numbers kept for
@@ -228,10 +230,19 @@ release savepoint before410;
 -- builds on 410's version), so 410 is not run again; its daily job is
 -- scheduled here as 410 schedules it.
 -- (417 is known by the function it adds.)
+-- 422 changes claim_purchased_therapy and activate_purchased_therapy after
+-- 410, so 410's guards refuse them on a database that has 422. 422 can only
+-- be applied on top of 410, so 410 is already there: skip it and check the
+-- rest.
 select to_regprocedure('public.invoice_voucher_stock_unrecorded(uuid,boolean)') is not null as has_417 \gset
+select md5(pg_get_functiondef('public.claim_purchased_therapy(uuid,text,date,text,text,boolean,jsonb,uuid,text)'::regprocedure))
+       = 'c833e4cbfd01b3de4d825b5f6080e73e' as has_422 \gset
+select set_config('t410.skipped_410', :'has_422', true);
 \if :has_417
 \echo '410 is not re-run: 417 is installed'
 select cron.schedule('therapy-status-refresh', '5 16 * * *', 'select public.run_therapy_status_refresh()');
+\elif :has_422
+\echo 'SKIP  applying 410: it is already applied (this database has 422)'
 \else
 \ir ../../../supabase/410_clawbacks_carried_forward_and_therapy_status_refresh.sql
 \endif
@@ -386,11 +397,19 @@ end $$;
 
 -- ===== 7. The nightly job =====
 do $$
+declare v_skipped boolean := current_setting('t410.skipped_410', true) = 't';
 begin
+  -- When 410 was not applied here (the database has 422), the job is the one
+  -- 410 left. A copy made without rows has none, and a copy of a database
+  -- keeps the job's old database name, so that name is checked only when 410
+  -- ran here.
+  if v_skipped and not exists (select 1 from cron.job where jobname = 'therapy-status-refresh') then
+    raise notice 'SKIP  7: 410 was not applied here and this database has no cron job rows';
+    return; end if;
   perform pg_temp.check((select count(*) from cron.job where jobname = 'therapy-status-refresh') = 1
                         and exists (select 1 from cron.job where jobname = 'therapy-status-refresh'
                                       and schedule = '5 16 * * *' and command = 'select public.run_therapy_status_refresh()'
-                                      and active and database = current_database()),
+                                      and active and (v_skipped or database = current_database())),
     '7: one job, 16:05 GMT (00:05 in Singapore), running run_therapy_status_refresh()');
 end $$;
 
