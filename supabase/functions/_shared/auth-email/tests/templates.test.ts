@@ -4,12 +4,13 @@
 import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
   SUBJECTS, escapeHtml, headerSafe, formatWhen,
-  renderVerifySignup, renderPasswordRecovery, renderPasswordChanged,
+  renderVerifySignup, renderVerifyEmail, renderPasswordRecovery, renderPasswordChanged,
 } from '../templates.ts';
-import { ACTION_LINK } from './support.ts';
+import { ACTION_LINK, MAGIC_LINK } from './support.ts';
 
 Deno.test('subjects are exactly the agreed wording', () => {
   assertEquals(SUBJECTS.verify_signup, 'Verify Your Energia Affiliate Account');
+  assertEquals(SUBJECTS.verify_email, 'Verify Your Energia Email Address');
   assertEquals(SUBJECTS.password_recovery, 'Reset Your Energia Password');
   assertEquals(SUBJECTS.password_changed, 'Your Energia Password Was Changed');
 });
@@ -33,7 +34,8 @@ Deno.test('a name carrying a newline cannot inject a header', () => {
 });
 
 Deno.test('both emails carry the action link in HTML and plain text', () => {
-  for (const email of [renderVerifySignup('Ada', ACTION_LINK), renderPasswordRecovery('Ada', ACTION_LINK)]) {
+  for (const email of [renderVerifySignup('Ada', ACTION_LINK), renderPasswordRecovery('Ada', ACTION_LINK),
+                       renderVerifyEmail('Ada', ACTION_LINK)]) {
     assertStringIncludes(email.html, escapeHtml(ACTION_LINK));
     assertStringIncludes(email.text, ACTION_LINK);
     assert(email.text.length > 80, 'plain-text alternative must be real text');
@@ -81,4 +83,14 @@ Deno.test('an unreadable timestamp degrades to wording, not to "Invalid Date"', 
 Deno.test('a missing name produces a greeting, not "Hi undefined"', () => {
   assertStringIncludes(renderVerifySignup('', ACTION_LINK).text, 'Hi,');
   assertStringIncludes(renderPasswordRecovery('   ', ACTION_LINK).text, 'Hi,');
+});
+
+Deno.test('437: the Account page verification email says what the link does, and escapes the name', () => {
+  const email = renderVerifyEmail('<b>Ada</b>', MAGIC_LINK);
+  assertEquals(email.subject, 'Verify Your Energia Email Address');
+  assertStringIncludes(email.html, 'Verify My Email');
+  assertStringIncludes(email.text, MAGIC_LINK);
+  assertStringIncludes(email.text, 'marks your email as verified');
+  assertFalse(email.html.includes('<b>Ada'), 'the name is escaped');
+  assertStringIncludes(email.html, '&lt;b&gt;Ada');
 });

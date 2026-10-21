@@ -59,7 +59,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setActorType(null); setProfile(null); setAffiliateAccount(null); setAssignments([]);
   }, []);
 
+  // 437: each read of the account is numbered, and an older read never
+  // overwrites what a newer one already set. A sign-up signs in and creates
+  // its affiliate account moments apart: the sign-in's read (no account yet)
+  // could otherwise land after the read that found the new account, and send
+  // the person back to "Finishing setup".
+  const resolveSeq = useRef(0);
+  const appliedSeq = useRef(0);
+
   const resolveActor = useCallback(async (userId: string) => {
+    const mine = ++resolveSeq.current;
+    const stale = () => {
+      if (mine < appliedSeq.current) return true;
+      appliedSeq.current = mine;
+      return false;
+    };
     // ADMIN-AUTH-14: a re-read of an account already loaded that fails (a
     // network blip) keeps what is there. Clearing it replaced the page staff
     // were working on, an unsaved invoice included, with "Account setup
@@ -71,6 +85,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 1) Staff? A profiles row keyed by auth.uid().
     const { data: profileData, error: profileError } = await supabase
       .from('profiles').select('*').eq('id', userId).maybeSingle();
+    if (stale()) return;
 
     // A failed lookup is not the same as "no profile". Falling through would
     // send a perfectly valid owner to the "account setup needed" dead end,
@@ -100,6 +115,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       loadedActor.current = 'staff';
       const { data: assignData, error: assignError } = await supabase
         .from('user_store_assignments').select('*').eq('user_id', userId);
+      if (stale()) return;
       if (!assignError || !known) setAssignments((assignData as UserStoreAssignment[]) ?? []);
       return;
     }
@@ -110,6 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .from('affiliate_accounts')
       .select('id, auth_user_id, customer_id, affiliate_id, status')
       .eq('auth_user_id', userId).maybeSingle();
+    if (stale()) return;
 
     if (acctError) {
       if (known) return;
@@ -191,8 +208,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearActor();
   }, [clearActor]);
 
+  // 437: read the session supabase-js holds now, not the one this render saw.
+  // Right after a sign-up signs in, the page that finishes the sign-up can
+  // run before React has stored the new session, and a refresh that read the
+  // old (empty) one did nothing.
   const refreshProfile = useCallback(async () => {
-    if (session?.user) await resolveActor(session.user.id);
+    const { data } = await supabase.auth.getSession();
+    const userId = data.session?.user?.id ?? session?.user?.id;
+    if (userId) await resolveActor(userId);
   }, [session, resolveActor]);
 
   return (

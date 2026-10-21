@@ -54,7 +54,9 @@ export const Protected: React.FC<{ children: React.ReactNode }> = ({ children })
 };
 
 // Affiliate-only guard. Staff are sent to the staff app; unauthenticated to the
-// affiliate login. Not-yet-onboarded sessions go to the verify/onboarding flow.
+// affiliate login. A signed-in login with no affiliate account yet goes to
+// /affiliate/verify, which finishes its sign-up by itself with the details
+// already given and comes back to the dashboard (437: nobody waits there).
 export const AffiliateProtected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { session, actorType, loading, resolving, error, refreshProfile } = useAuth();
   if (loading || resolving) return <FullScreenLoader />;

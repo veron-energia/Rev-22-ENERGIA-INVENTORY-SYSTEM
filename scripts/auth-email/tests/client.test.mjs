@@ -110,3 +110,25 @@ test('a failed password change is not reported as changed', () => {
   assert.equal(result.kind, 'unauthorized');
   assert.equal(result.notified, false);
 });
+
+// 437 (the Owner, 20 Oct 2026): sign-up goes straight in, and says when an
+// address already has a login.
+test('437: a sign-up that made the login reads as "created", for the page to sign in', () => {
+  const result = interpretAuthEmailResponse(200, { ok: true, status: 'created', request_id: 'abc' });
+  assert.equal(result.ok, true);
+  assert.equal(result.kind, 'created');
+  assert.equal(result.message, null);
+});
+
+test('437: an address that already has a login reads as "email_in_use", with Sign in and Reset password', () => {
+  const result = interpretAuthEmailResponse(409, { error: 'email_in_use', message: 'This email already has an Energia login. Sign in, or reset your password if you have forgotten it.' });
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'email_in_use');
+  assert.match(result.message, /sign in/i);
+  assert.match(result.message, /reset your password/i);
+  assert.equal(interpretAuthEmailResponse(409, { error: 'email_in_use' }).message, AUTH_EMAIL_COPY.signupEmailInUse);
+});
+
+test('437: an old server\'s "submitted" is still a plain success', () => {
+  assert.equal(interpretAuthEmailResponse(200, { ok: true, status: 'submitted' }).kind, 'submitted');
+});

@@ -55,7 +55,8 @@ set local lock_timeout = '10s';
 do $$
 begin
   if to_regprocedure('public.invite_user_reusable_login(uuid)') is null
-     or md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure)) <> '7219cae03a5a758402e79762baf46f42' then
+     or md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure))
+        not in ('7219cae03a5a758402e79762baf46f42', '6b895cc341bacbe9e115e28982d661e3') then
     raise exception '429 is not in this database: run with -v prelude=supabase/429_users_invitations_and_payment_methods.sql (see the header)'; end if;
 end $$;
 
@@ -380,10 +381,14 @@ select pg_temp.check((select string_agg(x.sig || '=' || md5(pg_get_functiondef(t
                      = 'invite_user_accept(uuid,text)=04eb29a50699f8f9f41d7ba591af3480 '
                        || 'invite_user_begin(text,text,text,user_role,text,text,text,uuid[])=eda7f730fd83891146265adb06eca132 '
                        || 'invite_user_cancel(uuid,text)=e9e97c330ed7189415e2f67cef9716c5 '
-                       || 'invite_user_provisioned(uuid,uuid)=7219cae03a5a758402e79762baf46f42 '
+                       || 'invite_user_provisioned(uuid,uuid)='
+                       || case md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure))
+                            -- 437: a login the affiliate sign-up made is never an invitee's
+                            when '6b895cc341bacbe9e115e28982d661e3' then '6b895cc341bacbe9e115e28982d661e3'
+                            else '7219cae03a5a758402e79762baf46f42' end || ' '
                        || 'invite_user_reusable_login(uuid)=340580cff28c74eb1b1b8bde967dc8fc '
                        || 'staff_login_sync(uuid)=9259111deccca8c66e95469acfdd250f',
-  'catalogue: the functions tested are 429''s');
+  'catalogue: the functions tested are 429''s (invite_user_provisioned 429''s or 437''s)');
 select pg_temp.check(not exists (select 1 from auth.users u join fx on fx.id = u.id
                                   where u.banned_until is not null and not isfinite(u.banned_until)),
   'no login was ever given an infinite ban');

@@ -5,7 +5,7 @@
 // Every interpolated value goes through `escapeHtml`, and the action link is
 // checked against this project's Auth origin by the caller before it gets here.
 
-export type AuthEmailAction = 'verify_signup' | 'password_recovery' | 'password_changed' | 'user_invitation';
+export type AuthEmailAction = 'verify_signup' | 'verify_email' | 'password_recovery' | 'password_changed' | 'user_invitation';
 
 export interface RenderedEmail {
   subject: string;
@@ -15,6 +15,7 @@ export interface RenderedEmail {
 
 export const SUBJECTS: Record<AuthEmailAction, string> = {
   verify_signup: 'Verify Your Energia Affiliate Account',
+  verify_email: 'Verify Your Energia Email Address',
   password_recovery: 'Reset Your Energia Password',
   password_changed: 'Your Energia Password Was Changed',
   user_invitation: "You're Invited to Energia",
@@ -109,6 +110,40 @@ export function renderVerifySignup(name: string, actionLink: string): RenderedEm
       actionLink, '',
       'This link can only be used once and expires after a while.',
       'If you did not sign up for an Energia Affiliate account, you can ignore this email.', '',
+      'Rev 22 Global Energia',
+    ].join('\n'),
+  };
+}
+
+/**
+ * The Account page's verification email (437). An affiliate signs up and
+ * goes straight in (the Owner, 20 Oct 2026); verifying the email comes later,
+ * from the Account page. The link is a single-use sign-in link to the
+ * affiliate's own account: opening it signs them in and marks the email as
+ * verified. Nothing in the portal waits on it, so the email says so rather
+ * than urging.
+ */
+export function renderVerifyEmail(name: string, actionLink: string): RenderedEmail {
+  return {
+    subject: SUBJECTS.verify_email,
+    html: shell(
+      h('Verify your email address') +
+      p(escapeHtml(greeting(name))) +
+      p('You asked to verify the email address of your Energia Affiliate account. Open the link below to confirm it is yours. ' +
+        'It signs you in to your affiliate portal and marks your email as verified.') +
+      button(actionLink, 'Verify My Email') +
+      `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
+        This link can only be used once and expires after a while. If you did not ask for it, you can ignore this email — your account stays as it is.
+      </p>`,
+    ),
+    text: [
+      greeting(name), '',
+      'You asked to verify the email address of your Energia Affiliate account.',
+      'Open this link to confirm it is yours. It signs you in to your affiliate',
+      'portal and marks your email as verified:', '',
+      actionLink, '',
+      'This link can only be used once and expires after a while.',
+      'If you did not ask for it, you can ignore this email; your account stays as it is.', '',
       'Rev 22 Global Energia',
     ].join('\n'),
   };

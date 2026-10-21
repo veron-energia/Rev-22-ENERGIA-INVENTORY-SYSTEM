@@ -75,6 +75,9 @@
 -- invented; the phones are +65 8378 01xx.
 \set ON_ERROR_STOP on
 begin;
+-- Since 437 sign-up parks no claim; the claims below are made by the 432
+-- sign-up, put back for this transaction only (see the file).
+\ir sign-up-before-437.sql
 set local lock_timeout = '10s';
 set local statement_timeout = '120s';
 create temp table failed(n serial, msg text);

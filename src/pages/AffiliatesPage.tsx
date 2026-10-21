@@ -30,6 +30,115 @@ interface SignupCheck {
   referrer_customer_id: string | null; referrer_name: string | null; referral_code: string | null; signed_up_at: string;
   shares_with: { customer_id: string; name: string; deleted?: boolean; paid_invoices: number }[];
 }
+/** 437: an affiliate who signed up on a fresh customer record that may be a
+ *  customer already there (the Owner, 20 Oct 2026, decision 6). An Owner or
+ *  Manager links them (the fresh record joins the customer) or keeps them
+ *  separate. The person who signed up is never told. */
+interface SignupMatchCandidate {
+  customer_id: string; name: string; phone: string | null; email: string | null; created_at: string;
+  matched_by: ('phone' | 'email' | 'name')[]; has_login: boolean; protected: boolean;
+  /** The customer's own affiliate record's code (an Owner unlinked the login
+   *  that had it): linked, they keep it and the new record's is retired.
+   *  Absent before this was added. */
+  own_referral_code?: string | null;
+  /** Linked to them, the new record's code is retired (they have an
+   *  affiliate record of their own; AFF-SIGNUP-9 and -14). */
+  retires_new_code?: boolean;
+  /** What Link does with the email they signed up with (AFF-SIGNUP-12):
+   *  copies it (the customer has none), the customer keeps their own, or it
+   *  is left because another customer already has it. */
+  email_on_link?: 'copy' | 'keep_own' | 'in_use' | 'none';
+  /** The very same phone and a name of the same words, and an affiliate
+   *  login of their own (AFF-SIGNUP-13). */
+  twin?: boolean;
+  /** AFF-SIGNUP-16: whether "Use the phone they signed up with" starts
+   *  ticked, as the server works it out, and why: 'email_keep_own' and
+   *  'email_in_use' (the email they signed up with cannot be copied),
+   *  'waiting_seminar' and 'waiting_qr' (something of theirs waits under To
+   *  match); 'same_phone' and 'no_signup_phone' when there is nothing to
+   *  tick. Absent before this was added: unticked. */
+  use_signup_phone_default?: boolean;
+  use_signup_phone_why?: string[];
+  /** Why this customer cannot be linked; null when they can. */
+  problem: string | null;
+}
+interface SignupMatch {
+  match_id: string; signed_up_at: string; reason: string;
+  entered_name: string | null; entered_phone: string | null;
+  customer_id: string; customer_name: string; phone: string | null; email: string | null; login_email: string | null;
+  referral_code: string | null; referrals: number;
+  /** AFF-SIGNUP-13: a customer with the very same phone and name already
+   *  has an affiliate login (the first of them). */
+  twin?: boolean; twin_customer_id?: string | null;
+  /** AFF-SIGNUP-18: 'may_be_someone_else' for a login joined to a customer
+   *  on the phone alone under another name (reason 'phone_other_name'):
+   *  customer_* is the record it joined, entered_name the name typed, and
+   *  there is no one to link. Otherwise (or absent) a fresh record. */
+  kind?: 'fresh_record' | 'may_be_someone_else';
+  /** AFF-SIGNUP-16: held under To match with the fresh record as a
+   *  candidate: seminar registrations (null before 436) and QR forms. */
+  waiting?: { seminar: number | null; qr: number } | null;
+  candidates: SignupMatchCandidate[];
+}
+/** AFF-SIGNUP-17: commission Link earned on a paid invoice it moved. */
+interface LinkCommission {
+  invoice_id: string; invoice_no: string | null; dated?: string | null; amount?: number;
+  rows?: { tier: string; referrer_name: string | null; amount: number; status: string; block_reason?: string | null }[];
+  why?: 'none_due' | 'refused'; message?: string | null;
+}
+/** What Link answers (437; AFF-SIGNUP-12, -17): what it put on the customer,
+ *  and the commission it earned on the paid invoices it moved. A replay (the
+ *  same request id after a lost answer) answers the same, read back from the
+ *  link's audit row, with replayed true. */
+interface LinkAnswer {
+  ok?: boolean; message?: string; replayed?: boolean; phone_refused?: boolean;
+  email_copied?: string | null; phone_changed?: boolean; phone?: string | null; notes?: string[];
+  commission_dated?: string | null; commission_earned?: LinkCommission[]; commission_not_earned?: LinkCommission[];
+}
+/** Two phones are the same number when their digits are. */
+const samePhone = (a?: string | null, b?: string | null) =>
+  !!a && !!b && a.replace(/\D/g, '') === b.replace(/\D/g, '');
+/** AFF-SIGNUP-18: a login joined to a customer on the phone alone under
+ *  another name, listed so staff check who it is. */
+const isSomeoneElse = (m: SignupMatch) => m.kind === 'may_be_someone_else' || m.reason === 'phone_other_name';
+/** AFF-SIGNUP-16: what of this sign-up waits under To match, or null. */
+const waitingText = (m: SignupMatch) => {
+  const seminar = m.waiting?.seminar ?? 0;
+  const qr = m.waiting?.qr ?? 0;
+  const parts = [seminar > 0 ? `${seminar} seminar ${seminar === 1 ? 'registration' : 'registrations'}` : null,
+                 qr > 0 ? `${qr} QR health ${qr === 1 ? 'form' : 'forms'}` : null].filter(Boolean);
+  return parts.length > 0 ? `Waiting under To match: ${parts.join(' and ')}.` : null;
+};
+/** AFF-SIGNUP-12: the tick box is offered only when the phone they signed
+ *  up with is not the customer's already. */
+const phoneBoxOffered = (match: SignupMatch, cand: SignupMatchCandidate) =>
+  !!match.entered_phone && !samePhone(cand.phone, match.entered_phone);
+/** Why a sign-up got a fresh record and is listed, in the page's words. */
+const MATCH_REASON: Record<string, string> = {
+  shared_phone: 'Several customers have this phone, and the name did not pick one of them.',
+  phone_unconfirmed: 'A customer\'s stored number could be this phone (its country is not confirmed).',
+  customer_has_login: 'The customer with this phone already has an affiliate login.',
+  protected_customer: 'The customer with this phone is protected: an Owner unlinked a login from them, or an Owner or Manager rejected a claim for them.',
+  affiliate_removed: 'The customer with this phone had their affiliate record removed.',
+  email_match: 'A customer we already have uses the same email.',
+  name_match: 'A customer we already have has a name with the same words.',
+  earlier_claim: 'An earlier account claim of theirs suggested a customer.',
+  phone_other_name: 'Joined the customer with this phone on the phone alone, but signed up under another name.',
+};
+/** AFF-SIGNUP-16: why the phone box starts ticked, in the page's words. */
+const PHONE_WHY: Record<string, (name: string) => string> = {
+  email_keep_own: name => `${name} keeps their own email, so the email they signed up with is not copied`,
+  email_in_use: () => 'another customer already has the email they signed up with, so it is not copied',
+};
+/** AFF-SIGNUP-17: an invoice's commission, in the page's words. */
+const TIER: Record<string, string> = { tier1: 'Tier 1', tier2: 'Tier 2' };
+const commissionLine = (c: LinkCommission) => {
+  const rows = (c.rows ?? []).map(r => `${TIER[r.tier] ?? r.tier} ${r.referrer_name ?? 'someone'} ${money(r.amount)}`
+    + (r.status === 'blocked' ? ` (blocked${r.block_reason ? `: ${r.block_reason}` : ''})` : ''));
+  return `${c.invoice_no ?? 'an invoice'}${rows.length ? `: ${rows.join(', ')}` : ''}`;
+};
+const MATCHED_BY: Record<string, string> = { phone: 'Phone', email: 'Email', name: 'Name' };
+
 /** The affiliate's current referrer, read when Correct Referrer opens. */
 interface CurrentReferrer { id: string | null; name: string | null; since: string | null }
 
@@ -166,6 +275,22 @@ const AffiliatesPage: React.FC = () => {
   const [decideFor, setDecideFor] = useState<{ check: SignupCheck; decision: 'different_person' | 'same_person' } | null>(null);
   const [decideNote, setDecideNote] = useState('');
   const [decideErr, setDecideErr] = useState<string | null>(null);
+  // 437: affiliates on fresh records that may be a customer already there.
+  const [matches, setMatches] = useState<SignupMatch[]>([]);
+  const [matchesErr, setMatchesErr] = useState<string | null>(null);
+  // The link being confirmed. Its request id is made when the window opens,
+  // so a second press of Link (or a retry after a lost answer) is the same
+  // link, and the server answers it as replayed.
+  const [linkMatch, setLinkMatch] = useState<{ match: SignupMatch; cand: SignupMatchCandidate; requestId: string } | null>(null);
+  const [linkNote, setLinkNote] = useState('');
+  const [linkErr, setLinkErr] = useState<string | null>(null);
+  // AFF-SIGNUP-12: "use the phone they signed up with". AFF-SIGNUP-16: it
+  // starts as the server suggests (ticked when the email cannot be copied or
+  // something of theirs waits under To match), and staff can change it.
+  const [linkUsePhone, setLinkUsePhone] = useState(false);
+  const [keepFor, setKeepFor] = useState<SignupMatch | null>(null);
+  // AFF-SIGNUP-18: "Same person" for a phone-only join under another name.
+  const [sameFor, setSameFor] = useState<SignupMatch | null>(null);
   // Resolve-claim modal
   const [resolveFor, setResolveFor] = useState<ClaimRow | null>(null);
   const [resolveCust, setResolveCust] = useState(''); const [resolveNote, setResolveNote] = useState('');
@@ -191,6 +316,10 @@ const AffiliatesPage: React.FC = () => {
   const [unlinkErr, setUnlinkErr] = useState<string | null>(null);
   const [unlinkReason, setUnlinkReason] = useState('');
   const [unlinkUnavailable, setUnlinkUnavailable] = useState(false);
+  // AFF-SIGNUP-18: the "May be someone else" entry the window was opened
+  // from, so it says how that login was joined (the phone alone, under
+  // another name). Null from the directory.
+  const [unlinkFrom, setUnlinkFrom] = useState<SignupMatch | null>(null);
   // Staff's claims load on their own, so the directory's own loading (which
   // clears the page error) cannot hide a failure here.
   const [claimsErr, setClaimsErr] = useState<string | null>(null);
@@ -226,12 +355,16 @@ const AffiliatesPage: React.FC = () => {
   const load = useCallback(async () => {
     if (!canManage) { await loadStaffDirectory(staffQRef.current, staffPageRef.current); return; }
     setLoading(true); setErr(null);
-    const [dir, cl, rj, chk] = await Promise.all([
+    const [dir, cl, rj, chk, mt] = await Promise.all([
       supabase.rpc('affiliate_admin_directory'),
       supabase.rpc('affiliate_pending_claims'),
       supabase.rpc('affiliate_rejected_claims'),
       supabase.rpc('referral_signup_checks_pending'),
+      supabase.rpc('affiliate_signup_matches_open'),
     ]);
+    // 437: before it is on the server there is no list and no error.
+    setMatches(mt.error ? [] : ((mt.data as SignupMatch[]) ?? []));
+    setMatchesErr(mt.error && !missingFunction(mt.error) ? mt.error.message : null);
     if (dir.error) setErr(dir.error.message);
     setRows((dir.data as DirRow[]) ?? []);
     setClaims((cl.data as ClaimRow[]) ?? []);
@@ -325,6 +458,108 @@ const AffiliatesPage: React.FC = () => {
       { p_customer_id: fixFor.customer_id, p_new_referrer_id: fixRef || null, p_reason: fixReason.trim() }, fixFor.customer_id,
       fixRemoving ? 'Referrer removed.' : 'Referrer updated successfully.');
     if (ok) { setFixFor(null); setFixRef(''); setFixReason(''); setFixRemove(false); }
+  };
+
+  // 437: an Owner or Manager links an affiliate on a fresh record to the
+  // customer already there. The fresh record joins that customer
+  // (merge_customer_records): the login, the referral code and the referrals
+  // made since move with it.
+  const openLink = (match: SignupMatch, cand: SignupMatchCandidate) => {
+    setLinkMatch({ match, cand, requestId: crypto.randomUUID() }); setLinkNote(''); setLinkErr(null);
+    setLinkUsePhone(phoneBoxOffered(match, cand) && !!cand.use_signup_phone_default);
+  };
+  const submitLink = async () => {
+    if (!linkMatch) return;
+    const { match, cand, requestId } = linkMatch;
+    // AFF-SIGNUP-12: offered only when the phone they signed up with is not
+    // the customer's already.
+    const usePhone = linkUsePhone && !!match.entered_phone && !samePhone(cand.phone, match.entered_phone);
+    setBusy(match.match_id); setLinkErr(null); setErr(null); setSuccess(null);
+    const { data, error } = await supabase.rpc('link_affiliate_signup',
+      { p_match_id: match.match_id, p_customer_id: cand.customer_id, p_note: linkNote.trim() || null, p_request_id: requestId,
+        p_use_signup_phone: usePhone });
+    setBusy(null);
+    if (error) { setLinkErr(error.message); return; }
+    const answer = (data && typeof data === 'object' ? data : {}) as LinkAnswer;
+    if (answer.ok === false) {
+      // A phone the phone rule refuses changes nothing: the window stays,
+      // and the server's words say to untick the box.
+      setLinkErr(answer.message ?? 'This sign-up could not be linked.');
+      await reload(); return;
+    }
+    setLinkMatch(null); setLinkNote(''); setLinkUsePhone(false);
+    const done = [cand.own_referral_code
+      ? `${match.customer_name} is linked to ${cand.name}. Their affiliate login now uses ${cand.name}'s own affiliate record and referral code ${cand.own_referral_code}.`
+      : `${match.customer_name} is linked to ${cand.name}. Their affiliate login, referral code and referrals now belong to ${cand.name}.`];
+    if (answer.phone_changed && answer.phone) done.push(`${cand.name}'s phone is now ${answer.phone}.`);
+    if (answer.email_copied) done.push(`The email they signed up with, ${answer.email_copied}, is now on ${cand.name}.`);
+    done.push(...(answer.notes ?? []));
+    // AFF-SIGNUP-17: commission earned on the paid invoices moved, and any
+    // that could not be earned.
+    const earned = answer.commission_earned ?? [];
+    if (earned.length > 0) {
+      done.push(`Commission earned on the paid ${earned.length === 1 ? 'invoice' : 'invoices'} moved to ${cand.name}`
+        + `${answer.commission_dated ? `, dated ${d(answer.commission_dated)}` : ''}: ${earned.map(commissionLine).join('; ')}.`);
+    }
+    const notEarned = answer.commission_not_earned ?? [];
+    const noneDue = notEarned.filter(c => c.why !== 'refused');
+    const refused = notEarned.filter(c => c.why === 'refused');
+    if (noneDue.length > 0) {
+      done.push(`No commission is due on ${noneDue.map(c => c.invoice_no ?? 'an invoice').join(', ')} by the commission rules`
+        + ' (for example it names their own affiliate code, or no affiliate on purpose).');
+    }
+    if (refused.length > 0) {
+      done.push(`Commission could not be earned on ${refused.map(c => `${c.invoice_no ?? 'an invoice'}${c.message ? ` (${c.message})` : ''}`).join(', ')}:`
+        + ' the link is done; ask the Owner to check the commission on that invoice.');
+    }
+    // A press after a lost answer: the server did it the first time and
+    // says what it did then (its audit row); nothing was linked or earned
+    // again.
+    if (answer.replayed) {
+      done.splice(1, 0, done.length > 1
+        ? 'This link had already gone through on an earlier press; nothing was linked, changed or earned again. What it did then:'
+        : 'This link had already gone through on an earlier press; nothing was linked, changed or earned again.');
+    }
+    setSuccess(done.join(' '));
+    await reload();
+  };
+  // AFF-SIGNUP-18: an Owner or Manager checked that a login joined on the
+  // phone alone under another name is the customer after all.
+  const submitSame = async (note: string): Promise<string | null> => {
+    if (!sameFor) return null;
+    const m = sameFor;
+    setBusy(m.match_id); setErr(null); setSuccess(null);
+    const { data, error } = await supabase.rpc('confirm_affiliate_signup_same_person', { p_match_id: m.match_id, p_note: note.trim() });
+    setBusy(null);
+    if (error) return error.message;
+    if (data && typeof data === 'object' && (data as any).ok === false) {
+      await reload();
+      return (data as any).message ?? 'This sign-up was already checked.';
+    }
+    setSuccess(`${m.customer_name}: checked as the same person. The login stays on their record.`);
+    await reload();
+    return null;
+  };
+  // AFF-SIGNUP-18: the fix when it is someone else, an Owner's Unlink login
+  // on the record the login joined (the directory row, when it is loaded).
+  const unlinkJoined = (m: SignupMatch) => {
+    const row = rows.find(r => r.customer_id === m.customer_id);
+    void openUnlink(row ?? ({ customer_id: m.customer_id, name: m.customer_name } as DirRow), m);
+  };
+  const submitKeep = async (reason: string): Promise<string | null> => {
+    if (!keepFor) return null;
+    const m = keepFor;
+    setBusy(m.match_id); setErr(null); setSuccess(null);
+    const { data, error } = await supabase.rpc('keep_affiliate_signup_separate', { p_match_id: m.match_id, p_note: reason.trim() });
+    setBusy(null);
+    if (error) return error.message;
+    if (data && typeof data === 'object' && (data as any).ok === false) {
+      await reload();
+      return (data as any).message ?? 'This sign-up was already answered.';
+    }
+    setSuccess(`${m.customer_name} is kept as a separate customer.`);
+    await reload();
+    return null;
   };
 
   // 425: an Owner or Manager checks a sign-up that shares a customer's phone.
@@ -423,8 +658,9 @@ const AffiliatesPage: React.FC = () => {
     if (ok) setDeleteFor(null);
   };
 
-  const openUnlink = async (r: DirRow) => {
+  const openUnlink = async (r: DirRow, from: SignupMatch | null = null) => {
     setUnlinkFor(r); setUnlinkInfo(null); setUnlinkErr(null); setUnlinkReason(''); setUnlinkUnavailable(false);
+    setUnlinkFrom(from);
     const { data, error } = await supabase.rpc('affiliate_portal_login', { p_customer_id: r.customer_id });
     if (error) { if (missingFunction(error)) setUnlinkUnavailable(true); else setUnlinkErr(error.message); return; }
     setUnlinkInfo(data as PortalLogin);
@@ -639,6 +875,148 @@ const AffiliatesPage: React.FC = () => {
         </div>
       )}
 
+      {/* 437: new affiliates on a fresh record that may be a customer already
+          there. Linking joins the fresh record into that customer. */}
+      {canManage && matchesErr && <div className="card" data-error="signup-matches" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>The new affiliates to check could not be loaded: {matchesErr}</div>}
+      {canManage && matches.length > 0 && (
+        <div className="card" data-section="signup-matches" style={{ padding: 16, marginBottom: 16, borderColor: 'var(--warning)' }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Users size={16} /> New affiliates who may already be customers ({matches.length})
+          </h3>
+          <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Each signed up as an affiliate and was given a new customer record, but their phone, email or name matches a
+            customer we already have. They can already use their portal. If it is the same person, link them: the new record
+            joins the existing customer, with the affiliate login, referral code and any referrals made since. If it is
+            someone else, keep them separate. Those marked "May be someone else" were let into a customer's account on
+            the phone alone, under another name: check who they are.
+          </p>
+          <div style={{ overflow: 'auto' }}>
+            <table className="table" style={{ width: '100%' }}>
+              <thead><tr><th>Signed up as</th><th>Phone</th><th>Why listed</th><th>May be</th><th></th></tr></thead>
+              <tbody>
+                {matches.map(m => isSomeoneElse(m) ? (
+                  // AFF-SIGNUP-18: joined on the phone alone under another
+                  // name. The join stays; staff check who it is. No Link
+                  // (there is no new record) and no Keep separate.
+                  <tr key={m.match_id} data-match={m.match_id} data-kind="may-be-someone-else">
+                    <td>{m.entered_name ?? m.customer_name}
+                      <br /><small style={{ color: 'var(--text-muted)' }}>{m.login_email ?? ''}</small>
+                      <br /><small style={{ color: 'var(--text-muted)' }}>
+                        {`Joined ${d(m.signed_up_at)}`}{m.referral_code ? ` · ${m.referral_code}` : ''}
+                      </small>
+                    </td>
+                    <td>{m.phone ?? m.entered_phone ?? '—'}</td>
+                    <td style={{ maxWidth: 220, fontSize: 12.5 }}>{MATCH_REASON.phone_other_name}
+                      <div style={{ marginTop: 4 }}>
+                        <span className="badge badge-danger" data-flag="someone-else">May be someone else</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div data-note="someone-else" role="note" style={{ fontSize: 12.5, maxWidth: 380, lineHeight: 1.5 }}>
+                        <div data-detail="typed-name"><b>Name they typed:</b> {m.entered_name ?? '—'}</div>
+                        <div data-detail="record-name"><b>The record's name:</b> {m.customer_name}</div>
+                        <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                          {`${m.entered_name ?? 'They'} signed up on ${m.phone ?? m.entered_phone ?? 'the phone'} and was let into `
+                            + `${m.customer_name}'s affiliate account on the phone alone: they see ${m.customer_name}'s portal. `
+                            + 'If it is the same person (their name written another way), press Same person. '
+                            + `If it is someone else (a family member on the same phone, say), an Owner unlinks the login from ${m.customer_name} `
+                            + '(Unlink login); they get a customer record of their own at their next sign-in.'}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button type="button" className="btn btn-secondary btn-sm" data-action="same-person" disabled={busy === m.match_id}
+                        onClick={() => setSameFor(m)}>Same person</button>
+                      {canUnlink && (
+                        <button type="button" className="btn btn-secondary btn-sm" data-action="unlink-joined" disabled={busy === m.match_id}
+                          onClick={() => unlinkJoined(m)} style={{ marginLeft: 6, gap: 4 }}><Unlink size={13} /> Unlink login</button>
+                      )}
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={m.match_id} data-match={m.match_id}>
+                    <td>{m.customer_name}
+                      <br /><small style={{ color: 'var(--text-muted)' }}>{m.login_email ?? m.email ?? ''}</small>
+                      <br /><small style={{ color: 'var(--text-muted)' }}>
+                        {`Joined ${d(m.signed_up_at)}`}{m.referral_code ? ` · ${m.referral_code}` : ''}
+                        {m.referrals > 0 ? ` · ${m.referrals === 1 ? '1 referral' : `${m.referrals} referrals`}` : ''}
+                      </small>
+                    </td>
+                    <td>{m.phone ?? m.entered_phone ?? '—'}</td>
+                    <td style={{ maxWidth: 220, fontSize: 12.5 }}>{MATCH_REASON[m.reason] ?? m.reason}
+                      {m.twin && (
+                        <div style={{ marginTop: 4 }}>
+                          <span className="badge badge-danger" data-flag="twin-entry"
+                            title="A customer with the very same name and phone already has an affiliate login.">Twin records</span>
+                        </div>
+                      )}
+                      {/* AFF-SIGNUP-16: what of theirs waits under To match. */}
+                      {waitingText(m) && (
+                        <div data-note="waiting" style={{ marginTop: 4, color: 'var(--text-muted)' }}>{waitingText(m)}</div>
+                      )}
+                    </td>
+                    <td>{m.candidates.length === 0 ? '—' : m.candidates.map(c => (
+                      <div key={c.customer_id} data-candidate={c.customer_id} style={{ marginBottom: 8 }}>
+                        <div style={{ fontWeight: 500 }}>{c.name}
+                          {c.matched_by.map(k => (
+                            <span key={k} className="badge badge-muted" style={{ marginLeft: 6 }}>{MATCHED_BY[k] ?? k}</span>
+                          ))}
+                          {c.protected && (
+                            <span className="badge badge-danger" data-flag="protected" style={{ marginLeft: 6 }}
+                              title="An Owner unlinked a login from this customer, or an Owner or Manager rejected a claim for them.">Protected</span>
+                          )}
+                          {c.twin && (
+                            <span className="badge badge-danger" data-flag="twin" style={{ marginLeft: 6 }}
+                              title="The very same name and phone as the new record, and an affiliate login of their own.">Same name and phone</span>
+                          )}
+                        </div>
+                        <small style={{ color: 'var(--text-muted)' }}>{[c.phone, c.email].filter(Boolean).join(' · ') || '—'}</small>
+                        {c.own_referral_code && !c.problem && (
+                          <div data-note="own-code" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {`Has their own affiliate code ${c.own_referral_code}, kept if linked.`}
+                          </div>
+                        )}
+                        <div style={{ marginTop: 4 }}>
+                          <button type="button" className="btn btn-secondary btn-sm" data-action="link"
+                            disabled={busy === m.match_id || !!c.problem} title={c.problem ?? `Link to ${c.name}`}
+                            onClick={() => openLink(m, c)} style={{ gap: 4 }}>
+                            <CheckCircle2 size={13} /> Link to this customer
+                          </button>
+                          {c.problem && <div data-note="cannot-link" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{c.problem}</div>}
+                        </div>
+                        {/* AFF-SIGNUP-13: two records with one name and phone hold
+                            this person's website and QR forms until sorted out.
+                            The Affiliates list then shows two rows with that name,
+                            each with Unlink login: the note names the right one by
+                            its referral code, and the new sign-up's. */}
+                        {c.twin && (
+                          <div data-note="twin" role="note" style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4, maxWidth: 380, lineHeight: 1.5 }}>
+                            <b>Twin records.</b> {m.customer_name} has the same name and phone as {c.name}, whose record already
+                            has an affiliate login. Until this is sorted out, this person's website registrations, VIP payments and
+                            QR health forms will wait under To match. {c.own_referral_code
+                              ? `To fix it, an Owner first unlinks the wrong login from ${c.name}: in the Affiliates list below, use Unlink login`
+                                + ` on the ${c.name} row with referral code ${c.own_referral_code}`
+                                + (m.referral_code && m.referral_code !== c.own_referral_code
+                                  ? `, not the one with code ${m.referral_code} (that one is this new sign-up)` : '')
+                                + `. Then link this sign-up to ${c.name} here.`
+                              : `To fix it, an Owner first unlinks the wrong login from ${c.name} (Unlink login, on ${c.name}'s row in`
+                                + ` the Affiliates list below), then links this sign-up to ${c.name} here.`}
+                          </div>
+                        )}
+                      </div>
+                    ))}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button type="button" className="btn btn-secondary btn-sm" data-action="keep-separate" disabled={busy === m.match_id}
+                        onClick={() => setKeepFor(m)}>Keep separate</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {canManage && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }} role="tablist" aria-label="Affiliates view">
           <button type="button" role="tab" aria-selected={view === 'affiliates'} className={`btn btn-sm ${view === 'affiliates' ? 'btn-primary' : 'btn-secondary'}`}
@@ -827,6 +1205,126 @@ const AffiliatesPage: React.FC = () => {
         </Modal>
       )}
 
+      {/* 437: link a new affiliate to the customer already there */}
+      {linkMatch && (() => {
+        const { match, cand } = linkMatch;
+        const linking = busy === match.match_id;
+        // AFF-SIGNUP-12: the phone and email they signed up with.
+        const signupPhone = match.entered_phone;
+        const signupEmail = match.login_email ?? match.email;
+        const offerPhone = phoneBoxOffered(match, cand);
+        // AFF-SIGNUP-16: how the box started, and why, as the server says.
+        const startTicked = offerPhone && !!cand.use_signup_phone_default;
+        const why = cand.use_signup_phone_why ?? [];
+        const seminar = match.waiting?.seminar ?? 0;
+        const qr = match.waiting?.qr ?? 0;
+        const waitingParts = [
+          why.includes('waiting_seminar') && seminar > 0 ? `${seminar} seminar ${seminar === 1 ? 'registration' : 'registrations'}` : null,
+          why.includes('waiting_qr') && qr > 0 ? `${qr} QR health ${qr === 1 ? 'form' : 'forms'}` : null,
+        ].filter(Boolean) as string[];
+        const startReasons = [
+          ...why.filter(w => PHONE_WHY[w]).map(w => PHONE_WHY[w](cand.name)),
+          ...(waitingParts.length > 0
+            ? [`${waitingParts.join(' and ')} for this sign-up ${seminar + qr === 1 ? 'is' : 'are'} waiting under To match`] : []),
+        ];
+        const emailOnLink = cand.email_on_link ?? (cand.email ? 'keep_own' : signupEmail ? 'copy' : 'none');
+        // AFF-SIGNUP-9 and -14: linked to a customer with an affiliate record
+        // of their own, the new record's code is retired.
+        const retires = cand.retires_new_code ?? !!cand.own_referral_code;
+        return (
+        <Modal title={`Link the new record to ${cand.name}`}
+          onClose={() => { if (!linking) setLinkMatch(null); }} confirmClose={!!linkNote.trim() || linkUsePhone !== startTicked}
+          footer={<><button className="btn btn-secondary" disabled={linking} onClick={() => setLinkMatch(null)}>Cancel</button>
+            <button className="btn btn-primary" data-action="confirm-link" disabled={linking}
+              onClick={() => void submitLink()}>{linking ? 'Linking…' : 'Link to this customer'}</button></>}>
+          {/* Who is who: the names alone can be the same. */}
+          <div data-detail="link-records" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.6 }}>
+            <div data-detail="new-record"><b>New record:</b> {match.customer_name} · {match.phone ?? match.entered_phone ?? '—'} · {match.login_email ?? match.email ?? '—'}</div>
+            <div data-detail="existing-customer"><b>Existing customer:</b> {cand.name} · {cand.phone ?? '—'} · {cand.email ?? '—'}</div>
+          </div>
+          {/* Both phones; the customer's changes only when ticked (AFF-SIGNUP-12). */}
+          <div data-detail="phones" style={{ fontSize: 13, marginBottom: 12, lineHeight: 1.6 }}>
+            <div data-detail="customer-phone"><b>{cand.name}'s phone:</b> {cand.phone ?? '—'}</div>
+            <div data-detail="signup-phone"><b>The phone they signed up with:</b> {signupPhone ?? '—'}</div>
+            {offerPhone ? (
+              <>
+                <label data-field="use-signup-phone" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 6 }}>
+                  <input type="checkbox" checked={linkUsePhone} disabled={linking}
+                    onChange={e => { setLinkUsePhone(e.target.checked); setLinkErr(null); }} style={{ marginTop: 3 }} />
+                  <span>Use the phone they signed up with</span>
+                </label>
+                {startTicked && startReasons.length > 0 && (
+                  <div data-note="phone-default" style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    {`Ticked to start: ${startReasons.join('; ')}.`}
+                  </div>
+                )}
+                <div data-note="phone-outcome" style={{ fontSize: 12.5, color: linkUsePhone ? 'var(--text-muted)' : 'var(--danger)' }}>
+                  {linkUsePhone
+                    ? `${cand.name}'s phone becomes ${signupPhone}, as a phone change on the Customers page: the old number goes into the phone history, and at most 3 customers may share a phone.`
+                    : `${cand.name} keeps ${cand.phone ?? 'no phone'}. A later website or referral-page registration on ${signupPhone} `
+                      + `will not find ${cand.name}: it becomes a new customer and, through another affiliate's link, can earn that `
+                      + 'affiliate commission (for a seminar VIP at once).'}
+                </div>
+              </>
+            ) : signupPhone && cand.phone ? (
+              <div data-note="phone-outcome" style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>The same phone.</div>
+            ) : null}
+          </div>
+          <p data-detail="email" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            {emailOnLink === 'copy'
+              ? `${cand.name} has no email: the one they signed up with, ${signupEmail}, will be copied onto them.`
+              : emailOnLink === 'in_use'
+                ? `${cand.name} has no email, but another customer already has the one they signed up with (${signupEmail}), so it will not be copied.`
+                : emailOnLink === 'keep_own'
+                  ? `${cand.name} keeps their own email${cand.email ? `, ${cand.email}` : ''}.`
+                  : `${cand.name} has no email, and there is none from their sign-up to copy.`}
+          </p>
+          {retires && match.referral_code && (
+            <p role="alert" data-warning="retired-code" style={{ fontSize: 13, color: 'var(--danger)', marginBottom: 12 }}>
+              {`Links shared with code ${match.referral_code} will stop crediting anyone. `
+                + (cand.own_referral_code
+                  ? `Ask them to share code ${cand.own_referral_code} instead.`
+                  : `Ask them to share ${cand.name}'s own code instead.`)}
+            </p>
+          )}
+          {cand.protected && (
+            <p role="alert" data-flag="protected" style={{ fontSize: 13, color: 'var(--danger)', marginBottom: 12 }}>
+              This customer is protected: an Owner unlinked a login from them, or an Owner or Manager rejected a claim for them.
+              Link only if you have checked it is the same person.
+            </p>
+          )}
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            {retires
+              ? `The new record ${match.customer_name} joins ${cand.name}. ${cand.name} keeps their own affiliate record`
+                + (cand.own_referral_code ? ` and referral code ${cand.own_referral_code}` : '') + ', and the affiliate login moves onto it'
+                + (match.referral_code ? `; the new record's code ${match.referral_code} is retired. ` : '. ')
+              : `The new record ${match.customer_name} joins ${cand.name}. The affiliate login`
+                + (match.referral_code ? `, referral code ${match.referral_code}` : '')
+                + ` and ${match.referrals === 1 ? '1 referral' : `${match.referrals} referrals`} move to ${cand.name}; the new record is retired. `}
+            The affiliate keeps signing in as before. This cannot be undone from the app.
+          </p>
+          {/* AFF-SIGNUP-17: what Link does with the new record's paid invoices. */}
+          <p data-note="commission-on-link" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12 }}>
+            {`If ${cand.name} has a referrer, paid invoices on the new record that earned no commission earn it for them now, `
+              + 'as at payment, dated today. You will see what was earned once it is linked.'}
+          </p>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Note (optional, kept in the Audit Log)</label>
+          <textarea className="input" rows={2} value={linkNote} onChange={e => { setLinkNote(e.target.value); setLinkErr(null); }} />
+          {linkErr && <div role="alert" data-error="link" style={{ fontSize: 12.5, color: 'var(--danger)', marginTop: 6 }}>{linkErr}</div>}
+        </Modal>
+        );
+      })()}
+      {keepFor && (
+        <ReasonModal title={`Keep ${keepFor.customer_name} separate`} label="Why are they a different person?"
+          placeholder="For example: a family member sharing the phone" confirmLabel="Keep separate"
+          onSubmitAsync={submitKeep} onClose={() => setKeepFor(null)} />
+      )}
+      {sameFor && (
+        <ReasonModal title={`${sameFor.entered_name ?? 'This sign-up'} is ${sameFor.customer_name}`}
+          label="How did you check it is the same person?" placeholder="For example: called them; their name written another way"
+          confirmLabel="Same person" onSubmitAsync={submitSame} onClose={() => setSameFor(null)} />
+      )}
+
       {/* Resolve Claim */}
       {resolveFor && (
         <Modal title="Resolve Affiliate Account" onClose={() => setResolveFor(null)}>
@@ -964,23 +1462,35 @@ const AffiliatesPage: React.FC = () => {
                       <b>How:</b> account claim resolved by {c.resolved_by_name ?? 'someone'} on {d(c.resolved_at)}
                       {c.entered_phone ? ` (phone entered ${c.entered_phone})` : ''}{c.resolution_note ? ` — “${c.resolution_note}”` : ''}
                     </div>))
-                : <div><b>How:</b> at sign-up, without a claim (the verified email, phone and name matched this customer).</div>}
+                : unlinkFrom && isSomeoneElse(unlinkFrom) && unlinkFrom.customer_id === unlinkFor.customer_id
+                  // AFF-SIGNUP-18: opened from a "May be someone else" row.
+                  ? <div data-detail="unlink-how"><b>How:</b> at sign-up, on the phone alone, under the name
+                      “{unlinkFrom.entered_name ?? '—'}”, which is not this record's name (listed “May be someone else”).</div>
+                  // 437: sign-up joins a login to a customer by the phone they
+                  // entered (before 437, only when the verified email, phone
+                  // and name all matched); Link on this page moves one too.
+                  : <div data-detail="unlink-how"><b>How:</b> without an account claim: at sign-up, by the phone they entered, or by Link to this customer on this page.</div>}
             </div>
           )}
           {unlinkInfo?.linked && (
             <>
-              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              <p data-note="unlink-what" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
                 Unlinking removes only the link between this login and {unlinkFor.name}, so the customer can be linked again.
                 Their affiliate record, referral code and link, referred customers, commissions and payouts stay as they are,
-                and the claim history is kept. The person can still sign in, but no longer sees this customer's portal: they are
-                asked to finish setting up again, which usually parks a new account claim and never links them back
-                to {unlinkFor.name} by itself, even if their email, phone and name all match this customer's record.
+                with {unlinkFor.name} (referrals made with that code while this login was linked too), and the claim history is kept.
+                The person can still sign in, but no longer sees this customer's portal: at their next sign-in they are let in at once
+                on a customer record and affiliate account of their own (no account claim is made), and they are never linked back
+                to {unlinkFor.name} by themselves, even if their email, phone and name all match this customer's record.
               </p>
               <p data-note="after-unlink" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
                 Afterwards staff cannot link any login to {unlinkFor.name}, this one or a new one, and sign-up no longer links
                 one to them automatically; only an Owner or Manager can link a login to them.
-                A new claim from this login shows as “Previously unlinked”, and a claim that suggests {unlinkFor.name} shows
-                “Login unlinked before”. If the person must not get back in, Reject that claim.
+                When the person's new record may be {unlinkFor.name} (the same phone, email or name), it is listed under
+                “New affiliates who may already be customers”, with {unlinkFor.name} marked Protected: answer it with Keep separate,
+                or Link once you have checked it is {unlinkFor.name} after all.
+                There is no claim to reject. To stop the new record's referral link registering referrals, Suspend that affiliate.
+                An account claim still waiting from before (sign-up no longer makes them) that suggests {unlinkFor.name} shows
+                “Login unlinked before”.
               </p>
               <p data-note="other-customers" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.6 }}>
                 This covers {unlinkFor.name} only. For other customers, staff who change a customer's email, name or phone can

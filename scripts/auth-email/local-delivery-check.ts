@@ -15,10 +15,10 @@
 // can be opened and read on a phone-width viewport.
 
 import { handlePublicRequest } from '../../supabase/functions/_shared/auth-email/pipeline.ts';
-import { recoveryEndpoint, signupEndpoint, type FlowDeps } from '../../supabase/functions/_shared/auth-email/flows.ts';
+import { recoveryEndpoint, resendEndpoint, type FlowDeps } from '../../supabase/functions/_shared/auth-email/flows.ts';
 import { deliver } from '../../supabase/functions/_shared/auth-email/pabbly.ts';
 import { normalizePhone } from '../../supabase/functions/_shared/auth-email/phone.ts';
-import { renderPasswordChanged, renderPasswordRecovery, renderVerifySignup } from '../../supabase/functions/_shared/auth-email/templates.ts';
+import { renderPasswordChanged, renderPasswordRecovery, renderVerifyEmail, renderVerifySignup } from '../../supabase/functions/_shared/auth-email/templates.ts';
 import type { AuthEmailConfig } from '../../supabase/functions/_shared/auth-email/config.ts';
 
 const SHARED_SECRET = 'local-shared-secret-for-this-check-only';
@@ -69,10 +69,15 @@ const config = (overrides: Partial<AuthEmailConfig> = {}): AuthEmailConfig => ({
 });
 
 // Supabase and the rate-limit database are stubbed; the delivery half is real.
+// Since 437 sign-up sends no email (the login is made already confirmed); the
+// affiliate verification email goes out from the Account page, through
+// auth-resend-verification, for a confirmed login not yet verified.
 const deps = (): FlowDeps => ({
-  accountState: () => Promise.resolve('none'),
-  generateSignupLink: () => Promise.resolve({ status: 'ok', link: { actionLink: ACTION_LINK, email: RECIPIENT, displayName: 'Shin Thant' } }),
+  accountState: () => Promise.resolve('confirmed'),
+  createConfirmedSignup: () => Promise.resolve({ status: 'created', userId: '00000000-0000-4000-8000-000000000437' }),
   regenerateSignupLink: () => Promise.resolve({ status: 'ok', link: { actionLink: ACTION_LINK, email: RECIPIENT, displayName: 'Shin Thant' } }),
+  generateMagicLink: () => Promise.resolve({ status: 'ok', link: { actionLink: ACTION_LINK.replace('type=signup', 'type=magiclink'), email: RECIPIENT, displayName: 'Shin Thant' } }),
+  affiliateEmailNeedsVerification: () => Promise.resolve(true),
   generateRecoveryLink: () => Promise.resolve({ status: 'ok', link: { actionLink: ACTION_LINK.replace('type=signup', 'type=recovery'), email: RECIPIENT, displayName: 'Shin Thant' } }),
   deliver: (cfg, request) => deliver(cfg, request),
   normalizePhone,
@@ -119,11 +124,11 @@ const check = (label: string, ok: boolean, detail = '') => {
 
 try {
   // --- 1. a correct request reaches the workflow and is accepted ------------
-  let response = await handlePublicRequest(post(signupBody), signupEndpoint(deps()), {
+  let response = await handlePublicRequest(post({ email: RECIPIENT }), resendEndpoint(deps()), {
     loadConfig: () => config(), makeAdmin: () => admin,
   });
   let json = await response.json();
-  check('signup is accepted by the workflow', response.status === 200 && json.status === 'submitted', `status=${json.status}`);
+  check('the verification email is accepted by the workflow', response.status === 200 && json.status === 'submitted', `status=${json.status}`);
   check('the workflow received exactly one request', received.length === 1);
   check('the shared secret was checked and matched', received[0]?.accepted === true);
 
@@ -134,14 +139,15 @@ try {
   check('the recipient is the account address', sent.to === RECIPIENT);
   check('the sender is the company alias', sent.from_email === 'info@rev22.com.sg' && sent.from_name === 'Rev 22 Global Energia');
   check('reply-to is set', sent.reply_to === 'info@rev22.com.sg');
-  check('the subject is the agreed wording', sent.subject === 'Verify Your Energia Affiliate Account');
+  check('the subject is the agreed wording', sent.subject === 'Verify Your Energia Email Address');
   check('the action link is inside the message, not a separate field',
-    String(sent.html).includes(ACTION_LINK.replace(/&/g, '&amp;')) && !('token' in sent) && !('action_link' in sent));
+    String(sent.html).includes(ACTION_LINK.replace('type=signup', 'type=magiclink').replace(/&/g, '&amp;'))
+    && !('token' in sent) && !('action_link' in sent));
   check('a request id is present for deduplication', typeof sent.request_id === 'string' && String(sent.request_id).length === 36);
 
   // --- 2. the wrong secret is refused, and no email is sent ----------------
   received.length = 0; arrivals = 0;
-  response = await handlePublicRequest(post(signupBody), signupEndpoint(deps()), {
+  response = await handlePublicRequest(post({ email: RECIPIENT }), resendEndpoint(deps()), {
     loadConfig: () => config({ pabblySharedSecret: 'the-wrong-secret' }), makeAdmin: () => admin,
   });
   json = await response.json();
@@ -164,7 +170,7 @@ try {
   arrivals = 0;
   behaviour = 'hang';
   const started = Date.now();
-  response = await handlePublicRequest(post(signupBody), signupEndpoint(deps()), {
+  response = await handlePublicRequest(post({ email: RECIPIENT }), resendEndpoint(deps()), {
     loadConfig: () => config({ pabblyTimeoutMs: 1500 }), makeAdmin: () => admin,
   });
   json = await response.json();
@@ -178,6 +184,7 @@ try {
   await Deno.mkdir('scripts/auth-email/preview', { recursive: true });
   const previews = {
     'verify-signup': renderVerifySignup('Shin Thant', ACTION_LINK),
+    'verify-email': renderVerifyEmail('Shin Thant', ACTION_LINK.replace('type=signup', 'type=magiclink')),
     'password-recovery': renderPasswordRecovery('Shin Thant', ACTION_LINK.replace('type=signup', 'type=recovery')),
     'password-changed': renderPasswordChanged('Shin Thant', new Date().toISOString(), 'info@rev22.com.sg'),
   };

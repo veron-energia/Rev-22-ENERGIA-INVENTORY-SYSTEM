@@ -72,6 +72,10 @@
 -- phone and email below is invented; the phones are +65 8432 01xx.
 \set ON_ERROR_STOP on
 begin;
+-- 437 replaced this sign-up (straight in, no claims; its own suite is
+-- straight-in-437.sql). On a database with 437 the 432 sign-up is put back
+-- for this transaction only, so 432's rules are still checked here.
+\ir ../../affiliate-claims/tests/sign-up-before-437.sql
 \ir ../../../supabase/432_affiliate_signup_no_duplicate_customers.sql
 create temp table m432 as
   select p.oid::regprocedure::text as fn, md5(pg_get_functiondef(p.oid)) as md5

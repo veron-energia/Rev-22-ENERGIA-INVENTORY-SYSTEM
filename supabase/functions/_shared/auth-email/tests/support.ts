@@ -8,7 +8,7 @@
 import type { AuthEmailConfig } from '../config.ts';
 import type { DeliveryRequest, DeliveryResult } from '../pabbly.ts';
 import type { FlowDeps } from '../flows.ts';
-import type { AccountState, GenerateOutcome } from '../admin.ts';
+import type { AccountState, CreateOutcome, GenerateOutcome } from '../admin.ts';
 
 export const SUPABASE_URL = 'https://project.supabase.co';
 export const APP_URL = 'https://rev-22-energia-inventory-system.vercel.app';
@@ -73,11 +73,19 @@ export function recordingDeliver(result: DeliveryResult = acceptedDelivery) {
   return { sent, deliver };
 }
 
+export const MAGIC_LINK = `${SUPABASE_URL}/auth/v1/verify?token=mag456&type=magiclink&redirect_to=${encodeURIComponent(APP_URL + '/affiliate/verify')}`;
+
+export function magicLink(email = 'someone@example.com', displayName = 'Ada Lovelace'): GenerateOutcome {
+  return { status: 'ok', link: { actionLink: MAGIC_LINK, email, displayName } };
+}
+
 export function flowDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
   return {
     accountState: () => Promise.resolve('none' as AccountState),
-    generateSignupLink: () => Promise.resolve(okLink()),
+    createConfirmedSignup: () => Promise.resolve({ status: 'created', userId: '00000000-0000-4000-8000-000000000437' } as CreateOutcome),
     regenerateSignupLink: () => Promise.resolve(okLink()),
+    generateMagicLink: () => Promise.resolve(magicLink()),
+    affiliateEmailNeedsVerification: () => Promise.resolve(false),
     generateRecoveryLink: () => Promise.resolve(okLink()),
     deliver: () => Promise.resolve(acceptedDelivery),
     normalizePhone: (raw) => (/^\+65[3689]\d{7}$/.test(raw) ? raw : null),

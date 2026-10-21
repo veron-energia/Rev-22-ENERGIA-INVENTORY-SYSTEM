@@ -50,13 +50,16 @@ begin
         not in ('7648388b0b41caee3696694ae172377e', '9259111deccca8c66e95469acfdd250f') then
     raise exception '412 is not in this database: run with -v prelude412=supabase/412_deactivated_staff_signed_out_and_blocked.sql (see the header)'; end if;
   if md5(pg_get_functiondef(to_regprocedure('public.invite_user_provisioned(uuid,uuid)')))
-        not in ('506816a8545148a24e9814d0bf2d5062', '7219cae03a5a758402e79762baf46f42')
+        not in ('506816a8545148a24e9814d0bf2d5062', '7219cae03a5a758402e79762baf46f42',
+                -- 437: a login the affiliate sign-up made is never an invitee's
+                '6b895cc341bacbe9e115e28982d661e3')
      or md5(pg_get_functiondef(to_regprocedure('public.invite_user_begin(text,text,text,user_role,text,text,text,uuid[])')))
         not in ('8d2e1f3540a00dad9c1be25bd413e3c4', 'eda7f730fd83891146265adb06eca132') then
     raise exception '413 is not in this database: run with -v prelude=supabase/413_invitations_begin_again_and_cancel_during_setup.sql (see the header)'; end if;
 end $$;
 create function pg_temp.v429() returns boolean language sql as $f$
-  select md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure)) = '7219cae03a5a758402e79762baf46f42'
+  select md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure))
+         in ('7219cae03a5a758402e79762baf46f42', '6b895cc341bacbe9e115e28982d661e3')
 $f$;
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
@@ -327,8 +330,9 @@ select pg_temp.check(pg_temp.out('affcall')->>'outcome' = 'forbidden' and pg_tem
 select pg_temp.check(md5(pg_get_functiondef('public.invite_user_begin(text,text,text,user_role,text,text,text,uuid[])'::regprocedure))
                        = case when pg_temp.v429() then 'eda7f730fd83891146265adb06eca132' else '8d2e1f3540a00dad9c1be25bd413e3c4' end
                      and md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure))
-                       = case when pg_temp.v429() then '7219cae03a5a758402e79762baf46f42' else '506816a8545148a24e9814d0bf2d5062' end,
-  'catalogue: both functions are at 413''s AFTER md5s (or 429''s)');
+                       in (case when pg_temp.v429() then '7219cae03a5a758402e79762baf46f42' else '506816a8545148a24e9814d0bf2d5062' end,
+                           '6b895cc341bacbe9e115e28982d661e3'),
+  'catalogue: both functions are at 413''s AFTER md5s (or 429''s; invite_user_provisioned may be 437''s)');
 select pg_temp.check(not exists (select 1 from auth.users u join fx on fx.id = u.id
                                   where u.banned_until is not null and not isfinite(u.banned_until)),
   'no login was ever given an infinite ban');

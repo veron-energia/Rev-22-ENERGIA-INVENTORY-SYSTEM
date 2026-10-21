@@ -1,8 +1,11 @@
 // POST /functions/v1/auth-signup-request
 //
-// Affiliate signup. Creates the Supabase Auth user, has Supabase mint the
-// verification link, and hands the finished email to Pabbly. Supabase keeps
-// owning the user, the password hash and the token; only delivery moved.
+// Affiliate signup. Since 437 (the Owner's decisions of 20 Oct 2026) it makes
+// the Supabase Auth login already confirmed, through the admin API, and sends
+// no email: the page signs in with the password typed and goes straight to the
+// affiliate dashboard. The email is verified later, from the Account page
+// (auth-resend-verification sends that email through Pabbly). Supabase keeps
+// owning the user and the password hash; "Confirm email" stays on.
 //
 // Deploy without gateway JWT verification — nobody signing up has a session yet:
 //   supabase functions deploy auth-signup-request --no-verify-jwt
@@ -12,8 +15,10 @@
 // Body: { first_name, last_name, phone, email, password, terms_accepted }.
 // Any other field is a rejected request, not an ignored one.
 //
-// The generated link is never returned to the browser and never logged, and the
-// response is identical for a new, an unverified and an already-verified address.
+// Answers: 200 { ok: true, status: 'created' } when the login was made; 409
+// { error: 'email_in_use' } when the address already has a login (the Owner
+// accepted that this shows an address is registered; decision 4), with nothing
+// about that login changed; 400 for a refused field; 429 when rate limited.
 
 import { handlePublicRequest } from '../_shared/auth-email/pipeline.ts';
 import { signupEndpoint } from '../_shared/auth-email/flows.ts';

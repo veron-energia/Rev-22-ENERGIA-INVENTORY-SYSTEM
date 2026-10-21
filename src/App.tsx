@@ -7,6 +7,9 @@ import { lazyPage } from './lib/staleChunks';
 // Loaded with the app, not with the reset pages: it notes whether the app was
 // opened from an email link before Supabase clears the address (ADMIN-AUTH-9).
 import './lib/resetSession';
+// The same for an affiliate's emailed link that Supabase refused (expired or
+// already used), which /affiliate/verify then says (437).
+import './lib/affiliateEmail';
 
 /**
  * Pages are fetched when they are first opened, not when the application

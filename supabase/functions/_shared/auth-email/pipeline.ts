@@ -6,10 +6,15 @@
 // nothing about the account — is identical, so it lives here once.
 //
 // The response is the part worth reading twice. Whatever happened inside, a
-// caller sees the same body for a brand-new account, an unverified one, a
+// caller of resend or recovery sees the same body for an unverified account, a
 // verified one and an address with no account at all. Account status is never
 // distinguishable from the outside: not in the body, not in the status code, and
 // not in how long the request took to fail.
+//
+// Sign-up is the one exception, by the Owner's decision of 20 Oct 2026 (437):
+// it makes the login at once ('created'), and an address that already has a
+// login is told so ('email_in_use', 409) so the page can offer Sign in and
+// Reset password. The rate limit is unchanged.
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError, type AuthEmailConfig } from './config.ts';
 import { adminClient } from './admin.ts';
@@ -22,6 +27,10 @@ import type { FieldError, Validated } from './validate.ts';
 
 // deno-lint-ignore no-explicit-any
 type Admin = any;
+
+/** 437 (the Owner, 20 Oct 2026, decision 4): what sign-up says to an address that already has a login. */
+export const EMAIL_IN_USE_MESSAGE =
+  'This email already has an Energia login. Sign in, or reset your password if you have forgotten it.';
 
 export interface PublicContext<T> {
   config: AuthEmailConfig;
@@ -37,6 +46,12 @@ export type EndpointResult =
   | { kind: 'suppressed'; reason: string }
   /** Handed to Pabbly; the result says what Pabbly did with it. */
   | { kind: 'delivered'; result: DeliveryResult }
+  /** 437, sign-up: the login was made, already confirmed. Nothing was sent. */
+  | { kind: 'created' }
+  /** 437, sign-up: the address already has a login. Nothing was changed. */
+  | { kind: 'email_in_use' }
+  /** 437, sign-up: Supabase Auth refused a value (its password policy, say). */
+  | { kind: 'refused'; field: string; message: string }
   /** Something on our side went wrong before a send was attempted. */
   | { kind: 'internal_error'; detail: string };
 
@@ -147,6 +162,22 @@ async function finish(
     logEvent('auth_email.internal_error', { action, request_id: requestId, detail: result.detail });
     return json({ error: 'temporarily_unavailable', message: 'We could not process that request just now. Please try again shortly.' },
       503, origin, allowed);
+  }
+
+  // 437: sign-up's own answers. Recorded like a send that was not needed.
+  if (result.kind === 'created') {
+    await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: 'account_created' });
+    logEvent('auth_email.account_created', { action, request_id: requestId, ip_seen: meta.ipSeen });
+    return json({ ok: true, status: 'created', request_id: requestId }, 200, origin, allowed);
+  }
+  if (result.kind === 'email_in_use') {
+    await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: 'email_in_use' });
+    logEvent('auth_email.email_in_use', { action, request_id: requestId, ip_seen: meta.ipSeen });
+    return json({ error: 'email_in_use', message: EMAIL_IN_USE_MESSAGE, request_id: requestId }, 409, origin, allowed);
+  }
+  if (result.kind === 'refused') {
+    await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: `refused:${result.field}` });
+    return json({ error: 'invalid_request', fields: { [result.field]: result.message } }, 400, origin, allowed);
   }
 
   if (result.kind === 'suppressed') {

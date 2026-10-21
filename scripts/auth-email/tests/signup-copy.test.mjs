@@ -45,3 +45,18 @@ test('recovery copy stays generic', () => {
   assert.match(AUTH_EMAIL_COPY.recoverySubmitted.toLowerCase(), /if an account exists/,
     'recovery must not confirm whether the address is registered');
 });
+
+// 437 (the Owner, 20 Oct 2026, decision 4): when the address already has a
+// login, sign-up says so plainly and offers both ways in.
+test('437: the email-in-use copy says so and names both next steps', () => {
+  const c = AUTH_EMAIL_COPY.signupEmailInUse.toLowerCase();
+  assert.match(c, /already has/);
+  assert.match(c, /sign in/);
+  assert.match(c, /reset your password/);
+});
+
+test('437: the verification copy points at the inbox, not at a wait', () => {
+  const c = AUTH_EMAIL_COPY.verifyEmailSent.toLowerCase();
+  assert.match(c, /verification link/);
+  assert.match(c, /spam/);
+});

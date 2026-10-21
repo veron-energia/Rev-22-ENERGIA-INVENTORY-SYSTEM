@@ -1,6 +1,6 @@
 export interface AuthEmailResult {
   ok: boolean;
-  kind: 'submitted' | 'not_sent' | 'rate_limited' | 'invalid' | 'unauthorized' | 'unavailable' | 'network' | 'unknown';
+  kind: 'submitted' | 'not_sent' | 'created' | 'email_in_use' | 'rate_limited' | 'invalid' | 'unauthorized' | 'unavailable' | 'network' | 'unknown';
   message: string | null;
   fields: Record<string, string>;
   requestId: string | null;
@@ -13,6 +13,8 @@ export interface PasswordChangeResult extends AuthEmailResult {
 export const AUTH_EMAIL_COPY: {
   signupSubmitted: string;
   signupExistingHint: string;
+  signupEmailInUse: string;
+  verifyEmailSent: string;
   resendSubmitted: string;
   recoverySubmitted: string;
   notSent: string;

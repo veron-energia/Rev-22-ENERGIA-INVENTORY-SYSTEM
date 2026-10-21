@@ -4,10 +4,11 @@
 // the Node test runner, following the same `.mjs` + `.d.mts` shape as
 // `lib/customer-phones/normalize.mjs` and `lib/survey/form.mjs`.
 //
-// One rule shapes all of this: the server answers signup, resend and recovery
+// One rule shapes all of this: the server answers resend and recovery
 // identically whether or not an account exists, so the wording here must be
 // generic too. A screen that said "no account found" would undo the server's
-// care on the client side.
+// care on the client side. Sign-up is the exception since 437 (the Owner, 20
+// Oct 2026): it says when an address already has a login.
 
 export const AUTH_EMAIL_COPY = {
   // Two branches, both stated, neither confirmed. The server deliberately
@@ -21,6 +22,15 @@ export const AUTH_EMAIL_COPY = {
     + 'or reset your password if you have forgotten it.',
   signupExistingHint:
     'Already signed up before? No email will arrive. Use Sign in or Reset password.',
+  // 437 (the Owner, 20 Oct 2026, decision 4): sign-up says when an address
+  // already has a login, and offers Sign in and Reset password. The Owner
+  // accepted that this shows the address is registered.
+  signupEmailInUse:
+    'This email already has an Energia login. Sign in, or reset your password if you have forgotten it.',
+  // 437 (decision 2): the Account page's "Send verification email".
+  verifyEmailSent:
+    'A verification link is on its way to your email. Open it on this phone or computer to finish. '
+    + 'Check your spam folder if it does not arrive in a few minutes.',
   resendSubmitted:
     'If that address still needs verifying, a new link is on its way. Please check your inbox and spam folder.',
   recoverySubmitted:
@@ -51,6 +61,11 @@ export function interpretAuthEmailResponse(httpStatus, body) {
     return { ok: false, kind: 'network', message: AUTH_EMAIL_COPY.network, fields: {}, requestId, retryAfterSeconds: 0 };
   }
 
+  if (httpStatus >= 200 && httpStatus < 300 && data.ok === true && data.status === 'created') {
+    // 437: sign-up made the login, already confirmed; the page signs in next.
+    return { ok: true, kind: 'created', message: null, fields: {}, requestId, retryAfterSeconds: 0 };
+  }
+
   if (httpStatus >= 200 && httpStatus < 300 && data.ok === true) {
     const notSent = data.status === 'not_sent';
     return {
@@ -60,6 +75,14 @@ export function interpretAuthEmailResponse(httpStatus, body) {
       fields: {},
       requestId,
       retryAfterSeconds: 0,
+    };
+  }
+
+  if (httpStatus === 409 && data.error === 'email_in_use') {
+    return {
+      ok: false, kind: 'email_in_use',
+      message: typeof data.message === 'string' ? data.message : AUTH_EMAIL_COPY.signupEmailInUse,
+      fields: {}, requestId, retryAfterSeconds: 0,
     };
   }
 

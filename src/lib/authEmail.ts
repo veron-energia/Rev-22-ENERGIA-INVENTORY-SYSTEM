@@ -58,6 +58,12 @@ function withDevHint<T extends { kind: string; message: string | null }>(result:
   };
 }
 
+/**
+ * Affiliate sign-up (437): 'created' when the login was made, already
+ * confirmed (the page then signs in with the password typed);
+ * 'email_in_use' when the address already has a login. An older sign-up
+ * function answers 'submitted' or 'not_sent' (it emailed a link instead).
+ */
 export async function requestAffiliateSignup(input: {
   firstName: string; lastName: string; phone: string; email: string; password: string; termsAccepted: boolean;
 }): Promise<AuthEmailResult> {

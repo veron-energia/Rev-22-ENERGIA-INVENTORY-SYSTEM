@@ -246,7 +246,9 @@ declare
       'affiliate_portal_campaign_progress()', 'affiliate_portal_dashboard()',
       'affiliate_portal_earnings()', 'affiliate_portal_me()', 'affiliate_portal_network()',
       'affiliate_portal_payouts()', 'affiliate_portal_purchases()', 'affiliate_portal_referral_info()',
-      'complete_affiliate_onboarding(text,text,text,boolean)'];
+      'complete_affiliate_onboarding(text,text,text,boolean)',
+      -- 437: the signed-in affiliate's own email, verified from an emailed link
+      'confirm_affiliate_email()'];
   -- Answer only about the caller: the policy helpers and their kin. Rules on
   -- tables call several of them, so signed-in logins keep them
   -- (function-grants.sql check 4).
@@ -612,6 +614,15 @@ begin
     -- answers its own refusal, never 42501, to those who may)
     ('sign-ups to check',      'om',     true,  false, 'select public.referral_signup_checks_pending()::text'),
     ('check a sign-up',        'om',     false, false, 'select public.decide_referral_signup_check(gen_random_uuid(), ''different_person'', ''SOFX'')::text'),
+    -- Affiliates (437): affiliates on fresh records that may be a customer
+    -- already there, Owners and Managers (no entry in the fixture, so link
+    -- and keep separate answer their own refusal, never 42501, to those who may)
+    ('new affiliates to check', 'om',    true,  false, 'select public.affiliate_signup_matches_open()::text'),
+    ('link a new affiliate',   'om',     false, false, 'select public.link_affiliate_signup(gen_random_uuid(), @c1@, ''SOFX'', gen_random_uuid(), false)::text'),
+    ('keep a new affiliate apart', 'om', false, false, 'select public.keep_affiliate_signup_separate(gen_random_uuid(), ''SOFX'')::text'),
+    -- 437 (AFF-SIGNUP-18): a phone-only join under another name checked as
+    -- the same person
+    ('same person, new affiliate', 'om', false, false, 'select public.confirm_affiliate_signup_same_person(gen_random_uuid(), ''SOFX'')::text'),
     -- Transfers and stock loans (the person's own records, X-5)
     ('cancel a transfer',      'all',    false, false, 'select public.cancel_transfer_request(gen_random_uuid())::text'),
     ('take back a loan',       'all',    false, false, 'select public.return_stock_loan(gen_random_uuid(), ''[]'', null, null)::text'),

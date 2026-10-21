@@ -398,16 +398,21 @@ test('only an Owner finds Unlink login, on a customer with a linked login, and i
   assert.ok(m.textContent.includes('Phoned the number on file'));
   assert.ok(m.textContent.includes('referral code and link, referred customers, commissions and payouts stay as they are'));
   assert.ok(m.textContent.includes('last signed in 01/10/2026'), 'the last sign-in is Supabase Auth\'s, not the day it was linked');
-  assert.ok(m.textContent.includes('which usually parks a new account claim and never links them back to Ana Test by itself, even if their email, phone and name all match this customer\'s record.'),
+  // 437: sign-up parks no claim any more; the person gets a record of their own.
+  assert.ok(m.textContent.includes('at their next sign-in they are let in at once on a customer record and affiliate account of their own (no account claim is made), and they are never linked back to Ana Test by themselves, even if their email, phone and name all match this customer\'s record.'),
     'sign-up no longer links the login straight back');
+  assert.ok(!m.textContent.includes('parks a new account claim'), 'no claim is promised (437)');
   assert.ok(!m.textContent.includes('links them straight back'), 'the old promise is gone');
   const note = m.querySelector('[data-note="after-unlink"]')?.textContent ?? '';
   assert.ok(note.includes('Afterwards staff cannot link any login to Ana Test, this one or a new one, and sign-up no longer links one to them automatically; only an Owner or Manager can link a login to them.'), note);
   const others = m.querySelector('[data-note="other-customers"]')?.textContent ?? '';
   assert.ok(others.includes('This covers Ana Test only.')
     && others.includes('For other customers, staff who change a customer\'s email, name or phone can still change which customer a sign-up is linked to automatically, as before.'), others);
-  assert.ok(note.includes('a claim that suggests Ana Test shows “Login unlinked before”'), note);
-  assert.ok(note.includes('If the person must not get back in, Reject that claim.'), note);
+  assert.ok(note.includes('that suggests Ana Test shows “Login unlinked before”'), note);
+  // 437: there is no new claim to reject; the new record is listed for an
+  // Owner or Manager, with this customer protected.
+  assert.ok(note.includes('it is listed under “New affiliates who may already be customers”, with Ana Test marked Protected'), note);
+  assert.ok(note.includes('There is no claim to reject.') && !note.includes('Reject that claim'), note);
   const go = buttons(m).find(b => b.textContent.trim() === 'Unlink login');
   assert.equal(go.disabled, true, 'no reason, no unlink');
   await setValue(m.querySelector('#unlink-reason'), '  Linked to the wrong Ana ');

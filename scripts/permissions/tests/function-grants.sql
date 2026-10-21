@@ -182,6 +182,13 @@ declare
                              'web_order_tickets',
                              -- 432: how affiliate sign-up compares names and emails
                              'customer_name_words','customer_names_match','customer_email_match_key',
+                             -- 437: whom a sign-up's fresh record may be and how, whether a
+                             -- session came from an emailed link, and the verification
+                             -- check auth-resend-verification asks with the service key
+                             'affiliate_signup_candidates','affiliate_signup_match_kinds',
+                             'affiliate_session_from_email_link','affiliate_email_verification_needed',
+                             -- 437: what a sign-up's fresh record has done as an affiliate
+                             'affiliate_signup_fresh_history',
                              -- 418: the date-of-birth rule, called inside update_customer and
                              -- the survey's Edit details (which run as the owner)
                              'assert_customer_dob_change',
@@ -357,9 +364,17 @@ begin
           or has_table_privilege('authenticated', 'public.referral_signup_checks', 'select,insert,update,delete,truncate,references,trigger')) then
     raise exception 'FAIL: referral_signup_checks is open to a client role'; end if;
 
+  -- 13. The list of affiliates on fresh records that may be a customer
+  --     already there (437) is reached through its functions only: no client
+  --     role holds the table, and its rows say whom a person may be.
+  if to_regclass('public.affiliate_signup_matches') is not null
+     and (has_table_privilege('anon', 'public.affiliate_signup_matches', 'select,insert,update,delete,truncate,references,trigger')
+          or has_table_privilege('authenticated', 'public.affiliate_signup_matches', 'select,insert,update,delete,truncate,references,trigger')) then
+    raise exception 'FAIL: affiliate_signup_matches is open to a client role'; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, and the legacy affiliate objects are gone', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, and no client role holds the sign-up list', n;
 end $$;
