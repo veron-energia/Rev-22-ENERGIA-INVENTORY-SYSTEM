@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { lengtheningCount } from '../../lib/catalogue/pageRules.mjs';
 import './therapy.css';
 
 /**
@@ -36,8 +37,25 @@ export const RecalculationPreview: React.FC<{ canManage: boolean }> = ({ canMana
   const needCountry = rows.filter(r => r.needs_country);
   const shortening = rows.filter(r => r.shortens);
   const unverified = rows.filter(r => r.coverage && r.coverage.verified === false);
+  const lengthening = lengtheningCount(rows);
+  const lengtheningUnverified = lengtheningCount(rows.filter(r => r.coverage && r.coverage.verified === false));
 
+  // Applying writes new expiry dates, so it asks first and says how many. The
+  // server leaves out a period with no holiday country first, so one that
+  // would also be shortened is counted once, under "no holiday country".
   const apply = async () => {
+    const shortenSkipped = shortening.filter(r => !r.needs_country).length;
+    const skipped = [
+      shortenSkipped > 0 ? `${shortenSkipped} that would be shortened` : '',
+      needCountry.length > 0 ? `${needCountry.length} with no holiday country` : '',
+    ].filter(Boolean).join(' and ');
+    const ok = window.confirm(
+      `Lengthen ${lengthening} therapy period${lengthening === 1 ? '' : 's'}?\n\n` +
+      'Each new expiry is the one shown under "Would become". No expiry is shortened.' +
+      (skipped ? `\nLeft as they are: ${skipped}.` : '') +
+      (lengtheningUnverified > 0
+        ? `\n${lengtheningUnverified} of them run through a holiday calendar that has not been checked.` : ''));
+    if (!ok) return;
     setBusy(true);
     const { data, error: e } = await supabase.rpc('therapy_apply_recalculation',
       { p_kind: null, p_customer_id: null, p_allow_shortening: false, p_reason: null });
@@ -113,8 +131,8 @@ export const RecalculationPreview: React.FC<{ canManage: boolean }> = ({ canMana
 
       {canManage && (
         <button className="btn btn-primary btn-sm" style={{ marginTop: 10 }}
-                onClick={() => void apply()} disabled={busy || changing.length === 0}>
-          {busy ? 'Working…' : `Apply ${changing.length - shortening.length} lengthening change(s)`}
+                onClick={() => void apply()} disabled={busy || lengthening === 0}>
+          {busy ? 'Working…' : `Apply ${lengthening} lengthening change(s)`}
         </button>
       )}
       <button className="btn btn-secondary btn-sm" style={{ marginTop: 10, marginLeft: 8 }}

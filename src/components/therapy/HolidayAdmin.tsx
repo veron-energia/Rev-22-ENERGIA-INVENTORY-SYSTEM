@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { inspectPhone } from '../../lib/customer-phones/normalize.mjs';
@@ -98,6 +98,17 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
   const [countries, setCountries] = useState<Country[]>([]);
   const [closures, setClosures] = useState<Closure[]>([]);
   const [country, setCountry] = useState<string>('SG');
+  // For a country whose holidays differ by region (Malaysia, say): the region
+  // whose calendar is shown and checked. Blank is the whole country. The
+  // calendar is read again once typing pauses, not on every key.
+  const [calRegion, setCalRegion] = useState('');
+  const [region, setRegion] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setRegion(calRegion.trim()), 300);
+    return () => clearTimeout(t);
+  }, [calRegion]);
+  // Only the latest read may show: an older answer arriving late is dropped.
+  const loadSeq = useRef(0);
   const [year, setYear] = useState<number>(new Date().getFullYear());
   const [coverage, setCoverage] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +121,7 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
   });
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setBusy(true);
     const [{ data: cs, error: ce }, { data: cl, error: le }] = await Promise.all([
       supabase.from('therapy_holiday_countries').select('*').order('name'),
@@ -118,19 +130,29 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
         .order('closure_date'),
     ]);
     const { data: gaps } = await supabase.rpc('therapy_calendar_gaps', {
-      p_from: `${year}-01-01`, p_to: `${year}-12-31`, p_country: country, p_region: null,
+      p_from: `${year}-01-01`, p_to: `${year}-12-31`, p_country: country, p_region: region || null,
     });
+    if (seq !== loadSeq.current) return;
     setBusy(false);
     if (ce || le) { setError((ce ?? le)!.message); return; }
     setError(null);
     setCountries((cs as Country[]) ?? []);
     setClosures((cl as Closure[]) ?? []);
     setCoverage(gaps ?? null);
-  }, [year, country]);
+  }, [year, country, region]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const visible = closures.filter(c => c.country_code === null || c.country_code === country);
+  // Typed, but the calendar shown is still the one before: wait for it.
+  const regionPending = calRegion.trim() !== region;
+  const countryRow = countries.find(c => c.code === country) ?? null;
+  const needsRegion = !!countryRow?.requires_region;
+  const calendarName = `${country}${region ? ` · ${region}` : ''} ${year}`;
+  // The country's dates; with a region chosen, the whole-country ones and that
+  // region's.
+  const visible = closures.filter(c => (c.country_code === null || c.country_code === country)
+    && (!region || c.region === null || c.region === region));
+  const formCountry = countries.find(c => c.code === form.scope) ?? null;
 
   const add = async () => {
     if (!form.date || !form.name.trim()) { setError('A date and a name are required.'); return; }
@@ -138,7 +160,8 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
     const { error: e } = await supabase.rpc('upsert_therapy_closure_date', {
       p_id: null, p_date: form.date, p_kind: form.kind, p_name: form.name.trim(),
       p_country: form.scope === 'ALL' ? null : form.scope,
-      p_region: form.region.trim() || null,
+      // A region belongs to a country; a date for all countries has none.
+      p_region: form.scope === 'ALL' ? null : form.region.trim() || null,
       p_observed_for: form.observedFor || null,
       p_source: form.source.trim() || null,
       p_source_reference: form.sourceRef.trim() || null,
@@ -170,15 +193,19 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
     void load();
   };
 
+  // The whole country ('*'), or the region chosen above. A country whose
+  // holidays differ by region is checked one region at a time.
   const confirmCoverage = async () => {
-    const source = window.prompt('Which source did you check these dates against?', 'mom.gov.sg');
-    if (!source) return;
+    if (needsRegion && !region) { setError(`Enter the region you checked first: ${countryRow?.name ?? country} holidays differ by region.`); return; }
+    if (regionPending) return;
+    const source = window.prompt('Which source did you check these dates against?', country === 'SG' ? 'mom.gov.sg' : '');
+    if (!source || !source.trim()) return;
     const { error: e } = await supabase.rpc('set_therapy_calendar_coverage', {
-      p_country: country, p_year: year, p_region: '*', p_verified: true,
-      p_source: source, p_source_reference: null, p_notes: null,
+      p_country: country, p_year: year, p_region: region || '*', p_verified: true,
+      p_source: source.trim(), p_source_reference: null, p_notes: null,
     });
     if (e) { setError(e.message); return; }
-    setNotice(`${country} ${year} marked as checked against ${source}.`);
+    setNotice(`${calendarName} marked as checked against ${source.trim()}.`);
     void load();
   };
 
@@ -191,10 +218,17 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 10 }}>
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label htmlFor="cal-country">Calendar</label>
-          <select id="cal-country" value={country} onChange={e => setCountry(e.target.value)}>
+          <select id="cal-country" value={country} onChange={e => { setCountry(e.target.value); setCalRegion(''); setRegion(''); }}>
             {countries.map(c => <option key={c.code} value={c.code}>{c.name} ({c.code})</option>)}
           </select>
         </div>
+        {needsRegion && (
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label htmlFor="cal-region">Region or state</label>
+            <input id="cal-region" value={calRegion} placeholder="e.g. Selangor"
+                   onChange={e => setCalRegion(e.target.value)} />
+          </div>
+        )}
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label htmlFor="cal-year">Year</label>
           <select id="cal-year" value={year} onChange={e => setYear(Number(e.target.value))}>
@@ -214,21 +248,28 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
         <div className="alert alert-warning" role="status">
           <AlertTriangle size={15} aria-hidden="true" />
           <div>
-            <strong>{country} {year} has not been checked against a source.</strong>{' '}
+            <strong>{calendarName} has not been checked against a source.</strong>{' '}
             Expiry dates spanning this year are shown as unverified until it has been.
             {(coverage.reasons ?? []).length > 0 && (
               <ul style={{ margin: '6px 0 0 18px' }}>
                 {coverage.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}
               </ul>
             )}
-            <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => void confirmCoverage()}>
+            {needsRegion && !region && (
+              <p className="therapy-remaining-hint" style={{ marginTop: 6 }}>
+                {countryRow?.name ?? country} holidays differ by region. Enter the region above, check its
+                dates, then mark it checked.
+              </p>
+            )}
+            <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={() => void confirmCoverage()}
+                    disabled={(needsRegion && !region) || regionPending}>
               I have checked these dates
             </button>
           </div>
         </div>
       )}
       {coverage?.verified && (
-        <p className="therapy-remaining-hint">{country} {year} has been checked against a source.</p>
+        <p className="therapy-remaining-hint">{calendarName} has been checked against a source.</p>
       )}
 
       <div className="table-wrap therapy-desktop-only">
@@ -242,7 +283,7 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
           <tbody>
             {visible.length === 0 && (
               <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 22 }}>
-                No dates recorded for {country} in {year}. This is not the same as "no holidays" —
+                No dates recorded for {calendarName}. This is not the same as "no holidays" —
                 entitlements spanning this year are flagged as unverified.
               </td></tr>
             )}
@@ -285,7 +326,7 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
             </div>
             <div className="therapy-card-stats">
               <span className="therapy-chip">{c.kind === 'public_holiday' ? 'Public holiday' : 'Company closure'}</span>
-              <span className="therapy-chip">{c.country_code ?? 'All countries'}</span>
+              <span className="therapy-chip">{c.country_code ? `${c.country_code}${c.region ? ` · ${c.region}` : ''}` : 'All countries'}</span>
             </div>
           </div>
         ))}
@@ -312,11 +353,23 @@ export const HolidayAdmin: React.FC<{ canManage: boolean }> = ({ canManage }) =>
         </div>
         <div className="form-group">
           <label htmlFor="add-scope">Applies to</label>
-          <select id="add-scope" value={form.scope} onChange={e => setForm(f => ({ ...f, scope: e.target.value }))}>
+          <select id="add-scope" value={form.scope}
+                  onChange={e => setForm(f => ({ ...f, scope: e.target.value, region: e.target.value === 'ALL' ? '' : f.region }))}>
             <option value="ALL">All countries</option>
             {countries.map(c => <option key={c.code} value={c.code}>{c.name} ({c.code}) only</option>)}
           </select>
         </div>
+        {form.scope !== 'ALL' && (
+          <div className="form-group">
+            <label htmlFor="add-region">Region or state (optional)</label>
+            <input id="add-region" value={form.region} placeholder={formCountry?.requires_region ? 'e.g. Selangor' : 'Leave blank'}
+                   onChange={e => setForm(f => ({ ...f, region: e.target.value }))} />
+            <p className="therapy-remaining-hint">
+              Leave it blank when the date is for the whole country.
+              {formCountry?.requires_region && ` ${formCountry.name} holidays can differ by region: type the region exactly as it is on the customer.`}
+            </p>
+          </div>
+        )}
         <div className="form-group">
           <label htmlFor="add-observed">Observed for (optional)</label>
           <input id="add-observed" type="date" value={form.observedFor}

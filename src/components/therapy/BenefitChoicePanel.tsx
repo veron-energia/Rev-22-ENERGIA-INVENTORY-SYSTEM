@@ -36,9 +36,10 @@ const vouchers = (n: number) => `${n} ${n === 1 ? 'voucher' : 'vouchers'}`;
  * than coloured as an error. The two options are labelled from the terms this
  * unit was actually sold with, not from the package as it stands today.
  *
- * Recording a choice is ordinary counter work and uses the ordinary store
- * permission. Changing one that has already been made is not: it is Owner or
- * Manager only, needs a reason, and the server enforces both.
+ * The choice itself is made with Claim on the Therapy page (PurchasedClaimPanel),
+ * which also starts the therapy or hands the vouchers over. This window shows
+ * the choice made and changes it: Owner or Manager only, with a reason, and the
+ * server enforces both.
  */
 export const BenefitChoicePanel: React.FC<{
   purchasedId: string;
@@ -55,6 +56,9 @@ export const BenefitChoicePanel: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const reasonRef = useRef<HTMLTextAreaElement | null>(null);
+  // One request id per switch: kept when a try fails, so pressing again is
+  // the same request; a new one for this window's next switch.
+  const requestId = useRef<string>(crypto.randomUUID());
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -66,24 +70,7 @@ export const BenefitChoicePanel: React.FC<{
   }, [purchasedId]);
 
   useEffect(() => { void load(); }, [load]);
-
-  const submitChoice = async () => {
-    if (!picked) return;
-    setBusy(true); setError(null);
-    const { data, error: err } = await supabase.rpc('choose_therapy_benefit', {
-      p_purchased_id: purchasedId, p_choice: picked,
-      // A stable id per attempt: a retry with the same id is refused by the
-      // server rather than creating a second allowance.
-      p_request_id: crypto.randomUUID(), p_note: null,
-    });
-    setBusy(false);
-    if (err) { setError(err.message); return; }
-    setSaved(picked === 'voucher'
-      ? 'Vouchers recorded. Nothing is issued until they are claimed.'
-      : 'Unlimited therapy recorded. It has not started — activate it when the customer is ready.');
-    void load(); onDone?.();
-    void data;
-  };
+  useEffect(() => { requestId.current = crypto.randomUUID(); }, [purchasedId]);
 
   const submitSwitch = async () => {
     if (!picked) return;
@@ -91,17 +78,27 @@ export const BenefitChoicePanel: React.FC<{
     setBusy(true); setError(null);
     const { error: err } = await supabase.rpc('switch_therapy_benefit', {
       p_purchased_id: purchasedId, p_new_choice: picked,
-      p_reason: reason.trim(), p_request_id: crypto.randomUUID(),
+      p_reason: reason.trim(), p_request_id: requestId.current,
     });
     setBusy(false);
+    // The first press went through but its answer was lost: the server knows
+    // this request already.
+    if (err && /already been submitted/i.test(err.message)) {
+      requestId.current = crypto.randomUUID();
+      setSaved('This switch was already saved.');
+      void load(); onDone?.();
+      return;
+    }
     if (err) { setError(err.message); return; }
+    requestId.current = crypto.randomUUID();
     setSaved('Benefit switched. The previous one has been withdrawn.');
     void load(); onDone?.();
   };
 
   const option = (value: 'unlimited' | 'voucher', title: string, body: string, note?: string) => {
     const current = state?.benefit_choice === value;
-    const disabled = current || (!switching && state?.benefit_choice != null);
+    // Only a switch picks here; the first choice is made with Claim.
+    const disabled = current || !switching;
     return (
       <label key={value} className={`benefit-option${picked === value ? ' picked' : ''}${current ? ' current' : ''}${disabled && !current ? ' disabled' : ''}`}>
         <input type="radio" name="benefit" value={value} checked={picked === value}
@@ -148,7 +145,7 @@ export const BenefitChoicePanel: React.FC<{
               {state.choice_pending && !state.choice_deadline_passed && (
                 <p className="credit-rules-hint">
                   No benefit has been chosen yet. Nothing is active and nothing has been issued
-                  until one is.
+                  until one is. Choose it with Claim on the Therapy page.
                 </p>
               )}
               {state.choice_pending && state.choice_deadline_passed && (
@@ -171,7 +168,7 @@ export const BenefitChoicePanel: React.FC<{
                     state.eligible_services.length
                       ? `Covers ${state.eligible_services.map(s => s.name).join(', ')}.`
                       : 'Covers the configured therapy services.',
-                    'Recording this does not start it. Activate it separately when the customer is ready.')}
+                    'Choosing this does not start it. Start it with Claim when the customer is ready.')}
                   {state.offered_choices.includes('voucher') && option(
                     'voucher',
                     `Vouchers — ${vouchers(state.voucher_qty)}`,
@@ -225,10 +222,6 @@ export const BenefitChoicePanel: React.FC<{
 
         <div className="credit-rules-foot">
           <button type="button" className="btn" onClick={onClose}>Close</button>
-          {state && state.choice_pending && !state.choice_deadline_passed && (
-            <button type="button" className="btn btn-primary" disabled={busy || !picked}
-              onClick={submitChoice}>{busy ? 'Saving…' : 'Confirm choice'}</button>
-          )}
           {state && !state.choice_pending && state.can_switch && canSwitch && !switching && (
             <button type="button" className="btn btn-secondary"
               onClick={() => { setSwitching(true); setPicked(null); setError(null); }}>

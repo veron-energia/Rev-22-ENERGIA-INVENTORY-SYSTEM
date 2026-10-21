@@ -1,15 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { CustomerSearchSelect } from './SearchSelect';
 import { QuickCustomerModal } from './customers/QuickCustomerModal';
 import { useAuth } from '../context/AuthContext';
 import { canAddCustomer } from '../lib/invoices/business';
+import { heldSplitRequest, holdSplitRequest, outcomeUnknown, releaseSplitRequest, splitRequestKey, splitRequestUsed } from '../lib/catalogue/pageRules.mjs';
 
 // A Premium Bundle purchase divided between several customers, each of whom
 // gets their own normal invoice. Paid/Bonus credit are derived from payment
 // (read-only); the bundle's free vouchers are allocated per customer across
 // the bundle's allowed voucher types and must total the bundle's free quantity.
 // The RPC is authoritative — this panel is a live preview.
+// One request id per sale (423): pressing Create again after a lost answer
+// returns the sale already made instead of making a second one. After a lost
+// answer the id is kept until a try succeeds, so closing the panel and
+// splitting the same bundle at the same store again sends it again.
 
 interface AllowedVoucher { voucher_id: string; name: string; unlimited: boolean; stock: number; }
 interface BundlePreview {
@@ -72,17 +77,28 @@ export function PremiumBundleSplitPanel(props: Props) {
   const mayAddCustomer = canAddCustomer(profile?.role);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [previewTry, setPreviewTry] = useState(0);
+  const requestKey = splitRequestKey('premium_bundle', storeId, bundleId);
+  const requestId = useRef<string>(heldSplitRequest(requestKey) ?? crypto.randomUUID());
+  // True while an earlier try got no answer: the invoices may have been made.
+  const [unsure, setUnsure] = useState(() => heldSplitRequest(requestKey) !== null);
 
   useEffect(() => {
     let live = true;
+    // Another bundle or store is another sale. A try of this one that got no
+    // answer keeps its id.
+    const held = heldSplitRequest(requestKey);
+    requestId.current = held ?? crypto.randomUUID();
+    setUnsure(held !== null);
     (async () => {
       const { data, error } = await supabase.rpc('premium_bundle_benefit_preview', { p_bundle_id: bundleId, p_store_id: storeId });
       if (!live) return;
       if (error) { setErr(error.message); return; }
+      setErr(null);
       setPv(data as BundlePreview);
     })();
     return () => { live = false; };
-  }, [bundleId, storeId]);
+  }, [bundleId, storeId, previewTry, requestKey]);
 
   const payments = rows.map(r => Number(r.payment) || 0);
   const price = pv?.customer_price ?? 0;
@@ -137,12 +153,51 @@ export function PremiumBundleSplitPanel(props: Props) {
       p_service_staff: serviceStaff?.length ? serviceStaff : null,
       p_affiliate_id: affiliateId,
       p_notes: notes,
+      // The same id on every try: a sale already made is returned, not made again.
+      p_request_id: requestId.current,
     });
     setSaving(false);
-    if (error) { setErr(error.message); return; }
+    if (error) {
+      if (outcomeUnknown(error)) {
+        // No answer: the server may have made them. Keep the id for the next try.
+        holdSplitRequest(requestKey, requestId.current);
+        setUnsure(true);
+        setErr(`We could not tell if the invoices were made (${error.message}). Press Create again: if they were made, they are shown and no second sale is made.`);
+      } else if (splitRequestUsed(error)) {
+        // An earlier try, whose answer was lost, made a sale with other
+        // customers, amounts or vouchers. That sale stays. Its id cannot make
+        // this one, so a new id is used if staff press Create again.
+        releaseSplitRequest(requestKey);
+        requestId.current = crypto.randomUUID();
+        setUnsure(false);
+        setErr('An earlier try of this split already made invoices, with other customers, amounts or vouchers. Check the invoice list first. Press Create again only if this is a second sale.');
+      } else {
+        setErr(`The invoices were not created. ${error.message}`);
+      }
+      return;
+    }
+    releaseSplitRequest(requestKey);
+    setUnsure(false);
     onCreated(data);
   };
 
+  // Closing while an earlier try had no answer asks first. The id is kept
+  // either way, so splitting this again later is still safe.
+  const cancel = () => {
+    if (unsure && !window.confirm('The invoices may already have been made. Press Create again to find out. Close anyway?')) return;
+    onCancel();
+  };
+
+  // A preview that failed says so, with Retry, instead of "Loading" for ever.
+  if (!pv && err) return (
+    <div role="alert" style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, marginTop: 8 }}>
+      <div style={{ color: 'var(--danger)' }}>The bundle could not be loaded: {err}</div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setErr(null); setPreviewTry(n => n + 1); }}>Retry</button>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={cancel}>Cancel</button>
+      </div>
+    </div>
+  );
   if (!pv) return <div style={{ padding: 12, color: 'var(--text-muted)' }}>Loading bundle…</div>;
   if (!pv.found) return <div style={{ padding: 12, color: 'var(--danger)' }}>Bundle unavailable.</div>;
 
@@ -240,10 +295,16 @@ export function PremiumBundleSplitPanel(props: Props) {
         {payOk && vouOk && !stockProblem && allCustomers && !dupCustomer && <span style={{ color: 'var(--text-muted)' }}>Paid Credit and Bonus are derived from payment and issued only when each customer’s own invoice is paid.</span>}
       </div>
 
-      {err && <div style={{ color: 'var(--danger)', marginTop: 8 }}>{err}</div>}
+      {err && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{err}</div>}
+      {unsure && !err && (
+        <div className="alert alert-warning" role="status" style={{ marginTop: 8, marginBottom: 0 }}>
+          An earlier try got no answer, so these invoices may already have been made. Press Create: if they were
+          made, the invoices from that try are shown and no second sale is made.
+        </div>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-        <button type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+        <button type="button" className="btn btn-secondary" onClick={cancel}>Cancel</button>
         <button type="button" className="btn btn-primary" disabled={!canCreate} onClick={create}>
           {saving ? 'Creating…' : `Create ${rows.length} Invoices`}
         </button>

@@ -7,10 +7,15 @@ import { Voucher, VoucherKind, VoucherStoreStock, Store, VOUCHER_KIND_LABELS, VO
 import StorePriceEditor from '../components/StorePriceEditor';
 import { Modal, NoAccess } from '../components/ui';
 import { Plus, Pencil, Trash2, Search, Ticket, RefreshCw, Boxes } from 'lucide-react';
+import { dayNumbers, dayText, isPastValidUntil, sgToday, voucherDependents, type VoucherDeleteAnswer } from '../lib/catalogue/pageRules.mjs';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
-const blank = (v?: Voucher) => ({
+// reward_eligible is read here only (the Voucher type in types/index.ts does
+// not carry it yet).
+type VoucherRow = Voucher & { reward_eligible?: boolean | null };
+
+const blank = (v?: VoucherRow) => ({
   name: v?.name ?? '', code: v?.code ?? '', voucher_kind: (v?.voucher_kind ?? 'normal') as VoucherKind,
   discount_amount: v?.discount_amount ?? 0, discount_percent: v?.discount_percent ?? 0,
   max_discount_cap: v?.max_discount_cap ?? 0, qty_type: v?.qty_type ?? 'unlimited',
@@ -19,6 +24,8 @@ const blank = (v?: Voucher) => ({
   // 384: where a discount voucher is offered on an invoice line.
   discount_category: (v?.discount_category ?? 'voucher') as VoucherDiscountCategory,
   birthday_rule: (v?.birthday_rule ?? '') as BirthdayRule | '',
+  // THERAPY-7: whether staff may hand a free-session voucher out as a reward.
+  reward_eligible: v?.reward_eligible !== false,
 });
 
 /** "Birthday · in the birth month", for a discount voucher; null for a normal one. */
@@ -36,7 +43,7 @@ const VouchersPage: React.FC = () => {
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
   const hasAccess = isOwnerOrManager(profile?.role);
-  const [rows, setRows] = useState<Voucher[]>([]);
+  const [rows, setRows] = useState<VoucherRow[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [mnmFor, setMnmFor] = useState<{ id: string; name: string } | null>(null);
   const [stock, setStock] = useState<VoucherStoreStock[]>([]);
@@ -46,8 +53,17 @@ const VouchersPage: React.FC = () => {
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blank());
   const [saving, setSaving] = useState(false);
-  const [applyPriceEverywhere, setApplyPriceEverywhere] = useState(true);
+  // Ticked for a new voucher only. On an edit it stays unticked unless staff
+  // tick it, so saving a name change never touches the store prices.
+  const [applyPriceEverywhere, setApplyPriceEverywhere] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pageErr, setPageErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Delete, when something still depends on the voucher: what it is, and why.
+  const [delFor, setDelFor] = useState<{ voucher: VoucherRow; answer: VoucherDeleteAnswer } | null>(null);
+  const [delReason, setDelReason] = useState('');
+  const [delBusy, setDelBusy] = useState(false);
+  const [delErr, setDelErr] = useState<string | null>(null);
 
   const [stockFor, setStockFor] = useState<Voucher | null>(null);
   const [stockStore, setStockStore] = useState('');
@@ -61,15 +77,15 @@ const VouchersPage: React.FC = () => {
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('voucher_store_stock').select('*'),
     ]);
-    setRows((v.data as Voucher[]) ?? []);
+    setRows((v.data as VoucherRow[]) ?? []);
     setStores((s.data as Store[]) ?? []);
     setStock((vs.data as VoucherStoreStock[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
-  const openEdit = (v: Voucher) => { setForm(blank(v)); setEditId(v.id); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setApplyPriceEverywhere(true); setModalOpen(true); };
+  const openEdit = (v: VoucherRow) => { setForm(blank(v)); setEditId(v.id); setErr(null); setApplyPriceEverywhere(false); setModalOpen(true); };
 
   const handleSave = async () => {
     if (!form.name.trim()) { setErr('Name is required.'); return; }
@@ -92,29 +108,61 @@ const VouchersPage: React.FC = () => {
       // A normal voucher has no category; only a birthday one has a rule.
       discount_category: isDiscount ? form.discount_category : null,
       birthday_rule: isDiscount && form.discount_category === 'birthday' ? form.birthday_rule : null,
+      // Only a free-session voucher can be a reward; a discount voucher's flag
+      // is left as it is (422's server rule, THERAPY-7, never offers one as a
+      // reward; 423's DEPLOY ORDER ships this page only after 422).
+      ...(isDiscount ? {} : { reward_eligible: form.reward_eligible }),
     };
     const res = editId
       ? await supabase.from('vouchers').update(payload).eq('id', editId).select().single()
       : await supabase.from('vouchers').insert(payload).select().single();
     if (res.error) { setErr(res.error.message); setSaving(false); return; }
-    // The price is entered once here and applied to every store, so it never has
-    // to be typed again in the Prices dialog. Per-store overrides stay possible.
+    // Ticked, the price is applied to every store, so it never has to be typed
+    // again in the Prices dialog. Each store keeps whether it sells the voucher
+    // (p_available null; 423); a store with no price yet sells it.
     if (applyPriceEverywhere && res.data && form.selling_price > 0) {
       const { error: pErr } = await supabase.rpc('set_voucher_price_all_stores', {
-        p_voucher_id: (res.data as any).id, p_price: form.selling_price, p_available: true,
+        p_voucher_id: (res.data as any).id, p_price: form.selling_price, p_available: null,
       });
       if (pErr) { setErr(`Saved, but the store prices could not be set: ${pErr.message}`); setSaving(false); load(); return; }
     }
     setSaving(false); setModalOpen(false); load();
   };
 
-  const handleDelete = async (v: Voucher) => {
-    if (!confirm(`Delete voucher "${v.name}"?`)) return;
-    await supabase.from('vouchers').update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', v.id);
+  // Delete marks the voucher deleted and switches it off (soft_delete_voucher,
+  // 423). When customers still hold it, a store has it in stock, or something
+  // live offers it, the server says so first and nothing changes until the
+  // second step, which needs a reason.
+  const handleDelete = async (v: VoucherRow) => {
+    if (!window.confirm(`Delete voucher "${v.name}"?`)) return;
+    setPageErr(null); setNotice(null);
+    const { data, error } = await supabase.rpc('soft_delete_voucher', { p_voucher_id: v.id, p_reason: null, p_confirmed: false });
+    if (error) { setPageErr(`"${v.name}" was not deleted: ${error.message}`); return; }
+    const answer = (data ?? {}) as VoucherDeleteAnswer;
+    if (answer.needs_confirmation) {
+      setDelFor({ voucher: v, answer }); setDelReason(''); setDelErr(null);
+      return;
+    }
+    setNotice(`"${v.name}" deleted.`);
     load();
   };
 
-  const openStock = (v: Voucher) => { setStockFor(v); setStockStore(stores[0]?.id ?? ''); setStockQty(0); };
+  const confirmDelete = async () => {
+    if (!delFor) return;
+    if (!delReason.trim()) { setDelErr('Give a short reason. It is kept in the history.'); return; }
+    setDelBusy(true); setDelErr(null);
+    const { data, error } = await supabase.rpc('soft_delete_voucher', {
+      p_voucher_id: delFor.voucher.id, p_reason: delReason.trim(), p_confirmed: true,
+    });
+    setDelBusy(false);
+    if (error) { setDelErr(error.message); return; }
+    if (!(data as VoucherDeleteAnswer | null)?.deleted) { setDelErr('The voucher was not deleted. Refresh and try again.'); return; }
+    setNotice(`"${delFor.voucher.name}" deleted. Customers keep the vouchers they hold.`);
+    setDelFor(null);
+    load();
+  };
+
+  const openStock = (v: VoucherRow) => { setStockFor(v); setStockStore(stores[0]?.id ?? ''); setStockQty(0); };
   const addStock = async () => {
     if (!stockFor || !stockStore || stockQty <= 0) return;
     setStockBusy(true);
@@ -125,14 +173,16 @@ const VouchersPage: React.FC = () => {
   };
 
   const stockFancy = (vId: string) => stock.filter(s => s.voucher_id === vId);
-  const validityText = (v: Voucher) => {
-    const f = v.valid_from ? new Date(v.valid_from).toLocaleDateString() : null;
-    const u = v.valid_until ? new Date(v.valid_until).toLocaleDateString() : null;
+  // Dates are days (YYYY-MM-DD), shown as they are, with no time zone shift.
+  const validityText = (v: VoucherRow) => {
+    const f = v.valid_from ? dayText(v.valid_from) : null;
+    const u = v.valid_until ? dayText(v.valid_until) : null;
     if (!f && !u) return 'No expiry';
     if (f && u) return `${f} → ${u}`;
     if (u) return `Until ${u}`;
     return `From ${f}`;
   };
+  const today = sgToday();
   const filtered = rows.filter(v => { const q = search.toLowerCase(); return !q || v.name.toLowerCase().includes(q) || v.code.toLowerCase().includes(q); });
 
   const kindBadge = (k: VoucherKind) => {
@@ -158,14 +208,19 @@ const VouchersPage: React.FC = () => {
               { header: 'Offered as', value: (v: any) => categoryText(v) ?? '' },
               { header: 'Qty type', value: (v: any) => v.qty_type },
               { header: 'Selling price', value: (v: any) => Number(v.selling_price ?? 0) },
-              { header: 'Valid from', value: (v: any) => v.valid_from ? new Date(v.valid_from).toLocaleDateString('en-GB') : '' },
-              { header: 'Valid until', value: (v: any) => v.valid_until ? new Date(v.valid_until).toLocaleDateString('en-GB') : 'No expiry' },
+              { header: 'Valid from', value: (v: any) => dayNumbers(v.valid_from) },
+              { header: 'Valid until', value: (v: any) => v.valid_until ? dayNumbers(v.valid_until) : 'No expiry' },
+              // A discount voucher is never a reward: 422's rule (THERAPY-7), live before this page.
+              { header: 'Can be a reward', value: (v: any) => v.voucher_kind === 'normal' ? (v.reward_eligible === false ? 'No' : 'Yes') : 'No' },
               { header: 'Status', value: (v: any) => v.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Voucher</button>
         </div>
       </div>
+
+      {pageErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{pageErr}</div></div>}
+      {notice && <div className="alert alert-success" role="status"><span>✓</span><div>{notice}</div></div>}
 
       <div style={{ marginBottom: 14, position: 'relative', maxWidth: 360 }}>
         <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
@@ -185,7 +240,9 @@ const VouchersPage: React.FC = () => {
                     <td><strong>{v.name}</strong></td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 12.5 }}>{v.code}</td>
                     <td>{kindBadge(v.voucher_kind)}
-                      {categoryText(v) && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>{categoryText(v)}</div>}</td>
+                      {categoryText(v) && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>{categoryText(v)}</div>}
+                      {v.voucher_kind === 'normal' && v.reward_eligible === false &&
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>Not given as a reward</div>}</td>
                     <td style={{ fontSize: 13 }}>
                       {v.voucher_kind === 'fixed_discount' ? money(v.discount_amount ?? 0)
                         : v.voucher_kind === 'percentage_discount' ? `${v.discount_percent}%${v.max_discount_cap ? ` (cap ${money(v.max_discount_cap)})` : ''}`
@@ -195,13 +252,14 @@ const VouchersPage: React.FC = () => {
                       {v.qty_type === 'unlimited' ? <span className="badge badge-muted">Unlimited</span>
                         : <span>{stockFancy(v.id).reduce((s, x) => s + x.current_qty, 0)} in stock</span>}
                     </td>
-                    <td style={{ fontSize: 11.5, color: v.valid_until && new Date(v.valid_until) < new Date() ? 'var(--danger)' : 'var(--text-muted)' }}>{validityText(v)}</td>
+                    {/* Red only after the last valid day, in Singapore. */}
+                    <td style={{ fontSize: 11.5, color: isPastValidUntil(v.valid_until, today) ? 'var(--danger)' : 'var(--text-muted)' }}>{validityText(v)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{money(v.selling_price)}</td>
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       {v.qty_type === 'limited' && <button className="btn btn-secondary btn-sm" onClick={() => openStock(v)}><Boxes size={13} /> Stock</button>}
                       <button className="btn btn-secondary btn-sm" title="Per-store selling prices" onClick={() => setMnmFor({ id: v.id, name: v.name })}>Prices</button>
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(v)}><Pencil size={13} /></button>
-                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(v)}><Trash2 size={13} /></button>
+                      <button className="btn btn-danger btn-sm btn-icon" aria-label={`Delete ${v.name}`} onClick={() => handleDelete(v)}><Trash2 size={13} /></button>
                     </div></td>
                   </tr>
                 ))}
@@ -238,11 +296,28 @@ const VouchersPage: React.FC = () => {
                   Use this price at every store
                 </label>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Leave ticked and you never need to open Prices — untick it only to set different prices per store.
+                  {editId
+                    ? (applyPriceEverywhere
+                        ? 'Every store\'s price becomes this price when you save. A store where it is switched off stays off. A store with no price yet starts selling it.'
+                        : 'Store prices stay as they are. Tick this to give every store this price.')
+                    : 'Every store gets this price and sells it. Untick it to set prices per store under Prices.'}
                 </div>
               </div>
             </div>
 
+            {form.voucher_kind === 'normal' && (
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 400 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={form.reward_eligible}
+                    onChange={e => setForm(f => ({ ...f, reward_eligible: e.target.checked }))} />
+                  <span style={{ fontSize: 13 }}>Can be given as a reward</span>
+                </label>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                  Staff can pick it when they hand out free reward vouchers. Untick it to keep it for sale only.
+                  Discount vouchers are never rewards.
+                </div>
+              </div>
+            )}
             {form.voucher_kind !== 'normal' && (
               <div className="form-grid-2">
                 <div className="form-group">
@@ -335,6 +410,34 @@ const VouchersPage: React.FC = () => {
                     ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {delFor && (
+        <Modal title={`Delete ${delFor.voucher.name}?`} maxWidth={480} onClose={() => setDelFor(null)}
+          footer={<><button className="btn btn-secondary" onClick={() => setDelFor(null)}>Keep it</button>
+            <button className="btn btn-danger" onClick={() => void confirmDelete()} disabled={delBusy || !delReason.trim()}>
+              {delBusy ? 'Deleting…' : 'Delete anyway'}</button></>}>
+          <div className="form-grid">
+            <div className="alert alert-warning" style={{ marginBottom: 0 }}>
+              <span>⚠</span>
+              <div>
+                <strong>This voucher is still in use.</strong>
+                <ul style={{ margin: '6px 0 0 18px' }}>
+                  {voucherDependents(delFor.answer).map((line, i) => <li key={i}>{line}</li>)}
+                </ul>
+                <div style={{ marginTop: 6 }}>
+                  Deleting it stops it being sold or offered. Past invoices still show it.
+                </div>
+              </div>
+            </div>
+            {delErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{delErr}</div></div>}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label htmlFor="voucher-delete-reason">Reason *</label>
+              <textarea id="voucher-delete-reason" rows={2} value={delReason} placeholder="For example: the event is over"
+                onChange={e => { setDelReason(e.target.value); setDelErr(null); }} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Kept in the history, with your name.</div>
             </div>
           </div>
         </Modal>

@@ -178,7 +178,10 @@ declare
                              'close_invoice_therapy_units',
                              -- 417: the voucher units a reopening must record before it takes
                              -- stock; called inside reopen_invoice and its preview
-                             'invoice_voucher_stock_unrecorded'];
+                             'invoice_voucher_stock_unrecorded',
+                             -- 423: the trigger function that writes every change to a voucher
+                             -- and to its store prices into the audit log
+                             'trg_audit_voucher_change'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

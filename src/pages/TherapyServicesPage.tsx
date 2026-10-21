@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isManagerOrAbove } from '../types';
@@ -8,6 +8,7 @@ import {
   Ticket, Clock, AlertTriangle,
 } from 'lucide-react';
 import { describeFrequency } from '../lib/therapy/frequency.mjs';
+import { serviceStoreRows } from '../lib/catalogue/pageRules.mjs';
 import '../components/therapy/therapy.css';
 
 /*
@@ -15,10 +16,10 @@ import '../components/therapy/therapy.css';
  * and how often it may be taken — and, on the second tab, what a therapy voucher
  * entitles its holder to.
  *
- * The frequency rule is entered as structured fields, never as free text,
- * because the database enforces those fields. The sentence under the inputs is
- * generated from them by the same function the server uses, so what the manager
- * reads while typing is what will be enforced.
+ * The frequency rule is entered as structured fields, never as free text. The
+ * sentence under the inputs is generated from them by the same function the
+ * server uses. It is a guide for staff: no visit is recorded in the app yet,
+ * so nothing checks it at the counter (THERAPY-16).
  */
 
 type FrequencyKind = 'per_day' | 'per_week' | 'per_month' | 'per_hours' | 'unrestricted';
@@ -33,7 +34,9 @@ interface CatalogueRow {
   available_here: boolean; has_price_override: boolean; can_manage: boolean;
 }
 
-interface StoreRow { id: string; name: string; }
+interface StoreRow { id: string; name: string; is_active: boolean | null; deleted_at: string | null; }
+/** A store that is open: not deleted and not switched off. */
+const isOpenStore = (s: StoreRow) => !s.deleted_at && s.is_active !== false;
 interface VoucherRow { id: string; name: string; code: string | null; }
 
 interface ServiceForm {
@@ -50,6 +53,8 @@ const blankService = (r?: CatalogueRow): ServiceForm => ({
   frequency_kind: r?.frequency_kind ?? 'unrestricted',
   frequency_max_per_period: r ? String(r.frequency_max_per_period) : '1',
   frequency_interval_hours: r?.frequency_interval_hours != null ? String(r.frequency_interval_hours) : '',
+  // The notes are not in the catalogue; openEdit reads them (423 keeps them
+  // when none are sent, so a save before they arrive does not wipe them).
   is_active: r?.is_active ?? false, notes: '',
 });
 
@@ -95,7 +100,9 @@ const TherapyServicesPage: React.FC = () => {
       supabase.rpc('therapy_service_catalogue', {
         p_store_id: storeFilter || null, p_include_inactive: true,
       }),
-      supabase.from('stores').select('id,name').order('name'),
+      // Every store, closed ones too: a closed store's existing row is still
+      // shown in the stores window. Filters and new rows use open stores only.
+      supabase.from('stores').select('id,name,is_active,deleted_at').order('name'),
       supabase.from('vouchers').select('id,name,code').is('deleted_at', null)
         .eq('is_active', true).order('name'),
     ]);
@@ -166,9 +173,25 @@ const TherapyServicesPage: React.FC = () => {
   const [form, setForm] = useState<ServiceForm>(blankService());
   const [saving, setSaving] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
+  // 'loading' while an edit's notes are read; 'failed' sends no notes, which
+  // keeps the saved ones (423).
+  const [notesState, setNotesState] = useState<'loaded' | 'loading' | 'failed'>('loaded');
+  // The service whose form is open, so a late answer for another is ignored.
+  const openFor = useRef<string | null>(null);
 
-  const openAdd = () => { setEditing(null); setForm(blankService()); setFormErr(null); setServiceOpen(true); };
-  const openEdit = (r: CatalogueRow) => { setEditing(r); setForm(blankService(r)); setFormErr(null); setServiceOpen(true); };
+  const openAdd = () => {
+    openFor.current = null;
+    setEditing(null); setForm(blankService()); setFormErr(null); setNotesState('loaded'); setServiceOpen(true);
+  };
+  const openEdit = async (r: CatalogueRow) => {
+    openFor.current = r.id;
+    setEditing(r); setForm(blankService(r)); setFormErr(null); setNotesState('loading'); setServiceOpen(true);
+    const { data, error } = await supabase.from('therapy_services').select('notes').eq('id', r.id).maybeSingle();
+    if (openFor.current !== r.id) return;
+    if (error) { setNotesState('failed'); return; }
+    setForm(f => ({ ...f, notes: (data as { notes: string | null } | null)?.notes ?? '' }));
+    setNotesState('loaded');
+  };
 
   // The same sentence the database generates, computed here so it updates as
   // the fields change.
@@ -193,7 +216,9 @@ const TherapyServicesPage: React.FC = () => {
           ? Number(form.frequency_interval_hours) : null,
       p_description: form.description || null,
       p_is_active: form.is_active,
-      p_notes: form.notes || null,
+      // The notes as shown: an empty box clears them. Not read (yet): none
+      // sent, so the saved notes are kept.
+      p_notes: notesState === 'loaded' ? form.notes : null,
     });
     setSaving(false);
     if (error) { setFormErr(error.message); return; }
@@ -211,35 +236,45 @@ const TherapyServicesPage: React.FC = () => {
   // ------------------------------------------------------------ store prices
   const [storeOpen, setStoreOpen] = useState<CatalogueRow | null>(null);
   const [storeRows, setStoreRows] = useState<Record<string, { available: boolean; override: string }>>({});
+  // The stores shown in the window: every open store, and a closed one only
+  // when this service already has a row for it.
+  const [storeList, setStoreList] = useState<StoreRow[]>([]);
   const [storeSaving, setStoreSaving] = useState(false);
+  const [storeErr, setStoreErr] = useState<string | null>(null);
+  const openStores = useMemo(() => stores.filter(isOpenStore), [stores]);
 
-  const openStores = async (r: CatalogueRow) => {
-    const { data } = await supabase.from('therapy_service_stores')
+  const openStoresFor = async (r: CatalogueRow) => {
+    setStoreErr(null);
+    const { data, error } = await supabase.from('therapy_service_stores')
       .select('store_id,is_available,price_override').eq('service_id', r.id);
+    // Not opened on a failed read: saving then would switch every store off.
+    if (error) { setErr(`The stores of ${r.name} could not be read: ${error.message}`); return; }
+    const saved = (data as any[]) ?? [];
     const map: Record<string, { available: boolean; override: string }> = {};
-    for (const s of stores) map[s.id] = { available: false, override: '' };
-    for (const d of ((data as any[]) ?? [])) {
+    for (const s of openStores) map[s.id] = { available: false, override: '' };
+    for (const d of saved) {
       map[d.store_id] = {
         available: !!d.is_available,
         override: d.price_override == null ? '' : String(d.price_override),
       };
     }
+    setStoreList(stores.filter(s => isOpenStore(s) || saved.some(d => d.store_id === s.id)));
     setStoreRows(map); setStoreOpen(r);
   };
 
+  // All the rows in one call (set_therapy_service_stores, 423): every store
+  // is saved, or none is. A problem is shown inside the window.
   const saveStores = async () => {
     if (!storeOpen) return;
-    setStoreSaving(true);
-    for (const s of stores) {
-      const row = storeRows[s.id];
-      const { error } = await supabase.rpc('set_therapy_service_store', {
-        p_service_id: storeOpen.id, p_store_id: s.id,
-        p_is_available: row?.available ?? false,
-        p_price_override: row?.override === '' || row?.override == null ? null : Number(row.override),
-      });
-      if (error) { setStoreSaving(false); setErr(error.message); return; }
-    }
-    setStoreSaving(false); setStoreOpen(null); await load();
+    const { problem, rows: payload } = serviceStoreRows(storeList, storeRows);
+    if (problem) { setStoreErr(problem); return; }
+    setStoreSaving(true); setStoreErr(null);
+    const { error } = await supabase.rpc('set_therapy_service_stores', {
+      p_service_id: storeOpen.id, p_rows: payload,
+    });
+    setStoreSaving(false);
+    if (error) { setStoreErr(`Nothing was saved. ${error.message}`); return; }
+    setStoreOpen(null); await load();
   };
 
   // ---------------------------------------------------------------- vouchers
@@ -284,6 +319,14 @@ const TherapyServicesPage: React.FC = () => {
 
   const activeServices = rows.filter(r => r.is_active && !r.is_archived);
   const serviceName = (id: string) => rows.find(r => r.id === id)?.name ?? 'Unknown service';
+  // A service already in a voucher that is archived or not active any more:
+  // still shown, ticked, so it can be taken out (the save refuses an archived
+  // one).
+  const notOffered = (id: string) => !activeServices.some(s => s.id === id);
+  const serviceLabel = (id: string) => {
+    const r = rows.find(x => x.id === id);
+    return `${r?.name ?? 'Unknown service'} (${r?.is_archived || !r ? 'archived' : 'not active'})`;
+  };
 
   const saveDefinition = async () => {
     setDefSaving(true); setDefErr(null); setDefSaved(false);
@@ -377,7 +420,7 @@ const TherapyServicesPage: React.FC = () => {
               className="therapy-store-select"
               title="Show the price and availability at one store">
               <option value="">Every store (standard price)</option>
-              {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {openStores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
 
@@ -457,9 +500,9 @@ const TherapyServicesPage: React.FC = () => {
                         <td>
                           <div style={{ display: 'flex', gap: 4 }}>
                             <button className="btn btn-secondary btn-sm btn-icon" title="Edit"
-                              onClick={() => openEdit(r)} disabled={r.is_archived}><Pencil size={13} /></button>
+                              onClick={() => void openEdit(r)} disabled={r.is_archived}><Pencil size={13} /></button>
                             <button className="btn btn-secondary btn-sm btn-icon" title="Stores and prices"
-                              onClick={() => openStores(r)} disabled={r.is_archived}><StoreIcon size={13} /></button>
+                              onClick={() => void openStoresFor(r)} disabled={r.is_archived}><StoreIcon size={13} /></button>
                             <button className="btn btn-danger btn-sm btn-icon" title="Archive"
                               onClick={() => archive(r)} disabled={r.is_archived}><Archive size={13} /></button>
                           </div>
@@ -537,6 +580,9 @@ const TherapyServicesPage: React.FC = () => {
                             j === i ? { ...x, service_id: e.target.value } : x))}>
                           <option value="">Choose…</option>
                           {activeServices.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                          {c.service_id && notOffered(c.service_id) && (
+                            <option value={c.service_id}>{serviceLabel(c.service_id)}: choose another</option>
+                          )}
                         </select>
                       </div>
                     ) : (
@@ -552,6 +598,15 @@ const TherapyServicesPage: React.FC = () => {
                                       : x.service_ids.filter(id => id !== s.id) }
                                   : x))} />
                               {s.name}
+                            </label>
+                          ))}
+                          {c.service_ids.filter(notOffered).map(id => (
+                            <label key={id} className="therapy-checkbox">
+                              <input type="checkbox" checked
+                                aria-label={`Take ${serviceLabel(id)} out of this choice`}
+                                onChange={() => setComponents(components.map((x, j) => j === i
+                                  ? { ...x, service_ids: x.service_ids.filter(sid => sid !== id) } : x))} />
+                              {serviceLabel(id)}: untick to take it out
                             </label>
                           ))}
                         </div>
@@ -626,7 +681,8 @@ const TherapyServicesPage: React.FC = () => {
                   max_per_period: Number(repeatMax || 1),
                   interval_hours: Number(repeatHours || 0),
                 })}
-                {' '}Each service also has its own limit, and the stricter of the two applies.
+                {' '}Each service also has its own limit. These limits are a guide for staff:
+                the app does not check them at the counter yet.
               </p>
 
               {defErr && <div className="alert alert-danger" style={{ marginTop: 12 }}>
@@ -720,6 +776,18 @@ const TherapyServicesPage: React.FC = () => {
             )}
             <div className="form-group" style={{ gridColumn: '1 / -1' }}>
               <div className="therapy-preview"><Clock size={14} /> {preview}</div>
+              <small>A guide for staff. The app does not check visits against it yet.</small>
+            </div>
+
+            <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+              <label htmlFor="service-notes">Notes</label>
+              <textarea id="service-notes" rows={2} value={form.notes}
+                disabled={notesState !== 'loaded'}
+                placeholder={notesState === 'loading' ? 'Loading…' : 'For staff only'}
+                onChange={e => setForm({ ...form, notes: e.target.value })} />
+              {notesState === 'failed' && (
+                <small>The saved notes could not be read, so they are kept as they are.</small>
+              )}
             </div>
 
             <div className="form-group" style={{ gridColumn: '1 / -1' }}>
@@ -744,6 +812,7 @@ const TherapyServicesPage: React.FC = () => {
           title={`${storeOpen.name} — stores and prices`}
           maxWidth={560}
           onClose={() => setStoreOpen(null)}
+          confirmClose
           footer={<>
             <button className="btn btn-secondary" onClick={() => setStoreOpen(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveStores} disabled={storeSaving}>
@@ -751,12 +820,13 @@ const TherapyServicesPage: React.FC = () => {
             </button>
           </>}
         >
+          {storeErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{storeErr}</div></div>}
           <p className="therapy-cell-sub">
             Leave a price empty to charge the standard {money(storeOpen.standard_price)}.
-            A store with no tick does not offer this service.
+            A store with no tick does not offer this service. All the stores are saved together.
           </p>
           <div className="therapy-store-list">
-            {stores.map(s => (
+            {storeList.map(s => (
               <div key={s.id} className="therapy-store-row">
                 <label className="therapy-checkbox">
                   <input type="checkbox" checked={storeRows[s.id]?.available ?? false}
@@ -764,7 +834,7 @@ const TherapyServicesPage: React.FC = () => {
                       ...storeRows,
                       [s.id]: { available: e.target.checked, override: storeRows[s.id]?.override ?? '' },
                     })} />
-                  {s.name}
+                  {s.name}{!isOpenStore(s) && ' (closed store)'}
                 </label>
                 <input type="number" min={0} step="0.01" placeholder="standard"
                   value={storeRows[s.id]?.override ?? ''}

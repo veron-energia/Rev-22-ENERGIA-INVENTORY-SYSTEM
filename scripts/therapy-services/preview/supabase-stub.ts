@@ -103,6 +103,8 @@ export const supabase = {
                  : table === 'therapy_service_stores' ? STORE_ROWS : [];
       const chain: any = {
         eq: () => chain, is: () => chain, order: () => ok(rows),
+        // 423: the edit form reads one service's notes.
+        maybeSingle: () => ok(rows[0] ?? null),
         then: (r: any) => Promise.resolve({ data: rows, error: null }).then(r),
       };
       return chain;

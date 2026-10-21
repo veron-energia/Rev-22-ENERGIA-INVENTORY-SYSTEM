@@ -283,8 +283,6 @@ declare
       'create_invoice_with_details(uuid,uuid,jsonb,jsonb)',
       'create_rental(uuid,uuid,uuid,integer,special_rate_type,integer,date,date,text)',
       'create_special_sale(uuid,uuid,uuid,integer,uuid,text,text)',
-      'create_split_credit_package_invoices(uuid,uuid,jsonb,uuid[],uuid,text)',
-      'create_split_premium_bundle_invoices(uuid,uuid,jsonb,uuid[],uuid,text)',
       'create_staff_commission_payout(uuid,date,uuid,text,text)',
       'create_staff_transfer_request(jsonb,text,uuid)',
       'create_transfer_request(text,text,uuid,text,uuid,jsonb,text)', 'customer_credit_balances(uuid)',

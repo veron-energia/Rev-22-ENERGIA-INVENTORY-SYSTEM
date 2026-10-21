@@ -107,6 +107,9 @@ export function CreditSpendingRules({ packageId, packageName, canEdit, onClose }
 
         {rules && (
           <p className="credit-rules-status">
+            {/* Q15 (9 Oct 2026): these rules are what the till follows; the
+                package form's old tick boxes were not. */}
+            These are the rules the till uses for this package.{' '}
             {rules.source === 'default'
               ? 'Using the approved defaults.'
               : `Changed from the defaults${rules.updated_by ? ` by ${rules.updated_by}` : ''}`
