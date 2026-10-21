@@ -163,6 +163,8 @@ declare
                              'event_web_planning_closed','event_web_planning_state','event_web_planning_answers',
                              -- 436 round 8: the VIP payments each customer holds for an event
                              'event_vip_holders',
+                             -- 439: the record that stands for a customer after a merge
+                             'event_web_kept_customer',
                              -- 409: the retired staff request, which moved the invoice itself
                              -- to refund_requested (staff raise guided requests now), and what a
                              -- cancelled invoice's customer already had (refund_invoice_recorded's)

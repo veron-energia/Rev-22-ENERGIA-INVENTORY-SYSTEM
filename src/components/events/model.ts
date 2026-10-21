@@ -627,6 +627,13 @@ export interface HoldCandidate {
   phone_matches: boolean; email_matches: boolean; name_matches: boolean;
   /** Round 8: already a guest of this event (their days and VIP payments), else null. */
   guest: { days: string[]; vips: VipHeld[] } | null;
+  /** 439 (the owner, 21 Oct 2026): the records they were held for that a merge has since folded into this one
+   *  (their own phone and email, and whether each matched what the person typed); empty when none. */
+  merged_from: MergedFromRecord[];
+}
+/** 439: a retired record a held person was held for, now merged into the candidate listed. */
+export interface MergedFromRecord {
+  customer_id: string; full_name: string; phone: string | null; email: string | null; phone_matches: boolean; email_matches: boolean;
 }
 /** A registered person held for staff instead of being matched (433's rules). */
 export interface RegistrationHold {
@@ -702,6 +709,11 @@ export function normalizeWebExtras(v: any): EventWebExtras {
         email_matches: bool(c?.email_matches), name_matches: bool(c?.name_matches),
         guest: c?.guest && typeof c.guest === 'object'
           ? { days: arr(c.guest.days).map(d => dateOnly(d) ?? '').filter(Boolean), vips: normalizeVipsHeld(c.guest.vips) } : null,
+        // 439: absent before 439 (and when nothing was merged into the candidate).
+        merged_from: arr(c?.merged_from).map((m: any) => ({
+          customer_id: String(m?.customer_id ?? ''), full_name: String(m?.full_name ?? ''), phone: str(m?.phone), email: str(m?.email),
+          phone_matches: bool(m?.phone_matches), email_matches: bool(m?.email_matches),
+        })).filter((m: MergedFromRecord) => m.customer_id),
       })).filter(c => c.customer_id),
       // An older 436 (before round 8) has no vip_payment: its vip_waiting stands in.
       vip_payment: h?.vip_payment === undefined ? bool(h?.vip_waiting) : bool(h?.vip_payment),
@@ -736,6 +748,17 @@ export function candidateGuestText(c: HoldCandidate): string | null {
   const days = c.guest.days.length ? fmtDayList(c.guest.days) : 'no day now';
   return `Already a guest: ${days}${c.guest.vips.length ? ` · ${vipHeldText(c.guest.vips)}` : ''}`;
 }
+/**
+ * 439: "Merged from Fay Holder, who had this phone" for a candidate that a merge folded the record they were held for
+ * into (the kept record may not have that phone or email itself); null when nothing was merged into it.
+ */
+export function candidateMergedText(c: HoldCandidate): string | null {
+  if (!c.merged_from?.length) return null;
+  return 'Merged from ' + c.merged_from.map(m => {
+    const had = [m.phone_matches ? 'phone' : null, m.email_matches ? 'email' : null].filter(Boolean).join(' and ');
+    return had ? `${m.full_name}, who had this ${had}` : m.full_name;
+  }).join('; ');
+}
 /** The warning before linking a held person who paid (or waits on) a VIP to a customer who already holds one. */
 export function doubleVipWarning(h: RegistrationHold, c: HoldCandidate | null): string | null {
   if (!c || !h.vip_payment || !c.guest || c.guest.vips.length === 0) return null;
@@ -763,7 +786,7 @@ export function pickedCustomerCandidate(customerId: string, guests: Guest[], ext
   return {
     customer_id: customerId, full_name: rows[0]?.customer_name ?? rows[0]?.name ?? dbl?.full_name ?? 'this customer',
     phone: null, email: null, created_at: null, phone_matches: false, email_matches: false, name_matches: false,
-    guest: { days, vips },
+    guest: { days, vips }, merged_from: [],
   };
 }
 /** A guest row (not a cancelled one: the review of round 8) whose customer holds two VIP payments for the event. */

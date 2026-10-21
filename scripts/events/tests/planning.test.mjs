@@ -1055,3 +1055,24 @@ test('model: timing text and time options', () => {
   assert.deepEqual(p.guests.g.answers.access, ['wheelchair', 'front_seat']);
   assert.deepEqual(p.guests.g.answers.timing, [{ date: D1, whole_day: false, arrive: '14:00', leave: '19:00' }]);
 });
+
+// ── 439 (the owner, 21 Oct 2026): a candidate that a merge folded the record they were held for into ──
+test('to match (439): a candidate with a record merged into it says whose phone or email that was; older servers send none', async () => {
+  await mount({ role: 'staff', setup: (b, fx) => {
+    fx.extras.holds[0].candidates[0].merged_from = [{ customer_id: 'c-old', full_name: 'Holly Oldrecord', phone: '+61491572983',
+      email: null, phone_matches: true, email_matches: false }];
+  } });
+  const rows = [...document.querySelector('[data-hold="p-3"]').querySelectorAll('tbody tr')];
+  assert.equal(rows[0].querySelector('[data-candidate-merged]').textContent, 'Merged from Holly Oldrecord, who had this phone');
+  await mount({ role: 'staff' });
+  assert.equal(document.querySelector('[data-candidate-merged]'), null, 'nothing merged into it: nothing said');
+  const x = model.normalizeWebExtras({ settings: { store_id: 's', mode: 'live', code: 'X' }, guests: [], holds: [
+    { person_id: 'p', registration_id: 'R', candidates: [{ customer_id: 'c', full_name: 'C', merged_from: [
+      { customer_id: 'm1', full_name: 'M One', phone_matches: true, email_matches: true }, { customer_id: '', full_name: 'none' }] },
+      { customer_id: 'd', full_name: 'D' }] }] });
+  assert.deepEqual(x.holds[0].candidates[0].merged_from,
+    [{ customer_id: 'm1', full_name: 'M One', phone: null, email: null, phone_matches: true, email_matches: true }]);
+  assert.equal(model.candidateMergedText(x.holds[0].candidates[0]), 'Merged from M One, who had this phone and email');
+  assert.deepEqual(x.holds[0].candidates[1].merged_from, [], 'an older 436 sends no merged_from');
+  assert.equal(model.candidateMergedText(x.holds[0].candidates[1]), null);
+});

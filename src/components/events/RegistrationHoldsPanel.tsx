@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
 import { CustomerSearchSelect } from '../SearchSelect';
 import {
-  EventWebExtras, Guest, HOLD_REASON_LABELS, HoldCandidate, RegistrationHold, candidateGuestText, doubleVipWarning, fmtDateTime,
+  EventWebExtras, Guest, HOLD_REASON_LABELS, HoldCandidate, RegistrationHold, candidateGuestText, candidateMergedText, doubleVipWarning, fmtDateTime,
   fmtDayList, pickedCustomerCandidate,
 } from './model';
 
@@ -34,6 +34,11 @@ import {
  * review of round 8 (21 Oct 2026): a customer picked with "Find another
  * customer…" is read from the guest list the page has (their rows, VIP paid
  * or waiting), so that window says "Already a guest" and warns the same.
+ *
+ * 439 (the owner, 21 Oct 2026): a customer they were held for whom a merge has since retired is listed as the record
+ * that kept it, with "Merged from <name>, who had this phone" (the kept record may not have that phone itself);
+ * linking it links the kept record, and a new customer still waits for the check where the retired record's phone
+ * or email made them.
  */
 
 /** R6-4: the warning for an affiliate_name hold, naming the affiliate (the server's name, else the candidate with her name). */
@@ -153,6 +158,7 @@ export const RegistrationHoldsPanel: React.FC<{
                   <tr key={c.customer_id}>
                     <td>
                       <div style={{ fontWeight: 600 }}>{c.full_name}</div>
+                      {candidateMergedText(c) && <div className="events-sub" data-candidate-merged>{candidateMergedText(c)}</div>}
                       {c.guest && <div className="events-sub" data-candidate-guest>{candidateGuestText(c)}</div>}
                       {doubleVipWarning(h, c) && (
                         <div className="events-sub events-text-danger" data-double-vip-note>{doubleVipWarning(h, c)}</div>
