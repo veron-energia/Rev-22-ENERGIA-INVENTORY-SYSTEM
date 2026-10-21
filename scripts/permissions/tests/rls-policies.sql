@@ -41,6 +41,7 @@ declare
   closed constant text[] := array[
     'customers','profiles','health_surveys','consultant_notes','customer_remarks',
     'customer_phone_history','invoice_items','invoice_refunds','customer_reward_vouchers',
+    'invoice_revisions','invoice_promotion_selections','invoice_credit_splits',
     'purchased_therapy_entitlements','credit_package_sales','user_store_assignments',
     'commission_corrections','credit_package_progress_lots'];
 begin

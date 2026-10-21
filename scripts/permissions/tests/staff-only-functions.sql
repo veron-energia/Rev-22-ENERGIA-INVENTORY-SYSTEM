@@ -252,7 +252,7 @@ declare
   -- (function-grants.sql check 4).
   c_caller constant text[] := array[
       'assignable_roles()', 'assignable_store_ids()', 'can_manage_warehouse_stock()',
-      'can_view_customer_credit()', 'current_user_role()', 'invoice_date_recovery_access()',
+      'can_view_customer_credit()', 'current_user_role()', 'current_user_store_ids()', 'invoice_date_recovery_access()',
       'is_manager_or_above()', 'is_owner_or_admin()', 'is_owner_or_manager()', 'my_assigned_store_id()',
       'my_assigned_stores()', 'staff_may_correct_invoice(uuid)', 'stock_history_global()',
       'stock_history_location(text,uuid)', 'stock_history_movement(uuid,uuid,uuid,uuid,uuid,uuid)',
@@ -764,9 +764,10 @@ begin
     end loop;
   end loop;
   -- The rest of the customer record stays closed too (342, 343; X-5 for the
-  -- deactivated employee).
+  -- deactivated employee; 430 for the other invoice detail tables).
   foreach t in array array['customers', 'health_surveys', 'consultant_notes', 'invoices', 'invoice_items',
-                           'profiles', 'audit_logs', 'document_sends', 'approval_requests',
+                           'invoice_revisions', 'invoice_promotion_selections', 'invoice_refunds',
+                           'invoice_credit_splits', 'profiles', 'audit_logs', 'document_sends', 'approval_requests',
                            'staff_commissions', 'staff_commission_payouts', 'transfer_requests'] loop
     foreach v_who in array array['affiliate', 'nostaff', 'inactive', 'pending', 'cancelled'] loop
       v_out := pg_temp.sof_try(v_who, format('select count(*)::text from public.%I where id <> %L', t,
