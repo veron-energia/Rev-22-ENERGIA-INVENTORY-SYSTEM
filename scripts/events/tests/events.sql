@@ -449,8 +449,10 @@ do $$ declare v uuid; begin
     public.sg_today(), null, 'E370 test', null, null, pg_temp.fx('owner'), null);
   v := pg_temp.sell('van', jsonb_build_array(pg_temp.ticket('one', array['Credit Guest'], array[pg_temp.d(0)])), pg_temp.d(0));
   insert into fx values ('inv_credit', v);
+  -- 443: 'Wallet — Paid Credit' (it names no source and pays the Other credit granted here); before 443 the one Paid method.
   perform public.record_invoice_payment(v, jsonb_build_array(jsonb_build_object('payment_method_id',
-    (select id from public.payment_methods where wallet_category = 'paid' and is_system limit 1), 'amount', 61)), gen_random_uuid());
+    (select wm.id from public.payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+      and to_jsonb(wm) ->> 'wallet_source' is null order by wm.created_at, wm.id limit 1), 'amount', 61)), gen_random_uuid());
 end $$;
 select pg_temp.check((select status from public.invoices where id = pg_temp.fx('inv_credit')) = 'paid'
     and (select sum(amount) from public.invoice_line_credit_allocations where invoice_id = pg_temp.fx('inv_credit')) = 61,

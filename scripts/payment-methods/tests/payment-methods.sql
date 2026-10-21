@@ -34,8 +34,11 @@ set local lock_timeout = '10s';
 \endif
 do $$
 begin
+  -- 429's protection of the system wallet methods, or 443's (which also
+  -- keeps a method's wallet_source).
   if to_regprocedure('public.payment_method_web_uses()') is null
-     or md5(pg_get_functiondef('public.trg_protect_system_payment_methods()'::regprocedure)) <> '9c1af002437091b7ef61b04221b254eb' then
+     or md5(pg_get_functiondef('public.trg_protect_system_payment_methods()'::regprocedure))
+        not in ('9c1af002437091b7ef61b04221b254eb', '74bca50e1b15f8b5b61a17ce6a350c5a') then
     raise exception '429 is not in this database: run with -v prelude=supabase/429_users_invitations_and_payment_methods.sql (see the header)'; end if;
 end $$;
 

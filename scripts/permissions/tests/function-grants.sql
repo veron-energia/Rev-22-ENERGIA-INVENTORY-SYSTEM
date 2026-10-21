@@ -195,6 +195,10 @@ declare
                              -- copy, which the no-self-referral checks read) and the trigger
                              -- that keeps the copy from being changed
                              'affiliate_login_signup_details','trg_affiliate_signup_identity_kept',
+                             -- 443: where a credit lot came from, what a wallet method pays
+                             -- from, and the allocator that draws a wallet payment's lots
+                             -- (record_invoice_payment and correct_invoice_payment call it)
+                             'credit_lot_source_group','wallet_method_source_filter','allocate_invoice_wallet_credit',
                              -- 418: the date-of-birth rule, called inside update_customer and
                              -- the survey's Edit details (which run as the owner)
                              'assert_customer_dob_change',
@@ -390,6 +394,15 @@ begin
                         and t.tgname = 'affiliate_signup_identities_kept' and t.tgenabled = 'O') then
       raise exception 'FAIL: affiliate_signup_identities is open to a client role, writable by the service role, or its UPDATE trigger is off'; end if;
   end if;
+
+  -- 15. Once 443 is in, the three-argument allocate_invoice_wallet_credit
+  --     stays gone (443 replaced it with the four-argument one, whose new
+  --     argument has a default). Re-running 82 or 175 would bring it back
+  --     beside the new one, and a three-argument call would then pick the old
+  --     one, which pays from any source.
+  if to_regprocedure('public.allocate_invoice_wallet_credit(uuid,numeric,text,text)') is not null
+     and to_regprocedure('public.allocate_invoice_wallet_credit(uuid,numeric,text)') is not null then
+    raise exception 'FAIL: the three-argument allocate_invoice_wallet_credit(uuid,numeric,text) is back beside 443''s four-argument one'; end if;
 
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'

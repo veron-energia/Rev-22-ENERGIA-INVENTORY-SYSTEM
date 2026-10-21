@@ -90,9 +90,14 @@ export interface PaymentMethod {
   deleted_at: string | null;
   created_at: string;
   is_wallet_credit?: boolean;
-  /** One of the five Wallet credit types: never deleted or renamed (429). */
+  /** One of the Wallet credit types (the five of 82 and, since 443, one Paid and
+   *  one Bonus each for Credit Package and Premium Bundle credit): never deleted
+   *  or renamed (429). */
   is_system?: boolean;
   wallet_category?: string | null;
+  /** 443: the source a wallet method pays from ('credit_package' or
+   *  'premium_bundle'); null: Paid and Bonus pay Other credit, the rest any. */
+  wallet_source?: string | null;
 }
 
 // Role display helpers

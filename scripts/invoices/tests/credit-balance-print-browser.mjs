@@ -12,6 +12,18 @@
 // whole or absent, never cut; and the PDF/image line sits beside the totals
 // where it costs no height, and otherwise never costs an item row or pushes
 // the footer down, even with a full store footer and a long payment list.
+// 443 (the Owner, 21 Oct 2026, CREDIT-SPLIT-1..14), for a customer whose
+// balance has sources (Ann keeps the categories alone, as a server before 443
+// answers): the line reads Credit Package · Premium Bundle · Other; a past
+// 'Wallet — Paid Credit' payment of Premium Bundle credit carries the source
+// in brackets on screen, in the print, the PDF, the image, the payment
+// correction and the guided refund, and no copy goes out before the sources
+// are in (a slow answer; a reload after another tab's payment); Record
+// Payment lists each wallet method with what it can pay of this invoice,
+// Credit Package first, switched off at nothing, says Credit Package credit is
+// used first on a Premium Bundle row unless the other rows already use it,
+// and never offers another customer's figures once the invoice's customer
+// changes.
 //
 // The real page and the real PDF and image renderers run in Chrome against an
 // in-memory stand-in for Supabase; every network request is blocked. The
@@ -205,6 +217,26 @@ const mock = `export const supabase = (() => {
         paid_credit_total: 500, bonus_total: 50, grants_reward: false, reward_voucher_total: 0 }, error: null };
       case 'premium_bundle_benefit_preview': return { data: { found: true, bundle_name: 'Fixture Premium Bundle', customer_price: 600,
         paid_credit_total: 600, bonus_total: 60, free_voucher_total: 0, allowed_vouchers: [] }, error: null };
+      // 443: what each wallet method can pay of an invoice, by the invoice's
+      // customer now (window.__availFor; slow for one customer with
+      // window.__availDelayFor), and the sources of its wallet payments
+      // (window.__paySources, by invoice; slow with window.__sourcesDelay). An
+      // invoice the test gives none for answers as a server before 443 does.
+      case 'invoice_wallet_availability': {
+        const i = find(args.p_invoice_id), a = i && (window.__availFor || {})[i.customer_id];
+        const wait = i && (window.__availDelayFor || {})[i.customer_id];
+        if (wait) await new Promise(r => setTimeout(r, wait));
+        if (!a) return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.invoice_wallet_availability' } };
+        return { data: { invoice_id: i.id, customer_id: i.customer_id, payable: true, credit_line: false, ...structuredClone(a) }, error: null };
+      }
+      case 'invoice_payment_credit_sources': {
+        const s = (window.__paySources || {})[args.p_invoice_id];
+        if (s && window.__sourcesDelay) await new Promise(r => setTimeout(r, window.__sourcesDelay));
+        if (!s) return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.invoice_payment_credit_sources' } };
+        return { data: structuredClone(s), error: null };
+      }
+      // The guided Refund / Cancel's plan, for an invoice the test gives one (window.__plans[invoice][action]).
+      case 'invoice_action_plan': return { data: structuredClone(((window.__plans || {})[args.p_invoice_id] || {})[args.p_action] ?? null), error: null };
       case 'my_assigned_store_id': return { data: window.__profile.role === 'staff' ? 'store' : null, error: null };
       case 'my_assigned_stores': return { data: window.__profile.role === 'staff' ? [{ store_id: 'store', store_name: 'Test Store', is_default: true }] : [], error: null };
       default: return { data: null, error: null };
@@ -898,18 +930,20 @@ try {
   ok('a closed share sheet is "Not sent"', true);
 
   // ---- Record Payment never offers the previous customer's wallet -------------
+  // (443: the wallet line under the form says what the customer holds, "S$350.00
+  // held"; "available" beside each method is what it can pay of this invoice.)
   await view(page, 'owed-ann');
-  await page.getByText('S$350.00 available').first().waitFor();
+  await page.getByText('S$350.00 held').first().waitFor();
   ok('Record Payment offers the customer\'s own wallet', true);
   // Ann's answer is slow and Ben's slower; Ben's invoice is opened straight after Ann's.
   await page.evaluate(() => { window.__balanceDelayFor = { ann: 1500, ben: 800 }; });
   await view(page, 'owed-ann');
   await view(page, 'owed-ben');
   ok('the wallet of the customer before is cleared the moment another customer\'s invoice opens',
-    !(await page.locator('.modal').innerText()).includes('S$350.00 available'));
+    !(await page.locator('.modal').innerText()).includes('S$350.00 held'));
   await page.waitForTimeout(2000);
   ok('and a slow answer for the invoice opened before is never shown on this one',
-    !(await page.locator('.modal').innerText()).includes('S$350.00 available'));
+    !(await page.locator('.modal').innerText()).includes('S$350.00 held'));
   await page.evaluate(() => { window.__balanceDelayFor = {}; });
 
   await view(page, 'cash');
@@ -1235,6 +1269,228 @@ try {
     }
     ok(`no browser errors (${who}, split panels)`, np.errors.length === 0, np.errors.join(' | '));
     await np.context().close();
+  }
+
+  // ---- 443: Credit Package and Premium Bundle credit kept apart -----------------
+  // (the Owner, 21 Oct 2026, CREDIT-SPLIT-1..14). Eve's balance has sources, as
+  // a server with 443 answers; Ann's keeps the categories alone (before 443).
+  // Eve's paid invoice was paid partly through 'Wallet — Paid Credit' from
+  // Premium Bundle credit (before 443; invoice_payment_credit_sources says so)
+  // and partly through 'Wallet — Credit Package Paid'.
+  const wm = (id, name, cat, source) => ({ id, name, is_wallet_credit: true, wallet_category: cat, wallet_source: source, is_system: true, ...common });
+  tables.payment_methods.push(wm('wallet-pk-paid', 'Wallet — Credit Package Paid', 'paid', 'credit_package'),
+    wm('wallet-pk-bonus', 'Wallet — Credit Package Bonus', 'bonus', 'credit_package'),
+    wm('wallet-pb-paid', 'Wallet — Premium Bundle Paid', 'paid', 'premium_bundle'),
+    wm('wallet-pb-bonus', 'Wallet — Premium Bundle Bonus', 'bonus', 'premium_bundle'));
+  tables.customers.push({ id: 'eve', full_name: 'Eve Sources', phone: '+61491570811', email: 'eve@example.com', ...common },
+    { id: 'fay', full_name: 'Fay Nothing', phone: '+61491570812', ...common });
+  for (const i of [inv('eve-paid', 'eve'), inv('eve-part', 'eve', { status: 'partially_paid', paid_amount: 60 }),
+    inv('eve-owed', 'eve', { status: 'unpaid', paid_amount: 0, paid_at: null }),
+    inv('eve-moves', 'eve', { status: 'unpaid', paid_amount: 0, paid_at: null })]) { tables.invoices.push(i); tables.invoice_items.push(line(i.id)); }
+  tables.invoice_payments.push({ ...pay('eve-paid', 'wallet-paid', 40), id: 'pay-eve-1' }, { ...pay('eve-paid', 'wallet-pk-paid', 60), id: 'pay-eve-2' },
+    { ...pay('eve-part', 'wallet-pk-paid', 60), id: 'pay-eve-3' });
+  const src = (paid, bonus, legacy = 0) => ({ paid, bonus, legacy, promotional: 0, exchange: 0, total: paid + bonus + legacy });
+  balances.eve = { categories: cats({ paid: 570, bonus: 80, legacy: 15 }), available_total: 665,
+    sources: { credit_package: src(300, 30), premium_bundle: src(200, 50, 15), other: src(70, 0) } };
+  balances.fay = { categories: cats({}), available_total: 0, sources: { credit_package: src(0, 0), premium_bundle: src(0, 0), other: src(0, 0) } };
+  // invoice_wallet_availability for an invoice of 100: what each method can pay of it / holds, in the server's order.
+  const availOf = (figures, def) => ({ default_method_id: def, methods: figures.map(([id, available, held], n) => {
+    const m = tables.payment_methods.find(x => x.id === id);
+    return { payment_method_id: id, name: m.name, wallet_category: m.wallet_category, wallet_source: m.wallet_source ?? null,
+      pays_from: m.wallet_source ?? 'other', available, held, rank: n + 1 };
+  }) });
+  const AVAIL = {
+    eve: availOf([['wallet-pk-paid', 100, 300], ['wallet-pk-bonus', 0, 30], ['wallet-pb-paid', 100, 200], ['wallet-pb-bonus', 50, 50],
+      ['wallet-paid', 70, 70], ['wallet-bonus', 0, 0]], 'wallet-pk-paid'),
+    fay: availOf([['wallet-pk-paid', 0, 0], ['wallet-pk-bonus', 0, 0], ['wallet-pb-paid', 0, 0], ['wallet-pb-bonus', 0, 0],
+      ['wallet-paid', 0, 0], ['wallet-bonus', 0, 0]], null),
+  };
+  const SOURCES = { 'eve-paid': { 'pay-eve-1': ['premium_bundle'], 'pay-eve-2': ['credit_package'] }, 'eve-part': { 'pay-eve-3': ['credit_package'] } };
+  // The guided Refund / Cancel of Eve's paid invoice gives each wallet payment's credit back.
+  const PLAN = { invoice_no: 'INV-T-eve-paid', action: 'refund_full', refund_amount: 100, refund_due: 0,
+    window: { created_on: '2026-09-30', deadline: '2026-10-05', within: true, days_remaining: 3, override_required: false, creation_reliable: true },
+    lines: [{ invoice_item_id: 'line-eve-paid', name: 'Long Energia Socks', line_kind: 'product', quantity: 1, selected_quantity: 1, amount: 100 }],
+    stock: [], sources: [{ payment_id: 'pay-eve-1', method: 'Wallet — Paid Credit', wallet: true, amount: 40 },
+      { payment_id: 'pay-eve-2', method: 'Wallet — Credit Package Paid', wallet: true, amount: 60 }],
+    overrides_required: [], blockers: [], summary: ['Test plan'], requires_override: false, blocked: false, plan_hash: 'h443', status: 'paid',
+    effects: { money_returned: { total: 100, destinations: [{ payment_id: 'pay-eve-1', method: 'Wallet — Paid Credit', wallet: true, amount: 40 },
+      { payment_id: 'pay-eve-2', method: 'Wallet — Credit Package Paid', wallet: true, amount: 60 }] },
+      benefits: [], stock_returned: [], overrides: [], rewards: { withdrawn: [], kept: [] } } };
+  const set443 = (p, extra = {}) => p.evaluate(([a, s, plan, x]) => {
+    window.__availFor = a; window.__paySources = s; window.__plans = { 'eve-paid': { refund_full: plan } }; Object.assign(window, x);
+  }, [AVAIL, SOURCES, PLAN, extra]);
+  /** The wallet methods Record Payment's row `n` offers: [label, switched off]. */
+  const walletOptions = async (p, n = 0) => {
+    await p.getByRole('button', { name: 'Payment method', exact: true }).nth(n).click();
+    const list = await p.locator('[role="listbox"][aria-label="Payment method"] [role="option"]')
+      .evaluateAll(bs => bs.map(b => [b.textContent, b.disabled]).filter(([t]) => t.startsWith('Wallet')));
+    await p.getByRole('combobox', { name: 'Search payment method' }).press('Escape');
+    return list;
+  };
+  const chooseMethod = async (p, n, name) => {
+    await p.getByRole('button', { name: 'Payment method', exact: true }).nth(n).click();
+    await p.getByRole('combobox', { name: 'Search payment method' }).fill(name);
+    await p.getByRole('combobox', { name: 'Search payment method' }).press('Enter');
+  };
+  const notes = p => p.locator('.modal p[role="note"]').allInnerTexts();
+  const flat = h => h.replace(/&nbsp;/g, ' ');
+  const BREAKDOWN = 'Credit Package S$330.00 · Premium Bundle S$265.00 · Other S$70.00';
+  const BRACKETED = 'Wallet — Paid Credit (Premium Bundle)';
+
+  {
+    const p = await openPage(owner);
+    await set443(p);
+    await view(p, 'eve-paid');
+    let text = await p.locator('.modal').innerText();
+    ok('443: a past Paid Credit payment of Premium Bundle credit shows its source on screen; a Credit Package payment needs none',
+      text.includes(`${BRACKETED} · `) && text.includes('Wallet — Credit Package Paid · ') && !text.includes('Wallet — Credit Package Paid ('), text);
+    html = await print(p);
+    ok('443: both printed halves carry the bracket', count(html, `${BRACKETED} · `) === 2 && count(html, 'Wallet — Credit Package Paid · ') === 2);
+    ok('443: the printed credit line reads Credit Package · Premium Bundle · Other',
+      count(flat(html), BREAKDOWN) === 2 && count(html, '<strong>S$665.00</strong>') === 2 && !flat(html).includes('Paid S$570.00'),
+      (flat(html).match(/Credit Package S\$[^<]*/) || [''])[0]);
+    pdf = await downloadText(p, 'PDF');
+    ok('443: the PDF carries the bracket and the line by source (it may wrap after a dot)',
+      pdf.includes('Paid Credit (Premium Bundle)') && ['Credit Package S$330.00', 'Premium Bundle S$265.00', 'Other S$70.00'].every(x => pdf.includes(x))
+        && !pdf.includes('Paid S$570.00'));
+    const img = p.waitForEvent('download');
+    await p.getByRole('button', { name: 'Image', exact: true }).click();
+    await img;
+    const drawn = (await imageTexts(p)).join(' | ');
+    ok('443: so does the image', drawn.includes(BRACKETED) && ['Credit Package S$330.00', 'Premium Bundle S$265.00', 'Other S$70.00'].every(x => drawn.includes(x)), drawn);
+    // Correct amount / date opens the correction with the payment named as the invoice names it.
+    await p.locator('.invoice-payment-record').filter({ hasText: BRACKETED }).getByRole('button', { name: 'Correct amount / date' }).click();
+    await p.getByRole('button', { name: 'Recorded payment', exact: true }).waitFor();
+    const chosen = await p.getByRole('button', { name: 'Recorded payment', exact: true }).innerText();
+    ok('443: the payment correction names it with its source', chosen.startsWith(`${BRACKETED} · S$40.00`), chosen);
+    // The guided Refund / Cancel says where each payment's credit goes back.
+    await view(p, 'eve-paid');
+    await p.getByRole('button', { name: 'Refund / Cancel', exact: true }).click();
+    const dlg = p.getByRole('dialog', { name: /Refund or cancel/ });
+    await dlg.getByRole('button', { name: /Full refund/ }).click();
+    await dlg.getByPlaceholder('What happened, in a sentence').fill('Returned in the box');
+    await dlg.getByRole('button', { name: 'Continue', exact: true }).click();
+    await dlg.getByText('What this will do').waitFor();
+    const review = await dlg.locator('.invoice-guided-review').innerText();
+    ok('443: the guided refund names the credit it gives back as the invoice does',
+      review.includes(`S$40.00 to ${BRACKETED} — restores the original credit`)
+        && review.includes('S$60.00 to Wallet — Credit Package Paid — restores the original credit'), review);
+    // Leave it without recording anything: Escape, and yes to discarding the reason typed.
+    p.once('dialog', d => d.accept());
+    await p.keyboard.press('Escape');
+    await dlg.waitFor({ state: 'detached' });
+
+    // ---- Record Payment: each wallet method with what it can pay of this invoice
+    await view(p, 'eve-owed');
+    await p.locator('[data-testid="wallet-summary"]').waitFor();
+    const opts = await walletOptions(p);
+    ok('443: Record Payment lists the wallet methods Credit Package first, each with what it can pay of this invoice, off at nothing',
+      JSON.stringify(opts) === JSON.stringify([
+        ['Wallet — Credit Package Paid — S$100.00 available (S$300.00 held)', false],
+        ['Wallet — Credit Package Bonus — S$0.00 available (S$30.00 held)', true],
+        ['Wallet — Premium Bundle Paid — S$100.00 available (S$200.00 held)', false],
+        ['Wallet — Premium Bundle Bonus — S$50.00 available', false],
+        ['Wallet — Paid Credit — S$70.00 available', false],
+        ['Wallet — Bonus Credit — S$0.00 available', true]]), JSON.stringify(opts));
+    const summary = await p.locator('[data-testid="wallet-summary"]').innerText();
+    ok('443: the wallet under the form is by source, and the wrong Bonus-first note is gone',
+      summary.includes('Wallet: S$665.00 held — Credit Package S$330.00 (Paid S$300.00, Bonus S$30.00) · Premium Bundle S$265.00 (Paid S$200.00, Bonus S$50.00, Legacy S$15.00) · Other S$70.00 (Paid S$70.00)')
+        && !summary.includes('Bonus Credit is always spent first') && summary.includes('Credit Package credit is listed first'), summary);
+    ok('443: no reminder before a method is chosen', (await notes(p)).length === 0);
+    await chooseMethod(p, 0, 'Premium Bundle Paid');
+    ok('443: a Premium Bundle row is told Credit Package credit is used first by default',
+      JSON.stringify(await notes(p)) === JSON.stringify(['Credit Package credit can pay S$100.00 of this invoice (Wallet — Credit Package Paid) and is used first by default. Keep Premium Bundle credit only if the customer asks for it.']),
+      JSON.stringify(await notes(p)));
+    // One row per source (CREDIT-SPLIT-7): Credit Package credit on the first row for all it can pay, Premium Bundle on the second.
+    await chooseMethod(p, 0, 'Credit Package Paid');
+    await p.locator('.modal input[placeholder="Amount"]').first().fill('100');
+    await p.getByRole('button', { name: 'Split Payment', exact: true }).click();
+    await chooseMethod(p, 1, 'Premium Bundle Paid');
+    ok('443: with the Credit Package credit already on another row, the Premium Bundle row is not told to drop', (await notes(p)).length === 0,
+      JSON.stringify(await notes(p)));
+    await p.locator('.modal input[placeholder="Amount"]').first().fill('40');
+    ok('443: with part of it on another row, the reminder quotes what is left',
+      JSON.stringify(await notes(p)) === JSON.stringify(['Credit Package credit can pay S$60.00 more of this invoice (Wallet — Credit Package Paid) and is used first by default. Keep Premium Bundle credit only if the customer asks for it.']),
+      JSON.stringify(await notes(p)));
+
+    // ---- Never another customer's figures once the invoice's customer changes
+    const setCustomer = (id, cust) => p.evaluate(([i, c]) => {
+      const ix = window.__tables.invoices.findIndex(x => x.id === i); window.__tables.invoices[ix] = { ...window.__tables.invoices[ix], customer_id: c };
+    }, [id, cust]);
+    const EVE_OFFER = 'Wallet — Credit Package Paid — S$100.00 available (S$300.00 held)';
+    await view(p, 'eve-moves');
+    ok('443: Eve\'s invoice offers Eve\'s figures', (await walletOptions(p)).some(([t]) => t === EVE_OFFER));
+    // Another tab moves the open invoice to Fay (Edit Invoice); Fay's figures are slow.
+    await setCustomer('eve-moves', 'fay');
+    await p.evaluate(() => { window.__availDelayFor = { fay: 3000 };
+      new BroadcastChannel('energia:invoices').postMessage({ type: 'invoices-changed', ids: ['eve-moves'], from: 'another-tab' }); });
+    await p.waitForFunction(() => document.querySelector('.modal')?.innerText.includes('Fay Nothing') && !!modalButton('Print') && !modalButton('Print').disabled);
+    let offered = await walletOptions(p);
+    ok('443: moved to another customer from another tab, it never offers the first customer\'s figures while the new ones load',
+      offered.length === 6 && offered.every(([t, off]) => t.includes('S$0.00 available') && off), JSON.stringify(offered));
+    await p.waitForTimeout(3200);
+    offered = await walletOptions(p);
+    ok('443: and then offers the new customer\'s own (nothing)', offered.every(([t, off]) => t.includes('S$0.00 available') && off), JSON.stringify(offered));
+    // The same invoice closed, moved back to Eve and opened again, then closed and moved to Fay again.
+    await setCustomer('eve-moves', 'eve');
+    await p.evaluate(() => { window.__availDelayFor = {}; });
+    await view(p, 'eve-moves');
+    await p.waitForFunction(() => document.querySelector('.modal')?.innerText.includes('Eve Sources'));
+    await p.waitForTimeout(200);
+    ok('443: back with Eve, Eve\'s figures', (await walletOptions(p)).some(([t]) => t === EVE_OFFER));
+    await p.getByRole('button', { name: 'Close', exact: true }).first().click();
+    await setCustomer('eve-moves', 'fay');
+    await p.evaluate(() => { window.__availDelayFor = { fay: 3000 }; });
+    await view(p, 'eve-moves');
+    await p.waitForFunction(() => document.querySelector('.modal')?.innerText.includes('Fay Nothing'));
+    offered = await walletOptions(p);
+    ok('443: closed and opened again with another customer, the first customer\'s figures are not offered either',
+      offered.length === 6 && offered.every(([t, off]) => t.includes('S$0.00 available') && off), JSON.stringify(offered));
+    await p.evaluate(() => { window.__availDelayFor = {}; });
+    ok('no browser errors (443)', p.errors.length === 0, p.errors.join(' | '));
+    await p.context().close();
+  }
+
+  // ---- 443: no copy goes out before the payments' sources are in ----------------
+  {
+    const p = await openPage(owner);
+    await set443(p, { __sourcesDelay: 2500 });
+    const openedAt443 = Date.now();
+    await row(p, 'INV-T-eve-paid').getByRole('button', { name: 'View', exact: true }).click();
+    await p.waitForFunction(() => document.querySelector('.modal')?.innerText.includes('INV-T-eve-paid')
+      && document.querySelector('.modal')?.innerText.includes('Long Energia Socks'));
+    await p.waitForTimeout(500);
+    ok('443: while the payments\' sources are on their way, Print, PDF, Image, WhatsApp and Email are off',
+      (await copyButtonsOff(p)).every(off => off === true), JSON.stringify(await copyButtonsOff(p)));
+    await p.waitForFunction(() => !!modalButton('Print') && !modalButton('Print').disabled);
+    ok('443: they come on once the sources answer', Date.now() - openedAt443 >= 2400);
+    html = await print(p);
+    ok('443: the copy made the moment they come on carries the bracket on both halves', count(html, `${BRACKETED} · `) === 2,
+      (html.match(/Wallet — Paid Credit[^·]*·/) || [''])[0]);
+    pdf = await downloadText(p, 'PDF');
+    ok('443: and so does the PDF', pdf.includes('Paid Credit (Premium Bundle)'));
+    // A reload of the open invoice (another tab records the rest through
+    // 'Wallet — Paid Credit' from Premium Bundle credit): the new payment's
+    // source is read again, slowly; the copies wait for it.
+    await view(p, 'eve-part');
+    await p.evaluate(t0 => {
+      const ix = window.__tables.invoices.findIndex(i => i.id === 'eve-part');
+      window.__tables.invoices[ix] = { ...window.__tables.invoices[ix], status: 'paid', paid_amount: 100, paid_at: t0 };
+      window.__tables.invoice_payments.push({ id: 'pay-eve-4', invoice_id: 'eve-part', payment_method_id: 'wallet-paid', amount: 40, entry_kind: 'receipt', created_at: t0, effective_at: t0 });
+      window.__paySources['eve-part']['pay-eve-4'] = ['premium_bundle'];
+      new BroadcastChannel('energia:invoices').postMessage({ type: 'invoices-changed', ids: ['eve-part'], from: 'another-tab' });
+    }, T0);
+    const reloadAt443 = Date.now();
+    await p.waitForFunction(() => !!modalButton('Print') && modalButton('Print').disabled);
+    await p.waitForFunction(() => document.querySelector('.modal')?.innerText.includes('Wallet — Paid Credit'));
+    ok('443: while the reload\'s sources are on their way, the copies are off', (await copyButtonsOff(p)).every(off => off === true));
+    await p.waitForFunction(() => !!modalButton('Print') && !modalButton('Print').disabled);
+    html = await print(p);
+    ok('443: after the reload, the payment just recorded prints with its source',
+      Date.now() - reloadAt443 >= 2400 && count(html, `${BRACKETED} · `) === 2 && count(html, 'Wallet — Credit Package Paid · ') === 2,
+      (html.match(/Wallet — Paid Credit[^·]*·/) || [''])[0]);
+    ok('no browser errors (443, slow sources)', p.errors.length === 0, p.errors.join(' | '));
+    await p.context().close();
   }
 
   console.log(`\nPASS credit-balance-print-browser: ${checks} checks`);

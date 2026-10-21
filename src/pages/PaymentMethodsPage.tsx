@@ -189,7 +189,7 @@ const PaymentMethodsPage: React.FC = () => {
                       <strong>{m.name}</strong>
                       {m.is_system && (
                         <span className="badge badge-primary" style={{ marginLeft: 8 }}
-                              title="One of the five Wallet credit types. It is always on, and cannot be renamed, switched off or deleted.">
+                              title="One of the Wallet credit types. It is always on, and cannot be renamed, switched off or deleted.">
                           <Lock size={10} aria-hidden="true" /> System
                         </span>
                       )}
@@ -232,7 +232,7 @@ const PaymentMethodsPage: React.FC = () => {
                      disabled={!!editing?.is_system} aria-describedby={editing?.is_system ? 'pm-name-hint' : undefined} />
               {editing?.is_system && (
                 <span id="pm-name-hint" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
-                  This is one of the five Wallet credit types. Its name stays as it is, and once on it stays on.
+                  This is one of the Wallet credit types. Its name stays as it is, and once on it stays on.
                 </span>
               )}
             </div>
@@ -250,7 +250,7 @@ const PaymentMethodsPage: React.FC = () => {
                 </div>
               </div>
             )}
-            {/* The five Wallet credit types are never switched off (the Owner,
+            {/* The Wallet credit types are never switched off (the Owner,
                 10 Oct 2026): Active is offered only to switch on one found off. */}
             {!(editing?.is_system && editing.is_active) && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>

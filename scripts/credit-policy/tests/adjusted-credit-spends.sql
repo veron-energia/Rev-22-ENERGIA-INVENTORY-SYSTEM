@@ -33,7 +33,9 @@ begin
   insert into stores(name,code,country_code) values ('ACS A','ACSA','SG') returning id into st;
   insert into stores(name,code,country_code) values ('ACS B','ACSB','SG') returning id into st2;
   insert into customers(full_name,phone) values ('ACS Buyer','+6598919353') returning id into c;
-  select id into wpm from payment_methods where wallet_category = 'paid' and is_system limit 1;
+  -- 443: 'Wallet — Paid Credit' (it names no source and pays the Other credit granted here); before 443 the one Paid method.
+  select wm.id into wpm from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+   and to_jsonb(wm) ->> 'wallet_source' is null order by wm.created_at, wm.id limit 1;
   if wpm is null then raise exception 'FIXTURE: no system paid-credit wallet payment method'; end if;
 
   svc := (upsert_therapy_service(null,'ACS-S','ACS Session',60,30,'per_hours',1,5,null,true,null)->>'id')::uuid;
@@ -200,7 +202,9 @@ begin
   insert into customers(full_name,phone)
     values ('ACS Statement '||sfx, '+6591'||lpad(floor(random()*1000000)::int::text, 6, '0')) returning id into c;
   insert into payment_methods(name,is_active) values ('ACS Cash '||sfx, true) returning id into cash;
-  select id into wpm from payment_methods where wallet_category = 'paid' and is_system limit 1;
+  -- 443: 'Wallet — Paid Credit' (it names no source and pays the Other credit granted here); before 443 the one Paid method.
+  select wm.id into wpm from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+   and to_jsonb(wm) ->> 'wallet_source' is null order by wm.created_at, wm.id limit 1;
   if wpm is null then raise exception 'FIXTURE: no system paid-credit wallet payment method'; end if;
 
   svc := (upsert_therapy_service(null,'ACSR-'||sfx,'ACS Statement Session '||sfx,60,30,'per_hours',1,5,null,true,null)->>'id')::uuid;

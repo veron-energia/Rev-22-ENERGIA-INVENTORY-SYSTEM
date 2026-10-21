@@ -110,7 +110,9 @@ begin
  insert into user_store_assignments(user_id,store_id) values(mgr,st),(a,st),(b,st),(c,st);
  insert into customers(full_name,phone) values('SSR Buyer',pg_temp.phone()) returning id into cust;
  insert into payment_methods(name,is_active) values('SSR Cash '||sfx,true) returning id into cash;
- select id into wpm from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: 'Wallet — Paid Credit' (it names no source and pays the Other credit granted here); before 443 the one Paid method.
+ select wm.id into wpm from payment_methods wm where wm.wallet_category='paid' and wm.is_system and wm.deleted_at is null
+  and to_jsonb(wm)->>'wallet_source' is null order by wm.created_at, wm.id limit 1;
  insert into products(name,sku,product_type) values('SSR 10.00','SSR10-'||sfx,'own') returning id into p10;
  insert into products(name,sku,product_type) values('SSR 10.01','SSR1001-'||sfx,'own') returning id into p1001;
  insert into products(name,sku,product_type) values('SSR 1000','SSR1000-'||sfx,'own') returning id into p1000;

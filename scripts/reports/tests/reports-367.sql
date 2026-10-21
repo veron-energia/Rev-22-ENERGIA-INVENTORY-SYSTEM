@@ -67,7 +67,9 @@ begin
  insert into stores(name,code,country_code) values('R367 Store '||sfx,'R367'||sfx,'SG') returning id into st;
  insert into customers(full_name,phone) values('R367 Buyer',pg_temp.phone()) returning id into cust;
  insert into payment_methods(name,is_active) values('R367 Cash '||sfx,true) returning id into cash;
- select id into wpm from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: 'Wallet — Paid Credit' (it names no source and pays the Other credit granted here); before 443 the one Paid method.
+ select wm.id into wpm from payment_methods wm where wm.wallet_category='paid' and wm.is_system and wm.deleted_at is null
+  and to_jsonb(wm)->>'wallet_source' is null order by wm.created_at, wm.id limit 1;
  insert into products(name,sku,product_type) values('R367 Item','R367-A-'||sfx,'own') returning id into p;
  insert into products(name,sku,product_type) values('R367 Half','R367-B-'||sfx,'own') returning id into p2;
  insert into store_inventory(store_id,product_id,current_qty) values(st,p,50),(st,p2,50);

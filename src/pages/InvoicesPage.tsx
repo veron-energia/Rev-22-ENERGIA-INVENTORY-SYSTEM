@@ -48,6 +48,7 @@ import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefres
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates';
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
+import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMethodLabel, type WalletAvailability } from '../lib/invoices/walletSources.mjs';
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
 import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
@@ -540,6 +541,13 @@ const InvoicesPage: React.FC = () => {
   const [bundleVoucherOpts, setBundleVoucherOpts] = useState<Record<string, any[]>>({});
   const [legacyDiag, setLegacyDiag] = useState<any>(null);
   const [payWallet, setPayWallet] = useState<any>(null);
+  // 443 (the Owner, 21 Oct 2026): what each wallet method can pay of the open
+  // invoice (invoice_wallet_availability; null until read, or before 443),
+  // and where each of its wallet payments' credit came from
+  // (invoice_payment_credit_sources: payment id -> sources), for the row's
+  // label, e.g. 'Wallet — Paid Credit (Premium Bundle)'.
+  const [payAvail, setPayAvail] = useState<WalletAvailability | null>(null);
+  const [paySources, setPaySources] = useState<Record<string, string[]>>({});
   const [warehouses, setWarehouses] = useState<any[]>([]);
   const [fulfilBusy, setFulfilBusy] = useState(false);
   const [fulfilErr, setFulfilErr] = useState<string | null>(null);
@@ -1724,6 +1732,24 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('customer_credit_balances', { p_customer_id: inv.customer_id })
         .then(({ data }) => { if (!superseded()) setPayWallet(data ?? null); });
     }
+    // 443: the same care for what each wallet method can pay of this invoice
+    // (read again with the invoice, so after each payment): figures read for
+    // this invoice when it had another customer (Edit Invoice, here or in
+    // another tab) are dropped at once, as the wallet is. Without 443 the read
+    // answers with an error and the page shows what it showed before.
+    setPayAvail(prev => (prev?.invoice_id === inv.id && prev?.customer_id === inv.customer_id ? prev : null));
+    if (inv.customer_id) {
+      supabase.rpc('invoice_wallet_availability', { p_invoice_id: inv.id })
+        .then(({ data, error }) => { if (!superseded()) setPayAvail(error ? null : ((data as WalletAvailability) ?? null)); });
+    }
+    // And the sources of its wallet payments (CREDIT-SPLIT-13), which the
+    // copies print beside each one, so the copies wait for them (below): a
+    // payment just recorded or corrected is never printed without its source.
+    // A failed read (or a server before 443) prints the method's own name and
+    // never holds the copies.
+    const sourcesLoaded = supabase.rpc('invoice_payment_credit_sources', { p_invoice_id: inv.id })
+      .then(({ data, error }) => { if (!superseded()) setPaySources(error ? {} : ((data as Record<string, string[]>) ?? {})); },
+        () => { if (!superseded()) setPaySources({}); });
     setDetailEvent(null); setEventTagErr(null);
     const [items, pays, svc, ther, financial, evt] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
@@ -1797,7 +1823,7 @@ const InvoicesPage: React.FC = () => {
     });
     setPayErr(null); setPayOutcome(null); setPayDate(singaporeToday());
     // Everything the printed and sent copies read is in: they may be made now.
-    await Promise.all([namesLoaded, billToLoaded, goodsLoaded]).catch(() => { /* the copy falls back to the page's own names */ });
+    await Promise.all([namesLoaded, billToLoaded, goodsLoaded, sourcesLoaded]).catch(() => { /* the copy falls back to the page's own names */ });
     if (superseded()) return;
     detailDataForRef.current = inv.id; setDetailLoadedFor(inv.id);
   };
@@ -2487,6 +2513,14 @@ const InvoicesPage: React.FC = () => {
   // The server resolves these whatever state the record is in now, so a
   // deactivated payment method, a deleted voucher or customer still prints.
   const printedMethod = (id: any): string => srvName(id) || txt(methods.find(m => m.id === id)?.name);
+  /** 443 (CREDIT-SPLIT-13): a payment row's method, with where a wallet
+   *  payment's credit came from when its method does not say, e.g.
+   *  'Wallet — Paid Credit (Premium Bundle)'. Payment ids are unique, so a
+   *  label is never another invoice's. */
+  const paymentLabel = (p: any, fallback = ''): string => {
+    const name = printedMethod(p?.payment_method_id) || fallback;
+    return name ? paymentMethodLabel(name, paySources[p?.id], methods.find(m => m.id === p?.payment_method_id) as any) : name;
+  };
   const printedVoucher = (id: any): string => srvName(id) || txt(voucherById(id)?.name);
   const printedCustomer = (d: any): string => txt(detailNames?.customer_name) || txt(customerOf(d?.customer_id)?.full_name) || '—';
   // A saved line's discount other than FOC: a voucher (any category), a
@@ -2658,7 +2692,7 @@ const InvoicesPage: React.FC = () => {
       ],
       grandTotal: [exLabels.totalLabel, `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
       payments: detailPayments.map((pm: any) => [
-        `${printedMethod(pm.payment_method_id) || 'Payment'} · ${displayDay(pm.effective_at || pm.created_at)}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
+        `${paymentLabel(pm, 'Payment')} · ${displayDay(pm.effective_at || pm.created_at)}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
         `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
       ] as [string, string]),
       paymentsTotal: `S$${paymentsTotal(detailPayments as any[]).toFixed(2)}`,
@@ -2876,7 +2910,7 @@ const InvoicesPage: React.FC = () => {
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
-      `<tr><td>${esc(printedMethod(p.payment_method_id))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(displayDay((p as any).effective_at || p.created_at))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
+      `<tr><td>${esc(paymentLabel(p))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(displayDay((p as any).effective_at || p.created_at))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
 
     // Service Provided By = the invoice's service staff, each with their work phone.
     const staffRows = servedBy().map(p => ({ full_name: p.name, work_phone: p.work_phone }));
@@ -3549,7 +3583,7 @@ const InvoicesPage: React.FC = () => {
                           {money(Number(p2.amount))}
                         </span>
                         <span style={{ flex: 1, fontSize: 12.5, color: 'var(--text-muted)' }}>
-                          {printedMethod(p2.payment_method_id) || '—'} — wallet credit; corrected from the payment list, not here
+                          {paymentLabel(p2) || '—'} — wallet credit; corrected from the payment list, not here
                         </span>
                       </div>
                     );
@@ -4612,6 +4646,7 @@ const InvoicesPage: React.FC = () => {
             )}
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
+              paymentLabel={(paymentId, fallback) => paymentLabel(detailPayments.find(x => x.id === paymentId) ?? { id: paymentId }, fallback)}
               usedValue={detailUsedValue}
               requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
               onRequestHandled={() => setFinanceRequest(null)}
@@ -4912,7 +4947,7 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
                   {detailPayments.map(p => (
                     <div key={p.id} className="invoice-payment-record">
-                      <span className="invoice-payment-record-label">{printedMethod(p.payment_method_id) || '—'} · {displayDay((p as any).effective_at || p.created_at)}
+                      <span className="invoice-payment-record-label">{paymentLabel(p) || '—'} · {displayDay((p as any).effective_at || p.created_at)}
                         {(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</span>
                       <span className="invoice-payment-record-actions">
                         <span style={{ fontWeight: 600 }}>{money(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1))}</span>
@@ -5056,6 +5091,18 @@ const InvoicesPage: React.FC = () => {
               // for the WHOLE invoice — the database enforces the same rule, so
               // this only spares the user a rejected attempt.
               const hasCreditLine = detailItems.some(it => it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle');
+              // 443: the wallet methods, from what the server says each can
+              // pay of this invoice (payAvail, read for this invoice and its
+              // customer now only), else from the customer's balance as before.
+              const availNow = payAvail?.invoice_id === detail.id && payAvail?.customer_id === detail.customer_id ? payAvail : null;
+              const walletOptions = walletMethodOptions({ methods: methods as any, availability: availNow,
+                balances: !payWallet?.customer_id || payWallet.customer_id === detail.customer_id ? payWallet : null, money });
+              // The payment's other rows count: what they already put on
+              // Credit Package credit is not offered again (CREDIT-SPLIT-7).
+              const packageFirstNote = (methodId: string, row: number) =>
+                creditPackageFirstNote({ methodId, methods: methods as any, availability: availNow, money,
+                  otherLines: payLines.filter((_, j) => j !== row) });
+              const walletSources = walletBySource(payWallet);
               return (
               <div>
                 {payErr && <div className="alert alert-danger"><span>⚠</span><div>{payErr}</div></div>}
@@ -5077,10 +5124,11 @@ const InvoicesPage: React.FC = () => {
                           // that is where a person looks for it — but it is
                           // never sent as a payment method.
                           { value: INSTALMENT_METHOD, label: 'Instalment' },
-                          ...methods.filter((m: any) => !m.is_wallet_credit || !hasCreditLine).map((m: any) => ({
-                            value: m.id, label: m.name + (m.is_wallet_credit ? ` — ${money(Number(payWallet?.categories?.[m.wallet_category] ?? 0))} available` : ''),
-                            disabled: m.is_wallet_credit && Number(payWallet?.categories?.[m.wallet_category] ?? 0) <= 0,
-                          }))]} />
+                          ...methods.filter((m: any) => !m.is_wallet_credit).map((m: any) => ({ value: m.id, label: m.name })),
+                          // 443: each wallet method with what it can pay of
+                          // THIS invoice, Credit Package first (the server's
+                          // order); none on an invoice that sells credit.
+                          ...(hasCreditLine ? [] : walletOptions)]} />
                       <input type="number" min={0} step={0.01} value={pl.amount || ''}
                         placeholder="Amount" style={{ width: 110 }}
                         onChange={e => setPayLines(ls => ls.map((l, j) => j === i ? { ...l, amount: +e.target.value } : l))} />
@@ -5089,6 +5137,12 @@ const InvoicesPage: React.FC = () => {
                           onShow={() => showPayQr(i, pl.payment_method_id, false)} />}
                       <button className="btn btn-secondary btn-sm btn-icon" onClick={() => setPayLines(ls => ls.filter((_, j) => j !== i))} disabled={payLines.length === 1}><X size={13} /></button>
                     </div>
+                    {/* 443 (CREDIT-SPLIT-6): Credit Package credit is used first by default. */}
+                    {packageFirstNote(pl.payment_method_id, i) && (
+                      <p role="note" style={{ margin: '-4px 0 0', fontSize: 11.5, color: 'var(--text-muted)' }}>
+                        {packageFirstNote(pl.payment_method_id, i)}
+                      </p>
+                    )}
                     {pl.payment_method_id === INSTALMENT_METHOD && (
                       <InstalmentPortionFields
                         value={pl.instalment ?? emptyPortion}
@@ -5119,12 +5173,16 @@ const InvoicesPage: React.FC = () => {
                 {payBlockedReason && payLines.some(p => p.amount > 0 || p.payment_method_id) &&
                   <p role="status" style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{payBlockedReason}</p>}
                 {!hasCreditLine && payWallet && Number(payWallet.available_total ?? 0) > 0 && (
-                  <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--text-muted)' }}>
-                    Wallet: <strong>{money(Number(payWallet.available_total))}</strong> available —
-                    {' '}{(['paid','bonus','legacy','promotional','exchange'] as const)
-                      .filter(k => Number(payWallet.categories?.[k] ?? 0) > 0)
-                      .map(k => `${k} ${money(Number(payWallet.categories[k]))}`).join(' · ')}
-                    <div>Bonus Credit is always spent first, then the oldest eligible credit. Credit-funded value earns no commission.</div>
+                  <div style={{ marginTop: 10, fontSize: 11.5, color: 'var(--text-muted)' }} data-testid="wallet-summary">
+                    {/* 443 (CREDIT-SPLIT-3, 4, 8): the wallet by where the
+                        credit came from; before 443, by kind as it was. */}
+                    Wallet: <strong>{money(Number(payWallet.available_total))}</strong> held —
+                    {' '}{walletSources
+                      ? walletSources.map(g => `${g.name} ${money(g.total)} (${g.parts.map(([n, v]) => `${n} ${money(v)}`).join(', ')})`).join(' · ')
+                      : (['paid','bonus','legacy','promotional','exchange'] as const)
+                          .filter(k => Number(payWallet.categories?.[k] ?? 0) > 0)
+                          .map(k => `${k} ${money(Number(payWallet.categories[k]))}`).join(' · ')}
+                    <div>Each wallet method pays only from its own credit, and only for what that credit may buy: the amount beside it is what it can pay of this invoice. Credit Package credit is listed first. Credit-funded value earns no commission.</div>
                   </div>
                 )}
 
@@ -5194,6 +5252,7 @@ const InvoicesPage: React.FC = () => {
         <InvoiceGuidedAction
           invoiceId={detail.id}
           canApprove={isOwnerOrManager(profile?.role)}
+          paymentLabel={(paymentId, fallback) => paymentLabel(detailPayments.find(x => x.id === paymentId) ?? { id: paymentId }, fallback)}
           onClose={() => setGuidedOpen(false)}
           onDone={async () => {
             // The open invoice first, so the figures behind the dialog are the

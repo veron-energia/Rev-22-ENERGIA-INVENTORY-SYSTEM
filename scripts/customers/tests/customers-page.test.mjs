@@ -369,6 +369,52 @@ test('View: a customer opened after another never shows the first one\'s wallet'
   assert.ok(!modal().textContent.includes('111.00'), 'Ada\'s wallet shows under Ben: ' + modal().textContent);
 });
 
+test('View (443): the wallet by source, each with its Paid and Bonus, and each package or bundle bought with what is left (used up too; credit moved in says so)', async () => {
+  await mount('manager');
+  backend.handlers.customer_credit_balances = a => ({
+    customer_id: a.p_customer_id, available_total: 1872,
+    categories: { paid: 1570, bonus: 170, legacy: 105, promotional: 15, exchange: 12 },
+    sources: {
+      credit_package: { paid: 1000, bonus: 100, legacy: 0, promotional: 0, exchange: 0, total: 1100 },
+      premium_bundle: { paid: 500, bonus: 50, legacy: 45, promotional: 0, exchange: 0, total: 595 },
+      other: { paid: 70, bonus: 20, legacy: 60, promotional: 15, exchange: 12, total: 177 },
+    },
+    purchases: [
+      { source: 'credit_package', name: 'Fixture Package', invoice_no: 'INV-2026-0901', bought_on: '2026-10-21', paid: 1000, bonus: 100, legacy: 0, total: 1100 },
+      { source: 'credit_package', name: 'Fixture Package', invoice_no: 'INV-2026-0903', bought_on: '2026-10-22', paid: 0, bonus: 0, legacy: 0, total: 0 },
+      { source: 'credit_package', name: 'Fixture Package', invoice_no: 'INV-2026-0904', bought_on: '2026-10-23', paid: 40, bonus: 0, legacy: 0, total: 40, received: true },
+      { source: 'premium_bundle', name: 'Fixture Bundle', invoice_no: 'INV-2026-0902', bought_on: '2026-10-21', paid: 500, bonus: 50, legacy: 45, total: 595 },
+    ],
+  });
+  await click(button('View', row('Ada Tan')));
+  const bySource = modal().querySelector('[data-testid="credit-by-source"]');
+  assert.ok(bySource, 'the wallet by source: ' + modal().textContent);
+  const t = bySource.textContent;
+  assert.ok(t.includes('Credit Package') && t.includes('S$1100.00') && t.includes('Paid S$1000.00 · Bonus S$100.00'), t);
+  assert.ok(t.includes('Premium Bundle') && t.includes('S$595.00') && t.includes('Paid S$500.00 · Bonus S$50.00 · Legacy S$45.00'), t);
+  assert.ok(t.includes('Other') && t.includes('S$177.00') && t.includes('Paid S$70.00 · Bonus S$20.00 · Legacy S$60.00 · Promotional S$15.00 · Exchange S$12.00'), t);
+  const bought = modal().querySelector('[data-testid="credit-purchases"]').textContent;
+  assert.ok(bought.includes('Credit Package bought') && bought.includes('Fixture Package · INV-2026-0901 · 21/10/2026')
+    && bought.includes('S$1100.00 left'), bought);
+  assert.ok(bought.includes('Premium Bundle bought') && bought.includes('Fixture Bundle · INV-2026-0902')
+    && bought.includes('(Paid S$500.00 · Bonus S$50.00 · Legacy S$45.00)'), bought);
+  // One used up is still listed, at S$0.00; credit moved in from another
+  // customer's purchase says so.
+  const rows = [...modal().querySelectorAll('[data-testid="credit-purchases"] > div > div')].map(d => d.textContent);
+  assert.ok(rows.some(r => r.includes('INV-2026-0903') && r.includes('S$0.00 left') && !r.includes('received')), rows.join(' | '));
+  assert.ok(rows.some(r => r.includes('INV-2026-0904 · 23/10/2026 · received from another customer') && r.includes('S$40.00 left')), rows.join(' | '));
+  assert.ok(!rows.some(r => r.includes('INV-2026-0901') && r.includes('received')), 'one bought here is not "received"');
+  assert.ok(modal().textContent.includes('S$1872.00'), 'the total, as before');
+});
+
+test('View (before 443): a balance with no sources shows the categories as before', async () => {
+  await mount('manager');
+  backend.handlers.customer_credit_balances = () => ({ available_total: 350, categories: { paid: 300, bonus: 50 } });
+  await click(button('View', row('Ada Tan')));
+  assert.ok(!modal().querySelector('[data-testid="credit-by-source"]') && !modal().querySelector('[data-testid="credit-purchases"]'));
+  assert.ok(modal().textContent.includes('S$300.00') && modal().textContent.includes('S$50.00'), modal().textContent);
+});
+
 test('View: a failed load says so with Retry instead of "Loading…" for ever', async () => {
   await mount('manager', b => b.failures.set('customer_overview', 'customer_overview failed (fixture)'));
   await click(button('View', row('Ada Tan')));

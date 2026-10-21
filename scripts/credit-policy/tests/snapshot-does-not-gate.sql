@@ -23,8 +23,12 @@ begin
  insert into stores(name,code,country_code) values('SG Store','SGS','SG') returning id into st;
  insert into customers(full_name,phone) values('SG Buyer','+6598912001') returning id into c;
  insert into payment_methods(name) values('SG Cash') returning id into pm;
- select id into wpm_paid  from payment_methods where wallet_category='paid'  and is_system limit 1;
- select id into wpm_bonus from payment_methods where wallet_category='bonus' and is_system limit 1;
+ -- 443: the paid method of this credit's source (credit_package); before 443, the paid one.
+ select wm.id into wpm_paid from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
+ -- 443: the bonus method of this credit's source (credit_package); before 443, the bonus one.
+ select wm.id into wpm_bonus from payment_methods wm where wm.wallet_category = 'bonus' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
 
  insert into products(name,sku,product_type) values('SG Own','SG-OWN','own') returning id into own_p;
  insert into store_inventory(store_id,product_id,current_qty) values(st,own_p,50);

@@ -1198,7 +1198,7 @@ const TherapyPage: React.FC = () => {
               )}
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>
                 A percentage is taken from the <strong>customer price</strong>, not the credit issued.
-                Bonus Credit is always spent before Paid Credit; what it buys is shown above.
+                Bonus Credit is paid with its own wallet method (Wallet — Credit Package Bonus), chosen at the till; what it buys is shown above.
               </div>
             </div>
 

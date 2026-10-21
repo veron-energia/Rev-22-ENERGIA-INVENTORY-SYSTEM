@@ -48,8 +48,12 @@ type Options = { financial: Record<string, any>; sources: Source[]; benefits: Be
 /** All amounts are proposals: the locked database transaction rechecks capacity,
  * source ownership, benefit use and stock evidence before recording anything. */
 export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, stores = [], onChanged,
-  requestedMode = null, requestedPaymentId = null, onRequestHandled, onActiveChange, usedValue = null }: {
+  requestedMode = null, requestedPaymentId = null, onRequestHandled, onActiveChange, usedValue = null, paymentLabel }: {
   invoiceId: string; canManage: boolean; payments: any[]; methods: any[]; stores?: { id: string; name: string }[]; onChanged: () => Promise<void>;
+  /** 443: a payment's method as the invoice shows it, with where a wallet
+   *  payment's credit came from, e.g. 'Wallet — Paid Credit (Premium Bundle)'.
+   *  Without it, the method's name. */
+  paymentLabel?: (paymentId: string, fallback: string) => string;
   /** 409: on a cancelled invoice, what its customer already had from it (the
    *  guided cancellation's override codes); null while unknown. With any, the
    *  money it holds is not all owed back, and "Record refund paid" is not
@@ -64,6 +68,9 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   onActiveChange?: (active: boolean) => void;
 }) {
   const [options, setOptions] = useState<Options | null>(null);
+  // 443: a payment named as the invoice names it (its credit's source).
+  const payLabel = (paymentId: string, fallback: string) => (paymentLabel ? paymentLabel(paymentId, fallback) || fallback : fallback);
+  const sourceLabel = (src: Source) => (src.wallet ? payLabel(src.payment_id, src.method) : src.method);
   const [mode, setMode] = useState<Mode>('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -332,7 +339,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
           recorded against the original payments it came in on; a payment made with credit gets that credit back.</p>
         <strong>Paid back through</strong>
         {options.sources.filter(s => Number(s.remaining) > 0).map(s => <div key={s.payment_id}>{amountInput(
-          `${s.method} · ${s.wallet ? 'credit restored' : 'money returned'} · up to ${money(s.remaining)}`,
+          `${sourceLabel(s)} · ${s.wallet ? 'credit restored' : 'money returned'} · up to ${money(s.remaining)}`,
           sourceAmounts[s.payment_id], Number(s.remaining), n => { setDueTouched(true); setSourceAmounts(v => ({ ...v, [s.payment_id]: n })); })}</div>)}
         {options.sources.every(s => Number(s.remaining) <= 0) && <p role="alert">No payment on this invoice still holds money, so there is nothing to record.</p>}
         <p>Recording {money(dueTotal)} of the {money(refundDue)} still due.</p>
@@ -372,7 +379,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         </div>)}
         {Number(f?.overpayment_refundable) > 0 && options.benefits.length === 0 && amountInput('Correction overpayment', lineAmounts.excess, f?.overpayment_refundable, n => setLineAmounts(v => ({ ...v, excess: n })))}
         <strong>Return through original payment sources</strong>
-        {options.sources.map(s => <div key={s.payment_id}>{amountInput(`${s.method} · ${s.wallet ? 'restore credit' : 'actual refund'} · up to ${money(s.remaining)}`, sourceAmounts[s.payment_id], s.remaining, n => setSourceAmounts(v => ({ ...v, [s.payment_id]: n })))}</div>)}
+        {options.sources.map(s => <div key={s.payment_id}>{amountInput(`${sourceLabel(s)} · ${s.wallet ? 'restore credit' : 'actual refund'} · up to ${money(s.remaining)}`, sourceAmounts[s.payment_id], s.remaining, n => setSourceAmounts(v => ({ ...v, [s.payment_id]: n })))}</div>)}
         <p>Line refund: {money(total)} · Payment allocation: {money(sourceTotal)}</p>
         {options.stock.length > 0 && <strong>Actual product outcomes (quantities)</strong>}
         {options.stock.filter(s => s.quantity > s.resolved_quantity).map(s => <fieldset key={s.movement_id}>
@@ -392,7 +399,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       </>}
       {mode === 'payment' && <>
         <p>The original payment stays in history. This records a reversal and replacement, with a reason. It does not record a customer refund.</p>
-        <InvoiceSearchSelect label="Recorded payment" value={paymentId} onChange={choosePayment} options={currentPayments.map(p => ({ value: p.id, label: `${methods.find(m => m.id === p.payment_method_id)?.name || 'Payment'} · ${money(p.amount)} · ${paymentDay(p.effective_at || p.created_at)}` }))} />
+        <InvoiceSearchSelect label="Recorded payment" value={paymentId} onChange={choosePayment} options={currentPayments.map(p => ({ value: p.id, label: `${payLabel(p.id, methods.find(m => m.id === p.payment_method_id)?.name || 'Payment')} · ${money(p.amount)} · ${paymentDay(p.effective_at || p.created_at)}` }))} />
         <label>Correct amount<input type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(Number(e.target.value))} /></label>
         {/* 417 (AFTER-16): a payment is never dated in the future (Singapore). */}
         <label>Actual payment date<input type="date" value={date} max={singaporeToday()} onChange={e => setDate(e.target.value)} /></label>

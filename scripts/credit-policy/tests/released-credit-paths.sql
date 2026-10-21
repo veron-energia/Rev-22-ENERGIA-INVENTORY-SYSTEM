@@ -167,14 +167,35 @@ begin
   perform record_invoice_payment(p_invoice, jsonb_build_array(jsonb_build_object(
     'payment_method_id',pg_temp.fx('pm'),'amount',p_amount)), gen_random_uuid());
 end $$;
+-- 443: Paid credit of any source, as 'Wallet — Paid Credit' paid it before
+-- 443: since 443 each source has its own method, so the amount is split over
+-- them, Credit Package first (invoice_wallet_availability). Before 443, the
+-- one Paid method.
+create function pg_temp.paid_credit(p_invoice uuid, p_amount numeric) returns jsonb language plpgsql as $$
+declare v_out jsonb := '[]'::jsonb; v_left numeric := p_amount; v_take numeric; m jsonb; v_first text;
+begin
+  if to_regprocedure('public.invoice_wallet_availability(uuid)') is null then
+    return jsonb_build_array(jsonb_build_object('payment_method_id', pg_temp.fx('wpm'), 'amount', p_amount)); end if;
+  for m in select x from jsonb_array_elements(public.invoice_wallet_availability(p_invoice) -> 'methods') x
+            where x ->> 'wallet_category' = 'paid' and x ->> 'pays_from' in ('credit_package', 'premium_bundle')
+            order by (x ->> 'rank')::int loop
+    v_first := coalesce(v_first, m ->> 'payment_method_id');
+    v_take := least(v_left, (m ->> 'available')::numeric);
+    if v_take > 0 then
+      v_out := v_out || jsonb_build_object('payment_method_id', m ->> 'payment_method_id', 'amount', v_take);
+      v_left := v_left - v_take;
+    end if;
+  end loop;
+  if v_left > 0 then v_out := v_out || jsonb_build_object('payment_method_id', v_first, 'amount', v_left); end if;
+  return v_out;
+end $$;
 -- The customer spends released credit for real: therapy at S$100 a session, paid from the wallet.
 create function pg_temp.spend(p_customer uuid, p_sessions int) returns uuid language plpgsql as $$
 declare v_inv uuid;
 begin
   v_inv := pg_temp.invoice(p_customer, jsonb_build_array(jsonb_build_object(
              'kind','therapy','therapy_service_id',pg_temp.fx('svc'),'quantity',p_sessions)));
-  perform record_invoice_payment(v_inv, jsonb_build_array(jsonb_build_object(
-    'payment_method_id',pg_temp.fx('wpm'),'amount',100 * p_sessions)), gen_random_uuid());
+  perform record_invoice_payment(v_inv, pg_temp.paid_credit(v_inv, 100 * p_sessions), gen_random_uuid());
   return v_inv;
 end $$;
 create function pg_temp.lines(p_invoice uuid, p_kind text) returns uuid[] language sql stable as
@@ -289,7 +310,10 @@ begin
   perform set_config('request.jwt.claim.sub', own::text, true);
   insert into stores(name,code,country_code) values ('RCP Store '||sfx,'RCP-'||sfx,'SG') returning id into st;
   insert into payment_methods(name) values ('RCP Cash '||sfx) returning id into pm;
-  select id into wpm from payment_methods where wallet_category = 'paid' and is_system limit 1;
+  -- The one Paid method before 443 (pg_temp.paid_credit uses it only then); since 443
+  -- 'Wallet — Paid Credit', which names no source.
+  select wm.id into wpm from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+   and to_jsonb(wm) ->> 'wallet_source' is null order by wm.created_at, wm.id limit 1;
   insert into vouchers(name,code,qty_type,reward_eligible) values ('RCP V '||sfx,'RCP-V-'||sfx,'limited',true) returning id into v;
   insert into voucher_store_stock(voucher_id,store_id,current_qty) values (v,st,500);
   insert into voucher_store_prices(voucher_id,store_id,selling_price,available_at_store) values (v,st,20,true);
@@ -1209,7 +1233,7 @@ begin
   -- 860 of the second line's 900 spent: 800 in sessions, then 60 toward one more.
   perform pg_temp.spend(c, 8);
   t := pg_temp.invoice(c, jsonb_build_array(jsonb_build_object('kind','therapy','therapy_service_id',pg_temp.fx('svc'),'quantity',1)));
-  perform record_invoice_payment(t, jsonb_build_array(jsonb_build_object('payment_method_id',pg_temp.fx('wpm'),'amount',60)), gen_random_uuid());
+  perform record_invoice_payment(t, pg_temp.paid_credit(t, 60), gen_random_uuid());
   if pg_temp.held(c) <> 40 or (select l.remaining_amount from customer_credit_lots l where l.id = lot2) <> 40
      or credit_package_released_paid_credit(q1) <> 900 or credit_package_released_paid_credit(q2) <> 900 or pg_temp.used(c) <> 1760 then
     raise exception 'FAIL 10c (fixture): expected 900 released to each line, 1,760 spent and 40 left on the second line''s lot (held %, lot %, spent %, lines %)',

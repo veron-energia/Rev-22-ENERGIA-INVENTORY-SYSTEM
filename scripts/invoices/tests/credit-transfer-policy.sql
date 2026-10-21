@@ -1,6 +1,7 @@
 begin;
 do $$
 declare o uuid:=gen_random_uuid(); st uuid; st2 uuid; a uuid; b uuid; c uuid; cash uuid; wallet_paid uuid; wallet_bonus uuid;
+ wallet_bundle_paid uuid;
  package_id uuid; purchase uuid; original_paid uuid; original_bonus uuid; paid_benefit uuid; bonus_benefit uuid;
  first_paid uuid; final_paid uuid; final_bonus uuid; first_benefit uuid; last_benefit uuid; last_transfer uuid;
  product_own uuid; product_third uuid; session_voucher uuid; spend uuid; fake uuid; paid_restrictions jsonb;
@@ -15,9 +16,16 @@ begin
  insert into customers(full_name,phone) values('Policy First Recipient','+6591238742') returning id into b;
  insert into customers(full_name,phone) values('Policy Final Recipient','+6591238743') returning id into c;
  insert into payment_methods(name) values('Credit Policy Cash') returning id into cash;
- select id into wallet_paid from payment_methods where is_system and wallet_category='paid' limit 1;
- select id into wallet_bonus from payment_methods where is_system and wallet_category='bonus' limit 1;
- if wallet_paid is null or wallet_bonus is null then raise exception 'Wallet payment methods are missing from the baseline'; end if;
+ -- 443: the paid method of this credit's source (credit_package); before 443, the paid one.
+ select wm.id into wallet_paid from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
+ -- 443: the bonus method of this credit's source (credit_package); before 443, the bonus one.
+ select wm.id into wallet_bonus from payment_methods wm where wm.wallet_category = 'bonus' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
+ -- 443: the paid method of this credit's source (premium_bundle); before 443, the paid one.
+ select wm.id into wallet_bundle_paid from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'premium_bundle' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
+ if wallet_paid is null or wallet_bonus is null or wallet_bundle_paid is null then raise exception 'Wallet payment methods are missing from the baseline'; end if;
 
  insert into credit_packages(name,customer_price,paid_credit_amount,bonus_enabled,bonus_value,allow_product,allow_therapy,allow_voucher,grants_reward)
   values('Recorded Policy Package',100,120,true,20,true,true,true,false) returning id into package_id;
@@ -98,7 +106,7 @@ begin
  if credit_lot_policy_for(bundle_paid)<>'bundle_any' or credit_lot_policy_for(bundle_bonus)<>'bundle_any' then
   raise exception 'Transferred bundle credit did not retain the bundle policy'; end if;
  spend:=create_invoice(st2,c,null,jsonb_build_array(jsonb_build_object('kind','product','product_id',product_third,'quantity',1)));
- perform record_invoice_payment(spend,jsonb_build_array(jsonb_build_object('payment_method_id',wallet_paid,'amount',5)),gen_random_uuid());
+ perform record_invoice_payment(spend,jsonb_build_array(jsonb_build_object('payment_method_id',wallet_bundle_paid,'amount',5)),gen_random_uuid());
  if not exists(select 1 from invoice_line_credit_allocations where invoice_id=spend and lot_id=bundle_paid and amount=5)
   or (select remaining_amount from customer_credit_lots where id=final_paid)<>115 then
   raise exception 'Third-party spending did not select only the transferred bundle credit'; end if;

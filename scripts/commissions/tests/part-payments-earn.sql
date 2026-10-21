@@ -313,7 +313,9 @@ declare st uuid:=pg_temp.fx('st'); p uuid:=pg_temp.fx('p'); m uuid:=pg_temp.fx('
  s1 uuid:=pg_temp.fx('s1'); s3 uuid:=pg_temp.fx('s3'); buyer uuid:=pg_temp.fx('buyer'); wpm uuid; inv uuid; lot uuid;
  ref_na uuid; buyer2 uuid;
 begin
- select id into wpm from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: 'Wallet — Paid Credit' (it names no source and pays the Other credit granted here); before 443 the one Paid method.
+ select wm.id into wpm from payment_methods wm where wm.wallet_category='paid' and wm.is_system and wm.deleted_at is null
+  and to_jsonb(wm)->>'wallet_source' is null order by wm.created_at, wm.id limit 1;
  -- wallet credit never earns; cash does
  lot:=grant_customer_credit(buyer,'paid',400,'opening_balance',null,st,sg_today(),null,'test',null,null,own,null);
  inv:=create_invoice_with_details(st,buyer,jsonb_build_array(jsonb_build_object('kind','product','product_id',p,'quantity',1)),

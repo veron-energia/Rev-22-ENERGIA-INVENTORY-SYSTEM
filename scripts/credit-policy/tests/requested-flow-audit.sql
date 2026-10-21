@@ -14,8 +14,12 @@ begin
  insert into customers(full_name,phone) values('Audit B','+6598987102') returning id into b;
  insert into customers(full_name,phone) values('Audit C','+6598987103') returning id into c;
  insert into payment_methods(name) values('Audit Cash') returning id into pm;
- select id into paidpm from payment_methods where wallet_category='paid' and is_system limit 1;
- select id into bonuspm from payment_methods where wallet_category='bonus' and is_system limit 1;
+ -- 443: the paid method of this credit's source (credit_package); before 443, the paid one.
+ select wm.id into paidpm from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
+ -- 443: the bonus method of this credit's source (credit_package); before 443, the bonus one.
+ select wm.id into bonuspm from payment_methods wm where wm.wallet_category = 'bonus' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
  insert into credit_packages(name,customer_price,paid_credit_amount,bonus_enabled,bonus_mode,bonus_value,allow_product,allow_therapy,effective_from)
  values('Audit Package',500,500,true,'fixed',200,true,true,current_date) returning id into cp;
  insert into credit_package_stores(package_id,store_id) values(cp,st);

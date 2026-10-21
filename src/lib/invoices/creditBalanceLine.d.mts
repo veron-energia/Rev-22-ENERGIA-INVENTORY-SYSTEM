@@ -1,5 +1,7 @@
 export type WalletKind = 'paid' | 'bonus' | 'legacy' | 'promotional' | 'exchange';
 export const WALLET_KINDS: readonly (readonly [WalletKind, string])[];
+export type CreditSource = 'credit_package' | 'premium_bundle' | 'other';
+export const CREDIT_SOURCES: readonly (readonly [CreditSource, string])[];
 export const NO_CREDIT_LINE_STATUSES: readonly string[];
 export const CREDIT_BALANCE_TIMEOUT_MS: number;
 
@@ -8,6 +10,8 @@ export interface CreditBalances {
   customer_id?: string | null;
   categories?: Partial<Record<WalletKind, number | string | null>> | null;
   available_total?: number | string | null;
+  /** 443: the same credit by where it came from, each with its categories and total. */
+  sources?: Partial<Record<CreditSource, Partial<Record<WalletKind | 'total', number | string | null>>>> | null;
 }
 export interface CreditBalanceLine { label: string; amount: string; detail: string | null }
 export interface PaymentLike { amount?: number | string | null; entry_kind?: string | null; payment_method_id?: string | null }

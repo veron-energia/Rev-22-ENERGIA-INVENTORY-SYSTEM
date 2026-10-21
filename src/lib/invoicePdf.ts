@@ -41,7 +41,8 @@ export interface PdfDoc {
   grandTotal?: [string, string];
   payments?: [string, string][];
   /** The customer's credit balance as printed, read fresh for this copy —
-   *  see src/lib/invoices/creditBalanceLine.mjs. Absent when it does not apply. */
+   *  see src/lib/invoices/creditBalanceLine.mjs: the total, and under it where
+   *  the credit came from (443). Absent when it does not apply. */
   creditBalance?: { label: string; amount: string; detail?: string | null } | null;
   payDetails?: string[];
   staffName?: string | null;
@@ -172,7 +173,8 @@ export function creditBalanceShown(d: PdfDoc): CreditBalanceShown | null {
  * is lower down.
  *
  * Drawn with the full line first. If that ends past the limit, the breakdown
- * of kinds is left off and only the total is drawn (beside the totals if it
+ * (where the credit came from: Credit Package, Premium Bundle, Other; 443) is
+ * left off and only the total is drawn (beside the totals if it
  * fits there now); if even that does not fit, the copy goes without the line.
  * At most three drawings; each one thrown away is handed to `discard` (the
  * image releases its canvas). How it came out is kept: creditBalanceShown.
@@ -519,7 +521,8 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
     y += 4.2;
     if (d.creditBalance.detail) {
       doc.setFontSize(8.5); grey();
-      // Wrapped between kinds only, never between a kind's name and its amount.
+      // Wrapped between parts only ('Credit Package S$… · Premium Bundle S$… ·
+      // Other S$…', 443), never between a part's name and its amount.
       for (const ln of wrapCreditDetail(d.creditBalance.detail, RIGHT - M, t => doc.getTextWidth(t))) { doc.text(ln, M, y); y += 3.4; }
       doc.setFontSize(10); black();
     }

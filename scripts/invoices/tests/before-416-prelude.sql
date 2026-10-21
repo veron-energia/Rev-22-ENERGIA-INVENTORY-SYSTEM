@@ -411,8 +411,13 @@ begin
   for r in select * from (values
     ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', '5f3f317dfb226be09055142dc44bdec7',
      array['8a126ade5710d340378ac4e75931b05b', '422682d6e1ada0e5d98053e74ab9f007'], c_correct_invoice),
-    ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '63efea7ed4721721b598f2e1237b8f6c', array['f3c96d9916a95a68a9202cdb25d8017b'], c_correct_invoice_payment),
-    ('record_invoice_payment(uuid,jsonb,uuid)', '95a02a1685af524ecf0201b4ed7f9a67', array['c3da81f28d5a24a1c5f336527cfc33a4'], c_record_invoice_payment)
+    -- 443 changes both payment functions again (af993370..., 9c70097e...): they
+    -- are put back the same way (their allocator call, three arguments, still
+    -- resolves: 443's fourth has a default, any source).
+    ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '63efea7ed4721721b598f2e1237b8f6c',
+     array['f3c96d9916a95a68a9202cdb25d8017b', 'af99337094edb6d73b9cc0ae00fbf138'], c_correct_invoice_payment),
+    ('record_invoice_payment(uuid,jsonb,uuid)', '95a02a1685af524ecf0201b4ed7f9a67',
+     array['c3da81f28d5a24a1c5f336527cfc33a4', '9c70097ed4da614fb9dcc66fdfcdb7d6'], c_record_invoice_payment)
   ) x(fn, before_md5, after_md5, def)
   loop
     v := md5(pg_get_functiondef(to_regprocedure('public.' || r.fn)));

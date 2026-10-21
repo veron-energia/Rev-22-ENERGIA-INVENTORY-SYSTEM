@@ -109,12 +109,17 @@ type RequestStatus = {
  * the request being submitted, the request being approved, money going back,
  * and goods coming back.
  */
-export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, requestId: reviewRequestId }: {
+export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, requestId: reviewRequestId, paymentLabel }: {
   invoiceId: string; canApprove: boolean; onDone: () => Promise<void> | void; onClose: () => void;
   /** Approval mode: review an existing request instead of raising a new one.
    *  The same steps, plan, stock confirmation and override fields are reused,
    *  so an approval from Approvals and one from the invoice cannot diverge. */
   requestId?: string;
+  /** 443: a payment's method as the invoice shows it, with where a wallet
+   *  payment's credit came from, e.g. 'Wallet — Paid Credit (Premium Bundle)',
+   *  so the review names the credit it gives back as the invoice does.
+   *  Without it (Approvals), the method's name. */
+  paymentLabel?: (paymentId: string, fallback: string) => string;
 }) {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [action, setAction] = useState<Action | null>(null);
@@ -785,7 +790,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                     <h5>Money returned</h5>
                     <p className="invoice-guided-figure">{money(fx.money_returned.total)}</p>
                     <ul>{(fx.money_returned.destinations ?? []).map(d => (
-                      <li key={d.payment_id}>{money(d.amount)} to {d.method}
+                      <li key={d.payment_id}>{money(d.amount)} to {d.wallet && paymentLabel ? (paymentLabel(d.payment_id, d.method) || d.method) : d.method}
                         {d.wallet ? ' — restores the original credit' : ''}</li>))}</ul>
                     <p className="muted">Recording this does not send money anywhere. It records that
                       the money was returned; making the payment is a separate act.</p>

@@ -340,7 +340,9 @@ begin
  insert into stores(name,code,country_code) values('RP6 Store','RP6','SG') returning id into st;
  insert into customers(full_name,phone) values('RP6 Buyer','+6598911783') returning id into c;
  insert into payment_methods(name) values('RP6 Cash') returning id into pm;
- select id into wpm_paid from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: the paid method of this credit's source (credit_package); before 443, the paid one.
+ select wm.id into wpm_paid from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
  svc:=(upsert_therapy_service(null,'RP6-PR','RP6 Session',50,30,'per_hours',1,5,null,true,null)->>'id')::uuid;
  perform set_therapy_service_store(svc,st,true,null);
  insert into credit_packages(name,customer_price,paid_credit_amount,allow_product,allow_therapy)
@@ -403,7 +405,9 @@ begin
  insert into stores(name,code,country_code) values('RP7 Store','RP7','SG') returning id into st;
  insert into customers(full_name,phone) values('RP7 Buyer','+6598911784') returning id into c;
  insert into payment_methods(name) values('RP7 Cash') returning id into pm;
- select id into wpm_paid from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: the paid method of this credit's source (credit_package); before 443, the paid one.
+ select wm.id into wpm_paid from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
  svc:=(upsert_therapy_service(null,'RP7-PR','RP7 Session',50,30,'per_hours',1,5,null,true,null)->>'id')::uuid;
  perform set_therapy_service_store(svc,st,true,null);
  insert into credit_packages(name,customer_price,paid_credit_amount,allow_product,allow_therapy)

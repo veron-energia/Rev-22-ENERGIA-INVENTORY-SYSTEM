@@ -15,6 +15,7 @@ import { visitFilterArgs, visitFilterActive, sgDate, sgDayOf } from '../lib/refe
 import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
 import { canEditCustomers } from '../lib/customers/customerRoles.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
+import { walletSourceTiles, purchasesBySource } from '../lib/invoices/walletSources.mjs';
 
 // join_person_name() in the database: the two parts, trimmed, single-spaced,
 // with either side allowed to be empty. Mirrored here so the name the form
@@ -155,6 +156,10 @@ const CustomersPage: React.FC = () => {
   // (a slow one, for the customer opened before) is dropped.
   const overviewIdRef = useRef<string | null>(null);
   const [credit, setCredit] = useState<any>(null);
+  // 443: the wallet by source and each package or bundle bought (null and
+  // none from a server before 443: the categories show, as before).
+  const creditTiles = useMemo(() => walletSourceTiles(credit), [credit]);
+  const creditBought = useMemo(() => purchasesBySource(credit), [credit]);
   const [creditRows, setCreditRows] = useState<any[]>([]);
   const [creditForm, setCreditForm] = useState<any>(null);
   const [creditBusy, setCreditBusy] = useState(false);
@@ -871,15 +876,54 @@ const CustomersPage: React.FC = () => {
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>available, all stores</div>
                     </div>
-                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
-                      {(['paid','bonus','legacy','promotional','exchange'] as const).map(k => (
-                        <div key={k}>
-                          <div style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{k}</div>
-                          <div style={{ fontWeight: 600 }}>S${Number(credit.categories?.[k] ?? 0).toFixed(2)}</div>
+                    {creditTiles ? (
+                      // 443 (the Owner, 21 Oct 2026, CREDIT-SPLIT-3, 4, 12): by
+                      // where the credit came from, each with its Paid and Bonus.
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12 }} data-testid="credit-by-source">
+                        {creditTiles.map(g => (
+                          <div key={g.source}>
+                            <div style={{ color: 'var(--text-muted)' }}>{g.name}</div>
+                            <div style={{ fontWeight: 600 }}>S${g.total.toFixed(2)}</div>
+                            {g.parts.length > 0 && (
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                {g.parts.map(([n, v]) => `${n} S$${v.toFixed(2)}`).join(' · ')}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
+                        {(['paid','bonus','legacy','promotional','exchange'] as const).map(k => (
+                          <div key={k}>
+                            <div style={{ color: 'var(--text-muted)', textTransform: 'capitalize' }}>{k}</div>
+                            <div style={{ fontWeight: 600 }}>S${Number(credit.categories?.[k] ?? 0).toFixed(2)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {creditBought.length > 0 && (
+                    // Each package and bundle bought, with what is left of it
+                    // (one used up too, at S$0.00); credit moved in from
+                    // another customer's purchase says so.
+                    <div style={{ marginTop: 8, fontSize: 12 }} data-testid="credit-purchases">
+                      {creditBought.map(g => (
+                        <div key={g.source} style={{ marginBottom: 4 }}>
+                          <div style={{ color: 'var(--text-muted)' }}>{g.name} bought</div>
+                          {g.items.map((b, i) => (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                              <span>{b.name}{b.invoiceNo ? ` · ${b.invoiceNo}` : ''}{b.boughtOn ? ` · ${showDate(b.boughtOn)}` : ''}{b.received ? ' · received from another customer' : ''}</span>
+                              <span>
+                                <strong>S${b.total.toFixed(2)}</strong> left
+                                {b.parts.length > 0 && <span style={{ color: 'var(--text-muted)' }}> ({b.parts.map(([n, v]) => `${n} S$${v.toFixed(2)}`).join(' · ')})</span>}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                       ))}
                     </div>
-                  </div>
+                  )}
                   {creditRows.length > 0 && (
                     <div style={{ marginTop: 8, maxHeight: 190, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
                       <table style={{ fontSize: 11.5 }}>

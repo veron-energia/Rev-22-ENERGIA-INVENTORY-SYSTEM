@@ -2,10 +2,14 @@
 //
 // Owner's decision, 2 Oct 2026: the printed invoice (both halves) and the
 // customer copy sent as a PDF or image show the customer's wallet credit as it
-// stands at the moment of printing — a total, then each kind they hold:
+// stands at the moment of printing — a total, then where it came from (the
+// Owner, 21 Oct 2026, CREDIT-SPLIT-11; non-zero only):
 //
-//   Credit balance (as at 2 Oct 2026)          S$350.00
-//   Paid S$300.00 · Bonus S$50.00
+//   Credit balance (as at 21 Oct 2026)         S$350.00
+//   Credit Package S$300.00 · Premium Bundle S$40.00 · Other S$10.00
+//
+// From a server before 443 (no sources in the balance) it lists the kinds
+// instead, as it did: 'Paid S$300.00 · Bonus S$50.00'.
 //
 // It shows when the invoice has a customer and either the customer holds credit
 // or the invoice was paid at least partly from their wallet (then even at
@@ -29,6 +33,13 @@ export const WALLET_KINDS = Object.freeze([
   Object.freeze(['legacy', 'Legacy']),
   Object.freeze(['promotional', 'Promotional']),
   Object.freeze(['exchange', 'Exchange']),
+]);
+
+/** Where credit came from, in the order the invoice lists them (443, CREDIT-SPLIT-11). */
+export const CREDIT_SOURCES = Object.freeze([
+  Object.freeze(['credit_package', 'Credit Package']),
+  Object.freeze(['premium_bundle', 'Premium Bundle']),
+  Object.freeze(['other', 'Other']),
 ]);
 
 /** Statuses whose invoice never carries the line (our default, not the owner's). */
@@ -100,11 +111,15 @@ export function shouldShowCreditBalance({ customerId, status, balanceTotal, paid
 
 /**
  * The line itself, from customer_credit_balances(): { label, amount, detail }.
- * `detail` lists the kinds the customer holds, and is null when they hold none.
+ * `detail` lists where the customer's credit came from (Credit Package,
+ * Premium Bundle, Other), or, from a server before 443, the kinds they hold;
+ * null when they hold none.
  */
 export function creditBalanceLine(balance, now = new Date()) {
-  const detail = WALLET_KINDS
-    .map(([k, name]) => [name, cents(balance?.categories?.[k])])
+  const parts = balance?.sources && typeof balance.sources === 'object'
+    ? CREDIT_SOURCES.map(([k, name]) => [name, cents(balance.sources[k]?.total)])
+    : WALLET_KINDS.map(([k, name]) => [name, cents(balance?.categories?.[k])]);
+  const detail = parts
     .filter(([, c]) => c !== 0)
     .map(([name, c]) => `${name} ${sgd(c)}`)
     .join(' · ');
@@ -117,7 +132,7 @@ export function creditBalanceLine(balance, now = new Date()) {
 
 const escHtml = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** What separates one kind from the next in the breakdown: 'Paid S$300.00 · Bonus S$50.00'. */
+/** What separates one part from the next in the breakdown: 'Credit Package S$300.00 · Other S$50.00'. */
 export const CREDIT_KIND_SEPARATOR = ' · ';
 
 /**

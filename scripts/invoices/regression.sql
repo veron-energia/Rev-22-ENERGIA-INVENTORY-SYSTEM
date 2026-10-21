@@ -146,7 +146,10 @@ begin
  select id into cp_item from invoice_items where invoice_id=cp_inv;
  select id,lot_id into b,lot from invoice_benefit_values where invoice_item_id=cp_item;
  if b is null then raise exception 'New credit benefit paid value not recorded'; end if;
- select id into walletpm from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: the Paid method of this credit's source (credit_package); before 443 the one Paid method.
+ select wm.id into walletpm from payment_methods wm where wm.wallet_category='paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm)->>'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm)->>'wallet_source' nulls first,
+           wm.created_at, wm.id limit 1;
  -- The spend is a THERAPY SESSION, not a product, and that is the point.
  -- Credit-package paid credit may fund therapy sessions and therapy-session
  -- vouchers and nothing else (242). This block used to spend it on a product,

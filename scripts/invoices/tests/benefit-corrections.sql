@@ -46,7 +46,9 @@ begin
  svc:=(upsert_therapy_service(null,'BC-PR','Benefit Spend Session',60,30,'per_hours',1,5,null,true,null)->>'id')::uuid;
  perform set_therapy_service_store(svc,st,true,null);
  spend:=create_invoice(st,c,null,jsonb_build_array(jsonb_build_object('kind','therapy','therapy_service_id',svc,'quantity',1)));
- select id into wpm from payment_methods where wallet_category='paid' and is_system limit 1;
+ -- 443: the paid method of this credit's source (credit_package); before 443, the paid one.
+ select wm.id into wpm from payment_methods wm where wm.wallet_category = 'paid' and wm.is_system and wm.deleted_at is null
+  order by (to_jsonb(wm) ->> 'wallet_source') is not distinct from 'credit_package' desc, to_jsonb(wm) ->> 'wallet_source' nulls first limit 1;
  perform record_invoice_payment(spend,jsonb_build_array(jsonb_build_object('payment_method_id',wpm,'amount',60)),gen_random_uuid());
  r:=transfer_invoice_unused_benefit(b,c2,st2,'Correct unused recipient',tid); moved:=(r->>'benefit_id')::uuid;
  select lot_id into movedlot from invoice_benefit_values where id=moved;

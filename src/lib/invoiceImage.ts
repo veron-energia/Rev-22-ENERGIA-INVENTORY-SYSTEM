@@ -252,7 +252,8 @@ function paintDocumentImage(d: PdfDoc, height: number, rowLimit: number): CopyDr
     y += 4.2 * MM;
     if (d.creditBalance.detail) {
       font(2.9); x.fillStyle = GREY;
-      // Wrapped between kinds only, never between a kind's name and its amount.
+      // Wrapped between parts only ('Credit Package S$… · Premium Bundle S$… ·
+      // Other S$…', 443), never between a part's name and its amount.
       for (const ln of wrapCreditDetail(d.creditBalance.detail, RIGHT - M, t => x.measureText(t).width)) { x.fillText(ln, M, y); y += 3.4 * MM; }
     }
     font(3.64); x.fillStyle = BLACK;
