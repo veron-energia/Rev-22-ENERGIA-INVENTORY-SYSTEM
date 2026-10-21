@@ -260,7 +260,7 @@ declare
   -- Refuse a login that is not staff with their own message: their own role or
   -- store test, or a helper they call first (inventory of 9 Oct 2026).
   c_own constant text[] := array[
-      'activate_purchased_therapy(uuid,date,text,text,text,boolean)', 'activate_rental(uuid)',
+      'activate_purchased_therapy(uuid,date,text,text,text,boolean)',
       'add_consultant_note(uuid,uuid,text,text,text,text,jsonb)',
       'add_legacy_credit(uuid,text,numeric,date,uuid,text,text,date,uuid)',
       'add_promotion_item(uuid,promotion_item_type,uuid,uuid,uuid,text,integer,text,uuid,uuid)',
@@ -268,8 +268,7 @@ declare
       'affiliate_admin_directory()', 'affiliate_pending_claims()', 'affiliate_rejected_claims()',
       'apply_commission_rebase_all()', 'apply_line_foc(uuid,integer,uuid,text)',
       'archive_therapy_service(uuid,text)', 'backfill_legacy_qualification(date,date,uuid)',
-      'cancel_invoice_recorded(uuid,text,uuid)', 'cancel_rental(uuid,boolean,text)',
-      'cancel_special_sale(uuid,boolean,text)', 'change_customer_phone(uuid,text,text)',
+      'cancel_invoice_recorded(uuid,text,uuid)', 'change_customer_phone(uuid,text,text)',
       'choose_therapy_benefit(uuid,text,uuid,text)',
       'claim_purchased_therapy(uuid,text,date,text,text,boolean,jsonb,uuid,text)',
       'clear_invoice_event(uuid)', 'clear_therapy_voucher_definition(uuid)',
@@ -280,8 +279,6 @@ declare
       'correct_tiktok_row(uuid,integer,text)',
       'create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)',
       'create_invoice_with_details(uuid,uuid,jsonb,jsonb)',
-      'create_rental(uuid,uuid,uuid,integer,special_rate_type,integer,date,date,text)',
-      'create_special_sale(uuid,uuid,uuid,integer,uuid,text,text)',
       'create_staff_commission_payout(uuid,date,uuid,text,text)',
       'create_staff_transfer_request(jsonb,text,uuid)',
       'create_transfer_request(text,text,uuid,text,uuid,jsonb,text)', 'customer_credit_balances(uuid)',
@@ -300,7 +297,7 @@ declare
       'invoice_benefit_review_options(uuid)', 'invoice_event_guests(uuid)',
       'invoice_financial_position(uuid)', 'invoice_goods_status(uuid)', 'invoice_refund_options(uuid)',
       'invoice_reopen_preview(uuid)', 'lend_stock(text,uuid,jsonb,date,uuid,text,text,uuid)',
-      'list_deleted_customers(text,integer)', 'pay_rental(uuid,uuid,text)',
+      'list_deleted_customers(text,integer)',
       'preview_invoice_correction(uuid,jsonb)', 'purchased_therapy_unit_state(uuid)',
       'reactivate_affiliate(uuid)', 'reassign_customer_referrer(uuid,uuid,text)',
       'receive_returned_rental(uuid,uuid,text,text,uuid)', 'receive_transfer(uuid,jsonb,text,boolean)',
@@ -348,12 +345,10 @@ declare
       'tiktok_xero_payouts(integer,integer)',
       'transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)',
       'update_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text)',
-      'update_pending_rental(uuid,integer,special_rate_type,integer,date,date,text)',
       'upsert_credit_package(uuid,text,numeric,numeric,boolean,date,date,text,boolean,numeric,numeric,numeric,numeric,text,uuid[],uuid[],boolean,boolean,boolean,boolean,boolean,boolean,boolean,boolean,text,numeric)',
       'upsert_customer_source_option(text,integer,boolean,boolean,uuid)',
       'upsert_legacy_rule(uuid,uuid,text,numeric,text,integer,integer,integer,boolean,date,text)',
       'upsert_premium_bundle(uuid,text,numeric,numeric,numeric,integer,numeric,boolean,date,date,text,boolean,numeric,numeric,numeric,text,uuid[],uuid[])',
-      'upsert_special_product_from_product(uuid,uuid,numeric,numeric,numeric,numeric,numeric,numeric,text,boolean)',
       'upsert_therapy_closure_date(uuid,date,text,text,text,text,date,text,text,text)',
       'upsert_therapy_package_choice(uuid,text,text,text,boolean,integer,integer,uuid[],uuid[])',
       'upsert_therapy_service(uuid,text,text,numeric,integer,text,integer,numeric,text,boolean,text)',
@@ -482,6 +477,14 @@ begin
               and has_function_privilege('authenticated', p.oid, 'execute')) then
     perform pg_temp.sof_fail('1: a function 406 made server-only is callable by signed-in logins again');
   end if;
+  -- 426: the old Special page's sales, rentals and wallet payments stay the
+  -- service role's alone (no screen reaches them).
+  if exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
+              and p.proname in ('create_special_sale', 'create_rental', 'pay_rental', 'activate_rental',
+                                'cancel_rental', 'cancel_special_sale', 'pay_special_with_credit')
+              and has_function_privilege('authenticated', p.oid, 'execute')) then
+    perform pg_temp.sof_fail('1: an old Special page function 426 made server-only is callable by signed-in logins again');
+  end if;
 end $$;
 
 -- @key@ in a statement is the fixture's id for that key.
@@ -593,7 +596,11 @@ begin
     ('special queue',          'om',     true,  false, 'select count(*)::text from public.special_docs_awaiting_fulfilment()'),
     ('special products',       'om',     true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.products_available_as_special() x'),
     ('special availability',   'om',     true,  false, 'select count(*)::text from public.special_product_availability(null)'),
-    ('wallet payment (S$0)',   'om',     true,  false, 'select public.pay_special_with_credit(''special_sale'', null, @c1@, 0, @store_a@)::text'),
+    -- 426: Change rental terms and the special product form, Owners and Managers
+    -- (no such rental or product in the fixture, so each answers its own refusal);
+    -- the old wallet payment is the service role's alone (check 1 below)
+    ('change rental terms',    'om',     false, false, 'select public.update_pending_rental(gen_random_uuid(), 1, ''day'', 1, null, null, null)::text'),
+    ('special product form',   'om',     false, false, 'select public.upsert_special_product_from_product(null, gen_random_uuid(), 0, 1, 0, 0, 0, 0, '''', true)::text'),
     ('physical return',        'all',    false, false, 'select public.resolve_tiktok_physical_return(gen_random_uuid(), false, null, null)::text'),
     -- Commissions (414): Mark as settled and its Void, Owners and Managers (no
     -- deduction and no settlement in the fixture, so each answers its own

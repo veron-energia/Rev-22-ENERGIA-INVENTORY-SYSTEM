@@ -358,3 +358,15 @@ tbody tr:hover { background: var(--surface-2); }
 
 /* Long error/empty text must wrap, never widen the page */
 .portal-content .card, .portal-auth .card { overflow-wrap: anywhere; }
+
+/* Special page waiting list (426, SALES-EXTRAS-15): the item, where it is
+   released from, and the action; one column on a phone, so nothing runs
+   off the screen. */
+.special-queue-grid { display: grid; grid-template-columns: minmax(200px, 2fr) minmax(220px, 1.4fr) auto; gap: 20px; align-items: center; }
+.special-queue-head { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); padding-bottom: 6px; }
+.special-queue-row { padding: 14px 0; border-top: 1px solid var(--border); }
+@media (max-width: 640px) {
+  .special-queue-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .special-queue-head { display: none; }
+  .special-queue-row > button { justify-self: start; }
+}

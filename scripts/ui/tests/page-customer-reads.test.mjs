@@ -68,9 +68,13 @@ test('Special & Rentals fetches the columns its row actions actually read', () =
     'that select omits email, which disables every Send-by-email button');
 });
 
-test('Special & Rentals still picks customers through the server-side selector', () => {
-  assert.match(special, /CustomerSearchSelect/,
-    'the pickers must keep searching the server, not a local array');
+test('Special & Rentals never feeds a customer picker from its local array', () => {
+  // 426 removed the New Sale and New Rental windows, which no screen opened
+  // and which held the page's only customer pickers: sales and rentals are
+  // raised on the Invoices page. A picker added back must search the server
+  // (CustomerSearchSelect), never the customers this page happens to hold.
   assert.doesNotMatch(special, /options=\{customers/,
     'a selector must never be fed from the local customer array');
+  assert.doesNotMatch(special, /<SearchSelect[^>]*options=\{[^}]*customers/,
+    'nor a SearchSelect built from it');
 });

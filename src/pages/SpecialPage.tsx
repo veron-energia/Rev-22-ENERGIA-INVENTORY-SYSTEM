@@ -1,24 +1,28 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { sendViaWhatsAppLink, sendViaEmailAttachment, whatsappNumber, emailAddress } from '../lib/sendDoc';
+import { sendViaWhatsAppLink, sendViaEmailAttachment, whatsappNumber, emailAddress, openSendWindow,
+  type EmailResult } from '../lib/sendDoc';
 import { PdfDoc } from '../lib/invoicePdf';
 import { printA5Document, esc as pesc, money as pmoney, PrintLine, PrintTotal } from '../lib/printDoc';
 import { supabase, fetchCustomersByIds } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import {
   SpecialProduct, SpecialProductStock, SpecialSale, Rental, Warehouse, Customer, PaymentMethod,
-  SpecialRateType, RentalStatus, ReturnCondition, RATE_TYPE_LABELS, isOwnerOrManager,
+  RentalStatus, ReturnCondition, RATE_TYPE_LABELS, isOwnerOrManager,
 } from '../types';
-import { specialSaleBadge, rentalStatusLabel } from '../lib/special/waitingItems';
+import { specialSaleBadge, rentalStatusLabel, rentalStillWithCustomer } from '../lib/special/waitingItems';
 import {
   ReturnForm, initialReturnForm, withReturnedOn, lateDaysOn, lateNotice, lateFeeSum, lateFeeAmounts,
   stockHome, returnProblem, returnRpcArgs, needsStoreChoice, lateFeeStatus, overdueNote, receiptLateFee,
   shortDate, withCondition, isDay,
+  type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs, receivedText,
 } from '../lib/special/rentalReturn';
+import { type TermsForm, type SoldLine, initialTerms, withTermsChange, termsProblem, termsChanged, termsRpcArgs,
+  termsFee, SOLD_LINE_COLUMNS } from '../lib/special/rentalTerms';
+import { docStore, docInvoiceIds, invoiceLine, waitingButton, toReceive } from '../lib/special/specialDocs';
 import { Modal, NoAccess } from '../components/ui';
-import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, X, Download, Printer, MessageCircle, Mail} from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, Printer, MessageCircle, Mail } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
-import { CustomerSearchSelect } from '../components/SearchSelect';
 import { SearchSelect } from '../components/SearchSelect';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
@@ -35,17 +39,6 @@ const blank = (p?: SpecialProduct) => ({
   rate_month: p?.rate_month ?? 0, rate_year: p?.rate_year ?? 0,
   late_fee_per_day: p?.late_fee_per_day ?? 0, is_active: p?.is_active ?? true,
 });
-
-// Pure-UTC date arithmetic so the local→UTC conversion can never eat a day.
-const addPeriods = (start: string, rateType: SpecialRateType, periods: number): string => {
-  const [y, m, dd] = start.split('-').map(Number);
-  const d = new Date(Date.UTC(y, m - 1, dd));
-  if (rateType === 'day') d.setUTCDate(d.getUTCDate() + periods);
-  else if (rateType === 'week') d.setUTCDate(d.getUTCDate() + 7 * periods);
-  else if (rateType === 'month') d.setUTCMonth(d.getUTCMonth() + periods);
-  else d.setUTCFullYear(d.getUTCFullYear() + periods);
-  return d.toISOString().slice(0, 10);
-};
 
 const SpecialPage: React.FC = () => {
   const { profile } = useAuth();
@@ -69,21 +62,59 @@ const SpecialPage: React.FC = () => {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
-  // Branding for printing. Rentals and special sales belong to a warehouse,
-  // so the letterhead is taken from the store.
+  // The active stores, offered where staff choose one.
   const [brandStores, setBrandStores] = useState<any[]>([]);
+  // Every store the person can read, closed ones too: a receipt carries the
+  // letterhead of its own store, whatever has happened to that store since
+  // (426, SALES-EXTRAS-16).
+  const [allStores, setAllStores] = useState<any[]>([]);
   const [staffProfiles, setStaffProfiles] = useState<any[]>([]);
   // Every special product, deleted ones too: an old rental may be of one, and
   // whether it is a warehouse product decides where its Return puts it back.
   const [spAll, setSpAll] = useState<{ id: string; name: string; product_id: string | null }[]>([]);
-  // The late fees invoiced at a Return (396), by invoice id.
-  const [lateInvoices, setLateInvoices] = useState<Record<string, { invoice_no: string; status: string }>>({});
+  // The invoices the rows name, by id: the one that sold each sale or rental,
+  // and a late fee invoiced at a Return (396).
+  const [docInvoices, setDocInvoices] = useState<Record<string, { invoice_no: string; status: string }>>({});
   const [loading, setLoading] = useState(true);
 
+  // Paid sales and rentals with no warehouse yet — Owner/Manager assigns one,
+  // and only then does stock move. Refresh reloads it with everything else,
+  // and a list that could not be read says so rather than "Nothing waiting"
+  // (426, SALES-EXTRAS-8).
+  const [awaiting, setAwaiting] = useState<any[]>([]);
+  const [awaitingFailed, setAwaitingFailed] = useState(false);
+  // Availability per waiting document: what each warehouse holds, and how much
+  // of it is already claimed by pending transfer requests.
+  const [avail, setAvail] = useState<Record<string, any[]>>({});
+  const [availFailed, setAvailFailed] = useState(false);
+  /** The waiting list, or null when it could not be read. */
+  const loadAwaiting = useCallback(async (): Promise<any[] | null> => {
+    const { data, error } = await supabase.rpc('special_docs_awaiting_fulfilment');
+    if (error) {
+      // An old list could release or change what is no longer waiting.
+      setAwaiting([]); setAvail({}); setAwaitingFailed(true); setAvailFailed(false);
+      return null;
+    }
+    const list = (data as any[]) ?? [];
+    setAwaitingFailed(false);
+    setAwaiting(list);
+    const map: Record<string, any[]> = {};
+    let missed = false;
+    await Promise.all(list.map(async r => {
+      const { data: a, error: e } = await supabase.rpc('special_product_availability',
+        { p_special_product_id: r.special_product_id });
+      if (e) missed = true;
+      map[r.doc_id] = (a as any[]) ?? [];
+    }));
+    setAvail(map); setAvailFailed(missed);
+    return list;
+  }, []);
 
-  const load = useCallback(async () => {
+  /** Everything on the page, the waiting list included. Gives the waiting list back. */
+  const load = useCallback(async (): Promise<any[] | null> => {
     setLoading(true);
-    const [sp, st, si, sa, re, wh, pm, sto, prof, spa] = await Promise.all([
+    const waiting = loadAwaiting();
+    const [sp, st, si, sa, re, wh, pm, sto, prof, spa, every] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('warehouse_inventory').select('warehouse_id,product_id,current_qty'),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
@@ -99,6 +130,7 @@ const SpecialPage: React.FC = () => {
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('id,full_name').is('deleted_at', null),
       supabase.from('special_products').select('id,name,product_id'),
+      supabase.from('stores').select('*').order('name'),
     ]);
     const spRows = (sp.data as SpecialProduct[]) ?? [];
     setRows(spRows);
@@ -135,16 +167,19 @@ const SpecialPage: React.FC = () => {
     ]) as Customer[]);
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setBrandStores((sto.data as any[]) ?? []);
+    setAllStores((every.data as any[]) ?? (sto.data as any[]) ?? []);
     setStaffProfiles((prof.data as any[]) ?? []);
     setSpAll((spa.data as any[]) ?? []);
-    const lateIds = [...new Set(((re.data as any[]) ?? []).map(x => x.late_fee_invoice_id).filter(Boolean))] as string[];
-    if (lateIds.length > 0) {
-      const { data: li } = await supabase.from('invoices').select('id,invoice_no,status').in('id', lateIds);
-      setLateInvoices(Object.fromEntries(((li as any[]) ?? []).map(x => [x.id, { invoice_no: x.invoice_no, status: x.status }])));
-    } else setLateInvoices({});
+    const invIds = docInvoiceIds([...((sa.data as any[]) ?? []), ...((re.data as any[]) ?? [])]);
+    if (invIds.length > 0) {
+      const { data: li } = await supabase.from('invoices').select('id,invoice_no,status').in('id', invIds);
+      setDocInvoices(Object.fromEntries(((li as any[]) ?? []).map(x => [x.id, { invoice_no: x.invoice_no, status: x.status }])));
+    } else setDocInvoices({});
+    const left = await waiting;
     setLoading(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+    return left;
+  }, [loadAwaiting]);
+  useEffect(() => { void load(); }, [load]);
 
   const spName = (id: string) => rows.find(r => r.id === id)?.name ?? spAll.find(r => r.id === id)?.name ?? '—';
   const whName = (id: string) => warehouses.find(w => w.id === id)?.name ?? '—';
@@ -155,77 +190,80 @@ const SpecialPage: React.FC = () => {
   const totalIn = (list: SpecialProductStock[]) => list.reduce((a, b) => a + (b.current_qty || 0), 0);
   const stockOf = (spId: string, whId?: string) => stock.filter(s => s.special_product_id === spId && (!whId || s.warehouse_id === whId));
   const isOverdue = (r: Rental) => (r.status === 'paid' || r.status === 'active') && todayStr() > r.expected_return_date;
+  const storeNameOf = (id: string | null | undefined) => id ? (allStores.find((s2: any) => s2.id === id)?.name ?? null) : null;
   // Where a rental went out from: the store it was released from, else its warehouse.
-  const releasedFrom = (r: Rental) => r.source_store_id
-    ? (brandStores.find((s2: any) => s2.id === r.source_store_id)?.name ?? '—') : whName(r.warehouse_id);
-  const lateInvoiceNo = (r: Rental) => r.late_fee_invoice_id ? (lateInvoices[r.late_fee_invoice_id]?.invoice_no ?? null) : null;
+  const releasedFrom = (r: Rental) => r.source_store_id ? (storeNameOf(r.source_store_id) ?? '—') : whName(r.warehouse_id);
+  const lateInvoiceNo = (r: Rental) => r.late_fee_invoice_id ? (docInvoices[r.late_fee_invoice_id]?.invoice_no ?? null) : null;
+  /** The invoice that sold a sale or rental, as its receipt names it. */
+  const soldOnInvoiceNo = (row: any) => row?.invoice_id ? (docInvoices[row.invoice_id]?.invoice_no ?? null) : null;
+  /** The store whose letterhead, PayNow details and send log a receipt uses. */
+  const receiptStore = (row: any): any => docStore(row, allStores, brandStores[0] ?? null) ?? {};
 
   // Special sales and rentals are their own transactions with their own numbers,
   // so they get a printable receipt rather than being forced through an invoice.
   // The customer copy as a real A5 PDF, matching the printed receipt.
   const [sendBusy, setSendBusy] = useState<string | null>(null);
-  // Paid sales and rentals with no warehouse yet — Owner/Manager assigns one,
-  // and only then does stock move.
-  const [awaiting, setAwaiting] = useState<any[]>([]);
   const [fulfilWh, setFulfilWh] = useState<Record<string, string>>({});
   const [fulfilBusy, setFulfilBusy] = useState<string | null>(null);
-  const [editRental, setEditRental] = useState<any | null>(null);
-  const [rentForm, setRentForm] = useState<any>({});
-  const [rentBusy, setRentBusy] = useState(false);
-  const [rentNote, setRentNote] = useState<string | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
 
+  // ── Change rental terms (426, SALES-EXTRAS-7) ──
+  // Only a rental still waiting (the database refuses any other). Its errors
+  // show in its own window; "Due back" follows the start, the rate and the
+  // periods (lib/special/rentalTerms), and staff may still type another date.
+  // The new fee is shown as the database will work it out: the list rate less
+  // the same discount as the invoice line sold it (the owner, 18 Oct 2026).
+  const [editRental, setEditRental] = useState<any | null>(null);
+  const [rentForm, setRentForm] = useState<TermsForm>(initialTerms({}));
+  const [rentOpened, setRentOpened] = useState<TermsForm>(initialTerms({}));
+  const [rentBusy, setRentBusy] = useState(false);
+  const [rentErr, setRentErr] = useState<string | null>(null);
+  const [rentNote, setRentNote] = useState<string | null>(null);
+  // The invoice line that sold it: null when it has none, undefined while it
+  // is read or when it could not be read (the fee is then said once saved).
+  const [rentLine, setRentLine] = useState<SoldLine | null | undefined>(undefined);
+  const rentLineFor = useRef<string | null>(null);
   const openRentalEdit = (row: any) => {
-    setEditRental(row);
-    setRentForm({
-      quantity: row.quantity ?? 1, rate_type: row.rate_type ?? 'day',
-      periods: row.periods ?? 1,
-      start_date: row.start_date ? String(row.start_date).slice(0, 10) : '',
-      expected_return_date: row.expected_return_date ? String(row.expected_return_date).slice(0, 10) : '',
+    const f = initialTerms(row);
+    setEditRental(row); setRentForm(f); setRentOpened(f);
+    setRentErr(null); setRentNote(null); setRentLine(undefined);
+    rentLineFor.current = row.doc_id;
+    const rental: any = rentals.find(r => r.id === row.doc_id);
+    if (!rental) return;
+    const itemId: string | null = rental.invoice_item_id ?? null;
+    if (!itemId) { setRentLine(null); return; }
+    void supabase.from('invoice_items').select(SOLD_LINE_COLUMNS).eq('id', itemId).then(({ data, error }: any) => {
+      if (rentLineFor.current !== row.doc_id) return;   // another rental's window by now
+      const line = error ? undefined : ((data as any[]) ?? []).find(x => x.id === itemId);
+      setRentLine(line ?? undefined);
     });
-    setRentNote(null);
   };
+  const rentFee = editRental && rentLine !== undefined
+    ? termsFee(editRental, rentLine, rows.find((p: any) => p.id === editRental.special_product_id) ?? null, rentForm)
+    : null;
+  const changeTerms = (patch: Partial<TermsForm>) => setRentForm(f => withTermsChange(f, patch));
+  const rentProblem = termsProblem(rentForm);
   const saveRental = async () => {
     if (!editRental) return;
-    setRentBusy(true); setErr(null);
-    const { data, error } = await supabase.rpc('update_pending_rental', {
-      p_rental_id: editRental.doc_id,
-      p_quantity: Number(rentForm.quantity) || 1,
-      p_rate_type: rentForm.rate_type,
-      p_periods: Number(rentForm.periods) || 1,
-      p_start_date: rentForm.start_date || null,
-      p_expected_return_date: rentForm.expected_return_date || null,
-    });
+    if (rentProblem) { setRentErr(rentProblem); return; }
+    setRentBusy(true); setRentErr(null);
+    const { data, error } = await supabase.rpc('update_pending_rental', termsRpcArgs(editRental.doc_id, rentForm));
     setRentBusy(false);
-    if (error) { setErr(error.message); return; }
+    if (error) { setRentErr(error.message); return; }
     const diff = Number((data as any)?.difference ?? 0);
     setEditRental(null);
-    await loadAwaiting();
+    // The Rentals tab and the waiting list both show the new terms.
+    await load();
     if (diff !== 0) {
       // The invoice was settled at the old fee, so say so rather than letting
       // the discrepancy surface later.
-      setRentNote(`The rental fee is now ${money(Number((data as any).rental_fee))} — `
+      const kept = (data as any)?.discount_kept ? ` (${(data as any).discount_kept})` : '';
+      setRentNote(`The rental fee is now ${money(Number((data as any).rental_fee))}${kept} — `
         + `${money(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than the `
         + `${money(Number((data as any).invoiced_fee))} already invoiced. `
         + `Collect or refund the difference on the invoice.`);
     }
   };
-  // Availability per waiting document: what each warehouse holds, and how much
-  // of it is already claimed by pending transfer requests.
-  const [avail, setAvail] = useState<Record<string, any[]>>({});
-  const loadAwaiting = async () => {
-    const { data } = await supabase.rpc('special_docs_awaiting_fulfilment');
-    const rows = (data as any[]) ?? [];
-    setAwaiting(rows);
-    const map: Record<string, any[]> = {};
-    await Promise.all(rows.map(async r => {
-      const { data: a } = await supabase.rpc('special_product_availability',
-        { p_special_product_id: r.special_product_id });
-      map[r.doc_id] = (a as any[]) ?? [];
-    }));
-    setAvail(map);
-  };
-  useEffect(() => { void loadAwaiting(); }, []);
 
   const doFulfil = async (row: any) => {
     const wh = fulfilWh[row.doc_id];
@@ -242,17 +280,16 @@ const SpecialPage: React.FC = () => {
     if (error) { setErr(error.message); return; }
     // Clear the choice so a stale warehouse cannot linger against a doc id.
     setFulfilWh(w => { const n = { ...w }; delete n[row.doc_id]; return n; });
-    const { data } = await supabase.rpc('special_docs_awaiting_fulfilment');
-    const left = (data as any[]) ?? [];
-    await loadAwaiting(); load();
+    const left = await load();
     // Nothing left to release: close rather than leaving an empty dialog open.
-    if (left.length === 0) setQueueOpen(false);
+    if (left && left.length === 0) setQueueOpen(false);
   };
   const buildReceiptPdf = (kind: 'sale' | 'rental', row: any): PdfDoc => {
     const prod = rows.find((p: any) => p.id === row.special_product_id);
     const cust = customers.find((c: any) => c.id === row.customer_id);
     const wh = warehouses.find((w: any) => w.id === row.warehouse_id);
-    const b: any = brandStores[0] ?? {};
+    // The row's own store (426): the invoice's, else the one it was released from.
+    const b: any = receiptStore(row);
     const fee = Number(kind === 'sale' ? row.total_amount : row.rental_fee) || 0;
     // A late fee invoiced at the Return (396) is on its own invoice: named
     // here, not added again.
@@ -264,6 +301,8 @@ const SpecialPage: React.FC = () => {
       docNo: row.sale_no ?? row.rental_no,
       date: d(row.created_at),
       status: String(row.status ?? '').replace(/_/g, ' '),
+      // The invoice that sold it (426).
+      headerNote: invoiceLine(soldOnInvoiceNo(row)),
       storeName: b.name ?? null, storeAddress: b.address ?? null,
       storePhone: [b.phone, b.whatsapp_phone ? `WhatsApp ${b.whatsapp_phone}` : '']
         .filter(Boolean).join(' · ') || null,
@@ -317,25 +356,77 @@ const SpecialPage: React.FC = () => {
     };
   };
 
+  // ── Sending a receipt (B16's sendDoc, INVOICES-AFTER-11 and -M3) ──
+  // WhatsApp's window is opened in the click, before anything is awaited, or
+  // a phone's pop-up blocker stops it once the PDF is ready; only a window
+  // really obtained counts as sent. Email goes from this device's own mail app
+  // (the owner, 9 Oct 2026, Q6): the page says where the PDF or its link went,
+  // never that it was attached or that the customer got it.
+  const sendingRef = useRef(false);
+  const [sendNote, setSendNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [emailRetry, setEmailRetry] = useState<{ shareAgain?: EmailResult['shareAgain']; mailto?: string } | null>(null);
+  const emailDone = (r: EmailResult) => {
+    if (r.shareAgain) {
+      setEmailRetry({ shareAgain: r.shareAgain });
+      setSendNote({ tone: 'ok', text: 'The PDF is ready. Press "Share the PDF" to choose your mail app.' });
+      return;
+    }
+    if (!r.ok) { setSendNote({ tone: 'error', text: r.reason ?? 'Not sent.' }); return; }
+    if (r.mailto) setEmailRetry({ mailto: r.mailto });
+    setSendNote({ tone: 'ok', text: r.reason ?? 'Your mail app should open; send the email from there.' });
+  };
+  /** The share sheet again, from a tap of its own. */
+  const shareEmailAgain = async () => {
+    const again = emailRetry?.shareAgain;
+    if (!again) return;
+    setEmailRetry(null); setSendNote(null);
+    const r = await again();
+    if (r.shareAgain) {
+      setEmailRetry({ shareAgain: r.shareAgain });
+      setSendNote({ tone: 'error', text: r.reason ?? 'The share sheet did not open.' });
+      return;
+    }
+    emailDone(r);
+  };
   const sendReceiptPdf = async (channel: 'whatsapp' | 'email', kind: 'sale' | 'rental', row: any) => {
-    const cust = customers.find((c: any) => c.id === row.customer_id);
-    setSendBusy(`${channel}-${row.id}`); setErr(null);
-    const args = {
-      pdf: buildReceiptPdf(kind, row),
-      kindLabel: kind === 'sale' ? 'Sale' : 'Rental',
-      docNo: row.sale_no ?? row.rental_no, docId: row.id,
-      docKind: (kind === 'sale' ? 'special_sale' : 'rental') as 'special_sale' | 'rental',
-      storeId: brandStores[0]?.id ?? null,
-      customerId: row.customer_id, customerName: cust?.full_name,
-      phone: cust?.phone, email: cust?.email,
-    };
-    const r = channel === 'whatsapp'
-      ? await sendViaWhatsAppLink(args)
-      : await sendViaEmailAttachment(args);
-    setSendBusy(null);
-    if (!r.ok) { setErr(r.reason ?? 'Could not send.'); return; }
-    // A link or a share sheet is not the same as an attached PDF; say which.
-    if ((r as any).reason) setErr((r as any).reason);
+    if (sendingRef.current) return;
+    // AFTER-11: the window opens now, in the click itself.
+    const win = channel === 'whatsapp' ? openSendWindow() : undefined;
+    sendingRef.current = true;
+    setSendBusy(`${channel}-${row.id}`); setSendNote(null); setEmailRetry(null);
+    let handedOver = false;
+    try {
+      const cust = customers.find((c: any) => c.id === row.customer_id);
+      const docNo = row.sale_no ?? row.rental_no;
+      const args = {
+        pdf: buildReceiptPdf(kind, row),
+        kindLabel: kind === 'sale' ? 'Sale' : 'Rental',
+        docNo, docId: row.id,
+        docKind: (kind === 'sale' ? 'special_sale' : 'rental') as 'special_sale' | 'rental',
+        // The row's own store files the PDF and the send log (426).
+        storeId: receiptStore(row).id ?? null,
+        customerId: row.customer_id, customerName: cust?.full_name,
+        phone: cust?.phone, email: cust?.email,
+      };
+      handedOver = true;
+      if (channel === 'whatsapp') {
+        const r = await sendViaWhatsAppLink(args, { win: win ?? null });
+        if (!r.ok) { setSendNote({ tone: 'error', text: r.reason ?? 'Could not send.' }); return; }
+        setSendNote({ tone: 'ok', text: `WhatsApp should now be open with the link to ${docNo}; send the message there.` });
+        return;
+      }
+      // Nothing is awaited before this: on a phone the share sheet must open
+      // while the tap still counts.
+      emailDone(await sendViaEmailAttachment(args));
+    } catch (e: any) {
+      console.error('The receipt could not be sent', e);
+      setSendNote({ tone: 'error', text: `Could not send${e?.message ? ` (${e.message})` : ''}.` });
+    } finally {
+      // A window opened for a send that never reached WhatsApp is closed.
+      if (win && !handedOver) { try { if (!win.closed) win.close(); } catch { /* gone already */ } }
+      sendingRef.current = false;
+      setSendBusy(null);
+    }
   };
 
   const printReceipt = (kind: 'sale' | 'rental', row: any) => {
@@ -344,6 +435,9 @@ const SpecialPage: React.FC = () => {
     const wh = warehouses.find((w: any) => w.id === row.warehouse_id);
     const methodName = (id: any) => methods.find(m => m.id === id)?.name ?? '';
     const d = (v: any) => v ? new Date(v).toLocaleDateString('en-GB') : '—';
+    // The row's own store (426): the invoice's, else the one it was released from.
+    const b: any = receiptStore(row);
+    const soldOn = invoiceLine(soldOnInvoiceNo(row));
 
     const fee = Number(kind === 'sale' ? row.total_amount : row.rental_fee) || 0;
     // A late fee invoiced at the Return (396) is on its own invoice: named
@@ -387,13 +481,14 @@ const SpecialPage: React.FC = () => {
       ?? profile?.full_name ?? '';
     printA5Document({
       signedByName,
-      policyText: (brandStores[0] as any)?.policy_text ?? null,
+      policyText: b.policy_text ?? null,
       docNo: row.sale_no ?? row.rental_no,
       docTitle: kind === 'sale' ? 'Special Product Sale' : 'Special Product Rental',
-      branding: brandStores[0] ?? {},
+      branding: b,
       headerLines: [
         `Date: ${d(row.created_at)}`,
         `Status: ${pesc(String(row.status ?? '').replace(/_/g, ' '))}`,
+        ...(soldOn ? [pesc(soldOn)] : []),
         ...(wh?.name ? [`Warehouse: ${pesc(wh.name)}`] : []),
       ],
       billToName: cust?.full_name ?? '—',
@@ -435,7 +530,9 @@ const SpecialPage: React.FC = () => {
       p_rate_day: form.rate_day || 0, p_rate_week: form.rate_week || 0,
       p_rate_month: form.rate_month || 0, p_rate_year: form.rate_year || 0,
       p_late_fee_per_day: form.late_fee_per_day || 0,
-      p_description: form.description.trim() || null, p_is_active: form.is_active,
+      // Emptied, it is sent as '' and the description is cleared (426); null
+      // would keep the old one.
+      p_description: (form.description ?? '').trim(), p_is_active: form.is_active,
     });
     setSaving(false);
     if (error) { setErr(error.message); return; }
@@ -461,131 +558,47 @@ const SpecialPage: React.FC = () => {
     setStockFor(null); load();
   };
 
-  // ── New sale modal ──
-  const [saleOpen, setSaleOpen] = useState(false);
-  const [sProduct, setSProduct] = useState(''); const [sWh, setSWh] = useState('');
-  const [sCustomer, setSCustomer] = useState(''); const [sQty, setSQty] = useState(1);
-  const [sMethod, setSMethod] = useState(''); const [sRef, setSRef] = useState('');
-  const [sBusy, setSBusy] = useState(false); const [sErr, setSErr] = useState<string | null>(null);
-  const openSale = () => { setSProduct(''); setSWh(warehouses[0]?.id ?? ''); setSCustomer(''); setSQty(1); setSMethod(methods[0]?.id ?? ''); setSRef(''); setSErr(null); setSaleOpen(true); };
-  // Phase 30: a special sale may be part- or fully funded from the customer's
-  // wallet, provided their credit permits the Special Products category.
-  const [sUseCredit, setSUseCredit] = useState(false);
-  const [sCreditAmt, setSCreditAmt] = useState('');
-  const [sWallet, setSWallet] = useState<any>(null);
-  useEffect(() => {
-    if (!sCustomer) { setSWallet(null); return; }
-    supabase.rpc('customer_credit_balances', { p_customer_id: sCustomer })
-      .then(({ data }) => setSWallet(data ?? null));
-  }, [sCustomer]);
+  // The old New Sale and New Rental windows, Pay (with wallet credit),
+  // Activate and the Cancel buttons of draft or paid documents are gone (426,
+  // SALES-EXTRAS-12): sales and rentals are raised on the Invoices page, no
+  // screen opened those windows, and their server functions are now the
+  // service role's alone. Old rows still print and send.
 
-  const submitSale = async () => {
-    if (!sProduct || !sWh) { setSErr('Select a product and warehouse.'); return; }
-    if (sUseCredit && !sCustomer) { setSErr('Wallet credit needs a customer.'); return; }
-    if (!sProduct || !sWh) { setSErr('Select a product and warehouse.'); return; }
-    setSBusy(true); setSErr(null);
-    const { error } = await supabase.rpc('create_special_sale', {
-      p_special_product_id: sProduct, p_warehouse_id: sWh, p_customer_id: sCustomer || null,
-      p_quantity: sQty, p_payment_method_id: sMethod || null, p_reference: sRef.trim() || null, p_notes: null,
-    });
-    if (error) { setSBusy(false); setSErr(error.message); return; }
-
-    // Apply wallet credit to the sale just created. Done as a second step
-    // because create_special_sale owns the stock movement and numbering.
-    if (sUseCredit && Number(sCreditAmt) > 0) {
-      const { data: latest } = await supabase.from('special_sales')
-        .select('id').eq('customer_id', sCustomer).order('created_at', { ascending: false }).limit(1);
-      const saleId = (latest as any[])?.[0]?.id;
-      if (saleId) {
-        const { error: cErr } = await supabase.rpc('pay_special_with_credit', {
-          p_doc_kind: 'special_sale', p_doc_id: saleId, p_customer_id: sCustomer,
-          p_amount: Number(sCreditAmt), p_store_id: brandStores[0]?.id ?? null,
-        });
-        if (cErr) {
-          setSBusy(false);
-          setSErr(`The sale was created, but the wallet payment failed: ${cErr.message}`);
-          load(); return;
-        }
-      }
-    }
-    setSBusy(false);
-    setSaleOpen(false); setSUseCredit(false); setSCreditAmt('');
-    load();
+  // ── Receive returned item (417; the owner, 10 Oct 2026) ──
+  // A rental cancelled while the item was still with the customer stays on
+  // the Rentals tab until an Owner or Manager records it as back, damaged or
+  // lost. Nothing is chosen for them; a good item goes back where it came
+  // from unless they pick another active warehouse; damaged and lost items
+  // never go back on sale. The database checks each again.
+  const [recvFor, setRecvFor] = useState<AwaitingRental | null>(null);
+  const [recvChoice, setRecvChoice] = useState<ReceiveChoice>(NOT_BACK_YET);
+  const [recvNote, setRecvNote] = useState('');
+  const [recvBusy, setRecvBusy] = useState(false);
+  const [recvErr, setRecvErr] = useState<string | null>(null);
+  const [recvDone, setRecvDone] = useState<string | null>(null);
+  const recvRequest = useRef<string | null>(null);
+  const openReceive = (r: Rental) => {
+    setRecvFor(toReceive(r, {
+      item: spName(r.special_product_id),
+      store: storeNameOf(r.source_store_id),
+      warehouse: warehouses.find(w => w.id === r.warehouse_id)?.name ?? null,
+    }));
+    setRecvChoice(NOT_BACK_YET); setRecvNote(''); setRecvErr(null); setRecvDone(null);
+    recvRequest.current = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : null;
   };
-  const cancelSale = async (s: SpecialSale) => {
-    const back = confirm(`Cancel sale ${s.sale_no}?\n\nOK = return stock to warehouse · Cancel = keep stock out`);
-    if (!confirm(`Confirm cancelling ${s.sale_no} (stock ${back ? 'WILL' : 'will NOT'} return)?`)) return;
-    const { error } = await supabase.rpc('cancel_special_sale', { p_sale_id: s.id, p_return_stock: back, p_note: null });
-    if (error) alert(error.message); else load();
-  };
-
-  // ── New rental modal ──
-  const [rentOpen, setRentOpen] = useState(false);
-  const [rProduct, setRProduct] = useState(''); const [rWh, setRWh] = useState('');
-  const [rCustomer, setRCustomer] = useState(''); const [rQty, setRQty] = useState(1);
-  const [rRate, setRRate] = useState<SpecialRateType>('day'); const [rPeriods, setRPeriods] = useState(1);
-  const [rStart, setRStart] = useState(todayStr());
-  const [rBusy, setRBusy] = useState(false); const [rErr, setRErr] = useState<string | null>(null);
-  const rExpected = useMemo(() => addPeriods(rStart, rRate, rPeriods || 1), [rStart, rRate, rPeriods]);
-  const rProductObj = rows.find(x => x.id === rProduct);
-  const rRateAmount = rProductObj ? (rRate === 'day' ? rProductObj.rate_day : rRate === 'week' ? rProductObj.rate_week : rRate === 'month' ? rProductObj.rate_month : rProductObj.rate_year) : 0;
-  const openRent = () => { setRProduct(''); setRWh(warehouses[0]?.id ?? ''); setRCustomer(''); setRQty(1); setRRate('day'); setRPeriods(1); setRStart(todayStr()); setRErr(null); setRentOpen(true); };
-  const submitRent = async () => {
-    if (!rProduct || !rWh || !rCustomer) { setRErr('Select a product, warehouse, and customer.'); return; }
-    setRBusy(true); setRErr(null);
-    const { error } = await supabase.rpc('create_rental', {
-      p_special_product_id: rProduct, p_warehouse_id: rWh, p_customer_id: rCustomer,
-      p_quantity: rQty, p_rate_type: rRate, p_periods: rPeriods,
-      p_start_date: rStart, p_expected_return_date: rExpected, p_notes: null,
-    });
-    setRBusy(false);
-    if (error) { setRErr(error.message); return; }
-    setRentOpen(false); load();
-  };
-
-  // ── Pay rental modal ──
-  const [payFor, setPayFor] = useState<Rental | null>(null);
-  const [payMethod, setPayMethod] = useState(''); const [payRef, setPayRef] = useState('');
-  const [payBusy, setPayBusy] = useState(false); const [payErr, setPayErr] = useState<string | null>(null);
-  // Phase 30: a rental fee may be met from wallet credit that permits Rentals.
-  const [payUseCredit, setPayUseCredit] = useState(false);
-  const [payCreditAmt, setPayCreditAmt] = useState('');
-  const [payWallet, setPayWallet] = useState<any>(null);
-  useEffect(() => {
-    if (!payFor?.customer_id) { setPayWallet(null); return; }
-    supabase.rpc('customer_credit_balances', { p_customer_id: payFor.customer_id })
-      .then(({ data }) => setPayWallet(data ?? null));
-    setPayUseCredit(false); setPayCreditAmt('');
-  }, [payFor?.customer_id]);
-
-  const submitPay = async () => {
-    if (!payFor) return;
-    setPayBusy(true); setPayErr(null);
-
-    // Credit first, so the remainder settles against the chosen method.
-    if (payUseCredit && Number(payCreditAmt) > 0) {
-      const { error: cErr } = await supabase.rpc('pay_special_with_credit', {
-        p_doc_kind: 'rental', p_doc_id: payFor.id, p_customer_id: payFor.customer_id,
-        p_amount: Number(payCreditAmt), p_store_id: brandStores[0]?.id ?? null,
-      });
-      if (cErr) { setPayBusy(false); setPayErr(cErr.message); return; }
-    }
-
-    const { error } = await supabase.rpc('pay_rental', { p_rental_id: payFor.id, p_payment_method_id: payMethod || null, p_reference: payRef.trim() || null });
-    setPayBusy(false);
-    if (error) { setPayErr(error.message); return; }
-    setPayFor(null); setPayUseCredit(false); setPayCreditAmt(''); load();
-  };
-  const doActivate = async (r: Rental) => {
-    const { error } = await supabase.rpc('activate_rental', { p_rental_id: r.id });
-    if (error) alert(error.message); else load();
-  };
-  const doCancelRental = async (r: Rental) => {
-    const needsStock = r.status === 'paid' || r.status === 'active';
-    const back = needsStock ? confirm(`Cancel ${r.rental_no}?\n\nOK = return stock to warehouse · Cancel = keep stock out`) : false;
-    if (!confirm(`Confirm cancelling ${r.rental_no}?`)) return;
-    const { error } = await supabase.rpc('cancel_rental', { p_rental_id: r.id, p_return_stock: back, p_note: null });
-    if (error) alert(error.message); else load();
+  // What was recorded stays said on the Rentals tab once the window closes.
+  const closeReceive = () => { setRecvFor(null); setRecvErr(null); };
+  const submitReceive = async () => {
+    if (!recvFor) return;
+    if (!recvChoice.outcome) { setRecvErr('Choose what happened to the item.'); return; }
+    if (!recvNote.trim()) { setRecvErr('Write a short note for the history.'); return; }
+    setRecvBusy(true); setRecvErr(null);
+    const { data, error } = await supabase.rpc('receive_returned_rental',
+      receiveRpcArgs(recvFor, recvChoice, recvNote, recvRequest.current));
+    setRecvBusy(false);
+    if (error) { setRecvErr(error.message); return; }
+    setRecvDone(receivedText(recvFor, recvChoice.outcome, data));
+    await load();
   };
 
   // ── Return rental modal (396, the Owner's rules of 6 Oct 2026) ──
@@ -627,10 +640,12 @@ const SpecialPage: React.FC = () => {
 
   const RentalBadge: React.FC<{ r: Rental }> = ({ r }) => {
     const s: RentalStatus = isOverdue(r) ? 'overdue' : r.status;
+    const out = rentalStillWithCustomer(r);
     const cls = s === 'returned' ? 'badge-success' : s === 'paid' || s === 'awaiting_fulfilment' ? 'badge-primary'
-      : s === 'active' ? 'badge-accent' : s === 'overdue' ? 'badge-danger' : 'badge-muted';
-    // A cancelled rental says why: refunded, its invoice cancelled, its line removed (393).
-    return <span className={`badge ${cls}`}>{rentalStatusLabel(s, r.notes)}</span>;
+      : s === 'active' ? 'badge-accent' : s === 'overdue' || out ? 'badge-danger' : 'badge-muted';
+    // A cancelled rental says why: refunded, its invoice cancelled, its line
+    // removed (393), or that the item is still with the customer (417).
+    return <span className={`badge ${cls}`}>{rentalStatusLabel(s, r.notes, r)}</span>;
   };
 
 
@@ -641,7 +656,7 @@ const SpecialPage: React.FC = () => {
     <div>
       <div className="page-header">
         <div><h2>Special Products & Rentals</h2><p>Warehouse-only special products — sold directly or rented (fee upfront, late fee at return). No commission applies.</p></div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <ExcelExportButton
             rows={tab === 'sales' ? sales : tab === 'rentals' ? rentals : rows}
             filename={`special-${tab}`} sheetName="Special"
@@ -649,6 +664,7 @@ const SpecialPage: React.FC = () => {
             dateLabel={tab === 'rentals' ? 'Rental date' : 'Sale date'}
             columns={tab === 'sales' ? [
               { header: 'Sale No', value: (x: any) => x.sale_no },
+              { header: 'Invoice', value: (x: any) => soldOnInvoiceNo(x) ?? '' },
               { header: 'Date', value: (x: any) => new Date(x.created_at).toLocaleDateString('en-GB') },
               { header: 'Product', value: (x: any) => rows.find(p => p.id === x.special_product_id)?.name ?? '' },
               { header: 'Customer', value: (x: any) => customers.find(c => c.id === x.customer_id)?.full_name ?? '' },
@@ -657,13 +673,14 @@ const SpecialPage: React.FC = () => {
               { header: 'Status', value: (x: any) => x.status },
             ] : tab === 'rentals' ? [
               { header: 'Rental No', value: (x: any) => x.rental_no },
+              { header: 'Invoice', value: (x: any) => soldOnInvoiceNo(x) ?? '' },
               { header: 'Date', value: (x: any) => new Date(x.created_at).toLocaleDateString('en-GB') },
               { header: 'Product', value: (x: any) => rows.find(p => p.id === x.special_product_id)?.name ?? '' },
               { header: 'Customer', value: (x: any) => customers.find(c => c.id === x.customer_id)?.full_name ?? '' },
               { header: 'Period', value: (x: any) => `${x.periods} x ${x.rate_type}` },
               { header: 'Fee', value: (x: any) => Number(x.rental_fee ?? 0) },
               { header: 'Late fee', value: (x: any) => Number(x.late_fee_total ?? 0) },
-              { header: 'Late fee invoice', value: (x: any) => x.late_fee_invoice_id ? (lateInvoices[x.late_fee_invoice_id]?.invoice_no ?? '') : '' },
+              { header: 'Late fee invoice', value: (x: any) => x.late_fee_invoice_id ? (docInvoices[x.late_fee_invoice_id]?.invoice_no ?? '') : '' },
               { header: 'Due back', value: (x: any) => x.expected_return_date ? new Date(x.expected_return_date).toLocaleDateString('en-GB') : '' },
               { header: 'Status', value: (x: any) => x.status },
             ] : [
@@ -672,46 +689,69 @@ const SpecialPage: React.FC = () => {
               { header: 'Sale price', value: (p: any) => Number(p.sale_price ?? 0) },
               { header: 'Day rate', value: (p: any) => Number(p.rate_day ?? 0) },
               { header: 'Late fee/day', value: (p: any) => Number(p.late_fee_per_day ?? 0) },
-            ]} /><button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
+            ]} /><button className="btn btn-secondary" onClick={() => { void load(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button></div>
       </div>
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+      {/* The tabs, the waiting list and the action wrap onto more rows on a
+          phone rather than running off the screen (426, SALES-EXTRAS-15). */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <button className={`btn btn-sm ${tab === 'catalog' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('catalog')}><KeyRound size={14} /> Catalog</button>
         <button className={`btn btn-sm ${tab === 'sales' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('sales')}><ShoppingBag size={14} /> Sales</button>
         <button className={`btn btn-sm ${tab === 'rentals' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('rentals')}><CalendarClock size={14} /> Rentals</button>
       {/* ---- Waiting for a warehouse: a button, with the detail in a dialog ---- */}
       {/* Always shown, so its colour carries the state: white when there is
-          nothing to do, amber when something is waiting. */}
+          nothing to do, amber when something is waiting, red when the list
+          could not be read (426: never "Nothing waiting" then). */}
+      {(() => {
+        const wb = waitingButton(awaiting.length, awaitingFailed);
+        return (
       <button className="btn" style={{
-          marginBottom: 16,
-          background: awaiting.length > 0 ? 'var(--warning-light)' : 'var(--surface)',
-          borderColor: awaiting.length > 0 ? '#fde68a' : 'var(--border)',
-          color: awaiting.length > 0 ? '#92400e' : 'var(--text-muted)',
-          fontWeight: awaiting.length > 0 ? 700 : 500,
-          cursor: awaiting.length > 0 ? 'pointer' : 'default',
+          background: wb.tone === 'waiting' ? 'var(--warning-light)' : wb.tone === 'failed' ? 'var(--danger-light)' : 'var(--surface)',
+          borderColor: wb.tone === 'waiting' ? '#fde68a' : wb.tone === 'failed' ? '#fecaca' : 'var(--border)',
+          color: wb.tone === 'waiting' ? '#92400e' : wb.tone === 'failed' ? '#991b1b' : 'var(--text-muted)',
+          fontWeight: wb.tone === 'none' ? 500 : 700,
+          cursor: wb.tone === 'waiting' ? 'pointer' : 'default',
         }}
-        disabled={awaiting.length === 0}
+        disabled={wb.tone !== 'waiting'}
+        aria-live="polite"
         onClick={() => awaiting.length > 0 && setQueueOpen(true)}>
         <Clock size={14} />
-        {awaiting.length > 0 ? 'Waiting for a warehouse' : 'Nothing waiting for a warehouse'}
-        {awaiting.length > 0 && (
+        {wb.label}
+        {wb.tone === 'waiting' && (
           <span style={{
             marginLeft: 8, padding: '1px 8px', borderRadius: 999, fontSize: 11.5,
             fontWeight: 700, background: 'var(--warning)', color: '#fff',
           }}>{awaiting.length}</span>
         )}
-      </button>
-
+      </button>);
+      })()}
 
         <div style={{ flex: 1 }} />
         {tab === 'catalog' && <button className="btn btn-primary btn-sm" onClick={openAdd}><Plus size={14} /> Add Special Product</button>}
         {(tab === 'sales' || tab === 'rentals') && (
-          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 12.5, color: 'var(--text-muted)', flex: '1 1 240px' }}>
             Sales and rentals are now raised on the <strong>Invoices</strong> page, so the customer
             gets one invoice and one receipt. They appear here once paid, waiting for a warehouse.
           </span>
         )}
       </div>
+
+      {/* What a WhatsApp or email send did, said once it is done (426). */}
+      {(tab === 'sales' || tab === 'rentals') && sendNote && (
+        <div className={`alert ${sendNote.tone === 'error' ? 'alert-danger' : 'alert-info'}`} role="status">
+          <span>{sendNote.tone === 'error' ? '⚠' : 'ℹ'}</span>
+          <div>
+            {sendNote.text}
+            {emailRetry?.shareAgain && (
+              <div style={{ marginTop: 6 }}><button className="btn btn-secondary btn-sm" onClick={shareEmailAgain}>Share the PDF</button></div>)}
+            {emailRetry?.mailto && (
+              <div style={{ marginTop: 6 }}><a href={emailRetry.mailto}>Open the email again</a></div>)}
+          </div>
+        </div>
+      )}
+      {tab === 'rentals' && recvDone && !recvFor && (
+        <div className="alert alert-success" role="status"><span>✓</span><div>{recvDone}</div></div>
+      )}
 
       <div className="card"><div className="table-wrap">
         {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
@@ -777,12 +817,11 @@ const SpecialPage: React.FC = () => {
                   <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('sale', s)} title="Print this sale"><Printer size={13} /> Print</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('whatsapp', 'sale', s)}
-                      disabled={!whatsappNumber(customers.find((c: any) => c.id === s.customer_id)?.phone)}
-                      title="Send by WhatsApp"><MessageCircle size={13} /></button>
+                      disabled={!!sendBusy || !whatsappNumber(customers.find((c: any) => c.id === s.customer_id)?.phone)}
+                      title="Send a link by WhatsApp" aria-label={`Send ${s.sale_no} by WhatsApp`}><MessageCircle size={13} /></button>
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('email', 'sale', s)}
-                      disabled={!emailAddress(customers.find((c: any) => c.id === s.customer_id)?.email)}
-                      title="Send by email"><Mail size={13} /></button>
-                    {s.status === 'paid' && <button className="btn btn-danger btn-sm" onClick={() => cancelSale(s)}>Cancel</button>}
+                      disabled={!!sendBusy || !emailAddress(customers.find((c: any) => c.id === s.customer_id)?.email)}
+                      title="Email from this device's mail app" aria-label={`Email ${s.sale_no} from this device`}><Mail size={13} /></button>
                   </div></td>
                 </tr>))}
               </tbody>
@@ -807,30 +846,24 @@ const SpecialPage: React.FC = () => {
                       {r.late_fee_invoice_id
                         ? <>+{money(Number(r.late_fee_total))} late · <Link to={`/invoices?review=${r.late_fee_invoice_id}`}
                             title="Open the late fee's invoice to print or send it">{lateInvoiceNo(r) ?? 'invoice'}</Link>
-                            {lateInvoices[r.late_fee_invoice_id] && lateInvoices[r.late_fee_invoice_id].status !== 'paid'
-                              && ` (${lateInvoices[r.late_fee_invoice_id].status.replace(/_/g, ' ')})`}</>
+                            {docInvoices[r.late_fee_invoice_id] && docInvoices[r.late_fee_invoice_id].status !== 'paid'
+                              && ` (${docInvoices[r.late_fee_invoice_id].status.replace(/_/g, ' ')})`}</>
                         : lateStatus}
                     </div>}</td>
                   <td style={{ fontSize: 12 }}>{new Date(r.expected_return_date).toLocaleDateString()}{isOverdue(r) && overdue && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{overdue}</div>}</td>
                   <td><RentalBadge r={r} />{r.return_condition && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{r.return_condition}{r.stock_returned === false ? ' · not restocked' : r.stock_returned ? ' · restocked' : ''}</div>}</td>
                   <td><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    {r.status === 'draft' && <>
-                      <button className="btn btn-primary btn-sm" onClick={() => { setPayFor(r); setPayMethod(methods[0]?.id ?? ''); setPayRef(''); setPayErr(null); }}>Pay</button>
-                      <button className="btn btn-secondary btn-sm" onClick={() => doCancelRental(r)}>Cancel</button>
-                    </>}
-                    {r.status === 'paid' && <>
-                      <button className="btn btn-primary btn-sm" onClick={() => doActivate(r)}>Activate</button>
-                      <button className="btn btn-secondary btn-sm" onClick={() => openReturn(r)}>Return</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => doCancelRental(r)}>Cancel</button>
-                    </>}
-                    {r.status === 'active' && <button className="btn btn-primary btn-sm" onClick={() => openReturn(r)}>Return</button>}
+                    {(r.status === 'paid' || r.status === 'active') && <button className="btn btn-primary btn-sm" onClick={() => openReturn(r)}>Return</button>}
+                    {rentalStillWithCustomer(r) && (
+                      <button className="btn btn-primary btn-sm" onClick={() => openReceive(r)}
+                        aria-label={`Receive returned item: ${spName(r.special_product_id)} (${r.rental_no})`}>Receive returned item</button>)}
                     <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('rental', r)} title="Print this rental"><Printer size={13} /> Print</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('whatsapp', 'rental', r)}
-                      disabled={!whatsappNumber(customers.find((c: any) => c.id === r.customer_id)?.phone)}
-                      title="Send by WhatsApp"><MessageCircle size={13} /></button>
+                      disabled={!!sendBusy || !whatsappNumber(customers.find((c: any) => c.id === r.customer_id)?.phone)}
+                      title="Send a link by WhatsApp" aria-label={`Send ${r.rental_no} by WhatsApp`}><MessageCircle size={13} /></button>
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('email', 'rental', r)}
-                      disabled={!emailAddress(customers.find((c: any) => c.id === r.customer_id)?.email)}
-                      title="Send by email"><Mail size={13} /></button>
+                      disabled={!!sendBusy || !emailAddress(customers.find((c: any) => c.id === r.customer_id)?.email)}
+                      title="Email from this device's mail app" aria-label={`Email ${r.rental_no} from this device`}><Mail size={13} /></button>
                   </div></td>
                 </tr>);
               })}
@@ -904,22 +937,20 @@ const SpecialPage: React.FC = () => {
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
             {rentNote && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ</span><div>{rentNote}</div></div>}
+            {awaitingFailed && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>Could not load the waiting list. Press Refresh.</div></div>}
+            {availFailed && <div className="alert alert-warning" style={{ marginBottom: 0 }}><span>⚠</span><div>Could not load where each item can come from. Press Refresh before releasing.</div></div>}
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
               These are paid for and no stock has moved. Choosing a warehouse is what takes the
               goods out of it.
             </div>
-            {awaiting.length === 0 ? (
+            {awaitingFailed ? null : awaiting.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
                 Nothing is waiting — everything paid for has been released.
               </div>
             ) : (
               <div>
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'minmax(260px, 2fr) minmax(280px, 1.4fr) auto',
-                  gap: 20, fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
-                  textTransform: 'uppercase', color: 'var(--text-muted)', paddingBottom: 6,
-                }}>
+                {/* Three columns, one under 640 px (globals.css, 426). */}
+                <div className="special-queue-grid special-queue-head">
                   <div>Item</div>
                   <div>Release from</div>
                   <div />
@@ -930,12 +961,7 @@ const SpecialPage: React.FC = () => {
             const canCover = opts.filter((o: any) => o.available >= row.quantity);
             const isRental = row.doc_kind === 'rental';
             return (
-              <div key={row.doc_id} style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(260px, 2fr) minmax(280px, 1.4fr) auto',
-                gap: 20, alignItems: 'center',
-                padding: '14px 0', borderTop: '1px solid var(--border)',
-              }}>
+              <div key={row.doc_id} className="special-queue-grid special-queue-row">
                 {/* WHAT — the thing itself, read first */}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -1029,10 +1055,14 @@ const SpecialPage: React.FC = () => {
 
       {editRental && (
         <Modal title={`Change rental terms — ${editRental.doc_no}`} onClose={() => setEditRental(null)}
+          confirmClose={termsChanged(rentForm, rentOpened)}
           footer={<><button className="btn btn-secondary" onClick={() => setEditRental(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={saveRental} disabled={rentBusy}>
+            <button className="btn btn-primary" onClick={saveRental} disabled={rentBusy || !!rentProblem}
+              title={rentProblem ?? undefined}>
               {rentBusy ? 'Saving…' : 'Save terms'}</button></>}>
           <div className="form-grid">
+            {/* Its own error line: the waiting list behind it is covered (426). */}
+            {rentErr && <div className="alert alert-danger" style={{ marginBottom: 0 }} role="alert"><span>⚠</span><div>{rentErr}</div></div>}
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
               {editRental.product_name} · {editRental.customer_name ?? '—'}
               {editRental.invoice_no ? ` · ${editRental.invoice_no}` : ''}
@@ -1040,10 +1070,10 @@ const SpecialPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group" style={{ marginBottom: 0 }}><label>Quantity</label>
                 <input type="number" min={1} max={999} value={rentForm.quantity}
-                  onChange={e => setRentForm((f: any) => ({ ...f, quantity: Math.max(1, Math.floor(+e.target.value || 1)) }))} /></div>
+                  onChange={e => changeTerms({ quantity: +e.target.value })} /></div>
               <div className="form-group" style={{ marginBottom: 0 }}><label>Rate</label>
                 <select value={rentForm.rate_type}
-                  onChange={e => setRentForm((f: any) => ({ ...f, rate_type: e.target.value }))}>
+                  onChange={e => changeTerms({ rate_type: e.target.value as TermsForm['rate_type'] })}>
                   {(['day','week','month','year'] as const)
                     .filter(rt => Number(rows.find((p: any) => p.id === editRental.special_product_id)?.[`rate_${rt}`] ?? 0) > 0)
                     .map(rt => <option key={rt} value={rt}>Per {rt}</option>)}
@@ -1052,21 +1082,46 @@ const SpecialPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group" style={{ marginBottom: 0 }}><label>Periods</label>
                 <input type="number" min={1} max={3650} value={rentForm.periods}
-                  onChange={e => setRentForm((f: any) => ({ ...f, periods: Math.max(1, Math.floor(+e.target.value || 1)) }))} /></div>
+                  onChange={e => changeTerms({ periods: +e.target.value })} /></div>
               <div className="form-group" style={{ marginBottom: 0 }}><label>Starts</label>
                 <input type="date" value={rentForm.start_date}
-                  onChange={e => setRentForm((f: any) => ({ ...f, start_date: e.target.value }))} /></div>
+                  onChange={e => changeTerms({ start_date: e.target.value })} /></div>
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}><label>Due back</label>
               <input type="date" value={rentForm.expected_return_date} min={rentForm.start_date}
-                onChange={e => setRentForm((f: any) => ({ ...f, expected_return_date: e.target.value }))} /></div>
-            <div className="alert alert-warning" style={{ marginBottom: 0 }}>
+                onChange={e => { const v = e.target.value; setRentForm(f => ({ ...f, expected_return_date: v })); }} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                Worked out from the start and the periods. You can type another date; late fees count from it.</div></div>
+            {rentProblem && !rentErr && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{rentProblem}</div>}
+            {/* The fee as the save will work it out (426): the same discount as sold. */}
+            <div className="alert alert-warning" style={{ marginBottom: 0 }} role="status" aria-live="polite" data-rental-fee>
               <span>⚠</span>
-              <div>
-                This invoice has already been paid at <strong>{money(Number(editRental.rental_fee ?? 0))}</strong>.
-                Changing the quantity, rate or periods changes the fee — you will be told the
-                difference so it can be collected or refunded on the invoice.
-              </div>
+              {!rentFee ? (
+                <div>
+                  {/* No paid amount is named here: the rental's own fee can be the value before a line
+                      discount, or from before a correction of the invoice. */}
+                  The fee will be worked out when you save: a change of the dates alone keeps it as sold, and a
+                  new quantity, rate or number of periods is priced at the list rate with the same discount as sold.
+                  You will be told any difference to collect or refund on the invoice.
+                </div>
+              ) : rentFee.problem ? (
+                <div>{rentFee.problem}</div>
+              ) : rentFee.datesOnly ? (
+                <div>
+                  The fee stays <strong>{money(rentFee.before)}</strong>: a change of the dates alone keeps it.
+                  A new quantity, rate or number of periods is priced at the list rate with the same discount as sold.
+                </div>
+              ) : (
+                <div>
+                  New fee <strong>{money(rentFee.fee ?? 0)}</strong>
+                  {' '}({money(rentFee.list ?? 0)} at the list rate{rentFee.discount ? `; ${rentFee.discount}` : ''}).{' '}
+                  {(rentFee.difference ?? 0) === 0
+                    ? <>The same as the {money(rentFee.before)} already invoiced.</>
+                    : <>That is {money(Math.abs(rentFee.difference ?? 0))} {(rentFee.difference ?? 0) > 0 ? 'more' : 'less'} than
+                      the {money(rentFee.before)} already invoiced — {(rentFee.difference ?? 0) > 0 ? 'collect' : 'refund'} the
+                      difference on the invoice.</>}
+                </div>
+              )}
             </div>
           </div>
         </Modal>
@@ -1119,7 +1174,7 @@ const SpecialPage: React.FC = () => {
                 ))}
               </div>
             </div>
-            <div className="form-group"><label>Description</label><textarea rows={2} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional" /></div>
+            <div className="form-group"><label>Description</label><textarea rows={2} value={form.description} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, description: v })); }} placeholder="Optional" /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
             </label>
@@ -1158,176 +1213,46 @@ const SpecialPage: React.FC = () => {
         </Modal>
       )}
 
-      {/* New sale */}
-      {saleOpen && (
-        <Modal title="New Special Sale" wide onClose={() => setSaleOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setSaleOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submitSale} disabled={sBusy}>{sBusy ? 'Selling…' : 'Complete Sale'}</button></>}>
+      {/* Receive returned item (417; the owner, 10 Oct 2026) */}
+      {recvFor && (
+        <Modal title={`Receive returned item — ${recvFor.rental_no}`} maxWidth={520} onClose={closeReceive}
+          confirmClose={!recvDone && (recvChoice.outcome !== '' || recvNote.trim() !== '')}
+          footer={recvDone
+            ? <button className="btn btn-primary" onClick={closeReceive}>Done</button>
+            : <><button className="btn btn-secondary" onClick={closeReceive}>Cancel</button>
+              <button className="btn btn-primary" onClick={submitReceive}
+                disabled={recvBusy || !recvChoice.outcome || !recvNote.trim()}>
+                {recvBusy ? 'Recording…' : 'Record what came back'}</button></>}>
+          {recvDone ? (
+            <div className="alert alert-success" style={{ marginBottom: 0 }} role="status"><span>✓</span><div>{recvDone}</div></div>
+          ) : (
           <div className="form-grid">
-            {sErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{sErr}</div></div>}
-            <div className="form-grid-2">
-              <div className="form-group"><label>Special Product *</label>
-                <select value={sProduct} onChange={e => setSProduct(e.target.value)}>
-                  <option value="">— Select —</option>
-                  {rows.filter(p => p.is_active).map(p => <option key={p.id} value={p.id}>{p.name} — {money(p.sale_price)}</option>)}
-                </select>
-              </div>
-              <div className="form-group"><label>Warehouse *</label>
-                <select value={sWh} onChange={e => setSWh(e.target.value)}>{warehouses.map(w => <option key={w.id} value={w.id}>{w.name}{sProduct ? ` (${stockOf(sProduct, w.id)[0]?.current_qty ?? 0} in stock)` : ''}</option>)}</select>
-              </div>
+            {recvErr && <div className="alert alert-danger" style={{ marginBottom: 0 }} role="alert"><span>⚠</span><div>{recvErr}</div></div>}
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {recvFor.item} × {recvFor.quantity} · {cuName(rentals.find(x => x.id === recvFor.rental_id)?.customer_id ?? null)}.
+              {' '}This rental was cancelled while the item was still with the customer. Record it only when
+              it is actually in your hands. Damaged and lost items are never put back on sale.
             </div>
-            <div className="form-grid-2">
-              <div className="form-group"><label>Customer</label>
-                <CustomerSearchSelect value={sCustomer} onChange={setSCustomer}
-                  placeholder="Search name, phone or email — or leave blank for walk-in" />
-              </div>
-              <div className="form-group"><label>Quantity</label><input type="number" min={1} value={sQty || ''} onChange={e => setSQty(+e.target.value)} /></div>
-            </div>
-            <div className="form-grid-2">
-              <div className="form-group"><label>Payment Method</label>
-                <select value={sMethod} onChange={e => setSMethod(e.target.value)}>{methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
-              </div>
-              <div className="form-group"><label>Reference</label><input value={sRef} onChange={e => setSRef(e.target.value)} placeholder="Optional" /></div>
-            </div>
-
-            {/* Wallet credit — only offered where the customer actually has some. */}
-            {sCustomer && (
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={sUseCredit}
-                    onChange={e => {
-                      setSUseCredit(e.target.checked);
-                      if (e.target.checked && !sCreditAmt) {
-                        const total = (rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty;
-                        const avail = Number(sWallet?.available_total ?? 0);
-                        setSCreditAmt(String(Math.min(total, avail).toFixed(2)));
-                      }
-                    }} />
-                  Pay with wallet credit
-                </label>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Wallet balance: <strong>{money(Number(sWallet?.available_total ?? 0))}</strong>.
-                  Only credit permitted for <strong>Special Products</strong> can be used, and
-                  Bonus Credit is spent first.
-                </div>
-                {sUseCredit && (
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 6 }}>
-                    <div style={{ flex: '0 0 160px' }}>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Credit to apply (S$)</div>
-                      <input type="number" min={0} step={0.01} value={sCreditAmt}
-                        onChange={e => setSCreditAmt(e.target.value)} />
-                    </div>
-                    <div style={{ fontSize: 12.5, paddingBottom: 6 }}>
-                      Remaining to pay by {methods.find(m => m.id === sMethod)?.name ?? 'the chosen method'}:{' '}
-                      <strong>{money(Math.max(
-                        (rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty - Number(sCreditAmt || 0), 0))}</strong>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {sProduct && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Total: <strong>{money((rows.find(p => p.id === sProduct)?.sale_price ?? 0) * sQty)}</strong> — paid now; warehouse stock deducts immediately. Credit-funded value earns no commission; externally paid value still qualifies for Legacy Therapy.</div></div>}
+            <div className="form-group" style={{ marginBottom: 0 }}><label>What happened *</label>
+              <select value={recvChoice.outcome} aria-label={`What happened to ${recvFor.rental_no}`}
+                onChange={e => { const v = e.target.value as ReceiveChoice['outcome']; setRecvChoice(c => ({ ...c, outcome: v })); }}>
+                <option value="">Choose…</option>
+                <option value="good">Back in good condition — on sale again</option>
+                <option value="damaged">Back but damaged — not for sale</option>
+                <option value="lost">Lost — never came back</option>
+              </select></div>
+            {recvChoice.outcome === 'good' && (
+              <div className="form-group" style={{ marginBottom: 0 }}><label>Goes back to</label>
+                <select value={recvChoice.warehouseId} aria-label={`Where ${recvFor.rental_no} goes back to`}
+                  onChange={e => { const v = e.target.value; setRecvChoice(c => ({ ...c, warehouseId: v })); }}>
+                  <option value="">{receiveHomeLabel(recvFor)}</option>
+                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select></div>)}
+            <div className="form-group" style={{ marginBottom: 0 }}><label>Note *</label>
+              <input value={recvNote} onChange={e => setRecvNote(e.target.value)}
+                placeholder="For the history, e.g. who brought it back" /></div>
           </div>
-        </Modal>
-      )}
-
-      {/* New rental */}
-      {rentOpen && (
-        <Modal title="New Rental" wide onClose={() => setRentOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setRentOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={submitRent} disabled={rBusy}>{rBusy ? 'Creating…' : 'Create Rental (Draft)'}</button></>}>
-          <div className="form-grid">
-            {rErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{rErr}</div></div>}
-            <div className="form-grid-2">
-              <div className="form-group"><label>Special Product *</label>
-                <select value={rProduct} onChange={e => setRProduct(e.target.value)}>
-                  <option value="">— Select —</option>
-                  {rows.filter(p => p.is_active).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
-              <div className="form-group"><label>Warehouse *</label>
-                <select value={rWh} onChange={e => setRWh(e.target.value)}>{warehouses.map(w => <option key={w.id} value={w.id}>{w.name}{rProduct ? ` (${stockOf(rProduct, w.id)[0]?.current_qty ?? 0} in stock)` : ''}</option>)}</select>
-              </div>
-            </div>
-            <div className="form-grid-2">
-              <div className="form-group"><label>Customer *</label>
-                <CustomerSearchSelect value={rCustomer} onChange={setRCustomer}
-                  placeholder="Search name, phone or email…" />
-              </div>
-              <div className="form-group"><label>Quantity</label><input type="number" min={1} value={rQty || ''} onChange={e => setRQty(+e.target.value)} /></div>
-            </div>
-            <div className="form-grid-2">
-              <div className="form-group"><label>Rate</label>
-                <select value={rRate} onChange={e => setRRate(e.target.value as SpecialRateType)}>
-                  {(['day','week','month','year'] as SpecialRateType[]).map(t => {
-                    const amt = rProductObj ? (t === 'day' ? rProductObj.rate_day : t === 'week' ? rProductObj.rate_week : t === 'month' ? rProductObj.rate_month : rProductObj.rate_year) : 0;
-                    return <option key={t} value={t} disabled={!!rProductObj && amt <= 0}>{RATE_TYPE_LABELS[t]}{rProductObj ? ` — ${money(amt)}` : ''}</option>;
-                  })}
-                </select>
-              </div>
-              <div className="form-group"><label>Duration ({rRate}s)</label><input type="number" min={1} value={rPeriods || ''} onChange={e => setRPeriods(+e.target.value)} /></div>
-            </div>
-            <div className="form-grid-2">
-              <div className="form-group"><label>Start Date</label><input type="date" value={rStart} onChange={e => setRStart(e.target.value)} /></div>
-              <div className="form-group"><label>Expected Return</label><input type="date" value={rExpected} readOnly style={{ background: 'var(--surface-2)' }} /></div>
-            </div>
-            {rProduct && rRateAmount > 0 && (
-              <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
-                Rental fee: <strong>{money(rRateAmount * rPeriods * rQty)}</strong> ({money(rRateAmount)} × {rPeriods} × {rQty}) — collected on Pay; stock deducts then.
-                Late fee after {new Date(rExpected).toLocaleDateString()}: <strong>{money((rProductObj?.late_fee_per_day ?? 0) * rQty)}/day</strong>.
-              </div></div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {/* Pay rental */}
-      {payFor && (
-        <Modal title={`Pay Rental — ${payFor.rental_no}`} maxWidth={420} onClose={() => setPayFor(null)}
-          footer={<><button className="btn btn-secondary" onClick={() => setPayFor(null)}>Cancel</button><button className="btn btn-primary" onClick={submitPay} disabled={payBusy}>{payBusy ? 'Processing…' : `Collect ${money(Number(payFor.rental_fee))}`}</button></>}>
-          <div className="form-grid">
-            {payErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{payErr}</div></div>}
-            <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
-              <strong>{spName(payFor.special_product_id)}</strong> × {payFor.quantity} · {payFor.periods} {payFor.rate_type}{payFor.periods > 1 ? 's' : ''}<br />
-              Fee: <strong>{money(Number(payFor.rental_fee))}</strong> — stock deducts on payment.
-            </div>
-            <div className="form-group"><label>Payment Method</label>
-              <select value={payMethod} onChange={e => setPayMethod(e.target.value)}>{methods.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
-            </div>
-            <div className="form-group"><label>Reference</label><input value={payRef} onChange={e => setPayRef(e.target.value)} placeholder="Optional" /></div>
-
-            {payFor.customer_id && (
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={payUseCredit}
-                    onChange={e => {
-                      setPayUseCredit(e.target.checked);
-                      if (e.target.checked && !payCreditAmt) {
-                        setPayCreditAmt(String(Math.min(
-                          Number(payFor.rental_fee), Number(payWallet?.available_total ?? 0)).toFixed(2)));
-                      }
-                    }} />
-                  Pay with wallet credit
-                </label>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Wallet balance: <strong>{money(Number(payWallet?.available_total ?? 0))}</strong>.
-                  Only credit permitted for <strong>Rentals</strong> can be used, Bonus Credit first.
-                  Rental value never counts toward Legacy Therapy, however it is paid.
-                </div>
-                {payUseCredit && (
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 6 }}>
-                    <div style={{ flex: '0 0 160px' }}>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Credit to apply (S$)</div>
-                      <input type="number" min={0} step={0.01} value={payCreditAmt}
-                        onChange={e => setPayCreditAmt(e.target.value)} />
-                    </div>
-                    <div style={{ fontSize: 12.5, paddingBottom: 6 }}>
-                      Remaining: <strong>{money(Math.max(Number(payFor.rental_fee) - Number(payCreditAmt || 0), 0))}</strong>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          )}
         </Modal>
       )}
 
@@ -1341,6 +1266,9 @@ const SpecialPage: React.FC = () => {
         const done = retDone;
         return (
         <Modal title={`Return — ${retFor.rental_no}`} maxWidth={520} onClose={closeReturn}
+          // A stray tap on the backdrop asks before a half-filled Return is
+          // lost (426, SALES-EXTRAS-15); once recorded it closes straight away.
+          confirmClose={!done}
           footer={done
             ? <button className="btn btn-primary" onClick={closeReturn}>Done</button>
             : <><button className="btn btn-secondary" onClick={closeReturn}>Cancel</button>

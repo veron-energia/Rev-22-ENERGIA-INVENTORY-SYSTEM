@@ -184,7 +184,13 @@ declare
                              'trg_audit_voucher_change',
                              -- 419: a customer's signed QR form into their consultant record,
                              -- called inside submit_health_survey and attach_held_health_survey
-                             'health_survey_sign_into_record'];
+                             'health_survey_sign_into_record',
+                             -- 426: the old Special page's sales, rentals and wallet
+                             -- payments; no screen reaches them (sales and rentals are
+                             -- raised on invoices), and four of them write the retired
+                             -- special_product_stock table
+                             'create_special_sale','create_rental','pay_rental','activate_rental',
+                             'cancel_rental','cancel_special_sale','pay_special_with_credit'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon
