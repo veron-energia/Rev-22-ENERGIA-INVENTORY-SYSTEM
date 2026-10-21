@@ -17,5 +17,6 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
+  "exclude": ["src/components/events/eventWebsiteContract.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

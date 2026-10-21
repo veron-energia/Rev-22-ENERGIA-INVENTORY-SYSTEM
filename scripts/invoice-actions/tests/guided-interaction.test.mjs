@@ -823,6 +823,46 @@ await render({ canApprove: true });
 check('a blocked invoice explains why', text().includes('needs review first'));
 check('and refuses every action', ['Cancel invoice', 'Full refund', 'Partial refund']
   .every(l => byText('button', l)?.disabled));
+// 436 (the owner, 21 Oct 2026): a VIP whose voucher kind was given as a
+// discount on a later invoice is not refunded in full automatically. The plan
+// carries an Owner's or Manager's override instead of a blocker: staff can
+// only ask, and an approver must give a reason, which goes to the server.
+const vipLater = { code: 'vip_voucher_used_later', invoice_no: 'INV-LATER',
+  message: 'A discount with the $72 discount Voucher was given to Ann on INV-LATER, an invoice made after this VIP invoice (INV-1), so the VIP ticket is not refunded in full automatically. An Owner or Manager may allow the full refund, giving a reason (it is recorded).' };
+planNow = args => basePlan({ action: args.p_action, stock: [], overrides_required: [vipLater], requires_override: true,
+  summary: ['Refund S$200.00.', `Owner/Manager override required: ${vipLater.message}`],
+  effects: { money_returned: { total: 200, destinations: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 200 }] },
+             benefits: [], stock_returned: [], overrides: [vipLater] } });
+calls.length = 0;
+await render({ canApprove: false });
+check('a VIP refund that needs the override is not blocked: staff can ask for it',
+  byText('button', 'Full refund')?.disabled === false && !text().includes('Every action is unavailable'));
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Cannot come');
+await click(byText('button', 'Continue'));
+check('staff see the override with what it does, give no reason for it, and are told an Owner or Manager decides',
+  text().includes(vipLater.message) && !field('Reason for override: vip_voucher_used_later')
+  && text().includes('This will be sent to an Owner or Manager'));
+await click(byText('button', 'Submit refund request'));
+check('and their request is sent for approval, never approved by them',
+  calls.some(c => c.name === 'request_invoice_action_v2' && c.args.p_action === 'refund_full')
+  && !calls.some(c => c.name === 'resolve_invoice_action_v2'));
+calls.length = 0;
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 200, refund: {}, cancellation: null,
+  goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Cannot come');
+await click(byText('button', 'Continue'));
+check('an Owner or Manager is asked for the override\'s reason, and cannot confirm without it',
+  !!field('Reason for override: vip_voucher_used_later')
+  && byText('button', 'Confirm S$200.00 refund')?.disabled === true && text().includes('Give a reason for each override.'));
+await type(field('Reason for override: vip_voucher_used_later'), 'The SAVE72 on INV-LATER was a separate offer');
+await click(byText('button', 'Confirm S$200.00 refund'));
+const vipSent = calls.find(c => c.name === 'resolve_invoice_action_v2')?.args.p_overrides ?? [];
+check('with it, the approval carries the reason for the override',
+  JSON.stringify(vipSent) === JSON.stringify([{ code: 'vip_voucher_used_later', reason: 'The SAVE72 on INV-LATER was a separate offer' }]),
+  JSON.stringify(vipSent));
 
 console.log(failures === 0
   ? '\nPASS: the guided flow steps, validates, submits what was chosen, refuses a changed plan until it is confirmed by its own hash, reports only what the server actually did, and offers nothing on a blocked invoice'

@@ -10,7 +10,9 @@
 //
 // Every name, phone and email here is invented. ?role= picks the user (see
 // auth-stub.tsx); ?fail=<rpc name> makes that call fail; ?allow_test=0 stops
-// the website channel accepting Stripe test orders.
+// the website channel accepting Stripe test orders; ?planning=fail makes the
+// guests' answers fail to load (round 7's warning), ?planning=none answers as a
+// database without round 7.
 import { PREVIEW_USERS, previewRole } from './auth-stub';
 
 type Day = { day: string; capacity: number | null };
@@ -75,6 +77,8 @@ CUSTOMERS.push(
   { id: 'c-09', full_name: 'Customer Nine', phone: '+65 9123 0020', email: 'customer9@tests.invalid', notes: null, deleted_at: null },
   { id: 'c-10', full_name: 'Customer Ten', phone: '+65 9123 0020', email: 'customer10@tests.invalid', notes: null, deleted_at: null },
 );
+// 436: the customer whose phone a website registration also gave (ACMA's fictional mobile range).
+CUSTOMERS.push({ id: 'c-11', full_name: 'Customer Eleven', phone: '+61 491 570 737', email: 'customer11@tests.invalid', notes: null, deleted_at: null });
 
 const isOwnerOrAdmin = role === 'owner';
 const isManager = role === 'owner' || role === 'manager';
@@ -725,7 +729,243 @@ const rpcs: Record<string, (a: any) => unknown> = {
     ch.mode = p_mode;
     return null;
   },
+
+  // 436: the event's own website, for Anniversary Open Days: its first ticket
+  // guest is a VIP, one person waits to be matched, two VIP orders, the
+  // Website tab's settings, keys and test rows. Gifts and keys change memory.
+  event_web_guest_extras: ({ p_event_id }) => {
+    if (p_event_id !== 'ev-open-days') return { settings: null, guests: [], holds: [], gift_choices: [], can_close_holds: isManager, can_undo_gifts: isManager };
+    const vip = guests.find(g => g.event_id === p_event_id && g.source === 'ticket' && g.status === 'registered');
+    return {
+      settings: { store_id: 'st-north', store_name: 'North Store', vip_option_id: null, mode: 'record_only', code: 'OPEN-DAYS-2026',
+        venue: null, site_url: 'https://seminar.example.com', gift_store_access: true },
+      guests: vip ? [{ guest_id: vip.id, person_id: null, website: false, is_test: false, registration_id: null, position: null, group_size: null,
+        parked: false, vip: 'paid', vip_guest: true, vip_invoice_no: null, vip_waiting: null, hold: null, closed: false, match: null,
+        referral: null, upgrade_token: null, gift: previewGifts[vip.id] ?? null }] : [],
+      holds: [{ person_id: 'pp-held', guest_id: null, registration_id: 'REG-20261020-PREV0001', position: 1, group_size: 1,
+        held_at: new Date().toISOString(), reason: 'phone_in_use', full_name: 'Website Person', phone: '+61 491 570 737', email: 'webperson@tests.invalid',
+        days: [D1], vip_waiting: true,
+        candidates: CUSTOMERS.filter(c => c.phone === '+61 491 570 737').map(c => ({ customer_id: c.id, full_name: c.full_name, phone: c.phone,
+          email: c.email, created_at: '2026-01-01T00:00:00Z', phone_matches: true, email_matches: false, name_matches: false })) },
+        // R6-4: someone gave the affiliate's own name (Customer Three's link) on a phone and email not on her record.
+        { person_id: 'pp-aff', guest_id: null, registration_id: 'REG-20261021-PREV0002', position: 1, group_size: 1,
+          held_at: new Date().toISOString(), reason: 'affiliate_name', full_name: 'Customer Three', phone: '+61 491 572 983',
+          email: 'customer.three.new@example.com', days: [D2], vip_waiting: false, affiliate_name: 'Customer Three',
+          referral_note: 'Not referred: the same name as Customer Three, the affiliate whose link (AFF003) was used. If this is Customer Three, link her record: she earns no commission from it. If it is someone else, make a new customer: they are not referred through this link either.',
+          candidates: CUSTOMERS.filter(c => c.id === 'c-03').map(c => ({ customer_id: c.id, full_name: c.full_name, phone: c.phone,
+            email: c.email, created_at: '2026-01-01T00:00:00Z', phone_matches: false, email_matches: false, name_matches: true })) }],
+      gift_choices: [{ product_id: 'pr-socks', name: 'Energia Socks - Black', stock: 13 }, { product_id: 'pr-gloves', name: 'Energia Gloves', stock: 0 }],
+      can_close_holds: isManager, can_undo_gifts: isManager,
+    };
+  },
+  event_vip_gift_give: ({ p_guest_id, p_product_id }) => {
+    previewGifts[p_guest_id] = { gift_id: newId('gift'), product_id: p_product_id, product_name: 'Energia Socks - Black', use_no: 'USE-000123',
+      day: D1, given_at: new Date().toISOString(), given_by_name: me.full_name };
+    return { ...previewGifts[p_guest_id], remaining: 12, replayed: false };
+  },
+  event_vip_gift_undo: ({ p_gift_id }) => {
+    if (!isManager) refuse('Your role cannot do this.');
+    for (const k of Object.keys(previewGifts)) if (previewGifts[k]?.gift_id === p_gift_id) previewGifts[k] = null;
+    return { ok: true, message: 'Put the item back with Stock, Adjust (an adjustment request), quoting USE-000123.' };
+  },
+  event_registration_attach: () => ({ ok: true, vip_orders: [] }),
+  event_registration_create_customer: () => ({ ok: true, vip_orders: [] }),
+  event_registration_close: () => { if (!isManager) refuse('Your role cannot do this.'); return { ok: true }; },
+  event_vip_orders_list: ({ p_event_id }) => (p_event_id !== 'ev-open-days' ? { settings: null, orders: [], can_close: false } : {
+    settings: { mode: 'record_only', code: 'OPEN-DAYS-2026', store_name: 'North Store', hitpay_method_name: 'HitPay (online)',
+      paynow_method_name: 'PayNow', bank_method_name: 'Bank Transfer' },
+    can_close: isManager,
+    orders: [
+      { id: 'vo-1', order_id: 'VIP-20261020-PREV0001', provider: 'paynow', status: 'needs_review', is_test: false, livemode: true,
+        unit_amount: 72, quantity: 1, amount_total: 72, amount_paid: 72, payer_name: 'Website Person', payer_email: 'webperson@tests.invalid',
+        payer_phone: '+61 491 570 737', checkout_opened_at: null, expires_at: null, expired: false, paid_at: null, paid_on: D1, reference: 'PN 4455',
+        review_reason: 'Person 1 on this order is still to be matched to a customer (Guests, To match)', refusal: null, waiting_for_match: false,
+        test_note: null, test_would: null, refunded_total: 0, refund_noted_at: null, refund_covered: false, created_at: new Date().toISOString(),
+        people: [{ person_id: 'pp-held', position: 1, name: 'Website Person', match: 'held', customer_id: null, customer_name: null, days: [D1] }] },
+      { id: 'vo-2', order_id: 'VIP-20261020-PREV0002', provider: 'hitpay', status: 'recorded', is_test: false, livemode: true,
+        unit_amount: 72, quantity: 2, amount_total: 144, amount_paid: 144, payer_name: 'Customer One', payer_email: 'customer1@tests.invalid',
+        payer_phone: null, checkout_opened_at: new Date().toISOString(), paid_at: new Date().toISOString(), paid_on: D1,
+        reference: null, review_reason: null, refunded_total: 0, refund_covered: false, created_at: new Date().toISOString(),
+        people: [{ person_id: 'pp-1', position: 1, name: 'Customer One', match: 'exact', customer_id: 'c-01', customer_name: 'Customer One', days: [D1, D2] },
+                 { person_id: 'pp-2', position: 2, name: 'Customer Two', match: 'exact', customer_id: 'c-02', customer_name: 'Customer Two', days: [D2] }] },
+    ],
+  }),
+  event_vip_order_invoice: () => ({ status: 'invoiced', review_reason: null, invoice_nos: ['INV-PREVIEW-0001'] }),
+  event_vip_order_dismiss: () => ({ ok: true }),
+  event_vip_order_close_refunded: () => { if (!isManager) refuse('Your role cannot do this.'); return { ok: true }; },
+  event_web_settings_get: ({ p_event_id }) => ({
+    event_id: p_event_id, event_name: events.find(e => e.id === p_event_id)?.name ?? '',
+    settings: p_event_id !== 'ev-open-days' ? null : {
+      event_id: p_event_id, code: 'OPEN-DAYS-2026', mode: 'record_only', venue: null, store_id: 'st-north', store_name: 'North Store',
+      acting_profile_id: 'u-owner', acting_name: 'Preview Owner', vip_option_id: null, vip_option_name: null, vip_voucher_ids: [],
+      gift_product_ids: ['pr-socks', 'pr-gloves'], hitpay_payment_method_id: 'pm-hitpay', paynow_payment_method_id: 'pm-paynow',
+      bank_payment_method_id: null, source_option_id: null, source_label: null, source_details: null,
+      sync_url: 'https://seminar.example.com/api/app/sync', site_url: 'https://seminar.example.com', last_sync_at: null, last_test_sync_at: null },
+    readiness: { blocking: [], errors: ['Choose the VIP ticket.'], warnings: ['No live key yet.',
+      ...(talkTitles === null ? ['The talk titles are the suggested list: set the real ones under Talk titles once the speakers\' titles are known.'] : [])] },
+    endpoint_path: '/functions/v1/event-website',
+    keys: previewKeys,
+    requests: [{ type: 'event_info', received_at: new Date().toISOString(), outcome: 'ok', kind: 'test', is_write: false }],
+    test: { registrations: [], orders: [] },
+    choices: {
+      stores: STORES.slice(0, 1).map(x => ({ id: x.id, name: x.name })),
+      profiles: PROFILES.filter(x => ['owner', 'manager'].includes(x.role)).map(x => ({ id: x.id, full_name: x.full_name, role: x.role })),
+      options: (events.find(e => e.id === p_event_id)?.options ?? []).map(o => ({ id: o.id, name: o.name, days_count: o.days_count, price: o.price, is_active: o.is_active })),
+      vouchers: [{ id: 'v-72', name: '$72 discount Voucher', code: 'SAVE72', priced_at_store: false }, { id: 'v-3in1', name: '3-in-1 Vouchers', code: '3-in-1', priced_at_store: true }],
+      products: [{ id: 'pr-socks', name: 'Energia Socks - Black', sku: 'SOCK-B', stock: 13 }, { id: 'pr-gloves', name: 'Energia Gloves', sku: 'GLOVE', stock: 0 }],
+      methods: [{ id: 'pm-hitpay', name: 'HitPay (online)' }, { id: 'pm-paynow', name: 'PayNow' }, { id: 'pm-bank', name: 'Bank Transfer' }],
+      sources: [{ id: 'so-1', label: 'Event Name', requires_details: true }],
+    },
+    can_manage: role === 'owner', can_clear_tests: isManager, can_set_venue: isManager,
+    // 436 round 7 (S4).
+    talks: { titles: effectiveTitles(), saved: talkTitles !== null, suggested: [...SUGGESTED_TALK_TITLES] },
+    can_set_talks: isManager && p_event_id === 'ev-open-days',
+  }),
+  event_web_settings_save: () => { if (role !== 'owner') refuse('Your role cannot do this.'); return { ok: true }; },
+  event_web_set_venue: ({ p_venue }) => ({ ok: true, venue: p_venue }),
+  event_web_key_create: ({ p_kind, p_label }) => {
+    if (role !== 'owner') refuse('Your role cannot do this.');
+    const key = `evk_${p_kind}_${'Prev1ewKey'.repeat(4)}abc`;
+    previewKeys.unshift({ id: newId('k'), kind: p_kind, key_hint: `evk_${p_kind}_Prev…eabc`, label: p_label, created_at: new Date().toISOString(),
+      created_by_name: me.full_name, last_used_at: null, revoked_at: null, revoked_by_name: null, revoked_reason: null });
+    return { key_id: previewKeys[0].id, kind: p_kind, key_hint: previewKeys[0].key_hint, key };
+  },
+  event_web_key_revoke: ({ p_key_id, p_reason }) => {
+    const k = previewKeys.find(x => x.id === p_key_id) ?? refuse('Key not found');
+    Object.assign(k, { revoked_at: new Date().toISOString(), revoked_by_name: me.full_name, revoked_reason: p_reason });
+    return { ok: true };
+  },
+  event_web_test_clear: () => ({ registrations: 0, orders: 0, requests: 0 }),
+
+  // 436 round 7: the guests' planning answers (S1-S4).
+  event_planning_list: ({ p_event_id }) => {
+    const e = findEvent(p_event_id); mustRun(e);
+    return {
+      talk_titles: effectiveTitles(), talk_titles_saved: talkTitles !== null,
+      hours: { daily_start: e.daily_start, daily_end: e.daily_end },
+      guests: guests.filter(g => g.event_id === e.id && planAnswers[g.id]).map(g => ({
+        guest_id: g.id, plan_id: `plan-${g.id}`, days: g.days.map(d => d.day), ...planRecord(g.id),
+      })),
+    };
+  },
+  event_planning_save: ({ p_guest_id, p_answers, p_version, p_note }) => {
+    const g = guests.find(x => x.id === p_guest_id) ?? refuse('Guest not found');
+    mustRun(findEvent(g.event_id));
+    if (String(p_note ?? '').trim().length > 200) refuse('The note is at most 200 characters');
+    const cur = planAnswers[g.id];
+    if (cur && JSON.stringify(cur.answers) === JSON.stringify(p_answers)) return { ok: true, guest_id: g.id, changed: false, ...planRecord(g.id) };
+    if ((cur?.version ?? 0) !== (p_version ?? 0)) {
+      refuse(`These answers were changed by ${cur?.updated_by === 'staff' ? nameOf(cur.staff_id) ?? 'staff' : 'the guest on the website'} since you opened them. Close this and open them again.`);
+    }
+    planAnswers[g.id] = { version: (cur?.version ?? 0) + 1, answers: p_answers, updated_at: new Date().toISOString(), updated_by: 'staff', staff_id: me.id };
+    return { ok: true, guest_id: g.id, ...planRecord(g.id) };
+  },
+  event_planning_summary: ({ p_event_id }) => {
+    const e = findEvent(p_event_id); mustRun(e);
+    return planningSummary(e);
+  },
+  event_web_set_talks: ({ p_event_id, p_titles }) => {
+    if (!isManager) refuse('Your role cannot do this.');
+    if (p_event_id !== 'ev-open-days') refuse('Save the website settings first');
+    if (p_titles === null) talkTitles = null;
+    else {
+      const out: string[] = [];
+      for (const x of p_titles as string[]) {
+        const t = String(x ?? '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        if (t.length > 120) refuse(`A talk title is at most 120 characters: ${t.slice(0, 40)}…`);
+        if (out.some(y => y.toLowerCase() === t.toLowerCase())) refuse(`Each talk title only once: ${t}`);
+        out.push(t);
+      }
+      if (out.length > 20) refuse('At most 20 talk titles');
+      talkTitles = out;
+    }
+    return { ok: true, talk_titles: effectiveTitles(), saved: talkTitles !== null };
+  },
 };
+
+// ── 436 round 7: planning answers ──────────────────────────────────────────
+// A vegetarian who comes late on Day 2, an allergy (long, never cut) who leaves
+// early on Day 1, a wheelchair, the VIP's other food and question, a talk no
+// longer listed. Talk titles: the suggested list until a Manager saves some.
+const SUGGESTED_TALK_TITLES = ['Sleep better, stress less', 'Healthy joints, back and muscles', 'Good circulation for everyday energy',
+  'Caring for your eyes', 'Ageing well and staying active', 'Eating well for long-term health', "Women's wellness"];
+let talkTitles: string[] | null = null;
+const effectiveTitles = () => [...(talkTitles ?? SUGGESTED_TALK_TITLES)];
+type PlanRow = { version: number; answers: any; updated_at: string; updated_by: 'guest' | 'staff'; staff_id: string | null };
+const planAnswers: Record<string, PlanRow> = {};
+const blank = { food: null, food_other: null, allergy: null, allergy_details: null, timing: [], talks: [], access: [], access_other: null,
+  heard_from: null, heard_from_other: null, question: null };
+const idOf = (name: string) => guests.find(g => g.event_id === 'ev-open-days' && g.name === name)!.id;
+const answered = (name: string, a: any, by: 'guest' | 'staff' = 'guest', version = 1) => {
+  planAnswers[idOf(name)] = { version, answers: { ...blank, ...a }, updated_at: at(addDays(TODAY, -2), '10:05'), updated_by: by,
+    staff_id: by === 'staff' ? 'u-staff' : null };
+};
+answered('Guest Nine', { food: 'vegetarian', allergy: 'no', heard_from: 'tiktok', talks: ['Sleep better, stress less', 'Caring for your eyes'],
+  timing: [{ date: D1, whole_day: true, arrive: null, leave: null }, { date: D2, whole_day: false, arrive: '14:00', leave: '19:00' }] });
+answered('Guest Two', { food: 'no_preference', allergy: 'yes', allergy_details: 'Peanuts and shellfish (carries an EpiPen at all times)',
+  timing: [{ date: D1, whole_day: false, arrive: '10:00', leave: '15:00' }], heard_from: 'friend_family',
+  talks: ['Healthy joints, back and muscles', 'Managing stress at work'] }, 'staff', 2);
+answered('Guest Thirteen', { food: 'halal', allergy: 'no', access: ['wheelchair', 'front_seat'], heard_from: 'staff',
+  timing: [{ date: D2, whole_day: true, arrive: null, leave: null }] });
+answered('Guest One', { food: 'other', food_other: 'No pork', allergy: 'no', heard_from: 'other', heard_from_other: 'Community centre poster',
+  talks: ['Good circulation for everyday energy', 'Sleep better, stress less'],
+  question: 'Is it better to walk in the morning or in the evening?\nI usually walk after dinner.' });
+answered('Guest Seven', { food: 'vegan', allergy: 'yes', heard_from: 'whatsapp', access: ['walking_help'], access_other: 'Needs a seat near the lift' });
+
+function planRecord(guestId: string) {
+  const r = planAnswers[guestId];
+  return { version: r.version, answers: r.answers, updated_at: r.updated_at, updated_by: r.updated_by,
+    staff_name: r.updated_by === 'staff' ? nameOf(r.staff_id) : null };
+}
+
+function planningSummary(e: Ev) {
+  const reg = guests.filter(g => g.event_id === e.id && g.status === 'registered');
+  const vipId = e.id === 'ev-open-days' ? reg.find(g => g.source === 'ticket')?.id ?? null : null;
+  const who = (g: G) => ({ guest_id: g.id, name: g.name, vip: g.id === vipId });
+  const ans = (g: G) => planAnswers[g.id]?.answers ?? null;
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+  const foodOf = (list: G[]) => {
+    const out: Record<string, number> = { no_preference: 0, vegetarian: 0, vegan: 0, halal: 0, no_beef: 0, other: 0, not_said: 0 };
+    for (const g of list) out[ans(g)?.food ?? 'not_said'] += 1;
+    return out;
+  };
+  const allergies = (list: G[]) => list.filter(g => ans(g)?.allergy === 'yes').map(g => ({ ...who(g), text: ans(g).allergy_details })).sort(byName);
+  const foodOther = (list: G[]) => list.filter(g => ans(g)?.food === 'other' && ans(g).food_other).map(g => ({ ...who(g), text: ans(g).food_other })).sort(byName);
+  const days = [...e.days].sort((a, b) => a.day.localeCompare(b.day)).map((d, i) => {
+    const on = reg.filter(g => g.days.some(x => x.day === d.day));
+    const part = on.map(g => ({ g, t: (ans(g)?.timing ?? []).find((t: any) => t.date === d.day && !t.whole_day) })).filter(x => x.t);
+    return {
+      day: d.day, label: `Day ${i + 1}`, registered: on.length, answered: on.filter(ans).length, food: foodOf(on),
+      food_other: foodOther(on), allergies: allergies(on),
+      late: part.filter(x => x.t.arrive > (e.daily_start ?? '00:00')).map(x => ({ ...who(x.g), time: x.t.arrive })).sort((a, b) => a.time.localeCompare(b.time) || byName(a, b)),
+      early: part.filter(x => x.t.leave < (e.daily_end ?? '24:00')).map(x => ({ ...who(x.g), time: x.t.leave })).sort((a, b) => a.time.localeCompare(b.time) || byName(a, b)),
+      access: on.filter(g => (ans(g)?.access ?? []).length || ans(g)?.access_other)
+        .map(g => ({ ...who(g), needs: ans(g).access, other: ans(g).access_other })).sort(byName),
+    };
+  });
+  const vips = reg.filter(g => g.id === vipId);
+  const listed = effectiveTitles();
+  const counts: Record<string, number> = Object.fromEntries(listed.map(t => [t, 0]));
+  for (const g of reg) for (const t of ans(g)?.talks ?? []) counts[t] = (counts[t] ?? 0) + 1;
+  const heard: Record<string, number> = { tiktok: 0, facebook: 0, instagram: 0, google: 0, whatsapp: 0, friend_family: 0, staff: 0, email: 0, other: 0, not_said: 0 };
+  for (const g of reg) heard[ans(g)?.heard_from ?? 'not_said'] += 1;
+  return {
+    event_id: e.id, hours: { daily_start: e.daily_start, daily_end: e.daily_end },
+    registered: reg.length, answered: reg.filter(ans).length, days,
+    vip: e.id === 'ev-open-days' ? { count: vips.length, answered: vips.filter(ans).length, waiting: 1, food: foodOf(vips),
+      food_other: foodOther(vips), allergies: allergies(vips) } : null,
+    talks: Object.keys(counts).map(t => ({ title: t, count: counts[t], listed: listed.includes(t) }))
+      .sort((a, b) => b.count - a.count || listed.indexOf(a.title) - listed.indexOf(b.title)),
+    heard_from: heard,
+    heard_from_other: reg.filter(g => ans(g)?.heard_from === 'other' && ans(g).heard_from_other)
+      .map(g => ({ ...who(g), text: ans(g).heard_from_other })).sort(byName),
+    questions: reg.filter(g => ans(g)?.question).map(g => ({ ...who(g), text: ans(g).question })).sort(byName),
+  };
+}
+// 436: gifts given and keys made in the preview.
+const previewGifts: Record<string, any> = {};
+const previewKeys: any[] = [];
 
 // ── the client surface the page uses ───────────────────────────────────────
 const failing = new Set(new URLSearchParams(typeof location === 'undefined' ? '' : location.search).getAll('fail'));
@@ -733,9 +973,12 @@ const TABLES: Record<string, any[]> = { stores: STORES, profiles: PROFILES, cust
 const clone = <T,>(v: T): T => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
 const delay = () => new Promise(r => setTimeout(r, 120));
 
+const planningMode = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('planning');
 function rpc(name: string, args: any = {}) {
   return delay().then(() => {
     if (failing.has(name)) return { data: null, error: { message: `Preview: ${name} failed` } };
+    if (name.startsWith('event_planning_') && planningMode === 'none') return { data: null, error: { message: 'Could not find the function', code: 'PGRST202' } };
+    if (name === 'event_planning_list' && planningMode === 'fail') return { data: null, error: { message: 'canceling statement due to statement timeout', code: '57014' } };
     const fn = rpcs[name];
     if (!fn) return { data: null, error: { message: `The preview has no ${name}` } };
     try { return { data: clone(fn(args)), error: null }; }

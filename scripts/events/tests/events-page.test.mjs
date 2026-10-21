@@ -50,6 +50,8 @@ process.env.TZ = 'America/Los_Angeles'; // west of UTC, where a date-only value 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 
@@ -99,6 +101,9 @@ const built = await build({
     b.onResolve({ filter: /(^|\/)lib\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
     b.onResolve({ filter: /(^|\/)context\/AuthContext$/ }, () => ({ path: 'auth', namespace: 'stub' }));
     b.onResolve({ filter: /^xlsx$/ }, () => ({ path: 'xlsx', namespace: 'stub' }));
+    // 436: the Website tab shows the contract's text, imported as Vite does (?raw).
+    b.onResolve({ filter: /\?raw$/ }, a => ({ path: join(a.resolveDir, a.path.replace(/\?raw$/, '')), namespace: 'raw' }));
+    b.onLoad({ filter: /.*/, namespace: 'raw' }, a => ({ loader: 'text', contents: readFileSync(a.path, 'utf8') }));
     b.onLoad({ filter: /^supabase$/, namespace: 'stub' }, () => ({ loader: 'js',
       contents: 'export const supabase = { from: (...a) => globalThis.__backend.client.from(...a), rpc: (...a) => globalThis.__backend.client.rpc(...a) };' }));
     b.onLoad({ filter: /^auth$/, namespace: 'stub' }, () => ({ loader: 'js',
@@ -297,7 +302,8 @@ function createBackend(fx, { canManage = true, canSwitch = false } = {}) {
       if (b.failures.has(this.name)) return { data: null, error: { message: b.failures.get(this.name) } };
       if (this.kind === 'rpc') {
         const fn = b.handlers[this.name] ?? rpcs[this.name];
-        if (!fn) return { data: null, error: { message: `unknown rpc ${this.name}` } };
+        // As PostgREST answers for a function the database does not have (436's, here).
+        if (!fn) return { data: null, error: { message: `unknown rpc ${this.name}`, code: 'PGRST202' } };
         return { data: structuredClone(fn(this.args)), error: null };
       }
       const rows = (tables[this.name] ?? []).filter(r => this.filters.every(f => f(r)));
@@ -1878,5 +1884,27 @@ test('Admins see no Close as refunded or Reopen; the server checks the role too 
     for (const label of ['Close as refunded', 'Reopen']) assert.ok(!button(label, row), `${row.dataset.order}: no ${label}`);
   assert.deepEqual(buttons(orderRow('wo-d1')).map(b => b.textContent.trim()), ['Create invoice', 'Link invoice', 'Dismiss'],
     'the rest of the tab is as before');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+// 436 round 7: a database without the planning answers answers PGRST202 for
+// event_planning_list (as this backend answers every function it does not
+// have). The page is then exactly as before: no warning, no Planning tab, no
+// Answers button, no badges, the export without answer columns.
+test('a database without round 7\'s planning answers: the page is as before (PGRST202)', async () => {
+  await mount();
+  await openEvent();
+  const asked = callsOf('event_planning_list');
+  assert.ok(asked.length >= 1, 'the page asks for the answers with the guest list');
+  assert.deepEqual(asked[0].args, { p_event_id: 'ev-1' });
+  assert.equal(document.querySelector('[data-planning-error]'), null, 'no warning');
+  assert.ok(!buttons().some(b => b.getAttribute('role') === 'tab' && b.textContent.trim() === 'Planning'), 'no Planning tab');
+  assert.ok(!document.querySelector('[data-answers]') && !document.querySelector('[data-plan-badges]'), 'no Answers, no badges');
+  globalThis.__exports = [];
+  await click(button('Export Excel'));
+  assert.ok(!globalThis.__exports.at(-1).sheet.ws.header.includes('Food'), 'no answer columns');
+  assert.ok(!globalThis.__exports.at(-1).sheet.ws.header.includes('Allergies'));
+  await openTab('Check-in');
+  assert.equal(document.querySelector('[data-plan-badges]'), null, 'the door shows none either');
   assert.deepEqual(globalThis.__renderErrors, []);
 });

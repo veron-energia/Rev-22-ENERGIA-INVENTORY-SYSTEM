@@ -138,6 +138,31 @@ declare
                              -- with the service key. (Kept away from the end of the
                              -- list, so it merges cleanly with what later files add.)
                              'invite_user_reusable_login',
+                             -- 436: an event's own website (the edge function event-website
+                             -- calls event_web_call with the service key), its messages and
+                             -- rules, VIP invoices, and the triggers that follow a VIP's records.
+                             -- (Kept away from the end of the list, so it merges cleanly.)
+                             'event_web_call','event_web_open_state','event_web_person_vip_state',
+                             'event_web_person_view','event_web_phone_holders','event_web_match_customer',
+                             'event_web_fill_customer','event_web_affiliate_contact','event_web_check_self_referral',
+                             'event_web_referral_note',
+                             'event_web_apply_referral','event_web_new_customer',
+                             'event_web_add_free_guest','event_web_new_token','event_vip_paid_order_open',
+                             'event_web_readiness','event_web_info','event_web_referral_info','event_web_register',
+                             'event_web_person','event_web_order_answer','event_vip_person_problems',
+                             'event_web_vip_checkout','event_vip_time_reason','event_vip_dry_run','event_web_vip_paid',
+                             'event_web_vip_transfer','event_web_vip_refund','event_web_guest_key','event_web_sync',
+                             'event_web_sync_ping','event_vip_make_invoices','event_vip_retry_after_match',
+                             'trg_event_vip_guest_follow','trg_event_vip_parked_guest','trg_event_web_delete_guard',
+                             'event_vip_invoice_items','event_vip_used_later','event_vip_take_back',
+                             'event_vip_refund_plan','trg_event_vip_refund_vouchers','trg_event_web_referral_check_decided',
+                             'trg_event_vip_used_later_reason',
+                             -- 436 round 7: the planning answers' helpers and the website's message
+                             'event_web_talk_titles','event_planning_anchor','event_planning_days',
+                             'event_planning_record','event_planning_check','event_planning_write',
+                             'event_web_planning_closed','event_web_planning_state','event_web_planning_answers',
+                             -- 436 round 8: the VIP payments each customer holds for an event
+                             'event_vip_holders',
                              -- 409: the retired staff request, which moved the invoice itself
                              -- to refund_requested (staff raise guided requests now), and what a
                              -- cancelled invoice's customer already had (refund_invoice_recorded's)

@@ -195,3 +195,109 @@ label.events-choice.unavailable { cursor: not-allowed; opacity: 0.65; }
   .events-web-table .events-row-cancelled td.events-web-actions-cell { opacity: 1; }
   .events-web-table .events-row-cancelled td.events-web-actions-cell > * { opacity: 0.6; }
 }
+
+/* 436: the event's own website: VIPs, To match, gifts, the Website tab. */
+.events-badges { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 3px; }
+.events-badge-vip {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; font-weight: 700;
+}
+.events-web-filter { margin-bottom: 10px; }
+.events-holds { padding: 14px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; border-color: #fecaca; }
+.events-holds-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.events-holds-head svg { color: var(--danger); align-self: center; }
+.events-hold { border-top: 1px solid var(--border); padding-top: 10px; }
+.events-hold-top { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.events-hold-reason { max-width: 380px; }
+.events-hold-table td, .events-hold-table th { font-size: 12.5px; }
+.events-checkin-row.vip { border-color: #fcd34d; }
+.events-vip-perks { color: #92400e; }
+.events-gift {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  font-size: 13px; font-weight: 600; color: #92400e;
+}
+.events-gift .btn { font-size: 13px; }
+.events-vip-orders { margin-bottom: 18px; }
+.events-vip-refund { color: var(--danger); max-width: 260px; }
+.events-website { display: flex; flex-direction: column; gap: 14px; }
+.events-web-section { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.events-web-form { border: 0; padding: 0; margin: 0; min-width: 0; }
+.events-web-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 16px; }
+.events-web-wide-field { grid-column: 1 / -1; }
+.events-web-checks { display: flex; flex-direction: column; gap: 6px; }
+.events-web-readiness { padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
+.events-web-readiness ul { margin: 4px 0 0 18px; padding: 0; font-size: 13px; }
+.events-web-ready-errors { color: var(--danger); }
+.events-web-ready-warnings { color: #92400e; }
+.events-web-copy-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.events-web-copy-row code { overflow-wrap: anywhere; font-size: 12.5px; }
+.events-web-code {
+  margin: 4px 0; padding: 10px 12px; max-height: 320px; overflow: auto; font-size: 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; white-space: pre; max-width: 100%;
+}
+.events-web-details summary { cursor: pointer; font-weight: 600; margin: 6px 0; }
+.events-web-tests { margin: 4px 0 0 18px; padding: 0; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.events-web-keys code { font-size: 12px; }
+
+/* 436 round 7: planning answers. Colours come from the app's badge-* classes
+   (K3); these are layout rules only. An allergy badge is never cut: it wraps
+   (K2). */
+.events-plan-badges { margin-top: 2px; }
+.events-plan-badges .badge { border-radius: 8px; text-align: left; }
+/* A checked-in row is green already: the food badge keeps an edge there. */
+.events-checkin-row.done .events-plan-badges .badge-success { background: var(--surface); box-shadow: inset 0 0 0 1px #bbf7d0; }
+.events-badge-allergy { white-space: normal; overflow-wrap: anywhere; text-align: left; border-radius: 8px; font-weight: 700; }
+/* At the door every badge is in full (a phone has no hover): they wrap as the allergy badge does. */
+.events-checkin-row .events-plan-badges .badge { white-space: normal; overflow-wrap: anywhere; }
+.events-plan-allergy { color: var(--danger); font-weight: 600; }
+.events-plan-export-warning { flex: 1 1 100%; margin-bottom: 0; }
+.events-hold-warning { margin: 4px 0 6px; align-items: flex-start; font-size: 13px; }
+/* Round 8: two VIP payments for one customer (To match note, guest row badge, Planning VIP block). */
+.events-text-danger { color: var(--danger); font-weight: 600; }
+.events-badge-vip-double { white-space: normal; text-align: left; }
+.events-plan-vip-doubles { margin: 4px 0 0; align-items: flex-start; font-size: 13px; }
+.events-plan-vip-doubles ul { margin: 4px 0 0; padding-left: 18px; }
+.events-hold-warning svg { flex: 0 0 auto; margin-top: 2px; }
+/* The guest's answers (detail and staff form). */
+.events-plan-detail { display: grid; grid-template-columns: minmax(130px, 34%) 1fr; gap: 6px 12px; margin: 0; font-size: 13.5px; }
+.events-plan-detail dt { font-weight: 600; color: var(--text-secondary); }
+.events-plan-detail dd { margin: 0; overflow-wrap: anywhere; }
+.events-plan-form { gap: 12px; }
+fieldset.events-plan-q { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+fieldset.events-plan-day {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; margin: 6px 0 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.events-plan-q legend, .events-plan-day legend { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); padding: 0 2px; margin-bottom: 4px; }
+.events-plan-choices { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.events-plan-times { display: flex; flex-wrap: wrap; gap: 10px; }
+.events-plan-times label { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; font-weight: 600; margin: 0; }
+.events-plan-times select { min-width: 130px; }
+/* The Planning tab. */
+.events-planning { display: flex; flex-direction: column; gap: 14px; }
+.events-plan-top { padding: 14px 18px; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.events-plan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.events-plan-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.events-plan-card-head { display: flex; flex-direction: column; gap: 2px; }
+.events-plan-card-head strong { display: inline-flex; gap: 6px; align-items: center; }
+.events-plan-vip-card { border-color: #fcd34d; }
+.events-plan-vip { color: #92400e; vertical-align: -1px; margin-left: 3px; }
+.events-plan-block { display: flex; flex-direction: column; gap: 4px; }
+.events-plan-list { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.events-plan-talks { list-style: none; padding-left: 0; gap: 8px; }
+.events-plan-talk-line { display: flex; justify-content: space-between; gap: 8px; }
+.events-plan-bar { height: 6px; border-radius: 999px; background: var(--primary-light); overflow: hidden; margin-top: 3px; }
+.events-plan-bar span { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+.events-plan-questions { padding: 12px 16px; }
+.events-plan-questions summary { cursor: pointer; font-weight: 600; }
+.events-plan-questions .events-plan-list { margin-top: 8px; }
+/* The Website tab's talk titles. */
+.events-talk-rows { display: flex; flex-direction: column; gap: 6px; }
+.events-talk-row { display: flex; gap: 6px; align-items: center; }
+.events-talk-row input { flex: 1 1 auto; min-width: 0; }
+.events-talks-actions { justify-content: flex-start; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 720px) {
+  .events-plan-grid { grid-template-columns: 1fr; }
+  .events-plan-detail { grid-template-columns: 1fr; }
+  .events-plan-detail dd { margin-bottom: 6px; }
+}

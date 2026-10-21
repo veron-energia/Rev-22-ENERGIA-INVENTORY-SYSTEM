@@ -6,6 +6,7 @@ import { isOwnerOrManager } from '../../types';
 import { Modal, ReasonModal } from '../ui';
 import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import { CustomerSearchSelect } from '../SearchSelect';
+import { VipOrdersSection } from './VipOrdersSection';
 import {
   EventRow, WEB_ORDER_MODE_BADGE, WEB_ORDER_MODE_LABELS, WEB_ORDER_STATUS_BADGE, WEB_ORDER_STATUS_LABELS,
   WebOrder, WebOrderLinkPreview, WebOrderList, WebOrderMode, WebOrderOutcome, fmtDate, fmtDateTime, fmtSgDate, fmtTime, money,
@@ -128,6 +129,9 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
   const [applying, setApplying] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>('current');
+  // 436: the event's own website's VIP orders come first; with them and no
+  // channel, the channel's part is left out.
+  const [hasVip, setHasVip] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -208,11 +212,13 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
   const closable = (o: WebOrder) => canClose && webOrderCanClose(o);
   const reopenable = (o: WebOrder) => canClose && webOrderClosedRefunded(o);
 
+  const channelPart = !(hasVip && list && !channel && orders.length === 0);
   return (
     <div>
+      <VipOrdersSection event={event} onInvoiced={onInvoiced} onLoaded={setHasVip} />
       {err && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{err}</div></div>}
 
-      {channel ? (
+      {!channelPart ? null : channel ? (
         <div className="card events-web-head">
           <div className="events-head-top">
             <div className="events-web-mode">
@@ -242,6 +248,7 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
         </div>
       )}
 
+      {channelPart && (<>
       <div className="events-toolbar">
         <div className="events-count-line" style={{ marginBottom: 0 }}>
           {list ? [
@@ -433,6 +440,7 @@ export const WebOrdersTab: React.FC<{ event: EventRow; onInvoiced: () => void }>
         The website fills in its workbook's Invoice No column itself, for website and staff-link orders alike, and adds
         the tickets sold on the Invoices page, so nothing needs typing in.
       </div>
+      </>)}
 
       {confirming === 'live' && channel && (
         <Modal title="Switch website orders to Live?" maxWidth={460} onClose={() => setConfirming(null)}

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, CalendarDays, ClipboardCheck, Clock, Globe, Pencil, Receipt, RefreshCw, Store, Ticket, Trash2, Users,
+  ArrowLeft, CalendarDays, ClipboardCheck, ClipboardList, Clock, Globe, MonitorSmartphone, Pencil, Receipt, RefreshCw, Store, Ticket,
+  Trash2, Users,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
@@ -10,19 +11,31 @@ import { GuestsTab } from './GuestsTab';
 import { CheckInPanel } from './CheckInPanel';
 import { SalesTab } from './SalesTab';
 import { WebOrdersTab } from './WebOrdersTab';
+import { WebsiteTab } from './WebsiteTab';
+import { PlanningTab } from './PlanningTab';
 import { GuestSaved } from './GuestModal';
 import {
-  EventRow, Guest, STATUS_BADGE, StaffOption, dayLoads, eventStatus, fmtDate, fmtDayList, fmtDayMonth,
-  fmtHours, fmtWeekday, loadText, loadTone, money, normalizeGuest, overCapacityText,
+  EventPlanning, EventRow, EventWebExtras, Guest, PlanningState, STATUS_BADGE, StaffOption, dayLoads, eventStatus, fmtDate,
+  fmtDayList, fmtDayMonth, fmtHours, fmtWeekday, loadText, loadTone, money, normalizeGuest, normalizePlanning, normalizeWebExtras,
+  overCapacityText,
 } from './model';
 
-type Tab = 'guests' | 'checkin' | 'sales' | 'web';
+// 436: 'website' is the event's own website (settings, keys, test mode).
+// 436 round 7: 'planning' is what the guests answered (S2).
+type Tab = 'guests' | 'checkin' | 'planning' | 'sales' | 'web' | 'website';
 
 /**
  * 415: while Check-in is open and the page is in sight, the guest list is read
  * again this often, so a second door device sees who the first checked in.
  */
 export const CHECK_IN_REFRESH_MS = 25_000;
+/**
+ * 436 round 7 (K13): the planning answers carry every answer, questions
+ * included, so while Check-in is open they are read with the guest list at
+ * most this often (on entering Check-in, after a save, after a Website tab
+ * change and away from Check-in: at every guest-list read).
+ */
+export const PLANNING_REFRESH_MS = 120_000;
 
 export const EventView: React.FC<{
   event: EventRow;
@@ -46,6 +59,57 @@ export const EventView: React.FC<{
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'warning' | 'info'; text: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 436: what the event's own website adds to each guest (VIP, To match,
+  // gift, referral, VIP link). An event without a website, or a database
+  // without 436, has none: the lists show as before. A read that fails (a
+  // timeout, the network) keeps what was shown, and says so: the door must
+  // not lose its VIP badges and gifts to one slow answer.
+  const [extras, setExtras] = useState<EventWebExtras | null>(null);
+  const [extrasErr, setExtrasErr] = useState<string | null>(null);
+  const extrasSeq = useRef(0);
+  const loadExtras = useCallback(async (): Promise<void> => {
+    const mine = ++extrasSeq.current;
+    const { data, error } = await supabase.rpc('event_web_guest_extras', { p_event_id: event.id });
+    if (mine !== extrasSeq.current) return;
+    if (!error) { setExtras(normalizeWebExtras(data)); setExtrasErr(null); return; }
+    if (error.code === 'PGRST202' || error.code === '42883') { setExtras(null); setExtrasErr(null); return; }
+    setExtrasErr(`Could not load the website details (VIP, To match, gifts); showing what was loaded before. ${error.message}`);
+  }, [event.id]);
+
+  // 436 round 7: the guests' planning answers (food, allergies, timing, talks,
+  // access, how heard, question), merged by guest id as the extras are. A
+  // database without round 7 has none ('none'): the page is as before. A read
+  // that fails keeps the badges shown, and says so; with nothing read yet the
+  // export's answer columns say Not loaded ('error', K14).
+  const [planning, setPlanning] = useState<EventPlanning | null>(null);
+  const [planningState, setPlanningState] = useState<PlanningState>('loading');
+  const [planningErr, setPlanningErr] = useState<string | null>(null);
+  const planningSeq = useRef(0);
+  const planningLoadedAt = useRef<number | null>(null);
+  const planningHad = useRef(false);
+  const tabNow = useRef<Tab>('guests');
+  const loadPlanning = useCallback(async (): Promise<void> => {
+    const mine = ++planningSeq.current;
+    const { data, error } = await supabase.rpc('event_planning_list', { p_event_id: event.id });
+    if (mine !== planningSeq.current) return;
+    if (!error) {
+      setPlanning(normalizePlanning(data)); setPlanningState('loaded'); setPlanningErr(null);
+      planningHad.current = true; planningLoadedAt.current = Date.now();
+      return;
+    }
+    if (error.code === 'PGRST202' || error.code === '42883') {
+      setPlanning(null); setPlanningState('none'); setPlanningErr(null); planningHad.current = false;
+      planningLoadedAt.current = Date.now();
+      return;
+    }
+    setPlanningState(planningHad.current ? 'loaded' : 'error');
+    setPlanningErr(planningHad.current
+      ? `Could not load the guests' answers (food, allergies, timing); showing what was loaded before. ${error.message}`
+      : `Could not load the guests' answers (food, allergies, timing). ${error.message}`);
+  }, [event.id]);
+  /** After a guest-list read: away from Check-in always; on it, once nothing is read yet or the last read is 2 minutes old. */
+  const planningDue = () => tabNow.current !== 'checkin' || planningLoadedAt.current === null
+    || Date.now() - planningLoadedAt.current >= PLANNING_REFRESH_MS;
 
   // Each load is numbered, so an older answer never replaces a newer one; and
   // a load that was on its way while a row changed here (a check-in) is read
@@ -64,9 +128,11 @@ export const EventView: React.FC<{
       if (error) { setErr(error.message); return; }
       setErr(null);
       setGuests((Array.isArray(data) ? data : []).map(normalizeGuest));
+      void loadExtras();
+      if (planningDue()) void loadPlanning();
       return;
     }
-  }, [event.id]);
+  }, [event.id, loadExtras, loadPlanning]);
   useEffect(() => { void loadGuests(); }, [loadGuests]);
 
   // 415: the door list follows the other door devices while Check-in is open:
@@ -86,7 +152,15 @@ export const EventView: React.FC<{
     };
   }, [tab, loadGuests]);
 
+  // Entering Check-in reads the answers once (then at most every 2 minutes).
+  useEffect(() => {
+    tabNow.current = tab;
+    if (tab === 'checkin') void loadPlanning();
+  }, [tab, loadPlanning]);
+
   const loads = useMemo(() => dayLoads(event, guests), [event, guests]);
+  const showsPlanning = planningState !== 'none'
+    && (!!extras?.settings || Object.keys(planning?.guests ?? {}).length > 0);
   const status = eventStatus(event, today);
 
   const onGuestSaved = async (r: GuestSaved) => {
@@ -175,6 +249,8 @@ export const EventView: React.FC<{
       </div>
 
       {err && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{err}</div></div>}
+      {extrasErr && <div className="alert alert-warning" role="alert" data-extras-error><span>⚠</span><div>{extrasErr}</div></div>}
+      {planningErr && <div className="alert alert-warning" role="alert" data-planning-error><span>⚠</span><div>{planningErr}</div></div>}
       {notice && (
         <div className={`alert ${notice.tone === 'warning' ? 'alert-warning' : 'alert-info'}`} role="status">
           <span>{notice.tone === 'warning' ? '⚠' : '✓'}</span>
@@ -188,28 +264,42 @@ export const EventView: React.FC<{
           onClick={() => setTab('guests')}><Users size={15} /> Guests</button>
         <button role="tab" aria-selected={tab === 'checkin'} className={`events-tab${tab === 'checkin' ? ' active' : ''}`}
           onClick={() => setTab('checkin')}><ClipboardCheck size={15} /> Check-in</button>
+        {showsPlanning && (
+          <button role="tab" aria-selected={tab === 'planning'} className={`events-tab${tab === 'planning' ? ' active' : ''}`}
+            onClick={() => setTab('planning')}><ClipboardList size={15} /> Planning</button>
+        )}
         <button role="tab" aria-selected={tab === 'sales'} className={`events-tab${tab === 'sales' ? ' active' : ''}`}
           onClick={() => setTab('sales')}><Receipt size={15} /> Sales</button>
         {seesWebOrders && (
           <button role="tab" aria-selected={tab === 'web'} className={`events-tab${tab === 'web' ? ' active' : ''}`}
             onClick={() => setTab('web')}><Globe size={15} /> Website orders</button>
         )}
+        {seesWebOrders && (
+          <button role="tab" aria-selected={tab === 'website'} className={`events-tab${tab === 'website' ? ' active' : ''}`}
+            onClick={() => setTab('website')}><MonitorSmartphone size={15} /> Website</button>
+        )}
       </div>
 
       {tab === 'guests' && (
         <GuestsTab event={event} guests={guests ?? []} loading={loading} loads={loads} staff={staff}
           currentUserId={currentUserId} currentUserName={currentUserName}
-          onSaved={r => { void onGuestSaved(r); }} onReload={async () => { await loadGuests(); onChanged(); }} />
+          onSaved={r => { void onGuestSaved(r); }} onReload={async () => { await loadGuests(); onChanged(); }} extras={extras}
+          planning={planning} planningState={planningState} onPlanningSaved={() => { void loadPlanning(); }} />
       )}
       {tab === 'checkin' && (
         guests === null
           ? <div className="card empty-state"><p>{loading ? 'Loading the guest list…' : 'The guest list could not be loaded.'}</p></div>
           : <CheckInPanel event={event} guests={guests} loads={loads} today={today}
-              currentUserName={currentUserName} onGuestChange={onGuestChange} />
+              currentUserName={currentUserName} onGuestChange={onGuestChange}
+              extras={extras} onExtrasChanged={() => { void loadExtras(); }} planning={planning} />
       )}
+      {tab === 'planning' && showsPlanning && <PlanningTab event={event} hasWebsite={!!extras?.settings} />}
       {tab === 'sales' && <SalesTab event={event} />}
       {tab === 'web' && seesWebOrders && (
         <WebOrdersTab event={event} onInvoiced={() => { void loadGuests(); onChanged(); }} />
+      )}
+      {tab === 'website' && seesWebOrders && (
+        <WebsiteTab event={event} onChanged={() => { void loadExtras(); void loadPlanning(); }} />
       )}
 
       {deleting && (
