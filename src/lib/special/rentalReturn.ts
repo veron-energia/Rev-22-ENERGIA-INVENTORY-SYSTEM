@@ -262,3 +262,84 @@ export function receiptLateFee(r: { late_fee_total?: number | null; late_fee_inv
   if (r.late_fee_invoice_id) return { inTotal: 0, note: `Late return fee ${money(fee)}, invoiced on ${invoiceNo ?? 'its own invoice'}` };
   return { inTotal: fee, note: null };
 }
+
+// ── A rental still with the customer after its invoice was cancelled (417) ──
+//
+// Cancelling an invoice ends its rental but does not bring the item back
+// (cancel_invoice_rentals leaves it waiting). When it comes back an Owner or
+// Manager records it, once (receive_returned_rental): in good condition it
+// goes back where it came from, the store it was released from or its
+// warehouse, unless they name another active warehouse; damaged or lost, it
+// never goes back on sale. Nothing is chosen for them: every item starts as
+// "Not back yet".
+
+/** A row of invoice_rentals_awaiting_return. */
+export type AwaitingRental = {
+  rental_id: string;
+  rental_no: string;
+  quantity: number;
+  item: string;
+  invoice_item_id?: string | null;
+  default_warehouse_id?: string | null;
+  default_warehouse?: string | null;
+  source_type?: 'store' | 'warehouse' | null;
+  source_name?: string | null;
+  cancelled_at?: string | null;
+  status?: string;
+};
+
+/** What happened to one item: nothing yet (''), or its condition; and, when it
+ *  is good, where it goes ('' = where it came from, else a warehouse id). */
+export type ReceiveOutcome = '' | ReturnConditionValue;
+export type ReceiveChoice = { outcome: ReceiveOutcome; warehouseId: string };
+export const NOT_BACK_YET: ReceiveChoice = { outcome: '', warehouseId: '' };
+
+/** The rentals a finished refund or cancellation leaves waiting to come back:
+ *  all of them for a cancellation, otherwise only those on the lines it
+ *  covered. Rentals on other lines are not this action's to receive. */
+export function rentalsToReceive(rows: AwaitingRental[] | null | undefined, action: string,
+  coveredItemIds: readonly string[]): AwaitingRental[] {
+  const list = rows ?? [];
+  if (action === 'cancel') return list;
+  const covered = new Set(coveredItemIds);
+  return list.filter(r => !!r.invoice_item_id && covered.has(r.invoice_item_id));
+}
+
+/** "Where it came from", in words. It sits under "Goes back to", so it says
+ *  only the place and what it is, short enough to read in the choice on a phone. */
+export function receiveHomeLabel(r: AwaitingRental): string {
+  if (r.source_type === 'store') return r.source_name ? `${r.source_name} (its store)` : 'The store it came from';
+  if (r.source_type === 'warehouse') return r.source_name ? `${r.source_name} (its warehouse)` : 'Its warehouse';
+  return 'Where it came from';
+}
+
+/** The items with something to record. */
+export const receivedChoices = (rows: AwaitingRental[], choices: Record<string, ReceiveChoice>) =>
+  rows.filter(r => (choices[r.rental_id]?.outcome ?? '') !== '');
+
+/** The arguments for receive_returned_rental. A good item goes back where it
+ *  came from (no warehouse) unless another warehouse was chosen; a damaged or
+ *  lost one moves no stock, so it names none. */
+export function receiveRpcArgs(r: AwaitingRental, c: ReceiveChoice, reason: string, requestId: string | null): Record<string, unknown> {
+  return {
+    p_rental_id: r.rental_id,
+    p_warehouse_id: c.outcome === 'good' && c.warehouseId ? c.warehouseId : null,
+    p_condition: c.outcome,
+    p_reason: reason.trim(),
+    p_request_id: requestId,
+  };
+}
+
+/** What one recorded item came to, from the server's answer. */
+export function receivedText(r: AwaitingRental, outcome: ReceiveOutcome, answer: any): string {
+  if (answer?.already_returned) return `${r.rental_no} was already recorded as back.`;
+  if (outcome === 'good') {
+    const place = answer?.location_name ? ` at ${answer.location_name}` : '';
+    return Number(answer?.returned_quantity ?? 0) > 0
+      ? `${r.rental_no} is back in good condition and on sale again${place}.`
+      : `${r.rental_no} is back in good condition. ${answer?.stock_note ?? 'No stock changed.'}`;
+  }
+  return outcome === 'damaged'
+    ? `${r.rental_no} is back but damaged. It is not put back on sale.`
+    : `${r.rental_no} is recorded as lost. It is not put back on sale.`;
+}

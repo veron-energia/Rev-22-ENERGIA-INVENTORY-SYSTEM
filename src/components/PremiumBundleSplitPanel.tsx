@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { CustomerSearchSelect } from './SearchSelect';
 import { QuickCustomerModal } from './customers/QuickCustomerModal';
+import { useAuth } from '../context/AuthContext';
+import { canAddCustomer } from '../lib/invoices/business';
 
 // A Premium Bundle purchase divided between several customers, each of whom
 // gets their own normal invoice. Paid/Bonus credit are derived from payment
@@ -62,6 +64,12 @@ export function PremiumBundleSplitPanel(props: Props) {
   // The row that opened the customer form. Only that row's recipient changes;
   // every other recipient and allocation amount is left exactly as it is.
   const [addCustomerRow, setAddCustomerRow] = useState<number | null>(null);
+  // Inventory Managers pick customers already on file but do not add them
+  // (the Owner, W2-B04-INVMGR-CUSTOMERS and 18 Oct 2026 W4-B04-IM-ADD-CUSTOMER),
+  // so a row's + and its Add a customer window are drawn only for the roles
+  // canAddCustomer allows, as on the New Invoice form's own button.
+  const { profile } = useAuth();
+  const mayAddCustomer = canAddCustomer(profile?.role);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -153,7 +161,7 @@ export function PremiumBundleSplitPanel(props: Props) {
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <button type="button" className="btn btn-secondary btn-sm" onClick={setEqual}>Split Equally</button>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={addRow}>+ Add Customer</button>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={addRow}>+ Add another person</button>
       </div>
 
       <div style={{ overflowX: 'auto' }}>
@@ -177,8 +185,10 @@ export function PremiumBundleSplitPanel(props: Props) {
                   <td style={{ padding: '4px 8px', minWidth: 200 }}>
                     <div className="customer-with-add">
                     <CustomerSearchSelect value={r.customer_id} onChange={v => setRows(rs => rs.map((x, k) => k === i ? { ...x, customer_id: v } : x))} />
-                    <button type="button" className="btn btn-secondary btn-sm" title="Add a customer for this row"
-                      onClick={() => setAddCustomerRow(i)}>+</button>
+                    {mayAddCustomer && (
+                      <button type="button" className="btn btn-secondary btn-sm" title="Add a customer for this row"
+                        onClick={() => setAddCustomerRow(i)}>+</button>
+                    )}
                   </div>
                   </td>
                   <td style={td}>
@@ -239,7 +249,7 @@ export function PremiumBundleSplitPanel(props: Props) {
         </button>
       </div>
     </div>
-    {addCustomerRow !== null && (
+    {mayAddCustomer && addCustomerRow !== null && (
       <QuickCustomerModal
         onCreated={(id) => {
           setRows(rs => rs.map((x, k) => k === addCustomerRow ? { ...x, customer_id: id } : x));

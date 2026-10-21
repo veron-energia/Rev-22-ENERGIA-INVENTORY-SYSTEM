@@ -1,5 +1,6 @@
 import React from 'react';
 import { InvoiceSearchSelect } from './InvoiceSearchSelect';
+import { hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE } from '../../lib/invoices/business';
 
 /** The sentinel the payment-method selector uses for "Instalment". It is a
  *  label on the payment, not an account, so it never reaches the database as
@@ -29,6 +30,8 @@ export function portionProblem(p: InstalmentPortion | undefined, receivedNow: nu
     return 'Enter a positive whole number of months.';
   }
   if (!(receivedNow > 0)) return 'Enter the amount received for this instalment.';
+  // 416: the server refuses more than 2 decimal places, never rounds them.
+  if (!hasAtMostTwoDecimals(receivedNow)) return TWO_DECIMALS_MESSAGE;
   return null;
 }
 

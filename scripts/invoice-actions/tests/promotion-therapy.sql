@@ -11,7 +11,9 @@
 -- It also covers the goods: the guided plan never offered a promotion's goods
 -- back, so a guided refund of any promotion with goods was refused.
 --
--- Needs 363. Disposable database only; everything is rolled back.
+-- Needs 417 (which rebuilt 363 on top of 409 and 410; 363 itself is never
+-- applied). Disposable database only; everything is rolled back. Every name
+-- and amount is invented; the phones are numbers kept for fiction (ACMA).
 \set ON_ERROR_STOP on
 begin;
 
@@ -37,24 +39,24 @@ begin
  insert into stores(name,code,country_code) values('PT Store','PTS','SG') returning id into st;
  insert into stores(name,code,country_code) values('PT Other Store','PTO','SG') returning id into st2;
  insert into user_store_assignments(user_id,store_id) values(mgr,st),(stf,st),(mgr2,st2);
- insert into customers(full_name,phone) values('PT Buyer','+6598933001') returning id into c;
- insert into customers(full_name,phone) values('PT Other','+6598933002') returning id into c2;
+ insert into customers(full_name,phone) values('PT Buyer','+61491570006') returning id into c;
+ insert into customers(full_name,phone) values('PT Other','+61491570156') returning id into c2;
  -- An ended period still holds its days for the same package (53's no-overlap
  -- constraint), so the sections that start therapy each have their own buyer.
- insert into customers(full_name,phone) values('PT Third','+6598933003') returning id into c3;
- insert into customers(full_name,phone) values('PT Fourth','+6598933004') returning id into c4;
- insert into customers(full_name,phone) values('PT Fifth','+6598933005') returning id into c5;
- insert into customers(full_name,phone) values('PT Sixth','+6598933006') returning id into c6;
- insert into customers(full_name,phone) values('PT Seventh','+6598933007') returning id into c7;
- insert into customers(full_name,phone) values('PT Eighth','+6598933008') returning id into c8;
- insert into customers(full_name,phone) values('PT Ninth','+6598933009') returning id into c9;
- insert into customers(full_name,phone) values('PT Tenth','+6598933010') returning id into c10;
- insert into customers(full_name,phone) values('PT C11','+6598933011') returning id into c11;
- insert into customers(full_name,phone) values('PT C12','+6598933012') returning id into c12;
- insert into customers(full_name,phone) values('PT C13','+6598933013') returning id into c13;
- insert into customers(full_name,phone) values('PT C14','+6598933014') returning id into c14;
- insert into customers(full_name,phone) values('PT C15','+6598933015') returning id into c15;
- insert into customers(full_name,phone) values('PT C16','+6598933016') returning id into c16;
+ insert into customers(full_name,phone) values('PT Third','+61491570157') returning id into c3;
+ insert into customers(full_name,phone) values('PT Fourth','+61491570737') returning id into c4;
+ insert into customers(full_name,phone) values('PT Fifth','+61491571266') returning id into c5;
+ insert into customers(full_name,phone) values('PT Sixth','+61491571491') returning id into c6;
+ insert into customers(full_name,phone) values('PT Seventh','+61491571804') returning id into c7;
+ insert into customers(full_name,phone) values('PT Eighth','+61491572549') returning id into c8;
+ insert into customers(full_name,phone) values('PT Ninth','+61491572665') returning id into c9;
+ insert into customers(full_name,phone) values('PT Tenth','+61491572983') returning id into c10;
+ insert into customers(full_name,phone) values('PT C11','+61491573087') returning id into c11;
+ insert into customers(full_name,phone) values('PT C12','+61491573770') returning id into c12;
+ insert into customers(full_name,phone) values('PT C13','+61491574118') returning id into c13;
+ insert into customers(full_name,phone) values('PT C14','+61491574632') returning id into c14;
+ insert into customers(full_name,phone) values('PT C15','+61491575254') returning id into c15;
+ insert into customers(full_name,phone) values('PT C16','+61491575789') returning id into c16;
  insert into payment_methods(name,is_active) values('PT Cash',true) returning id into pm;
  insert into products(name,sku,product_type) values('PT Corset','PTC','own') returning id into pc;
  insert into store_inventory(store_id,product_id,current_qty) values(st,pc,100);
@@ -602,12 +604,20 @@ begin
     pg_temp.goods(plan),false);
   raise exception '19: the second line''s therapy was ended without its own override';
  exception when others then if sqlerrm not like '%override reason is required for: therapy_activated%' then raise; end if; end;
+ -- The money goes back now too, so each line's amount reaches the refund record.
  res:=resolve_invoice_action_v2((req->>'request_id')::uuid,true,'ok',plan->>'plan_hash',
    jsonb_build_array(
      jsonb_build_object('code','therapy_activated','reason','Bundle A: a month used','amount',100,'invoice_item_id',it),
      jsonb_build_object('code','therapy_activated','reason','Bundle B: one facial collected','amount',50,'invoice_item_id',it2)),
-   pg_temp.goods(plan),false);
+   pg_temp.goods(plan),true);
  if (select status from invoices where id=inv)<>'cancelled' then raise exception '19: not cancelled: %',res; end if;
+ -- S12: each line refunds its own amount, not the first one typed for the code.
+ if (res->>'refunded_amount')::numeric is distinct from 150
+    or (select jsonb_object_agg(e->>'invoice_item_id',(e->>'amount')::numeric)
+          from invoice_refunds r, jsonb_array_elements(r.outcome->'lines') e where r.invoice_id=inv)
+       is distinct from jsonb_build_object(it::text,100,it2::text,50) then
+  raise exception '19: the refund did not take each line''s own amount: % / %',res->>'refunded_amount',
+    (select jsonb_agg(r.outcome->'lines') from invoice_refunds r where r.invoice_id=inv); end if;
  if not exists(select 1 from audit_logs where record_id=u and action='authorized_termination'
                 and (new_data->>'amount')::numeric=100 and new_data->'override'->>'reason' like 'Bundle A%')
     or not exists(select 1 from audit_logs where record_id=u3 and action='authorized_termination'

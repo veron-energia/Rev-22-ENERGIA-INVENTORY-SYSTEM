@@ -650,7 +650,8 @@ begin
   inv := pg_temp.mk(jsonb_build_array(pg_temp.line('band', 1)));
   perform pg_temp.as_user('s');
   perform public.record_invoice_handover(inv, pg_temp.take('band', 1), gen_random_uuid());
-  e := pg_temp.err(format('select public.delete_invoice(%L)', inv));
+  -- 417: deleting needs a short reason.
+  e := pg_temp.err(format('select public.delete_invoice(%L, %L)', inv, 'T399 made by mistake'));
   perform pg_temp.check(e like 'Goods on this invoice were handed over to the customer%'
       and (select deleted_at from public.invoices where id = inv) is null,
     '13a an unpaid invoice with goods out cannot be deleted');
@@ -658,7 +659,7 @@ begin
   perform public.record_invoice_goods_return(inv, jsonb_build_array(jsonb_build_object('product_id', pg_temp.fx('band'), 'good', 1)),
     'Returned', gen_random_uuid());
   perform pg_temp.as_user('s');
-  e := pg_temp.err(format('select public.delete_invoice(%L)', inv));
+  e := pg_temp.err(format('select public.delete_invoice(%L, %L)', inv, 'T399 made by mistake'));
   perform pg_temp.check(e is null and (select deleted_at from public.invoices where id = inv) is not null,
     '13b once the goods are recorded as returned it can be');
 end $$;

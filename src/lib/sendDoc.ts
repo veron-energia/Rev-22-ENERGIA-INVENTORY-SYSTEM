@@ -136,16 +136,14 @@ export function sendViaEmail(
 // WhatsApp receives a LINK to the customer copy: WhatsApp cannot be handed a
 // file from a browser, and a link opens instantly on a phone.
 //
-// Email attaches the PDF through the device share sheet on a phone, and falls
-// back to a link on desktop, because a browser cannot attach a file to an email
-// on its own.
-//
-// There was a third route: a send-invoice-email Edge Function that sent the
-// attachment server-side through Resend. It has been removed — this shop does
-// not use Resend, and its auth email goes through Pabbly instead. The call
-// below is kept because it costs one failed request per session, remembered,
-// and it is the seam a future server-side sender would slot into. Set
-// VITE_INVOICE_EMAIL=off to skip even that.
+// Email goes from this device's own mail app (the Owner, 9 Oct 2026, Q6 =
+// option 2: no email-sending service). On a phone the share sheet hands the
+// real PDF to the mail app; on a computer the mail app opens with a link to
+// the PDF, because a browser cannot attach a file to an email on its own.
+// The page says which happened and never says a PDF was attached or sent when
+// it was not: a closed share sheet is "Not sent", logged as failed. The
+// send-invoice-email Edge Function this used to try first was never built,
+// so that call is gone (B16, AFTER-M3).
 // ---------------------------------------------------------------------
 import { supabase } from './supabase';
 import { documentPdfBlob, downloadDocumentPdf, PdfDoc } from './invoicePdf';
@@ -158,18 +156,6 @@ const BUCKET = 'invoice-pdfs';
 const LINK_SECONDS = 60 * 60 * 24 * 365;
 
 const safeName = (docNo: string) => docNo.replace(/[^A-Za-z0-9._-]/g, '-');
-
-/** base64 without the data: prefix, which is what the email API expects. */
-async function blobToBase64(blob: Blob): Promise<string> {
-  const buf = await blob.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(buf);
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
 
 /**
  * A name no earlier send used. Each send is filed under its own name and never
@@ -229,15 +215,52 @@ const logSend = (a: SendArgs, channel: string, to: string, path: string | null,
   );
 };
 
-/** WhatsApp: upload the PDF, then open the chat with a link to it. */
-export async function sendViaWhatsAppLink(a: SendArgs): Promise<{ ok: boolean; reason?: string }> {
+/** Said when the browser would not open the WhatsApp window (a pop-up blocker). */
+export const WHATSAPP_BLOCKED = 'Your browser blocked the WhatsApp window. Allow pop-ups for this site, then press WhatsApp again.';
+
+/**
+ * A blank window for a WhatsApp send, opened in the click itself, before
+ * anything is awaited (B16, AFTER-11). A window opened after the upload is
+ * past the click, and a phone's pop-up blocker (iPhone Safari above all)
+ * stops it. Null when the browser refused it.
+ */
+export function openSendWindow(): Window | null {
+  let w: Window | null = null;
+  try { w = window.open('', '_blank'); } catch { w = null; }
+  if (w) {
+    try { w.document.title = 'WhatsApp'; if (w.document.body) w.document.body.textContent = 'Preparing the invoice link…'; }
+    catch { /* left blank */ }
+  }
+  return w;
+}
+
+export interface SendOptions {
+  /** The window openSendWindow opened in the click; null when it was refused.
+   *  Left out (the Special page today), a window is opened once the link is
+   *  ready, and a refusal is still reported, never logged as sent. */
+  win?: Window | null;
+}
+
+/**
+ * WhatsApp: upload the PDF, then open the chat with a link to it. 'sent' is
+ * logged only once a window was really obtained and pointed at the chat
+ * (AFTER-11); a blocked or closed window is 'failed', with the reason.
+ */
+export async function sendViaWhatsAppLink(a: SendArgs, opts: SendOptions = {}): Promise<{ ok: boolean; reason?: string }> {
+  const given = 'win' in opts;
+  const closeGiven = () => { try { if (opts.win && !opts.win.closed) opts.win.close(); } catch { /* gone already */ } };
   const num = whatsappNumber(a.phone);
-  if (!num) return { ok: false, reason: 'This customer has no usable mobile number.' };
+  if (!num) { closeGiven(); return { ok: false, reason: 'This customer has no usable mobile number.' }; }
+  if (given && !opts.win) {
+    logSend(a, 'whatsapp', num, null, 'failed', 'pop-up blocked');
+    return { ok: false, reason: WHATSAPP_BLOCKED };
+  }
 
   let url: string, path: string;
   try {
     ({ url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf));
   } catch (e: any) {
+    closeGiven();
     logSend(a, 'whatsapp', num, null, 'failed', e?.message);
     return { ok: false, reason: e?.message ?? 'Could not prepare the PDF.' };
   }
@@ -248,29 +271,27 @@ export async function sendViaWhatsAppLink(a: SendArgs): Promise<{ ok: boolean; r
     url, '',
     'Thank you for shopping with Energia.',
   ].join('\n');
+  const chat = `https://wa.me/${num}?text=${encodeURIComponent(message)}`;
 
-  window.open(`https://wa.me/${num}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+  // 'noopener' made window.open return null whether or not a window opened,
+  // so a blocked one could not be told apart. The new window's link back to
+  // this page is cut by hand instead.
+  let w: Window | null = given ? opts.win! : null;
+  if (w && w.closed) {
+    logSend(a, 'whatsapp', num, path, 'failed', 'window closed');
+    return { ok: false, reason: 'The WhatsApp window was closed before the link was ready. Press WhatsApp again.' };
+  }
+  try {
+    if (w) { w.opener = null; w.location.href = chat; }
+    else { w = window.open(chat, '_blank'); if (w) w.opener = null; }
+  } catch { w = null; }
+  if (!w) {
+    logSend(a, 'whatsapp', num, path, 'failed', 'pop-up blocked');
+    return { ok: false, reason: WHATSAPP_BLOCKED };
+  }
   logSend(a, 'whatsapp', num, path, 'sent');
   return { ok: true };
 }
-
-/** Email: send the PDF as a real attachment via the Edge Function. */
-/**
- * Is the email Edge Function reachable?
- *
- * Once a call has failed with "not deployed" we remember it for the rest of the
- * session, so the browser console is not filled with the same CORS/404 pair on
- * every send. Setting VITE_INVOICE_EMAIL=off skips the attempt entirely.
- */
-const FN_FLAG = 'energia.emailFn.unavailable';
-const emailFnDisabled = () =>
-  String((import.meta as any).env?.VITE_INVOICE_EMAIL ?? '').toLowerCase() === 'off';
-const emailFnKnownDown = () => {
-  try { return sessionStorage.getItem(FN_FLAG) === '1'; } catch { return false; }
-};
-const markEmailFnDown = () => {
-  try { sessionStorage.setItem(FN_FLAG, '1'); } catch { /* private mode */ }
-};
 
 /** Can this device attach a real file to a share? (Phones can; desktops cannot.) */
 export function canShareFiles(): boolean {
@@ -281,22 +302,40 @@ export function canShareFiles(): boolean {
   } catch { return false; }
 }
 
-export type EmailOutcome = 'attached' | 'shared' | 'link';
+/** 'shared': the PDF went to an app on this device (the share sheet); 'link':
+ *  the mail app was asked to open with a link to the PDF. */
+export type EmailOutcome = 'shared' | 'link';
+
+export interface EmailResult {
+  ok: boolean;
+  /** What to tell the person, in a sentence. */
+  reason?: string;
+  outcome?: EmailOutcome;
+  /** The share sheet needs a fresh tap (the first one was used up while the
+   *  copy was being made): call this from a button's click to try again. */
+  shareAgain?: () => Promise<EmailResult>;
+  /** The mail link, so the page can offer to open it again. */
+  mailto?: string;
+}
+
+/** Said when the share sheet was closed without choosing an app. */
+export const EMAIL_SHARE_CLOSED = 'Not sent: the share sheet was closed.';
 
 /**
- * Email the customer their invoice, preferring the method that actually
- * attaches the PDF:
+ * Email the customer their invoice from this device's own mail app (Q6):
  *
- *   1. the Edge Function — a true server-sent email with the PDF attached,
- *      fully automatic and works on any device;
- *   2. the device share sheet — on a phone this hands the real PDF to Gmail,
- *      Outlook or Mail, with no backend at all;
- *   3. a link to the PDF — the last resort, so a customer is never left with
- *      nothing.
+ *   1. on a phone, the share sheet: the real PDF goes to Gmail, Outlook or
+ *      Mail. The share sheet is opened before anything else is awaited, so it
+ *      still counts as the tap that asked for it; if the browser says the tap
+ *      was used up, `shareAgain` asks for another tap. Closing the sheet is
+ *      "Not sent", logged as failed ('cancelled');
+ *   2. on a computer, the mail app with a link to the PDF, which the person
+ *      sends from there.
+ *
+ * Nothing here can tell whether the email itself was sent, so the result
+ * never says it was: it says where the PDF or the link went.
  */
-export async function sendViaEmailAttachment(
-  a: SendArgs,
-): Promise<{ ok: boolean; reason?: string; outcome?: EmailOutcome }> {
+export async function sendViaEmailAttachment(a: SendArgs): Promise<EmailResult> {
   const addr = emailAddress(a.email);
   if (!addr) return { ok: false, reason: 'This customer has no valid email address.' };
 
@@ -307,81 +346,52 @@ export async function sendViaEmailAttachment(
     return { ok: false, reason: e?.message ?? 'Could not prepare the PDF.' };
   }
 
-  // ---- 1. The Edge Function -----------------------------------------
-  if (!emailFnDisabled() && !emailFnKnownDown()) {
-    let data: any = null, error: any = null;
-    try {
-      ({ data, error } = await supabase.functions.invoke('send-invoice-email', {
-        body: {
-          to: addr,
-          subject: `${a.kindLabel} ${a.docNo} — Energia`,
-          customerName: a.customerName ?? null,
-          docNo: a.docNo, kindLabel: a.kindLabel,
-          // The function checks this against the caller's own store access,
-          // so a document cannot be emailed out of a branch they cannot see.
-          storeId: a.storeId ?? null,
-          filename: `${safeName(a.docNo)}.pdf`,
-          pdfBase64: await blobToBase64(pdfBlob),
-        },
-      }));
-    } catch (e: any) { error = e; }
-
-    const status = error?.context?.status ?? error?.status;
-    const raw = String(error?.message ?? '');
-    const notDeployed = status === 404
-      || /failed to (fetch|send)|networkerror|load failed|cors/i.test(raw);
-
-    if (!notDeployed) {
-      const reason = data?.error ?? (error ? (error?.context?.error ?? error.message) : null);
-      if (error || reason) {
-        logSend(a, 'email', addr, null, 'failed', String(reason ?? 'unknown'));
-        return { ok: false, reason: String(reason ?? 'The email could not be sent.') };
-      }
-      logSend(a, 'email', addr, null, 'sent');
-      return { ok: true, outcome: 'attached' };
-    }
-    // Not deployed — remember, so this is the only console error this session.
-    markEmailFnDown();
-  }
-
-  // ---- 2. The device share sheet, which attaches the real file -------
-  // The Web Share API has no recipient field — the spec simply does not carry
-  // one — so the mail app opens with "To:" blank. The address is copied to the
-  // clipboard so it is one paste away, and repeated in the body as a fallback
-  // for when the clipboard is unavailable.
+  // ---- 1. The device share sheet, which attaches the real file -------
+  // The Web Share API has no recipient field, so the mail app opens with "To:"
+  // blank. The address is copied to the clipboard so it is one paste away, and
+  // repeated at the top of the message for when the clipboard is unavailable.
   if (canShareFiles()) {
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(addr);
-      copied = true;
-    } catch { /* clipboard blocked — the address is in the body instead */ }
-
-    try {
-      const file = new File([pdfBlob], `${safeName(a.docNo)}.pdf`, { type: 'application/pdf' });
-      await (navigator as any).share({
-        files: [file],
-        title: `${a.kindLabel} ${a.docNo}`,
-        text: [
-          `To: ${addr}`, '',
-          a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
-          `Please find your ${a.kindLabel.toLowerCase()} ${a.docNo} attached.`, '',
-          'Thank you for shopping with Energia.',
-        ].join('\n'),
-      });
+    const file = new File([pdfBlob], `${safeName(a.docNo)}.pdf`, { type: 'application/pdf' });
+    const share = async (): Promise<EmailResult> => {
+      // Not awaited before the share: the share must start while the tap counts.
+      const copied: Promise<boolean> = (async () => {
+        try { await navigator.clipboard.writeText(addr); return true; } catch { return false; }
+      })();
+      try {
+        await (navigator as any).share({
+          files: [file],
+          title: `${a.kindLabel} ${a.docNo}`,
+          text: [
+            `To: ${addr}`, '',
+            a.customerName ? `Hi ${a.customerName},` : 'Hi,', '',
+            `Please find your ${a.kindLabel.toLowerCase()} ${a.docNo} attached.`, '',
+            'Thank you for shopping with Energia.',
+          ].join('\n'),
+        });
+      } catch (e: any) {
+        if (e?.name === 'AbortError') {
+          logSend(a, 'email', addr, null, 'failed', 'cancelled');
+          return { ok: false, reason: EMAIL_SHARE_CLOSED };
+        }
+        if (e?.name === 'NotAllowedError') {
+          // Nothing was shown, so nothing is logged: the person is asked to tap again.
+          return { ok: false, reason: 'The share sheet did not open. Press Email again.', shareAgain: share };
+        }
+        logSend(a, 'email', addr, null, 'failed', String(e?.message ?? 'share failed'));
+        return { ok: false, reason: `The share sheet could not open${e?.message ? ` (${e.message})` : ''}.` };
+      }
       logSend(a, 'email', addr, null, 'sent', 'shared as a file from the device');
       return {
         ok: true, outcome: 'shared',
-        reason: copied
-          ? `The PDF is attached. ${addr} has been copied — paste it into "To:".`
-          : `The PDF is attached. Send it to ${addr} (the address is also at the top of the message).`,
+        reason: (await copied)
+          ? `The PDF went to the app you chose. ${addr} was copied: paste it into "To:" and send the email from there.`
+          : `The PDF went to the app you chose. Send the email to ${addr} from there.`,
       };
-    } catch (e: any) {
-      // Dismissing the share sheet is a choice, not a failure.
-      if (e?.name === 'AbortError') return { ok: true, outcome: 'shared' };
-    }
+    };
+    return share();
   }
 
-  // ---- 3. A link, so the customer still gets their invoice -----------
+  // ---- 2. A link, from the mail app on this computer ------------------
   try {
     const { url, path } = await uploadDocumentPdf(a.storeId, a.docKind, a.docNo, a.pdf);
     const body = [
@@ -390,14 +400,14 @@ export async function sendViaEmailAttachment(
       url, '',
       'Thank you for shopping with Energia.',
     ].join('\n');
-    window.location.href = `mailto:${encodeURIComponent(addr)}`
+    const mailto = `mailto:${encodeURIComponent(addr)}`
       + `?subject=${encodeURIComponent(`${a.kindLabel} ${a.docNo} — Energia`)}`
       + `&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
     logSend(a, 'email', addr, path, 'sent', 'link fallback — no server-side sender');
     return {
-      ok: true, outcome: 'link',
-      reason: 'Your mail client has opened with a link to the PDF. '
-            + 'To attach the PDF itself, send from a phone.',
+      ok: true, outcome: 'link', mailto,
+      reason: 'Your mail app should open with a link to the PDF; send it from there.',
     };
   } catch (e: any) {
     logSend(a, 'email', addr, null, 'failed', String(e?.message ?? 'link fallback failed'));

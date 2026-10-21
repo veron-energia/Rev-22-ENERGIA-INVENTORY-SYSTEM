@@ -1,19 +1,19 @@
 import { useSearchParams } from 'react-router-dom';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { PRINT_CSS } from '../lib/printDoc';
-import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat } from '../lib/sendDoc';
+import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat,
+  openSendWindow, type EmailResult } from '../lib/sendDoc';
 import { PdfDoc, creditBalanceShown } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { PaymentSummaryExport } from '../components/PaymentSummaryExport';
 import { XeroExportButton } from '../components/XeroExport';
 import { supabase } from '../lib/supabase';
 import { fetchAllFrom } from '../lib/supabasePaging';
-import { PaymentPriceReview, PriceReviewResult } from '../components/PricingControls';
 import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product,
-  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES, TherapyPackageRule,
+  PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES,
   VOUCHER_CATEGORY_LABELS, BIRTHDAY_RULE_LABELS } from '../types';
 import { DISCOUNT_CHOICE_LABELS, discountChoicesFor, voucherCategory, isVoucherChoice, lineMoney, invoiceTotals,
   lineDiscountPayload, lineDiscountProblem, restoreLineDiscount, switchDiscount, withQuantity, printedLineDiscount, birthdayProblem, formatPercent,
@@ -24,7 +24,7 @@ import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
 import { PremiumBundleSplitPanel } from '../components/PremiumBundleSplitPanel';
 import { Modal } from '../components/ui';
 import {
-  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, Search, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail, AlertTriangle } from 'lucide-react';
+  Plus, RefreshCw, FileText, Trash2, X, CreditCard, Eye, CheckCircle2, Download, Printer, Sparkles, MessageCircle, Mail, AlertTriangle } from 'lucide-react';
 
 import { InvoiceFinancePanel } from '../components/invoices/InvoiceFinancePanel';
 import { InvoiceGuidedAction } from '../components/invoices/InvoiceGuidedAction';
@@ -33,17 +33,20 @@ import { InvoiceStockEvidenceReview } from '../components/invoices/InvoiceStockE
 import { InstalmentFields } from '../components/invoices/InstalmentFields';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
-import { singaporeToday, invoiceDate, displayInvoiceDate, invoiceDateSearch, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
-  type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes } from '../lib/invoices/business';
+import { singaporeToday, invoiceDate, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
+  type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes,
+  hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
+import { copyMoneyRows, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml } from '../lib/invoices/customerCopy';
+import { correctionFingerprint, REVIEW_AGAIN_MESSAGE } from '../lib/invoices/correctionReview';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import { PaymentQrPopup, PaymentQrLineAction } from '../components/invoices/PaymentQrPopup';
 import { paymentQrFor } from '../lib/invoices/paymentQr.mjs';
 import '../components/invoices/invoice-controls.css';
 
-import { fetchInvoicePage, fetchAllMatchingInvoices, type InvoiceListResult } from '../lib/invoices/listPage';
+import { fetchInvoicePage, fetchAllMatchingInvoices, fetchPaymentMethodNames, withPaymentLabels, type InvoiceListResult } from '../lib/invoices/listPage';
 import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefresh, announcedMatchesShown } from '../lib/invoices/listRefresh';
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
-import { calendarDate, calendarDateInRange } from '../lib/calendarDates';
+import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates';
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
@@ -190,7 +193,6 @@ const InvoicesPage: React.FC = () => {
   const [assignedStoreId, setAssignedStoreId] = useState<string | null>(null);
   // A staff member may be assigned to several stores; they choose among those.
   const [myStores, setMyStores] = useState<{ store_id: string; store_name: string; is_default: boolean }[]>([]);
-  const [therapyRules, setTherapyRules] = useState<TherapyPackageRule[]>([]);
   const [therapyPackages, setTherapyPackages] = useState<any[]>([]);
   const [therapyServices, setTherapyServices] = useState<any[]>([]);
   const [therapyServiceStores, setTherapyServiceStores] = useState<any[]>([]);
@@ -211,6 +213,10 @@ const InvoicesPage: React.FC = () => {
 
   // Create modal
   const [createOpen, setCreateOpen] = useState(false);
+  // 416 (CREATE-15): one request id per New Invoice form, renewed when the
+  // form opens again. A lost reply and a second press of Create get back the
+  // invoice the first press made, not a second one.
+  const [createRequestId, setCreateRequestId] = useState(() => crypto.randomUUID());
   const [cStore, setCStore] = useState('');
   const [cBusinessDate, setCBusinessDate] = useState(singaporeToday);
   const [cNotes, setCNotes] = useState('');
@@ -390,6 +396,9 @@ const InvoicesPage: React.FC = () => {
   // Payment methods per invoice for the whole list, so the table can show them
   // and the search can match on them. Keyed by invoice for a direct lookup.
   const [payMethodsByInvoice, setPayMethodsByInvoice] = useState<Record<string, string[]>>({});
+  // AFTER-6: rows whose payment methods could not be read, so the list says
+  // so instead of showing them as having no payment.
+  const [payMethodsUnread, setPayMethodsUnread] = useState<Set<string>>(() => new Set());
   const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
   // Every name on the open invoice, resolved by invoice_display_names():
@@ -424,9 +433,29 @@ const InvoicesPage: React.FC = () => {
   const [payErr, setPayErr] = useState<string | null>(null);
   const [payBusy, setPayBusy] = useState(false);
   const [paymentRequestId, setPaymentRequestId] = useState(() => crypto.randomUUID());
-  const [priceReview, setPriceReview] = useState<PriceReviewResult | null>(null);
   const [focReasons, setFocReasons] = useState<FocReason[]>([]);
   const [focBusy, setFocBusy] = useState(false);
+  // CREATE-19 (f): Confirm FOC asks first; Remove FOC takes an optional reason.
+  const [confirmFocOpen, setConfirmFocOpen] = useState(false);
+  const [removeFocLine, setRemoveFocLine] = useState<InvoiceItem | null>(null);
+  const [removeFocReason, setRemoveFocReason] = useState('');
+  // CREATE-14 (417, Q4 = A): the invoice being deleted, and the short reason
+  // staff must give, kept in the history.
+  const [deleteFor, setDeleteFor] = useState<Invoice | null>(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  // The list's rows do not carry is_topup or is_exchange, so they are read
+  // when the dialog opens: 'checking', then 'ok' or 'blocked'.
+  const [deleteCheck, setDeleteCheck] = useState<'checking' | 'ok' | 'blocked'>('checking');
+  const deleteForRef = useRef<string | null>(null);
+  // AFTER-14 (417): the refund or cancellation request on the open invoice:
+  // one still waiting, else the last one (invoice_request_status).
+  const [detailRequest, setDetailRequest] = useState<any | null>(null);
+  // AFTER-M3: an email whose share sheet needs a fresh tap, and the mail
+  // link to open again.
+  const [emailRetry, setEmailRetry] = useState<{ invoiceId: string; shareAgain?: EmailResult['shareAgain']; mailto?: string;
+    creditMissing?: 'unreadable' | 'no-room' | null } | null>(null);
   // Phase 13 — edit mode + exchange detail + revision history
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   // Correcting a SETTLED invoice is a different, audited operation: it unwinds
@@ -443,6 +472,10 @@ const InvoicesPage: React.FC = () => {
   // not in the payload, which the preview reports as "unchanged".
   const [correctionPreview, setCorrectionPreview] = useState<any | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  // CREATE-5: what the open summary was of (correctionFingerprint), and why a
+  // summary was asked for again. The form is locked while it is open.
+  const correctionReviewedRef = useRef<string | null>(null);
+  const [correctionNotice, setCorrectionNotice] = useState<string | null>(null);
   // Per recorded payment on a correction: what the operator wants it to say.
   // Amount or date changes run through the per-payment rule (reversal +
   // replacement); a method-only change stays in place; "remove" reverses a
@@ -543,7 +576,7 @@ const InvoicesPage: React.FC = () => {
    */
   const loadReferenceData = useCallback(async () => {
     setLoading(true);
-    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, trules, utpk, utsp, aset, vsp, psp, focr, services, serviceStores] = await Promise.all([
+    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, utpk, utsp, vsp, psp, focr, services, serviceStores] = await Promise.all([
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       // The customers table is deliberately absent. It was read whole here —
@@ -562,11 +595,9 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('my_assigned_store_id'),
       supabase.rpc('my_assigned_stores'),
       supabase.from('special_products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-      supabase.from('therapy_package_rules').select('*').is('deleted_at', null).eq('is_active', true),
+      // therapy_package_rules was read here on every open and never used (CREATE-18).
       supabase.from('unlimited_therapy_packages').select('*').is('deleted_at', null).eq('is_active', true).order('duration_months'),
       supabase.from('unlimited_therapy_store_prices').select('*').is('deleted_at', null),
-      // Save Earth defaults used to be read here; the feature is withdrawn (330).
-      Promise.resolve({ data: null as any }),
       supabase.from('voucher_store_prices').select('*').is('deleted_at', null),
       supabase.from('promotion_store_prices').select('*').is('deleted_at', null),
       supabase.rpc('active_foc_reasons'),
@@ -589,7 +620,6 @@ const InvoicesPage: React.FC = () => {
     setAssignedStoreId((myStore.data as string | null) ?? null);
     setMyStores((myStoreList.data as any[]) ?? []);
     setSpecialProducts((specialRes.data as any[]) ?? []);
-    setTherapyRules((trules.data as TherapyPackageRule[]) ?? []);
     setTherapyPackages((utpk?.data as any[]) ?? []);
     setTherapyServices((services.data as any[]) ?? []);
     setTherapyServiceStores((serviceStores.data as any[]) ?? []);
@@ -608,13 +638,6 @@ const InvoicesPage: React.FC = () => {
   // carried. Either way the row is never left showing a dash for a customer
   // the database just named.
   const custName = (id: string) => customerOf(id)?.full_name ?? nameById[id] ?? '—';
-  const prodName = (id: string) => products.find(p => p.id === id)?.name ?? '—';
-  // Credit Package / Premium Bundle lines carry their name in plan_name_snapshot
-  // so a historical invoice keeps its name even if the package is later renamed.
-  const creditLineName = (it: any): string | null =>
-    it?.line_kind === 'credit_package' ? (it.plan_name_snapshot || 'Credit Package')
-    : it?.line_kind === 'premium_bundle' ? (it.plan_name_snapshot || 'Premium Bundle')
-    : null;
   const isStaff = profile?.role === 'staff';
   // Staff choose among their assigned stores; with only one, it behaves as
   // before. Owners and Managers use the full store list.
@@ -785,11 +808,8 @@ const InvoicesPage: React.FC = () => {
   // Discount vouchers selectable for redemption (fixed/percentage kinds).
   // Discount slots only show vouchers valid TODAY (not-yet-valid and expired are hidden).
   // They can still be SOLD as line items (the buyer redeems later, once valid).
-  const isDateValid = (v: Voucher) => {
-    const d = new Date();
-    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    return (!v.valid_from || v.valid_from <= today) && (!v.valid_until || v.valid_until >= today);
-  };
+  // Today in Singapore, whatever the device's clock says (CREATE-17).
+  const isDateValid = (v: Voucher) => liveOnDay({ valid_from: v.valid_from, valid_until: v.valid_until }, singaporeToday());
   const discountVouchers = useMemo(() => vouchers.filter(v => v.voucher_kind !== 'normal' && isDateValid(v)), [vouchers]);
   // A voucher by id: an active one, or one an open invoice already uses.
   const voucherById = (id?: string | null): Voucher | undefined =>
@@ -800,6 +820,14 @@ const InvoicesPage: React.FC = () => {
     [discountVouchers]);
 
   const groupsFor = (promoId: string) => choiceGroups.filter(g => g.promotion_id === promoId);
+  // SALES-EXTRAS-9: the promotions on sale on the invoice's own day, in
+  // Singapore, as the server checks them (416 rule 2; the Owner, 9 Oct 2026:
+  // a back-dated invoice may use a promotion that ran on its date). An
+  // undated invoice being edited goes by the day it was made. A line keeps
+  // the promotion it already has in its list.
+  const promotionDay = cBusinessDate
+    || (editingInvoiceId && editBaseRef.current ? invoiceDate(editBaseRef.current) : '') || singaporeToday();
+  const promotionOptions = (l: LineDraft) => promotions.filter(p => liveOnDay(p, promotionDay) || p.id === l.promotion_id);
   // The promotion's fixed contents. These are always part of the bundle and are
   // not chosen by the cashier, so they were never rendered — which made the
   // invoice look as though half the bundle was missing.
@@ -927,7 +955,6 @@ const InvoicesPage: React.FC = () => {
 
   // Whole-invoice voucher eligibility: fixed vouchers need the discountable
   // base (excl. 3rd-party lines) to be STRICTLY above their amount.
-  const wholeVoucherBase = fromCents(totalsPreview.voucherBase);
   const eligibleWholeVouchers = useMemo(() =>
     discountVouchers.filter(v => v.voucher_kind !== 'fixed_discount' || toCents(v.discount_amount) < totalsPreview.voucherBase),
     [discountVouchers, totalsPreview.voucherBase]);
@@ -950,7 +977,10 @@ const InvoicesPage: React.FC = () => {
     setIssuedRecipientsConfirmed(false); setIssuedHeaderBefore(null);
     setCInstalment({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
     setEditRequestId(crypto.randomUUID());
+    // A new form is a new request (416, CREATE-15).
+    setCreateRequestId(crypto.randomUUID());
     setOriginalDrafts([]); setAffTouched(false); setCAffiliate(''); setCorrectionPreview(null); setBenefitAction(''); setPayEdits({}); setPaymentsBeforeEdit([]); setStatusBeforeEdit(''); setCCreatedBy(''); setCreatedByBeforeEdit('');
+    correctionReviewedRef.current = null; setCorrectionNotice(null);
     setCLines([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]); setCDiscount(0);
     setCDiscountVoucher(''); setCServiceStaff([]); setCErr(null);
     setCDiscountReason(''); setDiscountReasonErr(null); setDiscountBeforeEdit(0);
@@ -991,7 +1021,10 @@ const InvoicesPage: React.FC = () => {
   const handleCreate = async () => {
     // A second click while the first is in flight would create a second invoice.
     if (cSaving) return;
-    if (!editingInvoiceId && !cBusinessDate) { setCErr('Choose the invoice business date.'); return; }
+    // 416 rule 3: never after today in Singapore; a date once set stays set.
+    const dateProblem = businessDateProblem(cBusinessDate, { editing: !!editingInvoiceId,
+      savedDate: editingInvoiceId ? String(editBaseRef.current?.business_date ?? '') : null, today: singaporeToday() });
+    if (dateProblem) { setCErr(dateProblem); return; }
     const instalmentError = validateInstalment(cInstalment);
     if (instalmentError) { setCErr(instalmentError); return; }
     if (isStaff && myStores.length === 0) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
@@ -1070,7 +1103,9 @@ const InvoicesPage: React.FC = () => {
       : l.kind === 'promotion'
       ? {
           kind: 'promotion', promotion_id: l.promotion_id, quantity: l.quantity,
-          selections: Object.keys(l.selections).map(groupId => {
+          // Only this promotion's own groups (416 rule 1, CREATE-4): picks
+          // left from another bundle the line held are never sent.
+          selections: Object.keys(l.selections).filter(groupId => groupsFor(l.promotion_id).some(g => g.id === groupId)).map(groupId => {
             const g = groupsFor(l.promotion_id).find(g => g.id === groupId);
             const saved = detailSelections.find(s => s.invoice_item_id === l.invoice_item_id && s.group_id === groupId);
             return ({
@@ -1165,6 +1200,12 @@ const InvoicesPage: React.FC = () => {
       setCErr('Each payment kept — and each part of a split — needs a positive amount and the date it was received. To take a payment out, mark it as recorded by mistake.');
       setCSaving(false); return;
     }
+    // 416 rule 4: no part dated after today, none with more than 2 decimals.
+    if (editingInvoiceId) {
+      const kept = paymentsBeforeEdit.flatMap(p => (payEdits[p.id] && !payEdits[p.id].remove) ? payEdits[p.id].parts : []);
+      if (kept.some(x => !hasAtMostTwoDecimals(x.amount))) { setCErr(TWO_DECIMALS_MESSAGE); setCSaving(false); return; }
+      if (kept.some(x => x.date > singaporeToday())) { setCErr('A payment cannot be dated in the future.'); setCSaving(false); return; }
+    }
     // Another user or tab changed this invoice while it was being edited. The
     // server refuses a stale save anyway; asking for the review here first
     // keeps the entries and makes the refusal not the first anyone hears of it.
@@ -1192,12 +1233,22 @@ const InvoicesPage: React.FC = () => {
     };
     // Show what the correction will do before doing it. Confirming from the
     // summary calls back in with the preview already shown.
-    if (editingInvoiceId && !correctionPreview) {
+    // CREATE-5: the summary describes the form as it was when it was asked
+    // for. If the form no longer matches it, the summary is asked for again
+    // and nothing is saved.
+    const fingerprint = editingInvoiceId ? correctionFingerprint(allItems, header, editReason) : null;
+    const changedAfterReview = !!editingInvoiceId && !!correctionPreview && correctionReviewedRef.current !== fingerprint;
+    if (changedAfterReview) setCorrectionPreview(null);
+    if (editingInvoiceId && (!correctionPreview || changedAfterReview)) {
       setPreviewing(true);
+      setCorrectionNotice(changedAfterReview ? REVIEW_AGAIN_MESSAGE : null);
+      // 416 rule 11 (CREATE-M1): the corrected lines go with it, so the summary
+      // says what the total and status become and any refund due.
       const { data: pv, error: pErr } = await supabase.rpc('preview_invoice_correction',
-        { p_invoice_id: editingInvoiceId, p_header: header });
+        { p_invoice_id: editingInvoiceId, p_header: { ...header, items: allItems } });
       setPreviewing(false); setCSaving(false);
       if (pErr) { setCErr(pErr.message); return; }
+      correctionReviewedRef.current = fingerprint;
       setCorrectionPreview(pv);
       return;
     }
@@ -1205,13 +1256,15 @@ const InvoicesPage: React.FC = () => {
       ? await supabase.rpc('correct_invoice', { p_invoice_id: editingInvoiceId, p_items: allItems,
           p_header: header, p_reason: editReason.trim() || null, p_request_id: editRequestId })
       : await supabase.rpc('create_invoice_with_details', { p_store_id: effectiveStore, p_customer_id: cCustomer,
-          p_items: allItems, p_header: header });
+          // 416 (CREATE-15): the form's request id; the same request again
+          // returns the invoice it made.
+          p_items: allItems, p_header: { ...header, request_id: createRequestId } });
     setCSaving(false);
     if (error) {
       // 399: a correction that takes off goods the customer already took says
       // so plainly (the machine prefix off): record them as returned first.
       setCErr(goodsRefusal(error.message) ?? error.message);
-      setCorrectionPreview(null);
+      setCorrectionPreview(null); setCorrectionNotice(null);
       // Someone else saved this invoice first (expected_edit_count). Say so
       // where the entries are, with the review, rather than as a bare refusal.
       if (editingInvoiceId && /changed by another user/i.test(error.message)) markEditConflict();
@@ -1268,13 +1321,13 @@ const InvoicesPage: React.FC = () => {
   const netReceived = Number(financialState?.net_received ?? 0);
   const refundedAmount = Number(financialState?.refunded ?? 0);
   const settledHistory = detailPayments.length > 0 || netReceived > 0 || refundedAmount > 0;
-  const auditedStatuses = ['paid', 'partially_paid', 'cancelled', 'refunded',
-    'cancellation_requested', 'refund_requested', 'completed_foc'];
+  // 'cancellation_requested' and 'refund_requested' are retired (409): no
+  // invoice holds them. They stay in the type and its labels so old audit rows
+  // still read (CREATE-18).
+  const auditedStatuses = ['paid', 'partially_paid', 'cancelled', 'refunded', 'completed_foc'];
   const needsAuditedCorrection = Boolean(detail) && (
     auditedStatuses.includes(String(detail?.status)) || settledHistory
     || Boolean((detail as any)?.is_topup) || Boolean((detail as any)?.is_exchange));
-  const canEditOrdinary = Boolean(detail) && !needsAuditedCorrection
-    && ['draft', 'unpaid'].includes(String(detail?.status));
   const canManageInvoice = isOwnerOrManager(profile?.role);
   // 377: staff correct a paid or part-paid invoice of a store they work at.
   // Prices, payment amounts and dates, removing or splitting a payment, the
@@ -1308,12 +1361,34 @@ const InvoicesPage: React.FC = () => {
   // canApprove=false), which changes nothing on the invoice until an Owner or
   // Manager approves it on Approvals. A cancelled or refunded invoice has
   // nothing left to refund or cancel (the server refuses it).
+  // 417 (AFTER-14): while a request waits, the button says so: an Owner or
+  // Manager opens it to review, anyone else is told it is waiting.
+  const requestWaiting = !!detailRequest?.pending && detailRequest?.invoice_id === detail?.id;
   const refundCancelButton = detail && profile?.role && !['cancelled', 'refunded'].includes(String(detail.status)) ? (
-    <button className="btn invoice-refund-cancel" onClick={() => setGuidedOpen(true)}
-      title={canManageInvoice ? 'Cancel this invoice, or record a refund'
+    <button className="btn invoice-refund-cancel" onClick={() => setGuidedOpen(true)} data-testid="invoice-refund-cancel"
+      title={requestWaiting
+        ? (canManageInvoice ? 'A refund or cancellation request is waiting: review it' : 'A request is already waiting for an Owner or Manager')
+        : canManageInvoice ? 'Cancel this invoice, or record a refund'
         : 'Ask an Owner or Manager to cancel this invoice or refund it. Nothing changes until they approve.'}>
-      <FileText size={14} /> {canManageInvoice ? 'Refund / Cancel' : 'Request refund / cancel'}</button>
+      <FileText size={14} /> {requestWaiting
+        ? (canManageInvoice ? 'Review request' : 'Request waiting')
+        : canManageInvoice ? 'Refund / Cancel' : 'Request refund / cancel'}</button>
   ) : null;
+  // 417 (AFTER-14): what the invoice says about its request: one waiting, or
+  // the last one rejected with the approver's reason. The requester's own
+  // reason is not given here (invoice_request_status leaves it out).
+  const requestBanner = (() => {
+    const r = detailRequest?.invoice_id === detail?.id ? detailRequest?.request : null;
+    if (!r) return null;
+    const what = r.action === 'cancel' ? 'cancellation' : r.action === 'refund_partial' ? 'partial refund' : 'refund';
+    if (detailRequest.pending) {
+      return { kind: 'waiting' as const, text: `A ${what} request is waiting for approval${r.requested_at ? ` since ${displayDay(r.requested_at)}` : ''}${r.requested_by ? ` (raised by ${r.requested_by})` : ''}.` };
+    }
+    if (r.status === 'rejected') {
+      return { kind: 'rejected' as const, text: `The ${what} request was rejected${r.resolved_by ? ` by ${r.resolved_by}` : ''}${r.resolved_at ? ` on ${displayDay(r.resolved_at)}` : ''}${r.rejection_reason ? `: ${r.rejection_reason}` : '.'}` };
+    }
+    return null;
+  })();
   // 409: money still owed back on a cancelled or refunded invoice (a
   // cancellation approved before the money went back) is recorded when it is
   // actually paid back. Owner or Manager; the server checks again. Not on a
@@ -1464,6 +1539,8 @@ const InvoicesPage: React.FC = () => {
     void loadAffiliateOptions();
     setDetail(null);
     setCErr(null);
+    // CREATE-5: a summary left open on another invoice is not this one's.
+    setCorrectionPreview(null); setCorrectionNotice(null); correctionReviewedRef.current = null;
     setCreateOpen(true);
   };
 
@@ -1507,7 +1584,8 @@ const InvoicesPage: React.FC = () => {
     // If nothing was earned, find out why so staff aren't left guessing.
     const src = inv ?? detail;
     if ((!data || (data as any[]).length === 0) && src?.customer_id && src?.store_id) {
-      const day = src.paid_at ? new Date(src.paid_at).toISOString().slice(0, 10) : null;
+      // The Singapore day it was paid, as the server reads it (CREATE-17); not the UTC day.
+      const day = src.paid_at ? (calendarDate(src.paid_at, 'Asia/Singapore') || null) : null;
       const { data: dg } = await supabase.rpc('legacy_qualification_diagnose', {
         p_customer_id: src.customer_id, p_store_id: src.store_id, p_day: day,
       });
@@ -1617,7 +1695,7 @@ const InvoicesPage: React.FC = () => {
       });
     void loadAffiliateOptions();
     void loadEffectiveAffiliate(inv.id);
-    setSendErr(null); setSendNote(null); setCreditNote(null);
+    setSendErr(null); setSendNote(null); setCreditNote(null); setEmailRetry(null);
     setRevisions([]);
     supabase.rpc('invoice_revision_history', { p_invoice_id: inv.id })
       .then(({ data }) => { if (!superseded()) setRevisions((data as any[]) ?? []); });
@@ -1626,6 +1704,12 @@ const InvoicesPage: React.FC = () => {
     const billToLoaded = supabase.rpc('invoice_bill_to_source', { p_invoice_id: inv.id })
       .then(({ data }) => { if (!superseded()) setBillToSource((data as string) || '-'); });
     void loadInvoiceLegacy(inv.id, inv);
+    // 417 (AFTER-14): the invoice's refund or cancellation request, waiting or
+    // last. Without 417 in the database there is nothing to read, and the
+    // invoice shows no banner, as before.
+    setDetailRequest((r: any) => (r?.invoice_id === inv.id ? r : null));
+    supabase.rpc('invoice_request_status', { p_invoice_id: inv.id })
+      .then(({ data, error }) => { if (!superseded()) setDetailRequest(error ? null : (data ?? null)); });
     void ensureCustomers([inv.customer_id]);
     if (warehouses.length === 0) {
       supabase.from('warehouses').select('id,name').is('deleted_at', null).order('name')
@@ -1755,17 +1839,24 @@ const InvoicesPage: React.FC = () => {
 
   const handleConfirmFoc = async () => {
     if (!detail) return;
+    setConfirmFocOpen(false);
     setFocBusy(true); setFocErr(null);
-    const { data, error } = await supabase.rpc('confirm_foc_invoice', { p_invoice_id: detail.id, p_note: null });
+    const invoiceId = detail.id;
+    const { data, error } = await supabase.rpc('confirm_foc_invoice', { p_invoice_id: invoiceId, p_note: null });
     setFocBusy(false);
     if (error) { setFocErr(error.message); return; }
-    noteLocalChangeRef.current([detail.id]);
+    noteLocalChangeRef.current([invoiceId]);
     const res = data as any;
     if (res && res.review_required) {
-      setFocErr('Prices changed since this invoice was created — reopen it and review before confirming.');
-      void refreshList(); return;
+      // CREATE-19 (e): the lines were repriced. Show the invoice as it is now
+      // before saying so, not the figures from before.
+      try { await refreshDetail(invoiceId); } catch { /* the message below still stands */ }
+      if (detailIdRef.current === invoiceId) {
+        setFocErr('Prices changed since this invoice was created. Check the repriced invoice with the customer, then confirm again.');
+      }
+      void refreshList({ changed: [invoiceId] }); return;
     }
-    setDetail(null); void refreshList({ afterSave: 'The FOC invoice was confirmed', changed: [detail.id] });
+    setDetail(null); void refreshList({ afterSave: 'The FOC invoice was confirmed', changed: [invoiceId] });
   };
 
   const handleApplyLineFoc = async () => {
@@ -1784,11 +1875,13 @@ const InvoicesPage: React.FC = () => {
     void refreshList({ afterSave: 'The FOC line was saved', changed: detail ? [detail.id] : [] });
   };
 
-  const handleRemoveLineFoc = async (itemId: string) => {
+  // CREATE-19 (f): an optional reason, kept with the change (p_reason).
+  const handleRemoveLineFoc = async (itemId: string, reason: string) => {
     setFocBusy(true); setFocErr(null);
-    const { error } = await supabase.rpc('remove_line_foc', { p_invoice_item_id: itemId, p_reason: null });
+    const { error } = await supabase.rpc('remove_line_foc', { p_invoice_item_id: itemId, p_reason: reason.trim() || null });
     setFocBusy(false);
     if (error) { setFocErr(error.message); return; }
+    setRemoveFocLine(null); setRemoveFocReason('');
     if (detail) { noteLocalChangeRef.current([detail.id]); await openDetail(detail); }
     void refreshList({ afterSave: 'The FOC was removed', changed: detail ? [detail.id] : [] });
   };
@@ -1812,6 +1905,8 @@ const InvoicesPage: React.FC = () => {
     if (filled.some(p => !Number.isFinite(p.amount) || p.amount <= 0)) {
       return 'Amounts must be positive.';
     }
+    // 416 rule 4 (CREATE-9): 99.995 is refused, never rounded to 100.00.
+    if (filled.some(p => !hasAtMostTwoDecimals(p.amount))) return TWO_DECIMALS_MESSAGE;
     const badPortion = filled.map((p, i) => isInstalment(p)
       ? portionProblem(p.instalment, p.amount || 0) : null).find(Boolean);
     if (badPortion) return badPortion;
@@ -1910,15 +2005,10 @@ const InvoicesPage: React.FC = () => {
       });
       if (labelError) setPayErr(`The payment was recorded. The instalment terms were not: ${labelError.message}`);
     }
+    // record_invoice_settlement either records the payment or refuses it; it
+    // never comes back asking for a price review (CREATE-18), so there is no
+    // review step here.
     const res: any = data;
-    if (res?.review_required) {
-      // Prices changed; nothing was charged. Refresh the (repriced) invoice
-      // and show the review so staff confirm the new total with the customer.
-      const { data: invRow } = await supabase.from('invoices').select('*').eq('id', invoiceId).single();
-      if (invRow) await openDetail(invRow as Invoice);
-      setPriceReview(res as PriceReviewResult);
-      return;
-    }
     // Recorded. From here a failure is a DISPLAY failure, never a reason to pay
     // again, so it is reported as exactly that.
     noteLocalChangeRef.current([invoiceId]);
@@ -1951,11 +2041,40 @@ const InvoicesPage: React.FC = () => {
     void refreshList({ afterSave: message, changed: [id] });
   };
 
-  const handleDelete = async (inv: Invoice) => {
-    if (inv.status === 'paid') { alert('Paid invoices cannot be deleted.'); return; }
-    if (!confirm(`Delete invoice ${inv.invoice_no}?`)) return;
-    const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: inv.id });
-    if (error) { alert(error.message); return; }
+  // 417 (the Owner, 9 Oct 2026, Q4 = A): any member of staff of the store may
+  // delete a draft or unpaid invoice, with a short reason kept in the
+  // history. The server says why when it refuses (paid, FOC, goods out).
+  // A top-up or an exchange is undone with Refund / Cancel. The list's rows
+  // do not say which invoices those are, so the invoice is read first, and
+  // Delete stays off until it is.
+  const askDelete = async (inv: Invoice) => {
+    deleteForRef.current = inv.id;
+    setDeleteFor(inv); setDeleteReason(''); setDeleteErr(null); setDeleteCheck('checking');
+    const { data, error } = await supabase.from('invoices').select('is_topup,is_exchange').eq('id', inv.id).maybeSingle();
+    if (!mountedRef.current || deleteForRef.current !== inv.id) return;
+    if (error || !data) {
+      setDeleteCheck('blocked');
+      setDeleteErr('This invoice could not be checked. Close this and try again.');
+      return;
+    }
+    if ((data as any).is_topup || (data as any).is_exchange) {
+      setDeleteCheck('blocked');
+      setDeleteErr('Top-up and exchange invoices are undone with Refund / Cancel, not deleted.');
+      return;
+    }
+    setDeleteCheck('ok');
+  };
+  const closeDelete = () => { deleteForRef.current = null; setDeleteFor(null); };
+  const handleDelete = async () => {
+    const inv = deleteFor;
+    if (!inv || deleteBusy || deleteCheck !== 'ok') return;
+    const reason = deleteReason.trim();
+    if (!reason) { setDeleteErr('Give a short reason for deleting this invoice. It is kept in the history.'); return; }
+    setDeleteBusy(true); setDeleteErr(null);
+    const { error } = await supabase.rpc('delete_invoice', { p_invoice_id: inv.id, p_reason: reason });
+    setDeleteBusy(false);
+    if (error) { setDeleteErr(error.message); return; }
+    closeDelete(); setDeleteReason('');
     noteLocalChangeRef.current([inv.id]);
     void refreshList({ afterSave: 'The invoice was deleted', changed: [inv.id] });
   };
@@ -1966,7 +2085,6 @@ const InvoicesPage: React.FC = () => {
 
   const canExport = isOwnerOrManager(profile?.role);
   const serviceStaffOptions = useMemo(() => profiles.filter(p => SERVICE_STAFF_ROLES.includes(p.role)), [profiles]);
-  const staffName = (id: string) => profiles.find(p => p.id === id)?.full_name ?? '—';
   const effectiveStore = isStaff
     ? (staffMustChooseStore ? cStore : (cStore || assignedStoreId || myStores[0]?.store_id || ''))
     : cStore;
@@ -2043,30 +2161,27 @@ const InvoicesPage: React.FC = () => {
     setGoodsOutByInvoice(prev => ({ ...prev, ...out }));
   }, []);
 
+  // AFTER-6: the names come back from the read itself (fetchPaymentMethodNames),
+  // and a batch that could not be read leaves its rows as they were, never
+  // blank as if they had no payment. The export reads its own (withPaymentLabels).
   const loadPaymentMethodsFor = useCallback(async (ids: string[]) => {
     const missing = ids.filter(Boolean);
     if (missing.length === 0) return;
     const token = labelStamps.current.stamp(missing);
-    const out: Record<string, string[]> = {};
-    for (let i = 0; i < missing.length; i += 200) {
-      const slice = missing.slice(i, i + 200);
-      const { data } = await supabase
-        .from('invoice_payments')
-        .select('invoice_id, payment_methods(name)')
-        .in('invoice_id', slice);
-      for (const row of ((data as any[]) ?? [])) {
-        const name = row.payment_methods?.name;
-        if (!name) continue;
-        // Two cash payments on one invoice read as "Cash", not "Cash, Cash".
-        const list = (out[row.invoice_id] ??= []);
-        if (!list.includes(name)) list.push(name);
-      }
-    }
+    const { names, failed, error } = await fetchPaymentMethodNames(missing);
+    if (failed.length) console.warn(`Payment methods not read for ${failed.length} invoice(s): ${error ?? 'unknown'}`);
     if (!mountedRef.current) return;
+    const unread = new Set(failed);
+    const current = missing.filter(id => labelStamps.current.accepts(id, token));
     setPayMethodsByInvoice(prev => {
       const next = { ...prev };
-      for (const id of missing) if (labelStamps.current.accepts(id, token)) next[id] = out[id] ?? [];
+      for (const id of current) if (!unread.has(id)) next[id] = names[id] ?? [];
       return next;
+    });
+    setPayMethodsUnread(prev => {
+      const next = new Set(prev);
+      for (const id of current) { if (unread.has(id)) next.add(id); else next.delete(id); }
+      return next.size === prev.size && current.every(id => next.has(id) === prev.has(id)) ? prev : next;
     });
   }, []);
 
@@ -2194,6 +2309,12 @@ const InvoicesPage: React.FC = () => {
       return c && { ...c, reviewed: true };
     });
     setCorrectionPreview(null); setCErr(null);
+  };
+  /** Closes the invoice form. Its correction summary goes with it, so the
+   *  next Correct or Edit Invoice opens unlocked (CREATE-5). */
+  const closeEditor = () => {
+    setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null);
+    setCorrectionPreview(null); setCorrectionNotice(null); correctionReviewedRef.current = null;
   };
   const discardAndReopen = async () => {
     const id = editingIdRef.current;
@@ -2400,8 +2521,26 @@ const InvoicesPage: React.FC = () => {
     );
   };
 
+  // W4-B16-PRICE-REASON (the Owner, 18 Oct 2026): a hand-changed price and
+  // its reason, for staff on screen only. No customer copy prints the reason.
+  const priceOverrideDetail = (it: InvoiceItem): React.ReactNode => {
+    if (!it.price_overridden) return null;
+    return (
+      <div data-testid="invoice-line-price-override" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        Manual price override
+        <span data-testid="invoice-line-price-override-reason">
+          {' '}· internal reason:{' '}
+          {String(it.override_reason ?? '').trim() ? <strong>{it.override_reason}</strong> : <em>none recorded</em>}
+        </span>
+      </div>
+    );
+  };
+
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [sendBusy, setSendBusy] = useState<'whatsapp' | 'email' | null>(null);
+  // One send at a time: a ref, because a fast second tap still sees the
+  // state from before the first one.
+  const sendingRef = useRef(false);
 
   // The customer's credit balance for a print or send, read from the server at
   // the moment the button is pressed (owner, 2 Oct 2026). payWallet is not used:
@@ -2465,6 +2604,8 @@ const InvoicesPage: React.FC = () => {
     const store: any = stores.find(s2 => s2.id === detail.store_id) ?? {};
     const cust = customerOf(detail.customer_id);
     const bal = Number(detailFinancial?.outstanding ?? 0);
+    // AFTER-9: an exchange invoice says so, as the printed copy does.
+    const exLabels = exchangeCopyLabels(detailExchange);
     const pdf: PdfDoc = {
       kindLabel: 'Tax Invoice',
       docNo: detail.invoice_no,
@@ -2476,19 +2617,30 @@ const InvoicesPage: React.FC = () => {
         .filter(Boolean).join(' · ') || null,
       customerName: `${printedCustomer(detail)} (${billToSource || '-'})`,
       customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
+      headerNote: exLabels.headerNote,
       lines: detailItems.map(it => {
-        const focQty = Number((it as any).foc_quantity ?? 0);
         const notes: string[] = [];
-        if (focQty > 0) notes.push(`FOC ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`}`);
+        // Q7 (the Owner, 9 Oct 2026): 'FOC' and its value, never its reason.
+        const foc = focCopyNote(it);
+        if (foc) notes.push(foc);
         // The line's discount by name and amount, as on the print (an ASCII
         // minus: the PDF's built-in fonts have no other). Never its reason.
         const lineDiscount = printedLineDiscount(it, printedVoucher(it.line_voucher_id), '-');
         if (lineDiscount) notes.push(lineDiscount);
-        if (it.price_overridden) notes.push('Manual price override');
+        // W4-B16-PRICE-REASON (the Owner, 18 Oct 2026): a hand-changed
+        // price says so, never its reason.
+        const priceNote = priceOverrideCopyNote(it);
+        if (priceNote) notes.push(priceNote);
         const tk = ticketDetail(it);
         if (tk) {
           if (tk.days) notes.push(`Day${(it as any).event_days?.length === 1 ? '' : 's'}: ${tk.days}`);
           if (tk.people) notes.push(`For: ${tk.people}`);
+        }
+        // AFTER-9: what is inside a promotion, and its top-up, as on the print.
+        if (it.line_kind === 'promotion') {
+          notes.push(...promotionCopyNotes(it.quantity,
+            detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id),
+            detailSelections.filter(s => s.invoice_item_id === it.id), contentName, (it as any).topup_amount));
         }
         return {
           name: lineName(it), qty: it.quantity,
@@ -2497,16 +2649,19 @@ const InvoicesPage: React.FC = () => {
       }),
       totals: [
         ['Subtotal', `S$${Number(detail.subtotal ?? 0).toFixed(2)}`],
-        ['Discount', `-S$${Number(detail.discount_total ?? 0).toFixed(2)}`],
-        ...(Number(detail.paid_amount ?? 0) > 0
-          ? [['Paid', `S$${Number(detail.paid_amount).toFixed(2)}`] as [string, string]] : []),
+        [exLabels.discountLabel, `-S$${Number(detail.discount_total ?? 0).toFixed(2)}`],
+        // AFTER-10: what was paid, refunded and is still due back, as the
+        // printed copy says it.
+        ...copyMoneyRows({ paid: paymentsTotal(detailPayments as any[]), refunded: detailFinancial?.refunded,
+          netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due, minus: '-' }),
         ...(bal > 0 ? [['Balance', `S$${bal.toFixed(2)}`] as [string, string]] : []),
       ],
-      grandTotal: ['Total', `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
+      grandTotal: [exLabels.totalLabel, `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
       payments: detailPayments.map((pm: any) => [
-        `${printedMethod(pm.payment_method_id) || 'Payment'} · ${new Date(pm.effective_at || pm.created_at).toLocaleDateString('en-SG')}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
+        `${printedMethod(pm.payment_method_id) || 'Payment'} · ${displayDay(pm.effective_at || pm.created_at)}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
         `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
       ] as [string, string]),
+      paymentsTotal: `S$${paymentsTotal(detailPayments as any[]).toFixed(2)}`,
       creditBalance,
       payDetails: [
         instalmentText(detail as any, methods),
@@ -2531,21 +2686,28 @@ const InvoicesPage: React.FC = () => {
     return { pdf, invoiceId: detail.id, unreadable };
   };
 
-  // Sends the invoice itself. On a phone the native share sheet opens with the
-  // file already attached; on desktop the file downloads and the chat opens for
-  // it to be attached, because desktop browsers cannot share files.
+  // What a send did, said once it is done: where the link or the PDF went.
+  // It never says the customer received anything; that happens in WhatsApp
+  // or the mail app, after this page.
   const [sendNote, setSendNote] = useState<string | null>(null);
   const [revisions, setRevisions] = useState<any[]>([]);
   // Resolved server-side so the printed Bill To is right whether or not the
   // affiliate list happens to be loaded in the browser.
   const [billToSource, setBillToSource] = useState<string>('-');
-  // WhatsApp gets a link to the PDF; email gets the PDF attached, sent by the
-  // send-invoice-email Edge Function. See src/lib/sendDoc.ts.
+  // WhatsApp gets a link to the PDF; email goes from this device's own mail
+  // app (Q6), the PDF itself on a phone, a link to it on a computer. See
+  // src/lib/sendDoc.ts.
   const sendPdf = async (channel: 'whatsapp' | 'email') => {
-    if (!detail) return;
+    if (!detail || sendingRef.current) return;
+    sendingRef.current = true;
+    // AFTER-11: WhatsApp's window opens now, in the click, before anything is
+    // awaited, or a phone's pop-up blocker stops it once the PDF is ready.
+    const win = channel === 'whatsapp' ? openSendWindow() : undefined;
     // Busy from the start: building the copy now waits on the credit balance.
     // Whatever happens, the button comes back.
-    setSendBusy(channel); setSendErr(null); setSendNote(null); setCreditNote(null);
+    setSendBusy(channel); setSendErr(null); setSendNote(null); setCreditNote(null); setEmailRetry(null);
+    const invoiceId = detail.id;
+    let handedOver = false;
     try {
       const built = await buildPdfDoc();
       if (!built) return;
@@ -2557,29 +2719,52 @@ const InvoicesPage: React.FC = () => {
         customerId: detail.customer_id, customerName: cust?.full_name,
         phone: cust?.phone, email: cust?.email,
       };
-      const r = channel === 'whatsapp'
-        ? await sendViaWhatsAppLink(args)
-        : await sendViaEmailAttachment(args);
-      if (!r.ok) { setSendErr(r.reason ?? 'Could not send.'); return; }
-      // It went: now say if it went without the credit balance.
-      copyWentWithoutCredit(built.invoiceId, 'Sent', pdfCreditMissing(built));
+      handedOver = true;
       if (channel === 'whatsapp') {
-        setSendNote('WhatsApp has opened with a link to the invoice PDF.');
+        const r = await sendViaWhatsAppLink(args, { win: win ?? null });
+        if (!r.ok) { setSendErr(r.reason ?? 'Could not send.'); return; }
+        copyWentWithoutCredit(built.invoiceId, 'Sent', pdfCreditMissing(built));
+        setSendNote('WhatsApp should now be open with the invoice link; send the message there.');
         return;
       }
-      // Say which of the three routes was used, rather than implying the PDF was
-      // attached when only a link went out.
-      const outcome = (r as any).outcome as 'attached' | 'shared' | 'link' | undefined;
-      setSendNote(
-        outcome === 'attached' ? `The invoice PDF has been emailed to ${cust?.email}.`
-        : outcome === 'shared' ? ((r as any).reason ?? 'Choose your email app — the PDF is attached.')
-        : ((r as any).reason ?? 'Your mail client has opened with a link to the PDF.'));
+      const r = await sendViaEmailAttachment(args);
+      emailDone(invoiceId, built, r);
     } catch (e: any) {
       console.error('The invoice could not be sent', e);
       setSendErr(`Could not send${e?.message ? ` (${e.message})` : ''}.`);
     } finally {
+      // A window opened for a send that never reached WhatsApp is closed.
+      if (win && !handedOver) { try { if (!win.closed) win.close(); } catch { /* gone already */ } }
+      sendingRef.current = false;
       setSendBusy(null);
     }
+  };
+  /** AFTER-M3: say what the email did, never more: where the PDF or its link
+   *  went, or that it was not sent. A share sheet that needs a fresh tap, and
+   *  the mail link, are offered again beside the note. */
+  const emailDone = (invoiceId: string, built: { pdf: PdfDoc; invoiceId: string; unreadable: boolean }, r: EmailResult) => {
+    if (detailIdRef.current !== invoiceId) return;
+    if (r.shareAgain) {
+      setEmailRetry({ invoiceId, shareAgain: r.shareAgain, creditMissing: pdfCreditMissing(built) });
+      setSendNote('The PDF is ready. Press "Share the PDF" to choose your mail app.');
+      return;
+    }
+    if (!r.ok) { setSendErr(r.reason ?? 'Not sent.'); return; }
+    copyWentWithoutCredit(built.invoiceId, 'Sent', pdfCreditMissing(built));
+    if (r.mailto) setEmailRetry({ invoiceId, mailto: r.mailto });
+    setSendNote(r.reason ?? 'Your mail app should open; send the email from there.');
+  };
+  /** The share sheet again, from a tap of its own. */
+  const shareEmailAgain = async () => {
+    const retry = emailRetry;
+    if (!retry?.shareAgain || !detail || retry.invoiceId !== detail.id) return;
+    setEmailRetry(null); setSendErr(null); setSendNote(null);
+    const r = await retry.shareAgain();
+    if (detailIdRef.current !== retry.invoiceId) return;
+    if (r.shareAgain) { setEmailRetry(retry); setSendErr(r.reason ?? 'The share sheet did not open.'); return; }
+    if (!r.ok) { setSendErr(r.reason ?? 'Not sent.'); return; }
+    copyWentWithoutCredit(retry.invoiceId, 'Sent', retry.creditMissing ?? null);
+    setSendNote(r.reason ?? 'The PDF went to the app you chose; send the email from there.');
   };
   // Saves the customer copy; once it is saved, says if it went without the
   // credit balance. A save that fails says so instead.
@@ -2644,7 +2829,9 @@ const InvoicesPage: React.FC = () => {
     // The staff signature is printed, not signed by hand. Use whoever raised the
     // invoice; fall back to the person printing it if that is not recorded.
     const signedByName = creatorName(detail);
-    const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    // CREATE-18: a full escape, quotes included, since some of these go
+    // inside attributes (the logos' src).
+    const esc = escapeHtml;
     const collectionBlock = collectionLines
       ? `<h2>Goods</h2><div data-testid="print-goods">${collectionLines.map(l => `<div>${esc(l)}</div>`).join('')}</div>` : '';
     const subFor = (it: InvoiceItem) => {
@@ -2667,12 +2854,18 @@ const InvoicesPage: React.FC = () => {
       const lv = lineDiscount ? `<div class="mut">${esc(lineDiscount)}</div>` : '';
       const tu = Number((it as any).topup_amount ?? 0) > 0 ? `<div class="mut">incl. top-up S$${Number((it as any).topup_amount).toFixed(2)}</div>` : '';
       const md = '';
-      const ov = it.price_overridden ? `<div class="mut"><b>Manual Override</b>${it.override_reason ? ` — ${esc(it.override_reason)}` : ''}</div>` : '';
+      // The same words as the PDF. W4-B16-PRICE-REASON (the Owner, 18 Oct
+      // 2026): the reason for a hand-changed price is internal, as an FOC
+      // reason is (Q7), so the paper never prints it either.
+      const priceNote = priceOverrideCopyNote(it);
+      const ov = priceNote ? `<div class="mut"><b>${esc(priceNote)}</b></div>` : '';
       const mem = '';
       const focQty = Number((it as any).foc_quantity ?? 0);
       const focAmt = Number((it as any).foc_amount ?? 0);
+      // Q7 (the Owner, 9 Oct 2026): FOC reasons are internal. The customer's
+      // copy says 'FOC' and its value only, as the PDF does.
       const fc = focQty > 0
-        ? `<div class="mut"><b>FOC</b> ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`} — value S$${focAmt.toFixed(2)}${(it as any).foc_reason ? ` — ${esc(String((it as any).foc_reason))}` : ''}</div>`
+        ? `<div class="mut"><b>FOC</b> ${focQty === it.quantity ? '(full line)' : `${focQty} of ${it.quantity} free`} — value S$${focAmt.toFixed(2)}</div>`
         : '';
       const amountCell = focQty === it.quantity && focQty > 0
         ? `<s>S$${(Number(it.line_total) + focAmt).toFixed(2)}</s> <b>FOC</b>`
@@ -2683,7 +2876,7 @@ const InvoicesPage: React.FC = () => {
         (it.line_kind === 'promotion' ? subFor(it) : '');
     }).join('');
     const payRows = detailPayments.map(p =>
-      `<tr><td>${esc(printedMethod(p.payment_method_id))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG'))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
+      `<tr><td>${esc(printedMethod(p.payment_method_id))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(displayDay((p as any).effective_at || p.created_at))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
 
     // Service Provided By = the invoice's service staff, each with their work phone.
     const staffRows = servedBy().map(p => ({ full_name: p.name, work_phone: p.work_phone }));
@@ -2697,7 +2890,14 @@ const InvoicesPage: React.FC = () => {
     // one here too — adding them all up overstated Total Paid on every
     // corrected invoice.
     const totalPaid = paymentsTotal(detailPayments as any[]);
+    // AFTER-10: under the rows, what was paid, what went back and what is
+    // still due back, from the invoice's financial position, as the PDF says.
+    const moneyRows = copyMoneyRows({ paid: totalPaid, refunded: detailFinancial?.refunded,
+      netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due });
+    const moneyRowsHtml = moneyRows.map(([label, value]) =>
+      `<tr><td><strong>${esc(label)}</strong></td><td class="r"><strong>${esc(value)}</strong></td></tr>`).join('');
     const ex = detailExchange?.found ? detailExchange : null;
+    const exLabels = exchangeCopyLabels(detailExchange);
     const exchangeBlock = ex ? `
       <h2>Exchange Details</h2>
       <div class="mut">Exchange ${esc(ex.exchange_no ?? '')} · Original invoice <b>${esc(ex.original_invoice_no ?? '')}</b>${ex.reason ? ` · Reason: ${esc(ex.reason)}` : ''}</div>
@@ -2768,14 +2968,14 @@ const InvoicesPage: React.FC = () => {
         ${(th.entitlements ?? []).map((en: any) => `
           <div class="entb">
             <div><strong>${esc(en.package_name)}</strong> — ${en.entitlement_kind === 'unlimited' ? `${en.duration_months} month(s) unlimited` : `${en.voucher_qty} voucher(s)`}</div>
-            <div class="mut">${esc(en.entitlement_no)} &nbsp;|&nbsp; Created: ${new Date(en.created_at).toLocaleDateString()} &nbsp;|&nbsp; Activate by: ${new Date(en.activation_deadline).toLocaleDateString()} &nbsp;|&nbsp; Status: ${esc(String(en.status).replace(/_/g, ' '))}</div>
+            <div class="mut">${esc(en.entitlement_no)} &nbsp;|&nbsp; Created: ${displayDay(en.created_at)} &nbsp;|&nbsp; Activate by: ${displayDay(en.activation_deadline)} &nbsp;|&nbsp; Status: ${esc(String(en.status).replace(/_/g, ' '))}</div>
             ${(en.beneficiaries ?? []).length
               ? `<table class="bentbl"><thead><tr><th>Beneficiary</th><th>Portion</th><th>Activated</th><th>Ends</th><th>Status</th></tr></thead><tbody>
                   ${(en.beneficiaries ?? []).map((b: any) => `<tr>
                     <td>${esc(b.name)}</td>
                     <td>${b.portion_months ? `${b.portion_months} mo` : `${b.portion_vouchers} vouchers`}</td>
-                    <td>${b.activation_date ? new Date(b.activation_date).toLocaleDateString() : '—'}</td>
-                    <td>${b.ending_date ? new Date(b.ending_date).toLocaleDateString() : (b.portion_vouchers ? 'No expiry' : '—')}</td>
+                    <td>${b.activation_date ? displayDay(b.activation_date) : '—'}</td>
+                    <td>${b.ending_date ? displayDay(b.ending_date) : (b.portion_vouchers ? 'No expiry' : '—')}</td>
                     <td>${esc(String(b.status).replace(/_/g, ' '))}</td>
                   </tr>`).join('')}
                 </tbody></table>`
@@ -2799,7 +2999,7 @@ const InvoicesPage: React.FC = () => {
             <div class="mut">Status: <b class="statusword">${esc(String(detail.status).replace(/_/g, ' ').toUpperCase())}</b></div></div>
         </div>
         ${focStamp}
-        ${ex ? `<div class="mut"><b>EXCHANGE INVOICE</b> — replaces items from ${esc(ex.original_invoice_no ?? '')}</div>` : ''}
+        ${exLabels.headerNote ? `<div class="mut"><b>${esc(exLabels.headerNote)}</b></div>` : ''}
         <h2>Bill To</h2>
         <div>${esc(billTo)}</div><div class="mut">${esc(cust?.phone ?? '')}</div>
         <h2>Items</h2>
@@ -2809,12 +3009,12 @@ const InvoicesPage: React.FC = () => {
           ${focTotal > 0 ? `<tr><td>Normal value</td><td class="r">S$${(Number(detail.subtotal) + focTotal).toFixed(2)}</td></tr>
           <tr><td>FOC (free of charge)</td><td class="r">−S$${focTotal.toFixed(2)}</td></tr>` : ''}
           <tr><td>Subtotal${focTotal > 0 ? ' (chargeable)' : ''}</td><td class="r">S$${Number(detail.subtotal).toFixed(2)}</td></tr>
-          <tr><td>${ex ? 'Exchange credit applied' : 'Discount'}</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
+          <tr><td>${esc(exLabels.discountLabel)}</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
           ${ex && Number(ex.foc_waived ?? 0) > 0 ? `<tr><td>incl. FOC waived top-up</td><td class="r">−S$${Number(ex.foc_waived).toFixed(2)}</td></tr>` : ''}
           ${gstEnabled && gstRate > 0 ? `<tr><td>GST (${gstRate}%, incl.)</td><td class="r">S$${gstAmount.toFixed(2)}</td></tr>` : ''}
-          <tr class="grand"><td>${ex ? 'Net Top-Up' : 'Total'}</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
+          <tr class="grand"><td>${esc(exLabels.totalLabel)}</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
         </table>
-        ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}<tr><td><strong>Total Paid</strong></td><td class="r"><strong>S$${totalPaid.toFixed(2)}</strong></td></tr></tbody></table>` : ''}
+        ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}${moneyRowsHtml}</tbody></table>` : ''}
         ${creditBlock}
         ${therapyBlock}
         ${authorisedBlock}
@@ -2858,7 +3058,41 @@ const InvoicesPage: React.FC = () => {
       .then(() => {}, () => {});
   };
 
-  const statusOptions: ('all' | InvoiceStatus)[] = ['all', 'unpaid', 'partially_paid', 'paid', 'cancelled', 'refunded'];
+  // The customer copies and Close, the same on every invoice. Email goes from
+  // this device's own mail app (Q6), and the button says so.
+  const copyButtons = detail ? (<>
+    <button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
+    <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
+    <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
+    <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
+      disabled={!docReady || !!sendBusy || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
+      title={whatsappNumber(customerOf(detail.customer_id)?.phone)
+        ? 'Open WhatsApp with this invoice ready to send'
+        : 'This customer has no usable mobile number'}>
+      <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
+    <button className="btn btn-secondary" onClick={() => sendPdf('email')}
+      disabled={!docReady || !!sendBusy || !emailAddress(customerOf(detail.customer_id)?.email)}
+      title={emailAddress(customerOf(detail.customer_id)?.email)
+        ? 'Send from this device’s mail app: the PDF on a phone, a link to it on a computer'
+        : 'This customer has no valid email address'}>
+      <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email (from this device)'}</button>
+    <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+  </>) : null;
+  // A fully FOC invoice is confirmed (asking first, CREATE-19 f); anything else
+  // takes a payment. The database refuses FOC to Inventory Managers, so they
+  // are not offered it (CREATE-19 a).
+  const settleButton = !detail ? null
+    : detail.is_full_foc && Number(detail.total_amount) <= 0
+      ? (canGiveFoc(profile?.role)
+          ? <button className="btn btn-primary" onClick={() => { setFocErr(null); setConfirmFocOpen(true); }} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
+          : null)
+      : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy || Boolean(payBlockedReason)}
+          title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>;
+
+  // CREATE-19 (c): FOC invoices can be listed on their own. No 'requested'
+  // filter: 409 retired those statuses.
+  const statusOptions: ('all' | InvoiceStatus)[] = ['all', 'unpaid', 'partially_paid', 'paid', 'completed_foc', 'cancelled', 'refunded'];
+  const statusFilterLabel = (s: 'all' | InvoiceStatus) => s === 'all' ? 'All' : s === 'completed_foc' ? 'FOC (completed)' : INVOICE_STATUS_LABELS[s];
 
   // Read by handlers that run after this render, without a stale closure.
   pageRef.current = page; rangeInvalidRef.current = rangeInvalid; pageRowsRef.current = pageRows;
@@ -2874,7 +3108,8 @@ const InvoicesPage: React.FC = () => {
     return qr?.image ? { qr, image: qr.image, amount: line.amount || 0, line: payQr.line, instalment: payQr.instalment } : null;
   })();
   dialogsOpenRef.current = createOpen || guidedOpen || !!focLine
-    || !!stockReviewFor || !!priceReview || !!quickCustomerFor || !!payQrView;
+    || confirmFocOpen || !!removeFocLine || !!deleteFor
+    || !!stockReviewFor || !!quickCustomerFor || !!payQrView;
 
   return (
     <div>
@@ -2903,11 +3138,15 @@ const InvoicesPage: React.FC = () => {
                Fetched in batches of 500 so a large one cannot be truncated by
                the API row limit — the failure XERO_ROW_LIMIT_FIX.md records. */
             fetchAll={async () => {
-              const all = await fetchAllMatchingInvoices(listQuery,
-                (got, total) => setExportProgress({ got, all: total }));
-              await loadPaymentMethodsFor(all.map(r => r.id));
-              setExportProgress(null);
-              return all;
+              // AFTER-6: each row carries its own payment methods, read for this
+              // export; a read that fails stops it. The progress always clears.
+              try {
+                const all = await fetchAllMatchingInvoices(listQuery,
+                  (got, total) => setExportProgress({ got, all: total }));
+                return await withPaymentLabels(all);
+              } finally {
+                setExportProgress(null);
+              }
             }}
             filename="invoices" sheetName="Invoices"
             dateOf={(i: Invoice) => i.business_date} dateLabel="Invoice business date" dateTimeZone="Asia/Singapore"
@@ -2923,7 +3162,7 @@ const InvoicesPage: React.FC = () => {
               { header: 'Instalments', value: (i: any) => instalmentText(i, methods) },
               // Kept in step with the table: the export mirrors these columns,
               // and a sheet missing a column the screen shows is confusing.
-              { header: 'Payment', value: (i: any) => (payMethodsByInvoice[i.id] ?? []).join(', ') },
+              { header: 'Payment', value: (i: any) => i.payment_methods_label ?? (payMethodsByInvoice[i.id] ?? []).join(', ') },
               { header: 'Status', value: (i: any) => INVOICE_STATUS_LABELS[i.status as InvoiceStatus] ?? i.status },
             ]} />}
           <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
@@ -2973,7 +3212,7 @@ const InvoicesPage: React.FC = () => {
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
         {statusOptions.map(s => (
           <button key={s} className={`btn btn-sm ${statusFilter === s ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setStatusFilter(s)}>
-            {s === 'all' ? 'All' : INVOICE_STATUS_LABELS[s]}
+            {statusFilterLabel(s)}
           </button>
         ))}
       </div>
@@ -3077,11 +3316,8 @@ const InvoicesPage: React.FC = () => {
                 {sorted.map(inv => (
                   <tr key={inv.id}>
                     <td><strong style={{ fontFamily: 'var(--font-display)' }}>{inv.invoice_no}</strong>
-                      {/* A voucher claim is a hand-over document, not a sale. It carries
-                          no value, so say so rather than let a S$0.00 row read as one. */}
-                      {(inv as any).is_voucher_claim && (
-                        <div><span className="badge badge-muted" style={{ fontSize: 10 }}>Voucher claim</span></div>
-                      )}
+                      {/* The "Voucher claim" badge is gone (CREATE-18): the list never
+                          carried is_voucher_claim, and no invoice has ever had it. */}
                       {eventByInvoice[inv.id] && (
                         <div><span className="badge badge-primary" style={{ fontSize: 10 }} title="Event sale">🎉 {eventByInvoice[inv.id]}</span></div>
                       )}
@@ -3102,14 +3338,23 @@ const InvoicesPage: React.FC = () => {
                     <td style={{ fontSize: 12.5 }}>
                       {(payMethodsByInvoice[inv.id] ?? []).length > 0
                         ? (payMethodsByInvoice[inv.id] ?? []).join(', ')
+                        : payMethodsUnread.has(inv.id)
+                        ? <span style={{ color: 'var(--text-muted)' }} title="The payment methods could not be read. Press Refresh."
+                            data-testid="invoice-row-payments-unread">Not read</span>
                         : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                     </td>
                     <td><StatusBadge s={inv.status} /></td>
                     <td>
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => openDetail(inv)}><Eye size={13} /> View</button>
-                        {inv.status !== 'paid' && inv.status !== 'partially_paid' && inv.status !== 'cancelled' && inv.status !== 'refunded' && Number(inv.paid_amount) === 0 && (
-                          <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(inv)}><Trash2 size={13} /></button>
+                        {/* 417 (CREATE-14): only where a delete can succeed, a draft or
+                            unpaid invoice with nothing paid. Anything else is undone
+                            with Refund / Cancel. The row does not say if it is a
+                            top-up or an exchange: askDelete reads that first. */}
+                        {canDeleteInvoice(inv as any) && (
+                          <button className="btn btn-danger btn-sm btn-icon" onClick={() => void askDelete(inv)}
+                            aria-label={`Delete invoice ${inv.invoice_no}`} title="Delete this invoice (a short reason is needed)">
+                            <Trash2 size={13} /></button>
                         )}
                       </div>
                     </td>
@@ -3164,9 +3409,13 @@ const InvoicesPage: React.FC = () => {
 
 
       {createOpen && (
-        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide confirmClose onClose={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}
-          footer={<><button className="btn btn-secondary" onClick={() => { setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null); }}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
-          <div className="form-grid invoice-editor">
+        <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide confirmClose onClose={closeEditor}
+          footer={<><button className="btn btn-secondary" onClick={closeEditor}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
+          <div className="form-grid">
+          {/* CREATE-5: locked while its summary is open, so what is saved is
+              what was reviewed. Back to the form unlocks it. */}
+          <fieldset className="form-grid invoice-editor invoice-editor-lock" disabled={!!correctionPreview}
+            data-testid="invoice-editor">
             {editingInvoiceId && editConflict && (
               <div className="alert alert-warning" role="alert" data-testid="invoice-edit-conflict" style={{ marginBottom: 0, display: 'block' }}>
                 <strong>This invoice was changed by another user or tab while you were editing it.</strong>{' '}
@@ -3224,10 +3473,17 @@ const InvoicesPage: React.FC = () => {
                 </div>
               </div>
             )}
-            <label>Invoice business date<input type="date" value={cBusinessDate} onChange={e => setCBusinessDate(e.target.value)} /></label>
+            {/* 416 rule 3: never after today in Singapore, and a date once set
+                cannot be cleared (CREATE-11). */}
+            <label>Invoice business date<input type="date" value={cBusinessDate} max={singaporeToday()}
+              required={!editingInvoiceId || !!editBaseRef.current?.business_date}
+              onChange={e => setCBusinessDate(e.target.value)} /></label>
             {/* A missing historical date stays missing. Filling it with today to
                 silence this would invent the date the sale happened on. */}
-            {editingInvoiceId && !cBusinessDate && <p>This legacy invoice’s business date is pending review. Enter the date the sale actually happened; it is not filled in for you.</p>}
+            {editingInvoiceId && !cBusinessDate && !editBaseRef.current?.business_date && <p>This legacy invoice’s business date is pending review. Enter the date the sale actually happened; it is not filled in for you.</p>}
+            {editingInvoiceId && !cBusinessDate && !!editBaseRef.current?.business_date && (
+              <p role="alert" style={{ color: 'var(--danger)' }}>Keep the invoice date; it cannot be cleared.</p>
+            )}
             {/* The instalment arrangement moved to Record Payment for a new
                 invoice. On a correction it stays here, in the payment part of
                 the form, so saved values can be seen and edited. */}
@@ -3306,29 +3562,33 @@ const InvoicesPage: React.FC = () => {
                     return (
                       <div key={p2.id} style={{ marginBottom: 6 }}>
                         {e.parts.map((part, idx) => (
-                          <div key={idx} style={{ display: 'grid', gridTemplateColumns: '104px 148px minmax(140px, 1fr) auto',
-                                                  gap: 8, alignItems: 'center', marginBottom: 4, opacity: e.remove ? 0.55 : 1 }}>
+                          // CREATE-13: a class, not an inline grid, so a phone gets two
+                          // columns and Remove stays on the screen.
+                          <div key={idx} className="invoice-correction-payment-part" style={{ opacity: e.remove ? 0.55 : 1 }}>
                             {/* 377: staff change only the method; the amount and the
                                 date stay as recorded. */}
                             <input type="number" min="0.01" step="0.01" aria-label="Payment amount" value={part.amount}
                               disabled={e.remove || staffCorrection}
                               title={staffCorrection ? 'Only an Owner or Manager can change a payment’s amount' : undefined}
                               onChange={ev => setPart(idx, { amount: ev.target.value })} />
-                            <input type="date" aria-label="Date received" value={part.date}
+                            {/* AFTER-16: never after today in Singapore (416 refuses it). */}
+                            <input type="date" aria-label="Date received" value={part.date} max={singaporeToday()}
                               disabled={e.remove || staffCorrection}
                               title={staffCorrection ? 'Only an Owner or Manager can change the date a payment was received' : undefined}
                               onChange={ev => setPart(idx, { date: ev.target.value })} />
-                            {e.remove
-                              ? <span style={{ fontSize: 12.5 }}>{printedMethod(part.payment_method_id) || '—'}</span>
-                              : <InvoiceSearchSelect value={part.payment_method_id} onChange={id => setPart(idx, { payment_method_id: id })}
-                                  options={methodOptionsFor(part.payment_method_id)} />}
-                            {staffCorrection ? <span /> : idx === 0 ? (
-                              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEdit({ remove: !e.remove })}
+                            <div className="invoice-correction-payment-method">
+                              {e.remove
+                                ? <span style={{ fontSize: 12.5 }}>{printedMethod(part.payment_method_id) || '—'}</span>
+                                : <InvoiceSearchSelect value={part.payment_method_id} onChange={id => setPart(idx, { payment_method_id: id })}
+                                    options={methodOptionsFor(part.payment_method_id)} />}
+                            </div>
+                            {staffCorrection ? <span className="invoice-correction-payment-action" /> : idx === 0 ? (
+                              <button type="button" className="btn btn-secondary btn-sm invoice-correction-payment-action" onClick={() => setEdit({ remove: !e.remove })}
                                 title={e.remove ? 'Keep this payment' : 'This receipt was recorded by mistake'}>
                                 {e.remove ? 'Keep' : 'Remove'}
                               </button>
                             ) : (
-                              <button type="button" className="btn btn-secondary btn-sm" aria-label="Drop this part"
+                              <button type="button" className="btn btn-secondary btn-sm invoice-correction-payment-action" aria-label="Drop this part"
                                 onClick={() => setEdit({ parts: e.parts.filter((_, j) => j !== idx) })}>✕</button>
                             )}
                           </div>
@@ -3409,20 +3669,16 @@ const InvoicesPage: React.FC = () => {
           onClose={() => setQuickCustomerFor(null)}
         />
       )}
-      {correctionPreview && (
-              <CorrectionPreview preview={correctionPreview} saving={cSaving}
-                onBack={() => setCorrectionPreview(null)}
-                onConfirm={() => { void handleCreate(); }} />
-            )}
-            {cErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
+            {cErr &&<div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{cErr}</div></div>}
             {stockReviewFor && editingInvoiceId === stockReviewFor && (
               <InvoiceStockEvidenceReview invoiceId={stockReviewFor}
                 onCancel={() => setStockReviewFor(null)}
                 onResolved={() => {
                   // The snapshot exists now. Clear the refusal and let the same
-                  // Save Changes go through the ordinary protected correction.
+                  // Review Changes go through the ordinary protected correction.
                   setStockReviewFor(null);
-                  setCErr('The original records are now on file. Press Save Changes again to apply the correction.');
+                  // CREATE-19 (d): the buttons are Review Changes, then Save the correction.
+                  setCErr('The original records are now on file. Press Review Changes again to apply the correction.');
                 }} />
             )}
             <div className="form-grid-2">
@@ -3468,10 +3724,14 @@ const InvoicesPage: React.FC = () => {
                 <label>Customer *</label>
                 <div className="customer-with-add">
                   <CustomerSearchSelect value={cCustomer} onChange={v => { setCCustomer(v); setCLines(ls => ls); }} />
-                  <button type="button" className="btn btn-secondary btn-sm"
-                    onClick={() => setQuickCustomerFor({ target: 'invoice' })}>
-                    <Plus size={13} aria-hidden="true" /> Add customer
-                  </button>
+                  {/* W4-B04-IM-ADD-CUSTOMER (the Owner, 18 Oct 2026): not for
+                      Inventory Managers, who pick a customer already on file. */}
+                  {canAddCustomer(profile?.role) && (
+                    <button type="button" className="btn btn-secondary btn-sm"
+                      onClick={() => setQuickCustomerFor({ target: 'invoice' })}>
+                      <Plus size={13} aria-hidden="true" /> Add customer
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -3598,7 +3858,10 @@ const InvoicesPage: React.FC = () => {
                             // Another kind of line starts without a discount.
                             discount: '', foc_quantity: 0, foc_reason_id: '', foc_reason: '', foc_all: false, line_voucher_id: '',
                             discount_amount: '', discount_percent: '', discount_reason: '', discount_untyped: false,
-                            rental_start_date: new Date().toISOString().slice(0, 10), rental_return_date: '' } : l))} style={{ width: 130 }}>
+                            // CREATE-4: another kind of line keeps no promotion picks.
+                            selections: {},
+                            // CREATE-17: today in Singapore, not the UTC day.
+                            rental_start_date: singaporeToday(), rental_return_date: '' } : l))} style={{ width: 130 }}>
                           <option value="product">Product</option>
                           <option value="voucher">Voucher</option>
                           <option value="promotion">Promotion</option>
@@ -3762,10 +4025,12 @@ const InvoicesPage: React.FC = () => {
                         ) : (
                           <SearchSelect style={{ flex: 1 }} placeholder="Search promotion name or code…"
                             value={line.promotion_id}
-                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { promotion_id: v }) : l))}
-                            options={promotions.map(p => ({
+                            // CREATE-4: another promotion starts with no picks; going
+                            // back to the saved one brings its picks back.
+                            onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { promotion_id: v }, { selections: {} }) : l))}
+                            options={promotionOptions(line).map(p => ({
                               value: p.id,
-                              label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}`,
+                              label: `${p.name}${promoPrice(p.id) != null ? ` — ${money(promoPrice(p.id)!)}` : ' — no price for this store'}${liveOnDay(p, promotionDay) ? '' : ' (saved)'}`,
                               sublabel: (p as any).code, search: `${p.name} ${(p as any).code ?? ''}`, searchPrices: [promoPrice(p.id)] }))} />
                         )}
                         <input type="number" min={1} max={9999}
@@ -3842,7 +4107,8 @@ const InvoicesPage: React.FC = () => {
                                   {line.foc_reason_id && !focReasons.some(r => r.id === line.foc_reason_id) && <option value={line.foc_reason_id}>{line.foc_reason || 'Saved FOC reason'} (historical)</option>}
                                   {focReasons.map(r => <option key={r.id} value={r.id}>{r.label}{r.requires_note ? ' *' : ''}</option>)}
                                 </select>
-                                <input aria-label={`Line ${i + 1} FOC note`} type="text" placeholder="Note" value={line.foc_reason ?? ''}
+                                <input aria-label={`Line ${i + 1} FOC note`} type="text" placeholder="FOC note (internal, not printed)"
+                                  title="Internal: not printed on the customer's copy" value={line.foc_reason ?? ''}
                                   onChange={e => setLine(l => ({ ...l, foc_reason: e.target.value }))}
                                   style={{ ...field, flex: 1, maxWidth: 200 }} />
                                 {m && m.foc > 0 ? <span style={{ fontSize: 11.5, color: 'var(--success)' }}>free {money(fromCents(m.foc))}</span> : null}
@@ -4263,6 +4529,13 @@ const InvoicesPage: React.FC = () => {
               </div>
             </div>
             </>)}
+          </fieldset>
+          {/* The summary sits under the locked form, beside the footer it replaces. */}
+          {correctionPreview && (
+            <CorrectionPreview preview={correctionPreview} saving={cSaving || previewing} notice={correctionNotice}
+              onBack={() => { setCorrectionPreview(null); setCorrectionNotice(null); }}
+              onConfirm={() => { void handleCreate(); }} />
+          )}
           </div>
         </Modal>
       )}
@@ -4272,21 +4545,7 @@ const InvoicesPage: React.FC = () => {
         <Modal title={`Invoice ${detail.invoice_no}`} wide onClose={() => setDetail(null)}
           footer={
             detail.status === 'paid'
-              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
-                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
-                    ? 'Open WhatsApp with this invoice ready to send'
-                    : 'This customer has no usable mobile number'}>
-                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
-                  title={emailAddress(customerOf(detail.customer_id)?.email)
-                    ? 'Open your mail client with this invoice ready to send'
-                    : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+              ? <>{copyButtons}
                   {/* Staff get Correct Invoice here too (377), beside Request refund / cancel (409). */}
                   {canCorrectInvoice && (
                     <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
@@ -4294,88 +4553,28 @@ const InvoicesPage: React.FC = () => {
                       <FileText size={14} /> Correct Invoice</button>
                   )}
                   {refundCancelButton}</>
-              : detail.status === 'cancelled' || detail.status === 'refunded' || detail.status === 'cancellation_requested' || detail.status === 'refund_requested'
-              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
-                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
-                    ? 'Open WhatsApp with this invoice ready to send'
-                    : 'This customer has no usable mobile number'}>
-                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
-                  title={emailAddress(customerOf(detail.customer_id)?.email)
-                    ? 'Open your mail client with this invoice ready to send'
-                    : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{recordRefundDueButton}{refundCancelButton}</>
+              : detail.status === 'cancelled' || detail.status === 'refunded'
+              ? <>{copyButtons}{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{recordRefundDueButton}{refundCancelButton}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
-              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
-                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
-                    ? 'Open WhatsApp with this invoice ready to send'
-                    : 'This customer has no usable mobile number'}>
-                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
-                  title={emailAddress(customerOf(detail.customer_id)?.email)
-                    ? 'Open your mail client with this invoice ready to send'
-                    : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button>
-                  <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+              ? <>{copyButtons}
                   {!isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}><FileText size={14} /> Edit Invoice</button>}
                   {handOverButton}
                   {refundCancelButton}
-                  {detail.is_full_foc && Number(detail.total_amount) <= 0
-                    ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
-                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy || Boolean(payBlockedReason)}
-                        title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
+                  {settleButton}</>
               : detail.status === 'completed_foc'
-              ? <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
-                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
-                    ? 'Open WhatsApp with this invoice ready to send'
-                    : 'This customer has no usable mobile number'}>
-                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
-                  title={emailAddress(customerOf(detail.customer_id)?.email)
-                    ? 'Open your mail client with this invoice ready to send'
-                    : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>
-              : <><button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
-                <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
-                <button className="btn btn-secondary" onClick={saveImg} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as an image'}><Download size={14} /> Image</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('whatsapp')}
-                  disabled={!docReady || !whatsappNumber(customerOf(detail.customer_id)?.phone)}
-                  title={whatsappNumber(customerOf(detail.customer_id)?.phone)
-                    ? 'Open WhatsApp with this invoice ready to send'
-                    : 'This customer has no usable mobile number'}>
-                  <MessageCircle size={14} /> {sendBusy === 'whatsapp' ? 'Preparing…' : 'WhatsApp'}</button>
-                <button className="btn btn-secondary" onClick={() => sendPdf('email')}
-                  disabled={!docReady || !emailAddress(customerOf(detail.customer_id)?.email)}
-                  title={emailAddress(customerOf(detail.customer_id)?.email)
-                    ? 'Open your mail client with this invoice ready to send'
-                    : 'This customer has no valid email address'}>
-                  <Mail size={14} /> {sendBusy === 'email' ? 'Sending…' : 'Email'}</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+              // CREATE-14: a completed FOC is undone with the guided Cancel
+              // (Owners and Managers confirm it; staff request it). It returns
+              // the stock and closes what the FOC gave.
+              ? <>{copyButtons}{refundCancelButton}</>
+              : <>{copyButtons}
                   {canCorrectInvoice && needsAuditedCorrection &&
                     <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
                       title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>}
                   {handOverButton}
                   {refundCancelButton}
-                  {detail.is_full_foc && Number(detail.total_amount) <= 0
-                    ? <button className="btn btn-primary" onClick={handleConfirmFoc} disabled={focBusy}><Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC Invoice'}</button>
-                    : <button className="btn btn-primary" onClick={handlePay} disabled={payBusy || Boolean(payBlockedReason)}
-                        title={payBlockedReason ?? undefined}><CreditCard size={15} /> {payBusy ? 'Processing…' : 'Record Payment'}</button>}</>
+                  {settleButton}</>
           }>
           <div className="form-grid">
             {detailReloadError && (
@@ -4395,6 +4594,12 @@ const InvoicesPage: React.FC = () => {
             )}
             {/* Correction lives in the footer now, once, beside Refund / Cancel.
                 An ordinary unpaid invoice offers Edit Invoice there instead. */}
+            {requestBanner && (
+              <div className={`alert ${requestBanner.kind === 'waiting' ? 'alert-info' : 'alert-warning'}`} role="status"
+                data-testid="invoice-request-banner" style={{ marginBottom: 0 }}>
+                <div>{requestBanner.text}</div>
+              </div>
+            )}
             <div data-testid="invoice-detail-date"><strong>Invoice date: {displayInvoiceDate(detail)}</strong>
             </div>
             {Number((detail as any).manual_discount ?? 0) > 0 && (
@@ -4512,7 +4717,7 @@ const InvoicesPage: React.FC = () => {
                 {revisions.map(r => (
                   <div key={r.revision_no} style={{ fontSize: 12, marginBottom: 4 }}>
                     <strong>#{r.revision_no}</strong>{' '}
-                    {new Date(r.edited_at).toLocaleString()} — {r.edited_by_name ?? 'Unknown'}
+                    {displayDateTime(r.edited_at)} — {r.edited_by_name ?? 'Unknown'}
                     <div style={{ color: 'var(--text-muted)' }}>
                       Was S${Number(r.old_total ?? 0).toFixed(2)} ({String(r.from_status ?? '').replace(/_/g,' ')})
                       {r.edit_reason ? ` · ${r.edit_reason}` : ''}
@@ -4522,7 +4727,16 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
             {sendErr && <div className="alert alert-danger"><span>⚠</span><div>{sendErr}</div></div>}
-            {sendNote && <div className="alert alert-info"><span>ℹ</span><div>{sendNote}</div></div>}
+            {sendNote && <div className="alert alert-info" data-testid="invoice-send-note"><span>ℹ</span><div>{sendNote}
+              {/* AFTER-M3: the share sheet from a tap of its own, or the mail link again. */}
+              {emailRetry?.invoiceId === detail.id && emailRetry.shareAgain && (
+                <div style={{ marginTop: 6 }}><button type="button" className="btn btn-primary btn-sm" onClick={() => void shareEmailAgain()}>
+                  <Mail size={13} /> Share the PDF</button></div>
+              )}
+              {emailRetry?.invoiceId === detail.id && emailRetry.mailto && (
+                <div style={{ marginTop: 6 }}><a href={emailRetry.mailto}>Open the email again</a></div>
+              )}
+            </div></div>}
             {creditNote && <div className="alert alert-info" role="status" data-testid="credit-balance-unread"><span>ℹ</span><div>{creditNote}</div></div>}
 
             {isOwnerOrManager(profile?.role) && ['draft','unpaid','partially_paid'].includes(detail.status) && (
@@ -4553,8 +4767,8 @@ const InvoicesPage: React.FC = () => {
                     {e.entitlement_kind === 'voucher' ? ` · ${e.voucher_qty ?? 0} voucher(s)` : e.duration_months ? ` · ${e.duration_months} months` : ''}
                     {' · '}
                     {e.status === 'pending_activation'
-                      ? <span>unclaimed — claim by {e.activation_deadline ? new Date(e.activation_deadline).toLocaleDateString('en-GB') : '—'} under Therapy → Legacy Therapy</span>
-                      : <span>{String(e.status).replace('_', ' ')}{e.expiry_date ? ` until ${new Date(e.expiry_date).toLocaleDateString('en-GB')}` : ''}</span>}
+                      ? <span>unclaimed — claim by {e.activation_deadline ? displayDay(e.activation_deadline) : '—'} under Therapy → Legacy Therapy</span>
+                      : <span>{String(e.status).replace('_', ' ')}{e.expiry_date ? ` until ${displayDay(e.expiry_date)}` : ''}</span>}
                   </div>
                 ))}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -4566,7 +4780,7 @@ const InvoicesPage: React.FC = () => {
             {detailRevisions.length > 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                 <b>Edit history:</b> {detailRevisions.map(r =>
-                  `#${r.revision_no} ${new Date(r.edited_at).toLocaleString('en-GB')}${r.edit_reason ? ` — ${r.edit_reason}` : ''}`
+                  `#${r.revision_no} ${displayDateTime(r.edited_at)}${r.edit_reason ? ` — ${r.edit_reason}` : ''}`
                 ).join(' · ')}
               </div>
             )}
@@ -4627,6 +4841,7 @@ const InvoicesPage: React.FC = () => {
                         <tr>
                           <td>{it.line_kind === 'voucher' ? `🎟 ${itemName(it)}` : isPromo ? `🧩 ${itemName(it)}` : (it.line_kind === 'credit_package' || it.line_kind === 'premium_bundle') ? `💳 ${itemName(it)}` : it.line_kind === 'rental' ? `Rental: ${itemName(it)}` : itemName(it)}
                             {lineDiscountDetail(it)}
+                            {priceOverrideDetail(it)}
                             {(() => { const tk = ticketDetail(it); return tk ? (
                               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                                 {tk.days && <div>Day{((it as any).event_days ?? []).length === 1 ? '' : 's'}: {tk.days}</div>}
@@ -4634,8 +4849,9 @@ const InvoicesPage: React.FC = () => {
                               </div>) : null; })()}
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {/* One discount per line: a line with a discount is not offered FOC. */}
+                            {/* CREATE-19 (a): not for Inventory Managers, whom the database refuses. */}
                             {Number(it.foc_quantity ?? 0) === 0 && !lineHasDiscount(it) && it.line_kind !== 'late_fee' && detail.status !== 'paid' && detail.status !== 'completed_foc'
-                              && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
+                              && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && canGiveFoc(profile?.role) && (
                               <div style={{ fontSize: 11 }}>
                                 <button className="btn btn-secondary btn-sm" style={{ padding: '1px 7px', fontSize: 10.5 }}
                                   onClick={() => { setFocLine(it); setFocQty(it.quantity); setFocReasonId(''); setFocNote(''); setFocErr(null); }}>
@@ -4647,9 +4863,10 @@ const InvoicesPage: React.FC = () => {
                               <div style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>
                                 {it.is_foc ? 'FOC' : `FOC ${it.foc_quantity} of ${it.quantity}`} — free {money(Number(it.foc_amount ?? 0))}
                                 {it.foc_reason ? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}> · {it.foc_reason}</span> : null}
-                                {detail.status !== 'paid' && detail.status !== 'completed_foc' && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && (
+                                {detail.status !== 'paid' && detail.status !== 'completed_foc' && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0
+                                  && canGiveFoc(profile?.role) && (
                                   <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6, padding: '1px 7px', fontSize: 10.5 }}
-                                    disabled={focBusy} onClick={() => handleRemoveLineFoc(it.id)}>Remove FOC</button>
+                                    disabled={focBusy} onClick={() => { setFocErr(null); setRemoveFocReason(''); setRemoveFocLine(it); }}>Remove FOC</button>
                                 )}
                               </div>
                             )}
@@ -4695,7 +4912,7 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
                   {detailPayments.map(p => (
                     <div key={p.id} className="invoice-payment-record">
-                      <span className="invoice-payment-record-label">{printedMethod(p.payment_method_id) || '—'} · {new Date((p as any).effective_at || p.created_at).toLocaleDateString('en-SG')}
+                      <span className="invoice-payment-record-label">{printedMethod(p.payment_method_id) || '—'} · {displayDay((p as any).effective_at || p.created_at)}
                         {(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</span>
                       <span className="invoice-payment-record-actions">
                         <span style={{ fontWeight: 600 }}>{money(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1))}</span>
@@ -4765,7 +4982,7 @@ const InvoicesPage: React.FC = () => {
                           <strong>{en.package_name}</strong>
                           <span style={{ color: 'var(--text-muted)' }}> · {en.entitlement_kind === 'unlimited' ? `${en.duration_months} month(s) unlimited` : `${en.voucher_qty} voucher(s)`}</span>
                           <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-                            {en.entitlement_no} · created {new Date(en.created_at).toLocaleDateString()} · activate by {new Date(en.activation_deadline).toLocaleDateString()}
+                            {en.entitlement_no} · created {displayDay(en.created_at)} · activate by {displayDay(en.activation_deadline)}
                           </div>
                         </div>
                         <span className={`badge ${en.status === 'expired_before_activation' || en.status === 'cancelled' ? 'badge-danger' : en.status === 'activated' ? 'badge-success' : 'badge-muted'}`}>
@@ -4783,7 +5000,7 @@ const InvoicesPage: React.FC = () => {
                               </span>
                               <span style={{ color: 'var(--text-secondary)' }}>
                                 {b.activation_date
-                                  ? <>{new Date(b.activation_date).toLocaleDateString()}{b.ending_date ? ` → ${new Date(b.ending_date).toLocaleDateString()}` : ' · no expiry'}</>
+                                  ? <>{displayDay(b.activation_date)}{b.ending_date ? ` → ${displayDay(b.ending_date)}` : ' · no expiry'}</>
                                   : 'not activated'}
                                 {' '}<span className={`badge ${b.status === 'active' ? 'badge-success' : b.status === 'scheduled' ? 'badge-primary' : b.status === 'cancelled' || b.status === 'expired_before_activation' ? 'badge-danger' : 'badge-muted'}`} style={{ fontSize: 10 }}>{String(b.status).replace(/_/g, ' ')}</span>
                               </span>
@@ -4829,8 +5046,11 @@ const InvoicesPage: React.FC = () => {
                 onRecordReturn={isOwnerOrManager(profile?.role) ? () => setGoodsModal('return') : undefined} />
             )}
 
-            {/* Payment entry (only if not fully paid) */}
-            {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded' && (() => {
+            {/* Payment entry (only if not fully paid). CREATE-19 (b): not on a
+                completed FOC invoice, nor on a fully FOC one at S$0, which have
+                no Record Payment. */}
+            {detail.status !== 'paid' && detail.status !== 'cancelled' && detail.status !== 'refunded'
+              && detail.status !== 'completed_foc' && !(detail.is_full_foc && Number(detail.total_amount) <= 0) && (() => {
               // Wallet Credit can never pay for a Credit Package or Premium Bundle.
               // If the invoice contains ANY such line, wallet methods are hidden
               // for the WHOLE invoice — the database enforces the same rule, so
@@ -4993,10 +5213,55 @@ const InvoicesPage: React.FC = () => {
           reference={detail.invoice_no} onClose={() => setPayQr(null)}
           returnFocusTo={() => payQrReturnFocus(payQrView.line, payQrView.instalment)} />
       )}
-      {priceReview && detail && (
-        <PaymentPriceReview review={priceReview} busy={payBusy}
-          onClose={() => setPriceReview(null)}
-          onConfirm={() => { setPriceReview(null); handlePay(); }} />
+      {/* CREATE-19 (f): Confirm FOC asks first. */}
+      {confirmFocOpen && detail && (
+        <Modal title="Confirm FOC invoice" maxWidth={420} onClose={() => setConfirmFocOpen(false)}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setConfirmFocOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={() => void handleConfirmFoc()} disabled={focBusy}>
+              <Sparkles size={15} /> {focBusy ? 'Confirming…' : 'Confirm FOC'}</button>
+          </>}>
+          <p style={{ margin: 0 }} data-testid="confirm-foc-question">
+            This closes {detail.invoice_no} as free of charge and takes the stock. To undo it later, use Refund / Cancel.
+          </p>
+        </Modal>
+      )}
+      {/* CREATE-19 (f): Remove FOC, with an optional reason kept with the change. */}
+      {removeFocLine && (
+        <Modal title="Remove FOC" maxWidth={420} onClose={() => setRemoveFocLine(null)}
+          footer={<>
+            <button className="btn btn-secondary" onClick={() => setRemoveFocLine(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={() => void handleRemoveLineFoc(removeFocLine.id, removeFocReason)} disabled={focBusy}>
+              {focBusy ? 'Removing…' : 'Remove FOC'}</button>
+          </>}>
+          <div className="form-grid">
+            {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
+            <p style={{ margin: 0 }}>The line is charged again at its price.</p>
+            <label>Reason (optional)
+              <input value={removeFocReason} maxLength={300} onChange={e => setRemoveFocReason(e.target.value)}
+                placeholder="Why the FOC is taken off" /></label>
+          </div>
+        </Modal>
+      )}
+      {/* 417 (CREATE-14; the Owner, Q4 = A): a short reason, kept in the history. */}
+      {deleteFor && (
+        <Modal title={`Delete invoice ${deleteFor.invoice_no}`} maxWidth={420} confirmClose={!!deleteReason.trim()} onClose={closeDelete}
+          footer={<>
+            <button className="btn btn-secondary" onClick={closeDelete}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => void handleDelete()} disabled={deleteBusy || deleteCheck !== 'ok' || !deleteReason.trim()}
+              title={deleteCheck === 'checking' ? 'Checking this invoice…' : undefined}>
+              <Trash2 size={13} /> {deleteBusy ? 'Deleting…' : 'Delete invoice'}</button>
+          </>}>
+          <div className="form-grid">
+            {deleteErr && <div className="alert alert-danger" role="alert" style={{ fontSize: 12.5 }}>{deleteErr}</div>}
+            <p style={{ margin: 0 }}>Only a draft or unpaid invoice can be deleted. Anything else is undone with Refund / Cancel.</p>
+            <label>Reason for deleting *
+              <input value={deleteReason} maxLength={300} autoFocus aria-required
+                onChange={e => { setDeleteReason(e.target.value); if (deleteErr && deleteCheck === 'ok') setDeleteErr(null); }}
+                placeholder="e.g. Made twice by mistake" /></label>
+            <small style={{ color: 'var(--text-muted)' }}>Kept in the invoice history.</small>
+          </div>
+        </Modal>
       )}
       {focLine && (
         <Modal title="Make line FOC" maxWidth={420} onClose={() => setFocLine(null)}
@@ -5033,8 +5298,8 @@ const InvoicesPage: React.FC = () => {
               </select>
             </div>
             <div>
-              <label>Note</label>
-              <input value={focNote} onChange={e => setFocNote(e.target.value)} placeholder="Optional unless the reason requires it" />
+              <label htmlFor="foc-note">Note (internal, not printed)</label>
+              <input id="foc-note" value={focNote} onChange={e => setFocNote(e.target.value)} placeholder="Optional unless the reason requires it" />
             </div>
           </div>
         </Modal>

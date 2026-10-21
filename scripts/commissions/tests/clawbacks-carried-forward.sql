@@ -27,7 +27,8 @@
 --   psql -X -v ON_ERROR_STOP=1 -v prelude=/path/to/prod_prelude.sql -f ...
 -- pg_cron installs only in the database cron.database_name names; elsewhere
 -- a stand-in for cron.schedule and cron.job is created (and rolled back), so
--- 410's nightly-job step can run. Every name, phone and amount is invented.
+-- 410's nightly-job step can run. Every name and amount is invented; the
+-- phones are numbers kept for fiction (ACMA).
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -114,11 +115,12 @@ begin
   insert into fx values ('store', v);
   insert into public.payment_methods(name) values ('T410 Cash') returning id into v;
   insert into fx values ('cash', v);
-  insert into public.customers(full_name, phone) values ('T410 Buyer', '+6591400100') returning id into v;
+  insert into public.customers(full_name, phone) values ('T410 Buyer', '+61491576398') returning id into v;
   insert into fx values ('buyer', v);
   foreach k in array array['r1','r2','r3','r4','r5','r6','r7'] loop
     n := n + 1;
-    insert into public.customers(full_name, phone) values ('T410 Affiliate ' || upper(k), '+65914001' || lpad((10 + n)::text, 2, '0'))
+    insert into public.customers(full_name, phone) values ('T410 Affiliate ' || upper(k), (array['+61491577426', '+61491577644', '+61491578148', '+61491578888',
+                  '+61491578957', '+61491579212', '+61491579455'])[n])
       returning id into v;
     insert into fx values (k, v);
     insert into public.customer_affiliates(customer_id, store_id, status, activated_at)
@@ -484,7 +486,7 @@ begin
   perform public.set_product_prices(pg_temp.fx('store'), v, 100, 100, 'available');
   foreach k in array array['r11','r13','r14'] loop
     n := n + 1;
-    insert into public.customers(full_name, phone) values ('T410 Affiliate ' || upper(k), '+65914001' || n::text)
+    insert into public.customers(full_name, phone) values ('T410 Affiliate ' || upper(k), (array['+61491579760', '+61491570006', '+61491570156'])[n - 30])
       returning id into v;
     insert into fx values (k, v);
     insert into public.customer_affiliates(customer_id, store_id, status, activated_at)
@@ -575,7 +577,7 @@ do $$
 declare v uuid; n_today int;
 begin
   perform pg_temp.as_user('owner');
-  insert into public.customers(full_name, phone) values ('T410 Affiliate R12', '+6591400140') returning id into v;
+  insert into public.customers(full_name, phone) values ('T410 Affiliate R12', '+61491576801') returning id into v;
   insert into fx values ('r12', v);
   insert into public.customer_affiliates(customer_id, store_id, status, activated_at) values (v, pg_temp.fx('store'), 'active', now());
   insert into public.invoices(invoice_no, store_id, customer_id, created_by, status)

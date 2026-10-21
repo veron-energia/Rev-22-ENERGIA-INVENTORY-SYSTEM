@@ -22,8 +22,9 @@
 -- installs production's payment, refund and cancellation functions, run right
 -- after the begin below:
 --   psql -v ON_ERROR_STOP=1 -v prelude=/path/to/prod_prelude.sql -f ...
--- Every name, phone, number and amount here is invented, and every date is in
--- 2019 so no other row of a shared database falls between them.
+-- Every name, number and amount here is invented (the phones are numbers kept
+-- for fiction, ACMA), and every date is in 2019 so no other row of a shared
+-- database falls between them.
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -33,18 +34,19 @@ set local lock_timeout = '10s';
 
 -- The flows below are driven through production's functions as 411 meets them
 -- (9 Oct 2026, after 408-410: refund_invoice_recorded at 409's AFTER md5 and
--- cancel_invoice_recorded at 410's).
+-- cancel_invoice_recorded at 410's), or as 417 leaves them (its AFTER md5s:
+-- the money and the events these flows check are the same).
 do $$
 declare r record;
 begin
   for r in select * from (values
-    ('refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)', 'b0a99345c0f2e635391ac1c251634d95'),
-    ('cancel_invoice_recorded(uuid,text,uuid)', 'e8ce9cc4f62896bff144893fdc42225d'),
+    ('refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)', 'b0a99345c0f2e635391ac1c251634d95,e6f6c3cbf1bda3574d748bde2db5a759'),
+    ('cancel_invoice_recorded(uuid,text,uuid)', 'e8ce9cc4f62896bff144893fdc42225d,de52d9dbaef8ab15163bef35cb9d733d'),
     ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '63efea7ed4721721b598f2e1237b8f6c'),
     ('remove_invoice_payment(uuid,text,uuid)', '29abf78aed704abb31b3faefd4153a28'),
     ('record_invoice_payment(uuid,jsonb,uuid)', '95a02a1685af524ecf0201b4ed7f9a67')) x(fn, md5)
   loop
-    if md5(pg_get_functiondef(('public.' || r.fn)::regprocedure)) <> r.md5 then
+    if md5(pg_get_functiondef(('public.' || r.fn)::regprocedure)) <> all (string_to_array(r.md5, ',')) then
       raise exception 'public.% is not production''s version: run with -v prelude=... (see the header)', r.fn; end if;
   end loop;
 end $$;
@@ -150,8 +152,8 @@ begin
   insert into public.stores(name, code, country_code) values ('T411 Store B', 'T411B', 'SG') returning id into sb;
   insert into public.user_store_assignments(user_id, store_id) values (m, sa), (s, sa), (im, sa), (im, sb), (pm_, sa);
   insert into public.customers(full_name, phone, email, address)
-    values ('T411 Tan Mei', '+6591400111', 't411-mei@sig.invalid', '1 Fixture Road') returning id into c1;
-  insert into public.customers(full_name, phone) values ('T411 Lim Ah Kow', '+6591400112') returning id into c2;
+    values ('T411 Tan Mei', '+61491578148', 't411-mei@sig.invalid', '1 Fixture Road') returning id into c1;
+  insert into public.customers(full_name, phone) values ('T411 Lim Ah Kow', '+61491578888') returning id into c2;
   insert into public.payment_methods(name, is_active) values ('T411 Cash', true) returning id into cash;
   insert into public.payment_methods(name, is_active) values ('T411 Card', true) returning id into card;
   insert into public.payment_methods(name, is_active, is_wallet_credit, wallet_category)

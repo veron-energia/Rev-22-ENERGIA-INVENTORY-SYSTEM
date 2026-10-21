@@ -78,10 +78,13 @@ const mock = `export const supabase = (() => {
   function from(table) {
     let rows = [...(db()[table] || [])], one = false;
     if (table === 'invoice_payments') { const ms = db().payment_methods || []; rows = rows.map(p => ({ ...p, payment_methods: { name: ms.find(m => m.id === p.payment_method_id)?.name ?? null } })); }
+    // window.__failPaymentMethods: the list's payment-method read fails (AFTER-6).
+    const failMethods = table === 'invoice_payments' && !!window.__failPaymentMethods;
     const q = new Proxy({}, { get(_, key) {
       if (key === 'then') return (ok, bad) => Promise.resolve().then(() => {
         calls.push({ name: 'from:' + table, at: Date.now() });
         if (window.__failInvoiceReload && table === 'invoices' && one) return err('Network error while reloading the invoice');
+        if (failMethods && !one) return err('Payment methods unavailable (test)');
         return { data: one ? (rows[0] || null) : rows, error: null };
       }).then(async r => { if (window.__detailDelay && table === 'invoices' && one) await sleep(window.__detailDelay); return r; }).then(ok, bad);
       return (...a) => { if (key === 'eq') rows = rows.filter(r => r[a[0]] === a[1]); if (key === 'in') rows = rows.filter(r => a[1].includes(r[a[0]]));
@@ -150,7 +153,10 @@ const mock = `export const supabase = (() => {
           created_at: new Date().toISOString(), business_date: args.p_header?.business_date || '2026-09-02', created_by: 'owner', edit_count: 0, is_active: true, deleted_at: null, notes: args.p_header?.notes || null });
         t.invoice_items.push({ id: 'item-' + id, invoice_id: id, line_kind: 'product', product_id: 'socks', quantity: 1, unit_price: 100, line_total: 100, topup_amount: 0, foc_quantity: 0 });
         save(t); return { data: id, error: null }; }
-      case 'delete_invoice': touch(args.p_invoice_id, { deleted_at: new Date().toISOString() }); return { data: null, error: null };
+      // 417: a delete needs a short reason (the Owner, Q4 = A).
+      case 'delete_invoice':
+        if (!String(args.p_reason ?? '').trim()) return { data: null, error: { message: 'Give a short reason for deleting this invoice. It is kept in the history.' } };
+        touch(args.p_invoice_id, { deleted_at: new Date().toISOString() }); return { data: null, error: null };
       case 'correct_invoice_payment': { const pay = t.invoice_payments.find(x => x.id === args.p_payment_id); const i = find(pay.invoice_id);
         const p = Number(i.paid_amount) - Number(pay.amount) + Number(args.p_amount);
         t.invoice_payments = t.invoice_payments.map(x => x.id === pay.id ? { ...x, amount: Number(args.p_amount), payment_method_id: args.p_method_id, effective_at: args.p_date + 'T04:00:00Z' } : x);
@@ -732,12 +738,17 @@ try {
       await waitBadge(page, 'INV-0007', 'Paid');
       ok('reopening shows the invoice as Paid again in the list', true);
       await closeAll(page);
-      // Delete an unpaid invoice from the row.
+      // Delete an unpaid invoice from the row, with the short reason 417 needs.
       page.on('dialog', d => d.accept());
       const countBefore = (await page.locator('.invoice-paging-count').textContent()).trim();
       await row(page, 'INV-0003').locator('.btn-danger').click();
+      const deleteButton = page.getByRole('button', { name: 'Delete invoice', exact: true });
+      ok('Delete waits for a reason', await deleteButton.isDisabled() && await rpcCalls(page, 'delete_invoice') === 0);
+      await page.getByLabel('Reason for deleting *').fill('Made twice by mistake');
+      await deleteButton.click();
       await waitGone(page, 'INV-0003');
       ok('a deleted invoice leaves the list and the count', (await page.locator('.invoice-paging-count').textContent()).trim() !== countBefore);
+      ok('the reason goes with it', await page.evaluate(() => window.__calls.find(c => c.name === 'delete_invoice')?.args.p_reason) === 'Made twice by mistake');
       // Affiliate on an unpaid invoice.
       const before = await listCalls(page);
       await row(page, 'INV-0002').getByRole('button', { name: 'View', exact: true }).click();
@@ -746,6 +757,29 @@ try {
       await page.locator('div', { hasText: /^Ben Buyer$/ }).last().click({ force: true });
       await page.waitForFunction(n => window.__calls.filter(c => c.name === 'invoice_list_page').length > n, before);
       ok('an affiliate change refreshes the list', await rpcCalls(page, 'set_invoice_affiliate') === 1);
+      await closeAll(page);
+      // The list's rows do not say an invoice is an exchange: Delete reads it
+      // first, and an exchange is undone with Refund / Cancel instead.
+      await page.evaluate(() => { const t = JSON.parse(localStorage.getItem('__db')); t.invoices = t.invoices.map(i => i.invoice_no === 'INV-0002' ? { ...i, is_exchange: true } : i); localStorage.setItem('__db', JSON.stringify(t)); });
+      await row(page, 'INV-0002').locator('.btn-danger').click();
+      await page.locator('.modal .alert-danger').filter({ hasText: 'Top-up and exchange invoices are undone with Refund / Cancel, not deleted.' }).waitFor();
+      await page.getByLabel('Reason for deleting *').fill('Made twice by mistake');
+      ok('an exchange invoice is not deleted from the list: the dialog says why and Delete stays off',
+        await page.getByRole('button', { name: 'Delete invoice', exact: true }).isDisabled() && await rpcCalls(page, 'delete_invoice') === 1);
+      await page.locator('.modal-footer').getByRole('button', { name: 'Cancel', exact: true }).click();
+      // AFTER-6: a payment-method read that fails says so on the row, not "—".
+      await page.evaluate(() => { window.__failPaymentMethods = true; });
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await page.getByTestId('invoice-row-payments-unread').first().waitFor();
+      // A row read before keeps what it showed; one with nothing to show says
+      // Not read, never "—" as if it had no payment.
+      ok('payment methods that could not be read show as Not read, never as no payment',
+        await row(page, 'INV-0002').getByTestId('invoice-row-payments-unread').count() === 1
+          && (await page.locator('tbody').innerText()).includes('Cash'));
+      await page.evaluate(() => { window.__failPaymentMethods = false; });
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await page.waitForFunction(() => !document.querySelector('[data-testid="invoice-row-payments-unread"]'));
+      ok('and read on the next refresh, the row shows its payments again', (await row(page, 'INV-0002').innerText()).includes('—'));
       await page.close();
     }
 

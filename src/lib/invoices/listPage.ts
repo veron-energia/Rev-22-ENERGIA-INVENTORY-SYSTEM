@@ -84,6 +84,55 @@ async function fetchInvoiceWindow(
   };
 }
 
+/** Invoices per payment-method read: well under the API's 1,000-row cap at
+ *  about 1.1 payments an invoice. */
+const METHOD_BATCH = 200;
+
+/**
+ * The payment methods of these invoices, by invoice, each method once ("Cash",
+ * not "Cash, Cash"), read in batches (B16, AFTER-6). `failed` lists the
+ * invoices whose batch could not be read, and `error` says why: their names
+ * are missing, not empty.
+ */
+export async function fetchPaymentMethodNames(ids: string[]): Promise<{
+  names: Record<string, string[]>; failed: string[]; error: string | null;
+}> {
+  const wanted = Array.from(new Set(ids.filter(Boolean)));
+  const names: Record<string, string[]> = {};
+  const failed: string[] = [];
+  let error: string | null = null;
+  for (let i = 0; i < wanted.length; i += METHOD_BATCH) {
+    const slice = wanted.slice(i, i + METHOD_BATCH);
+    const { data, error: e } = await supabase
+      .from('invoice_payments')
+      .select('invoice_id, payment_methods(name)')
+      .in('invoice_id', slice);
+    if (e) { failed.push(...slice); error = error ?? e.message; continue; }
+    for (const id of slice) names[id] = names[id] ?? [];
+    for (const row of ((data as any[]) ?? [])) {
+      const name = row.payment_methods?.name;
+      if (!name) continue;
+      const list = (names[row.invoice_id] ??= []);
+      if (!list.includes(name)) list.push(name);
+    }
+  }
+  return { names, failed, error };
+}
+
+/**
+ * Every exported row carries its own payment methods (AFTER-6). The export
+ * used to read them from the screen's state, which the export's own read had
+ * not reached yet, so most rows came out blank. A batch that could not be read
+ * stops the export rather than leave blanks that look like "no payment".
+ */
+export async function withPaymentLabels<T extends { id: string }>(rows: T[]): Promise<(T & { payment_methods_label: string })[]> {
+  const { names, failed, error } = await fetchPaymentMethodNames(rows.map(r => r.id));
+  if (failed.length) {
+    throw new Error(`The payment methods of ${failed.length} invoice${failed.length === 1 ? '' : 's'} could not be read${error ? ` (${error})` : ''}. Try the export again.`);
+  }
+  return rows.map(r => ({ ...r, payment_methods_label: (names[r.id] ?? []).join(', ') }));
+}
+
 /** Asked for per request; the database clamps this to its own maximum. */
 const EXPORT_BATCH = 200;
 /** A stop so a miscounting server cannot spin this loop forever. */

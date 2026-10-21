@@ -172,7 +172,13 @@ declare
                              -- for a named Owner or Manager (the page function
                              -- review_tiktok_settlement_without_order reaches it as the caller,
                              -- the one-off repair as a named Owner)
-                             'tiktok_settlement_review_record'];
+                             'tiktok_settlement_review_record',
+                             -- 417: closes the therapy units of one invoice line (363, rebuilt);
+                             -- called inside resolve_invoice_action_v2 and refund_invoice_recorded
+                             'close_invoice_therapy_units',
+                             -- 417: the voucher units a reopening must record before it takes
+                             -- stock; called inside reopen_invoice and its preview
+                             'invoice_voucher_stock_unrecorded'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

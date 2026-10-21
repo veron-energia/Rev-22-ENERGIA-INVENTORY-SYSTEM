@@ -19,6 +19,11 @@
 // The path logged is the one uploaded and signed, and two sends of the same
 // invoice use two names.
 //
+// B16 (AFTER-11, AFTER-M3, Q6): WhatsApp's window is opened in the click, and
+// only a window really obtained is logged 'sent'; a blocked one is 'failed'.
+// Email goes from the device's own mail app: a closed share sheet is "Not
+// sent" and logged as failed, and nothing says a PDF was attached or emailed.
+//
 // Run: node --test scripts/invoices/tests/send-log.test.mjs
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,7 +53,7 @@ const built = await build({
       contents: 'export const documentImageBlob = async () => new Blob([]);' }));
   } }],
 });
-const { sendViaWhatsAppLink, sendViaEmailAttachment } =
+const { sendViaWhatsAppLink, sendViaEmailAttachment, WHATSAPP_BLOCKED, EMAIL_SHARE_CLOSED } =
   await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 
 // ── fixture ────────────────────────────────────────────────────────────────
@@ -86,8 +91,15 @@ beforeEach(() => {
     if (url.startsWith(UPLOAD)) return uploadReply(decodeURIComponent(url.slice(UPLOAD.length)));
     return json(404, { message: `unexpected request ${url}` });
   };
+  // B16 (AFTER-11): window.open hands back a window, or null when a pop-up
+  // blocker stops it (window.blockPopups).
   globalThis.window = {
-    open: url => { events.push('chat opened'); window.opened = url; },
+    open: url => {
+      if (window.blockPopups) return null;
+      const w = fakeWindow();
+      if (url) { events.push('chat opened'); window.opened = url; }
+      return w;
+    },
     location: { set href(v) { events.push('mail opened'); window.mailto = v; } },
   };
   console.warn = (...a) => warnings.push(a.map(String).join(' '));
@@ -98,6 +110,13 @@ afterEach(() => {
   process.off('unhandledRejection', onUnhandled);
 });
 
+/** A window as window.open returns one: it records where it is sent and whether it was closed. */
+function fakeWindow() {
+  const w = { closed: false, opener: 'this page', sentTo: null, document: { title: '', body: { textContent: '' } },
+    close() { w.closed = true; events.push('window closed'); },
+    location: { set href(v) { w.sentTo = v; events.push('chat opened'); window.opened = v; } } };
+  return w;
+}
 /** The client resolves the session before it fetches, so give it a few turns. */
 async function settle() { for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 0)); }
 const logRequests = () => requests.filter(r => r.url === RPC);
@@ -197,6 +216,12 @@ test('the email link fallback logs itself too', async () => {
     p_error: 'link fallback — no server-side sender',
   });
   assert.deepEqual(events, ['mail opened', 'log requested']);
+  // B16 (AFTER-M3, Q6): it says what happened, never that a PDF was attached,
+  // and hands back the mail link so the page can offer it again.
+  assert.equal(res.reason, 'Your mail app should open with a link to the PDF; send it from there.');
+  assert.doesNotMatch(res.reason, /attached/i);
+  assert.equal(res.mailto, window.mailto);
+  assert.ok(!requests.some(r => r.url.includes('/functions/v1/')), 'no email-sending service is called (Q6)');
 });
 
 test('two sends of one invoice are filed under two names, each linked to its own file', async () => {
@@ -210,4 +235,125 @@ test('two sends of one invoice are filed under two names, each linked to its own
   const signed = requests.filter(r => r.url.startsWith(SIGN)).map(r => decodeURIComponent(r.url.slice(SIGN.length)));
   assert.deepEqual(signed, paths, 'each link is signed for the file that send uploaded');
   assert.deepEqual(logRequests().map(r => JSON.parse(r.body).p_pdf_path), paths);
+});
+
+// ── B16: a window opened in the click (AFTER-11) ───────────────────────────────
+test('a window opened in the click is sent to the chat once the link is ready, with its link back cut', async () => {
+  const w = fakeWindow();
+  const res = await sendViaWhatsAppLink(DOC, { win: w });
+  await settle();
+  assert.deepEqual(res, { ok: true });
+  assert.match(w.sentTo, /^https:\/\/wa\.me\/\d+\?text=/);
+  assert.equal(w.opener, null, 'the chat cannot reach back into this page');
+  assert.equal(w.closed, false);
+  const body = JSON.parse(logRequests()[0].body);
+  assert.equal(body.p_status, 'sent');
+  assert.equal(body.p_pdf_path, uploadedPath());
+});
+
+test('a window the browser blocked is said, logged as failed, and nothing is uploaded', async () => {
+  const res = await sendViaWhatsAppLink(DOC, { win: null });
+  await settle();
+  assert.deepEqual(res, { ok: false, reason: WHATSAPP_BLOCKED });
+  assert.equal(uploads().length, 0, 'no upload for a send that cannot open');
+  const body = JSON.parse(logRequests()[0].body);
+  assert.equal(body.p_status, 'failed');
+  assert.equal(body.p_error, 'pop-up blocked');
+  assert.ok(!events.includes('chat opened'));
+});
+
+test('without a window from the click (the Special page), a blocked window is not logged as sent', async () => {
+  window.blockPopups = true;
+  try {
+    const res = await sendViaWhatsAppLink(DOC);
+    await settle();
+    assert.deepEqual(res, { ok: false, reason: WHATSAPP_BLOCKED });
+    const body = JSON.parse(logRequests()[0].body);
+    assert.equal(body.p_status, 'failed');
+    assert.equal(body.p_error, 'pop-up blocked');
+    assert.equal(body.p_pdf_path, uploadedPath(), 'the PDF was uploaded, so its path is kept');
+  } finally { window.blockPopups = false; }
+});
+
+test('a failed upload closes the window opened for it', async () => {
+  uploadReply = () => json(400, { statusCode: '400', error: 'Bad Request', message: 'upload refused (test)' });
+  const w = fakeWindow();
+  const res = await sendViaWhatsAppLink(DOC, { win: w });
+  await settle();
+  assert.equal(res.ok, false);
+  assert.equal(w.closed, true);
+  assert.equal(w.sentTo, null);
+  assert.equal(JSON.parse(logRequests()[0].body).p_status, 'failed');
+});
+
+test('a window closed before the link was ready is not reported as sent', async () => {
+  const w = fakeWindow(); w.closed = true;
+  const res = await sendViaWhatsAppLink(DOC, { win: w });
+  await settle();
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /closed before the link was ready/);
+  assert.equal(JSON.parse(logRequests()[0].body).p_error, 'window closed');
+});
+
+// ── B16: email from this device's mail app (AFTER-M3, Q6) ─────────────────────
+/** A phone: it can share files. `share` is the test's. */
+function withShareSheet(share, clipboard = async () => {}) {
+  const before = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, writable: true,
+    value: { canShare: () => true, share, clipboard: { writeText: clipboard } } });
+  return () => { if (before) Object.defineProperty(globalThis, 'navigator', before); else delete globalThis.navigator; };
+}
+
+test('a share sheet closed without choosing an app is "Not sent", logged as failed (cancelled)', async () => {
+  const restore = withShareSheet(async () => { const e = new Error('closed'); e.name = 'AbortError'; throw e; });
+  try {
+    const res = await sendViaEmailAttachment(DOC);
+    await settle();
+    assert.deepEqual(res, { ok: false, reason: EMAIL_SHARE_CLOSED });
+    const body = JSON.parse(logRequests()[0].body);
+    assert.equal(body.p_channel, 'email');
+    assert.equal(body.p_status, 'failed');
+    assert.equal(body.p_error, 'cancelled');
+    assert.equal(uploads().length, 0, 'nothing is uploaded for a shared file');
+  } finally { restore(); }
+});
+
+test('the share sheet opens before anything else is awaited, and its result never says "attached"', async () => {
+  let release; const clipboardDone = new Promise(r => { release = r; });
+  const order = [];
+  const restore = withShareSheet(async (data) => { order.push('share'); assert.equal(data.files.length, 1); },
+    async () => { order.push('clipboard'); await clipboardDone; });
+  try {
+    const pending = sendViaEmailAttachment(DOC);
+    await settle();
+    assert.ok(order.includes('share'), 'the share started while the copy of the address was still pending');
+    release();
+    const res = await pending;
+    assert.equal(res.ok, true);
+    assert.equal(res.outcome, 'shared');
+    assert.match(res.reason, /went to the app you chose/);
+    assert.doesNotMatch(res.reason, /attached/i);
+    await settle();
+    assert.equal(JSON.parse(logRequests()[0].body).p_status, 'sent');
+  } finally { restore(); }
+});
+
+test('a share the browser refuses for want of a tap asks for one, logs nothing, and works from that tap', async () => {
+  let tries = 0;
+  const restore = withShareSheet(async () => {
+    tries++;
+    if (tries === 1) { const e = new Error('needs a tap'); e.name = 'NotAllowedError'; throw e; }
+  });
+  try {
+    const first = await sendViaEmailAttachment(DOC);
+    await settle();
+    assert.equal(first.ok, false);
+    assert.equal(typeof first.shareAgain, 'function');
+    assert.equal(logRequests().length, 0, 'nothing was shown, so nothing is logged');
+    const again = await first.shareAgain();
+    await settle();
+    assert.equal(again.ok, true);
+    assert.equal(again.outcome, 'shared');
+    assert.equal(JSON.parse(logRequests()[0].body).p_status, 'sent');
+  } finally { restore(); }
 });

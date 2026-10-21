@@ -36,9 +36,12 @@ test('nothing to say when the correction left therapy alone', () => {
 
 test('the form shows it after a saved correction, and only then', () => {
   const save = page.indexOf("await supabase.rpc('correct_invoice'");
-  const set = page.indexOf('setTherapyNote(correctionTherapyNote((data as any)?.therapy))');
+  // 416 joined the vouchers note to it (correctionVoucherNote), so the
+  // therapy note is one of the notes set from the result.
+  const set = page.indexOf('correctionTherapyNote((data as any)?.therapy)');
   assert.ok(save > 0 && set > save, 'the note must be set from the correction result');
-  assert.match(page.slice(set - 60, set), /if \(editingInvoiceId\) $/, 'only a correction sets the note');
+  assert.match(page.slice(set - 100, set), /if \(editingInvoiceId\) \{\s*const notes = \[$/, 'only a correction sets the note');
+  assert.match(page.slice(set, set + 200), /setTherapyNote\(notes\.length \? notes\.join\(' '\) : null\)/);
   // after the error branch has returned
   assert.ok(page.lastIndexOf('if (error) {', set) > save, 'the note must come after the error check');
   assert.match(page, /data-testid="correction-therapy-note"[\s\S]{0,200}\{therapyNote\}[\s\S]{0,200}setTherapyNote\(null\)/,

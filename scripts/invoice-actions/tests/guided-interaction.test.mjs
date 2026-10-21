@@ -37,11 +37,22 @@ const stub = {
   waiting: {},
   rpc: (name, args) => {
     calls.push({ name, args });
-    if (name === 'invoice_action_plan') return Promise.resolve({ data: planNow(args), error: null });
+    if (name === 'invoice_action_plan') {
+      // 417: a plan that cannot be worked out (AFTER-15).
+      if (stub.planError && stub.planError(args)) return Promise.resolve({ data: null, error: { message: stub.planError(args) } });
+      return Promise.resolve({ data: planNow(args), error: null });
+    }
     if (name === 'invoice_action_request_detail') return Promise.resolve({ data: stub.detail, error: null });
-    if (name === 'invoice_rentals_awaiting_return') return Promise.resolve({ data: [], error: null });
-    if (name === 'request_invoice_action_v2') return Promise.resolve({ data: { request_id: 'REQ-1' }, error: null });
-    if (name === 'resolve_invoice_action_v2') return Promise.resolve({ data: stub.resolveResult, error: null });
+    if (name === 'invoice_rentals_awaiting_return') return Promise.resolve({ data: stub.awaiting ?? [], error: null });
+    if (name === 'invoice_request_status') return Promise.resolve({ data: stub.requestStatus ?? null, error: null });
+    if (name === 'receive_returned_rental') return Promise.resolve({ data: stub.receiveResult ?? { returned_quantity: 1, location_name: 'Fixture Store' }, error: null });
+    if (name === 'request_invoice_action_v2') return Promise.resolve({ data: { request_id: stub.nextRequest ?? 'REQ-1' }, error: null });
+    if (name === 'resolve_invoice_action_v2') {
+      // 417: approvals that fail, one after another, then the result.
+      if (args.p_approve && stub.resolveErrors?.length) return Promise.resolve({ data: null, error: { message: stub.resolveErrors.shift() } });
+      if (!args.p_approve && stub.rejectResult) return Promise.resolve({ data: stub.rejectResult, error: null });
+      return Promise.resolve({ data: stub.resolveResult, error: null });
+    }
     return Promise.resolve({ data: null, error: null });
   },
   resolveResult: null,
@@ -220,6 +231,7 @@ await click(byText('button', 'Cancel invoice'));
 await type(document.querySelector('.invoice-guided-why textarea'), 'Customer pulled out');
 await click(byText('button', 'Continue'));
 check('offers the money-actually-returned choice', text().includes('has actually gone back to the customer now'));
+check('a cancellation with no rental says nothing about rented items', !text().includes('A rented item still with the customer'));
 check('and defaults to NOT claiming the money moved',
   document.querySelector('.invoice-guided-refunddue input').checked === false);
 check('cancellation without money uses a cancellation label', !!byText('button', 'Confirm cancellation'));
@@ -554,6 +566,253 @@ check('money held but nothing refundable: still only cancellation, and the messa
   byText('button', 'Full refund')?.disabled === true && byText('button', 'Partial refund')?.disabled === true
   && text().includes('No item on this invoice can be refunded, so it can only be cancelled. It holds S$1000.00 of payments.')
   && !text().includes('Nothing has been paid'));
+
+// ---------------------------------------------------------------------
+// 417 (AFTER-15): a plan that cannot be worked out keeps the step and says
+// why; no earlier plan is reviewed under the new choice.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action });
+stub.planError = args => args.p_action === 'cancel' ? 'Fixture: the plan could not be worked out' : null;
+await render({ canApprove: true });
+await click(byText('button', 'Cancel invoice'));
+check('a failed plan keeps the action step', text().includes('Partial refund') && !text().includes('What happened, in a sentence'));
+check('and shows why', text().includes('Fixture: the plan could not be worked out'));
+await click(byText('button', 'Partial refund'));
+await type(document.querySelector('.invoice-guided-lines input'), '1');
+stub.planError = args => args.p_action === 'refund_partial' ? 'Fixture: partial plan refused' : null;
+await click(byText('button', 'Continue'));
+check('a failed partial plan keeps the items step', text().includes('Which items are coming back?') && text().includes('Fixture: partial plan refused'));
+check('and the items are still listed from the full plan', !!document.querySelector('.invoice-guided-lines input'));
+stub.planError = null;
+
+// ---------------------------------------------------------------------
+// 417 (AFTER-M2): an approval that failed, then a different choice. The
+// request this window raised is withdrawn first, with a reason, and the new
+// one goes under a new request ID. The label and the refund tick follow the
+// plan on screen.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = args => args.p_action === 'cancel'
+  ? basePlan({ action: 'cancel', refund_amount: 0, refund_due: 200, plan_hash: 'HASH-C',
+      effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [] } })
+  : basePlan({ action: args.p_action });
+stub.resolveErrors = ['Fixture: approval refused'];
+stub.rejectResult = { status: 'rejected' };
+stub.resolveResult = { status: 'approved', refund_recorded: false, refunded_amount: 0, cancellation: { success: true }, refund: null,
+  goods_returned: 0, refund_still_due: 200 };
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Customer changed their mind');
+await click(byText('button', 'Continue'));
+await click(byText('button', 'Confirm S$200.00 refund'));
+check('a failed approval is shown', text().includes('Fixture: approval refused'));
+const firstReq = calls.find(c => c.name === 'request_invoice_action_v2');
+await click(byText('button', 'Back'));
+await click(byText('button', 'Back'));
+await click(byText('button', 'Cancel invoice'));
+await click(byText('button', 'Continue'));
+check('the label follows the plan on screen', !!byText('button', 'Confirm cancellation'));
+check('the refund tick is offered for the cancellation', !!document.querySelector('.invoice-guided-refunddue input'));
+stub.nextRequest = 'REQ-2';
+await click(byText('button', 'Confirm cancellation'));
+const rejects = calls.filter(c => c.name === 'resolve_invoice_action_v2' && c.args.p_approve === false);
+check('the first request is withdrawn before the new one is raised',
+  rejects.length === 1 && rejects[0].args.p_request_id === 'REQ-1' && /Replaced by a different choice/.test(rejects[0].args.p_note),
+  JSON.stringify(rejects));
+const reqs = calls.filter(c => c.name === 'request_invoice_action_v2');
+check('the new request goes under a new request ID',
+  reqs.length === 2 && reqs[1].args.p_action === 'cancel' && reqs[1].args.p_request_id !== firstReq.args.p_request_id);
+check('and its approval is of the new request', calls.filter(c => c.name === 'resolve_invoice_action_v2' && c.args.p_approve).at(-1)?.args.p_request_id === 'REQ-2');
+check('the cancellation is reported', text().includes('Invoice cancelled.'));
+stub.nextRequest = null; stub.rejectResult = null;
+
+// The same choice again is the same request: nothing is withdrawn.
+calls.length = 0;
+stub.resolveErrors = ['Fixture: approval refused'];
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 200, cancellation: null, refund: {}, goods_returned: 0, refund_still_due: 0 };
+planNow = args => basePlan({ action: args.p_action });
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'All back');
+await click(byText('button', 'Continue'));
+await click(byText('button', 'Confirm S$200.00 refund'));
+await click(byText('button', 'Confirm S$200.00 refund'));
+const sameReqs = calls.filter(c => c.name === 'request_invoice_action_v2');
+check('a retry of the same choice sends the same request ID and withdraws nothing',
+  sameReqs.length === 2 && sameReqs[0].args.p_request_id === sameReqs[1].args.p_request_id
+  && !calls.some(c => c.name === 'resolve_invoice_action_v2' && c.args.p_approve === false));
+
+// A revised plan for another action is not shown under this choice.
+calls.length = 0;
+stub.resolveErrors = [];
+stub.resolveResult = { confirmation_required: true, revised_plan: basePlan({ action: 'cancel', refund_amount: 0, refund_due: 200 }) };
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'All back');
+await click(byText('button', 'Continue'));
+await click(byText('button', 'Confirm S$200.00 refund'));
+check('a revised plan for another action stops and says so',
+  text().includes('is for a cancellation, not a full refund') && !!byText('button', 'Confirm S$200.00 refund'));
+stub.resolveResult = null;
+
+// ---------------------------------------------------------------------
+// 417 (AFTER-M2, AFTER-14): a request already waiting on the invoice.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action });
+stub.requestStatus = { invoice_id: 'INV-1', pending: true, can_review: false,
+  request: { request_id: 'REQ-W', status: 'pending', action: 'refund_full', requested_by: 'Fixture Staff',
+             requested_at: '2026-10-08T16:30:00Z' } };
+await render({ canApprove: false });
+check('staff are told a request is waiting, since when and by whom',
+  text().includes('A full refund request for this invoice is already waiting for approval since 9 Oct 2026 (raised by Fixture Staff)'));
+check('and cannot raise a second', ['Cancel invoice', 'Full refund', 'Partial refund'].every(l => byText('button', l)?.disabled));
+stub.detail = { request_id: 'REQ-W', status: 'pending', action: 'refund_full', reason: 'Customer returned it',
+  requested_by: 'Fixture Staff', store: 'Adelphi', legacy: false, invoice_status: 'paid', changed: false,
+  requested_lines: [], requested_amount: 200, requested_plan: basePlan(), current_plan: basePlan() };
+await render({ canApprove: true });
+check('an Owner or Manager opening it reviews the waiting request',
+  calls.some(c => c.name === 'invoice_action_request_detail' && c.args.p_request_id === 'REQ-W')
+  && text().includes('asked to') && text().includes('Customer returned it'));
+check('the requester\'s reason is shown, not put in the approver\'s note',
+  Array.from(document.querySelectorAll('textarea')).every(t => t.value === ''));
+await click(byText('button', 'Reject'));
+check('a rejection needs the approver\'s own reason', byText('button', 'Confirm rejection')?.disabled === true);
+await type(document.querySelector('.invoice-guided-why textarea'), 'Outside the refund terms');
+stub.rejectResult = { request_id: 'REQ-W', status: 'rejected', invoice_status_restored: null };
+await click(byText('button', 'Confirm rejection'));
+const rej = calls.filter(c => c.name === 'resolve_invoice_action_v2').at(-1);
+check('and sends that reason', rej?.args.p_approve === false && rej?.args.p_note === 'Outside the refund terms' && rej?.args.p_request_id === 'REQ-W');
+check('saying what the invoice will show', text().includes('The invoice shows it was rejected, with your reason'));
+stub.rejectResult = null;
+
+// Approving a request with no note of the approver's own sends none.
+calls.length = 0;
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 200, cancellation: null, refund: {}, goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true, requestId: 'REQ-W' });
+await click(byText('button', 'Confirm S$200.00 refund'));
+check('an approval without a note of the approver\'s own sends none (the request\'s reason is kept)',
+  calls.find(c => c.name === 'resolve_invoice_action_v2')?.args.p_note === null);
+stub.requestStatus = null; stub.detail = null; stub.resolveResult = null;
+
+// ---------------------------------------------------------------------
+// 417 (AFTER-M1): a credit package's reward entitlements are shown with the
+// credits, and their overrides take a reason, not an amount.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action, refund_amount: 4000,
+  lines: [{ invoice_item_id: 'LC', name: 'Fixture Package', line_kind: 'credit_package', quantity: 1, selected_quantity: 1, amount: 4000 }],
+  stock: [], overrides_required: [
+    { code: 'reward_withdrawal', message: 'Reward entitlements from this credit package that were not claimed yet (LEG-9000001, LEG-9000002) are withdrawn with this refund.' },
+    { code: 'reward_consumed_kept', message: 'Reward entitlements from this credit package were already activated or claimed (LEG-9000003). They stay with the customer and keep their history.' }],
+  effects: { money_returned: { total: 4000, destinations: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 4000 }] },
+             benefits: [], stock_returned: [], overrides: [],
+             rewards: { withdrawn: ['LEG-9000001', 'LEG-9000002'], kept: ['LEG-9000003'] } } });
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 4000, cancellation: null, refund: {}, goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Package returned');
+await click(byText('button', 'Continue'));
+check('the review names the reward entitlements withdrawn and kept',
+  text().includes('Reward entitlements withdrawn: LEG-9000001, LEG-9000002') && text().includes('LEG-9000003'));
+check('each takes a reason and no amount',
+  !!field('Reason for override: reward_withdrawal') && !!field('Reason for override: reward_consumed_kept')
+  && !field('Amount for override: reward_withdrawal'));
+await type(field('Reason for override: reward_withdrawal'), 'Package refunded');
+await type(field('Reason for override: reward_consumed_kept'), 'The used one stays');
+await click(byText('button', 'Confirm S$4000.00 refund'));
+check('both reasons go with the approval',
+  JSON.stringify(calls.find(c => c.name === 'resolve_invoice_action_v2')?.args.p_overrides) === JSON.stringify([
+    { code: 'reward_withdrawal', reason: 'Package refunded' }, { code: 'reward_consumed_kept', reason: 'The used one stays' }]));
+
+// ---------------------------------------------------------------------
+// 417 (the Owner's Q2): cancelling a sale the customer already used part of.
+// The Owner or Manager states how much is owed back.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = args => basePlan({ action: 'cancel', refund_amount: 0, refund_due: 300, net_held: 500,
+  lines: [{ invoice_item_id: 'LS', name: 'Fixture Sessions', line_kind: 'therapy', quantity: 1, selected_quantity: 1, amount: 300 }],
+  stock: [], sources: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 300 }],
+  overrides_required: [{ code: 'session_used', message: 'Sessions from this purchase have been delivered.' }],
+  refund_owed: { needed: true, held: 500, used: ['session_used'], message: 'Part of what this invoice sold has been used, so not all of the S$500.00 it holds is owed back. State how much is owed back to the customer. The rest is kept for what was used.' },
+  effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [] } });
+stub.resolveResult = { status: 'approved', refund_recorded: false, refunded_amount: 0, cancellation: { success: true }, refund: null,
+  goods_returned: 0, refund_still_due: 250, refund_owed: 250 };
+await render({ canApprove: true });
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Customer stopped after two sessions');
+await click(byText('button', 'Continue'));
+const owed = () => document.querySelector('input[aria-label="Amount owed back to the customer"]');
+check('the amount owed back is asked for, starting at the reviewed figure', owed() && Number(owed().value) === 300, owed()?.value);
+check('saying why not all the money is owed back', text().includes('not all of the S$500.00 it holds is owed back'));
+await type(field('Reason for override: session_used'), 'Two sessions given');
+await type(owed(), '600');
+check('never more than the invoice holds', byText('button', 'Confirm cancellation')?.disabled === true && text().includes('more than the S$500.00'));
+await type(owed(), '250');
+check('the refund due shows the amount stated', text().includes('S$250.00'));
+await click(byText('button', 'Confirm cancellation'));
+check('the amount owed back goes with the approval',
+  JSON.stringify(calls.find(c => c.name === 'resolve_invoice_action_v2')?.args.p_overrides?.find(o => o.code === 'refund_owed'))
+    === JSON.stringify({ code: 'refund_owed', amount: 250, reason: 'Customer stopped after two sessions' }));
+check('and the follow-up names it', text().includes('S$250.00 is still due back'));
+// Ticking "the money has gone back" records the refund now: no amount owed is asked.
+await render({ canApprove: true });
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Paid back now');
+await click(byText('button', 'Continue'));
+await click(document.querySelector('.invoice-guided-refunddue input'));
+check('with the money paid back now, no amount owed is asked', !owed());
+
+// ---------------------------------------------------------------------
+// 417 (AFTER-7): a rental still with the customer after the cancellation is
+// received on the next screen, only when it is back. Nothing is chosen.
+// ---------------------------------------------------------------------
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action, refund_amount: 0, refund_due: 0, sources: [], stock: [],
+  lines: [{ invoice_item_id: 'LR', name: 'Fixture Machine Rental', line_kind: 'rental', quantity: 1, selected_quantity: 1, amount: 0 }],
+  effects: { money_returned: { total: 0, destinations: [] }, benefits: [], stock_returned: [], overrides: [] } });
+stub.awaiting = [
+  { rental_id: 'R1', rental_no: 'RNT-2026-9101', quantity: 1, item: 'Fixture Machine', invoice_item_id: 'LR', source_type: 'store', source_name: 'Fixture Store' },
+  { rental_id: 'R2', rental_no: 'RNT-2026-9102', quantity: 1, item: 'Fixture Chair', invoice_item_id: 'LR', source_type: 'warehouse', source_name: 'Main Warehouse' }];
+stub.resolveResult = { status: 'approved', refund_recorded: false, refunded_amount: 0, cancellation: { success: true }, refund: null, goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true });
+check('nothing about rentals is read before the action is approved', !calls.some(c => c.name === 'invoice_rentals_awaiting_return'));
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Customer cancelled the rental');
+await click(byText('button', 'Continue'));
+check('a cancellation with a rental line says a rented item stays out until it comes back',
+  text().includes('A rented item still with the customer stays out until it comes back'));
+await click(byText('button', 'Confirm cancellation'));
+check('after the cancellation the rentals still out are read again', calls.some(c => c.name === 'invoice_rentals_awaiting_return'));
+const outcome = no => document.querySelector(`select[aria-label="What happened to ${no}"]`);
+check('each starts as "Not back yet"', outcome('RNT-2026-9101')?.value === '' && outcome('RNT-2026-9102')?.value === '');
+check('nothing can be recorded until one is marked back', byText('button', 'Record what came back')?.disabled === true);
+await choose(outcome('RNT-2026-9101'), 'good');
+const home = document.querySelector('select[aria-label="Where RNT-2026-9101 goes back to"]');
+check('a good item goes back where it came from by default, named', home?.value === '' && home?.options[0].textContent.includes('Fixture Store'));
+await click(byText('button', 'Record what came back'));
+const recv = calls.filter(c => c.name === 'receive_returned_rental');
+check('only the item marked back is recorded, to where it came from',
+  recv.length === 1 && recv[0].args.p_rental_id === 'R1' && recv[0].args.p_warehouse_id === null && recv[0].args.p_condition === 'good'
+  && recv[0].args.p_reason === 'Customer cancelled the rental' && recv[0].args.p_request_id === 'REQ-1', JSON.stringify(recv));
+check('what happened is said', text().includes('RNT-2026-9101 is back in good condition and on sale again at Fixture Store'));
+check('the other stays listed as not back yet', !!outcome('RNT-2026-9102') && !outcome('RNT-2026-9101'));
+check('each receive choice has a row of its own, so the choice can be read',
+  !!outcome('RNT-2026-9102')?.closest('.invoice-guided-receive-row'));
+// A partial refund receives only the rentals on the lines it covered.
+calls.length = 0;
+stub.awaiting = [
+  { rental_id: 'R3', rental_no: 'RNT-2026-9103', quantity: 1, item: 'Fixture Machine', invoice_item_id: 'L-OTHER', source_type: 'store', source_name: 'Fixture Store' }];
+planNow = args => basePlan({ action: args.p_action });
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 200, cancellation: null, refund: {}, goods_returned: 0, refund_still_due: 0 };
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Corset back');
+await click(byText('button', 'Continue'));
+await click(byText('button', 'Confirm S$200.00 refund'));
+check('a refund of another line offers no rental to receive', !outcome('RNT-2026-9103'));
+stub.awaiting = null; stub.resolveResult = null;
 
 // ---------------------------------------------------------------------
 // A blocked invoice offers nothing to click.

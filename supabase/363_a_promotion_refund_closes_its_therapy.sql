@@ -1,5 +1,13 @@
 -- 363_a_promotion_refund_closes_its_therapy.sql
 --
+-- SUPERSEDED BY 417 — NEVER APPLY THIS FILE. It was never applied to
+-- production, and its guards no longer match production since 409 and 410
+-- changed resolve_invoice_action_v2, refund_invoice_recorded and
+-- cancel_invoice_recorded. 417_refund_cancel_requests_and_rental_returns.sql
+-- carries the same rules, rebuilt on the functions as they are now (keeping
+-- 410's date-aware therapy rule), with the Owner's decisions A to C confirmed
+-- on 9 Oct 2026. The file is kept as the record of the design.
+--
 -- THE GAP
 --
 --   A promotion that includes a therapy package grants purchased therapy units

@@ -21,7 +21,8 @@
 --   psql -X -v ON_ERROR_STOP=1 -v prelude=/path/to/prod_prelude.sql -f ...
 -- pg_cron installs only in the database cron.database_name names; elsewhere
 -- a stand-in for cron.schedule and cron.job is created (and rolled back).
--- Every name, phone and number is invented.
+-- Every name and number is invented; the phones are numbers kept for
+-- fiction (ACMA).
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -114,7 +115,7 @@ begin
   perform set_config('request.jwt.claim.sub', pg_temp.fx('owner')::text, true);
   insert into public.stores(name, code, country_code) values ('T410 Therapy Store', 'T410T', 'SG') returning id into v;
   insert into fx values ('store', v);
-  insert into public.customers(full_name, phone) values ('T410 Buyer', '+6591400199') returning id into v;
+  insert into public.customers(full_name, phone) values ('T410 Buyer', '+61491577426') returning id into v;
   insert into fx values ('buyer', v);
   insert into public.invoices(invoice_no, store_id, customer_id, created_by, status)
     values ('T410-THERAPY', pg_temp.fx('store'), pg_temp.fx('buyer'), pg_temp.fx('owner'), 'paid') returning id into v;
@@ -164,7 +165,7 @@ begin
   perform public.record_invoice_payment(v, jsonb_build_array(jsonb_build_object('payment_method_id', pg_temp.fx('cash'), 'amount', 50)),
                                         gen_random_uuid());
   perform pg_temp.unit('K1', 'scheduled', pg_temp.t(-3), pg_temp.t(177), pg_temp.t(300), 'unlimited', 'buyer', null, 'inv_k');
-  insert into public.customers(full_name, phone) values ('T410 Other Customer', '+6591400198') returning id into v;
+  insert into public.customers(full_name, phone) values ('T410 Other Customer', '+61491577644') returning id into v;
   insert into fx values ('other', v);
 
   -- Legacy: L1 scheduled to start three days ago; L2 active, ended yesterday;
@@ -223,7 +224,17 @@ rollback to savepoint before410;
 release savepoint before410;
 
 -- ===== 2. Apply 410 =====
+-- Once 417 is in, 410's guard no longer matches cancel_invoice_recorded (417
+-- builds on 410's version), so 410 is not run again; its daily job is
+-- scheduled here as 410 schedules it.
+-- (417 is known by the function it adds.)
+select to_regprocedure('public.invoice_voucher_stock_unrecorded(uuid,boolean)') is not null as has_417 \gset
+\if :has_417
+\echo '410 is not re-run: 417 is installed'
+select cron.schedule('therapy-status-refresh', '5 16 * * *', 'select public.run_therapy_status_refresh()');
+\else
 \ir ../../../supabase/410_clawbacks_carried_forward_and_therapy_status_refresh.sql
+\endif
 
 -- ===== 3. The rule =====
 do $$

@@ -56,6 +56,23 @@ export interface PdfDoc {
    *  "+N more"; 'terms' no lists, a few words added to the terms line. */
   collectionFit?: CollectionFit;
   footerBits?: string[];
+  /** A line under the header, e.g. "Exchange invoice: replaces items from
+   *  INV-…" (B16, AFTER-9). */
+  headerNote?: string | null;
+  /** The payments' total as printed, for the one-row summary. Worked out from
+   *  `payments` when absent. */
+  paymentsTotal?: string | null;
+  /** Set by fitAroundPayments, never by the page (B16, AFTER-8): 'list' (the
+   *  default) every payment; 'summary' one row with the count and total. */
+  paymentsFit?: 'list' | 'summary';
+  /** Set by fitAroundPayments, never by the page: the payments, the
+   *  signatures, the terms, the policy, how to pay and the footer go on a
+   *  second page (the PDF), or the image grows taller. */
+  pageBreak?: boolean;
+  /** Set by fitAroundPayments, never by the page: on a copy of two pages the
+   *  item rows stay on page 1, ending '…continued' when it is full, as before
+   *  B16. Only when even two pages cannot hold every row and the footer. */
+  rowsStayOnPageOne?: boolean;
 }
 
 const A5_W = 148.5;
@@ -123,9 +140,10 @@ export function fitAroundCollection<T>(
   return terms;
 }
 
-/** One drawing of a copy: what was drawn, how far down the page it ran, and
- *  whether the credit balance went beside the totals, where it costs no height. */
-export interface CopyDrawing<T> { out: T; endY: number; creditBeside?: boolean }
+/** One drawing of a copy: what was drawn, how far down the page it ran,
+ *  whether the credit balance went beside the totals, where it costs no height,
+ *  and whether some item rows were left off ("…continued") for want of room. */
+export interface CopyDrawing<T> { out: T; endY: number; creditBeside?: boolean; rowsCut?: boolean }
 
 /** How the credit balance came out on a copy: in full, the total alone, or left off for space. */
 export type CreditBalanceShown = 'full' | 'total' | 'none';
@@ -165,21 +183,106 @@ export function fitAroundCreditBalance<T>(
   d: PdfDoc, draw: (d: PdfDoc) => CopyDrawing<T>, footLimit: number,
   discard: (out: T) => void = () => {},
 ): T {
+  return fitCreditBalanceDrawing(d, draw, footLimit, discard).out;
+}
+
+/** fitAroundCreditBalance, keeping how far down the chosen drawing ran. */
+export function fitCreditBalanceDrawing<T>(
+  d: PdfDoc, draw: (d: PdfDoc) => CopyDrawing<T>, footLimit: number,
+  discard: (out: T) => void = () => {},
+): CopyDrawing<T> {
   const full = draw(d);
-  if (!d.creditBalance) return full.out;
-  const shown = (s: CreditBalanceShown, out: T) => { creditShown.set(d, s); return out; };
+  if (!d.creditBalance) return full;
+  const shown = (s: CreditBalanceShown, out: CopyDrawing<T>) => { creditShown.set(d, s); return out; };
   const whole: CreditBalanceShown = d.creditBalance.detail ? 'full' : 'total';
-  if (full.creditBeside || full.endY <= footLimit + 0.01) return shown(whole, full.out);
+  if (full.creditBeside || full.endY <= footLimit + 0.01) return shown(whole, full);
   const bare = draw({ ...d, creditBalance: null });
   const limit = Math.max(bare.endY, footLimit);
-  if (full.endY <= limit + 0.01) { discard(bare.out); return shown(whole, full.out); }
+  if (full.endY <= limit + 0.01) { discard(bare.out); return shown(whole, full); }
   discard(full.out);
   if (d.creditBalance.detail) {
     const totalOnly = draw({ ...d, creditBalance: { ...d.creditBalance, detail: null } });
-    if (totalOnly.endY <= limit + 0.01) { discard(bare.out); return shown('total', totalOnly.out); }
+    if (totalOnly.endY <= limit + 0.01) { discard(bare.out); return shown('total', totalOnly); }
     discard(totalOnly.out);
   }
-  return shown('none', bare.out);
+  return shown('none', bare);
+}
+
+/** The payment rows a copy draws: every payment, or (paymentsFit 'summary')
+ *  one row with how many there were and their total (B16, AFTER-8). */
+export function copyPaymentRows(d: PdfDoc): [string, string][] {
+  const list = d.payments ?? [];
+  if (d.paymentsFit !== 'summary' || list.length < 2) return list;
+  const total = d.paymentsTotal
+    ?? `S$${(list.reduce((s, [, v]) => s + Math.round((Number(String(v).replace(/[^0-9.-]/g, '')) || 0) * 100), 0) / 100).toFixed(2)}`;
+  return [[`Payments: ${list.length}; full list on the store copy`, total]];
+}
+
+/**
+ * The last resort when a copy still runs off the page after the goods and the
+ * credit balance have given way (B16, AFTER-8): the payment list shortens to
+ * one row ("Payments: 4; full list on the store copy" and their total). If
+ * even that runs off, the copy takes a second page (the PDF) for the payments,
+ * signatures, terms, policy, how to pay and the footer, with the full payment
+ * list, and shortens it there too only if that page would overflow. The image
+ * grows taller instead (`grows`), so it never needs the last step. On a second
+ * page the goods and the credit balance have room again and are fitted anew.
+ * Whatever is drawn, the store contact and company registration are on the
+ * copy. Each drawing thrown away is handed to `discard`, and how the credit
+ * balance came out is kept for the copy the page made (creditBalanceShown).
+ *
+ * A drawing that left item rows off does not fit either, even when its footer
+ * is on the page: a long invoice (promotions list what is inside them) goes on
+ * to the second page, where its rows carry on, rather than lose a row (B16,
+ * AFTER-9). Only if even two pages cannot hold every row and the footer is
+ * the copy drawn as before: the rows page 1 holds, '…continued', the totals,
+ * and the rest on page 2, so the footer stays on the copy.
+ */
+export function fitAroundPayments<T>(
+  d: PdfDoc, drawFitted: (d: PdfDoc) => CopyDrawing<T>, footLimit: number,
+  discard: (out: T) => void = () => {}, grows = false,
+): T {
+  const fits = (r: CopyDrawing<T>) => r.endY <= footLimit + 0.01 && !r.rowsCut;
+  const take = (variant: PdfDoc, r: CopyDrawing<T>) => {
+    if (variant !== d) {
+      const s = creditShown.get(variant);
+      if (s) creditShown.set(d, s); else creditShown.delete(d);
+    }
+    return r.out;
+  };
+  const first = drawFitted(d);
+  if (fits(first)) return first.out;
+  const many = (d.payments?.length ?? 0) > 1;
+  // The rows come before the payments: a shorter payment list cannot bring
+  // back a row the first drawing left off, so it is not tried then.
+  if (many && !first.rowsCut) {
+    const shortList = { ...d, paymentsFit: 'summary' as const };
+    const summary = drawFitted(shortList);
+    if (fits(summary)) { discard(first.out); return take(shortList, summary); }
+    discard(summary.out);
+  }
+  discard(first.out);
+  const onPage = (r: CopyDrawing<T>) => r.endY <= footLimit + 0.01;
+  const brokenDoc = { ...d, pageBreak: true };
+  const broken = drawFitted(brokenDoc);
+  // Rows left off even on two pages, but the footer on the page: no drawing
+  // lists more of them.
+  if (fits(broken) || grows || onPage(broken)) return take(brokenDoc, broken);
+  if (many) {
+    const bothDoc = { ...brokenDoc, paymentsFit: 'summary' as const };
+    const both = drawFitted(bothDoc);
+    if (!broken.rowsCut || onPage(both)) { discard(broken.out); return take(bothDoc, both); }
+    discard(both.out);
+  }
+  if (!broken.rowsCut) return take(brokenDoc, broken);
+  // Two pages cannot hold every row and the footer: the rows stay on page 1.
+  discard(broken.out);
+  const stayDoc = { ...brokenDoc, rowsStayOnPageOne: true };
+  const stay = drawFitted(stayDoc);
+  if (onPage(stay) || !many) return take(stayDoc, stay);
+  discard(stay.out);
+  const stayBoth = { ...stayDoc, paymentsFit: 'summary' as const };
+  return take(stayBoth, drawFitted(stayBoth));
 }
 
 /**
@@ -209,11 +312,19 @@ export function creditBesideTotals(p: {
 }
 
 export function buildDocumentPdf(d: PdfDoc): jsPDF {
-  // The goods give way first (fitAroundCollection), then the credit balance.
-  return fitAroundCreditBalance(d, dd => fitAroundCollection(dd, drawDocumentPdf, FOOT_LIMIT), FOOT_LIMIT);
+  // The goods give way first (fitAroundCollection), then the credit balance;
+  // if the copy still runs off the page, the payments shorten, then a second
+  // page is taken (fitAroundPayments).
+  return fitAroundPayments(d, dd => fitCreditBalanceDrawing(dd,
+    ddd => fitAroundCollection(ddd, drawDocumentPdf, FOOT_LIMIT), FOOT_LIMIT), FOOT_LIMIT);
 }
 
-/** One drawing of the copy, and how far down the page it ran. */
+/**
+ * One drawing of the copy, and how far down the page it ran.
+ *
+ * On a copy of two pages (pageBreak) the item rows carry on to page 2 when
+ * page 1 is full, unless rowsStayOnPageOne (fitAroundPayments).
+ */
 function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
   const doc = new jsPDF({ unit: 'mm', format: [A5_W, A5_H], orientation: 'portrait' });
   let y = M;
@@ -246,6 +357,14 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
   doc.line(M, y, RIGHT, y);
   y += 5;
 
+  // ---- A note under the header (an exchange invoice, AFTER-9) --------
+  if (d.headerNote) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); black();
+    for (const ln of doc.splitTextToSize(d.headerNote, RIGHT - M)) { doc.text(ln, M, y); y += 3.9; }
+    doc.setFont('helvetica', 'normal');
+    y += 1.5;
+  }
+
   // ---- Customer -----------------------------------------------------
   doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
   doc.text('BILL TO', M, y); y += 4;
@@ -258,27 +377,55 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
 
   // ---- Items --------------------------------------------------------
   const cQty = RIGHT - 46, cUnit = RIGHT - 24, cTot = RIGHT;
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
-  doc.text('ITEM', M, y);
-  doc.text('QTY', cQty, y, { align: 'right' });
-  doc.text('UNIT', cUnit, y, { align: 'right' });
-  doc.text('TOTAL', cTot, y, { align: 'right' });
-  y += 1.5;
-  doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.2);
-  doc.line(M, y, RIGHT, y);
-  y += 3.6;
+  /** The column heads over the item rows. */
+  const itemHeads = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
+    doc.text('ITEM', M, y);
+    doc.text('QTY', cQty, y, { align: 'right' });
+    doc.text('UNIT', cUnit, y, { align: 'right' });
+    doc.text('TOTAL', cTot, y, { align: 'right' });
+    y += 1.5;
+    doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.2);
+    doc.line(M, y, RIGHT, y);
+    y += 3.6;
+  };
+  /** The top of the second page: what it continues, and that it is the last. */
+  const secondPageHead = () => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); grey();
+    doc.text('Continued on page 2', M, y + 3);
+    doc.addPage([A5_W, A5_H], 'portrait');
+    y = M + 2;
+    doc.text(`${d.docNo} (continued)`, M, y);
+    doc.text('Page 2 of 2', RIGHT, y, { align: 'right' });
+    y += 6;
+    doc.setFontSize(10); black();
+  };
+  itemHeads();
 
+  // B16 (AFTER-9): a row's height as it is drawn, its notes at 3.4 mm each.
+  let brokeInItems = false, rowsCut = false;
   black(); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
   for (const l of d.lines) {
     const nameLines = doc.splitTextToSize(l.name, cQty - M - 3);
-    const rowH = nameLines.length * 4.2 + (l.notes?.length ?? 0) * 3 + 1.6;
+    const rowH = nameLines.length * 4.2 + (l.notes?.length ?? 0) * 3.4 + 1.6;
 
-    // Keep the signature block on the page: stop listing and summarise.
+    // Keep the signature block on the page. A copy on two pages (pageBreak)
+    // carries its rows on to the second page, under the column heads again.
+    // Only when even that is full does it stop listing and summarise.
     if (y + rowH > A5_H - 70) {
-      grey(); doc.setFontSize(9);
-      doc.text('…continued — see the full invoice in store', M, y);
-      y += 4; black(); doc.setFontSize(10);
-      break;
+      if (d.pageBreak && !d.rowsStayOnPageOne && !brokeInItems) {
+        secondPageHead();
+        itemHeads();
+        brokeInItems = true;
+        black(); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+      }
+      if (y + rowH > A5_H - 70) {
+        grey(); doc.setFontSize(9);
+        doc.text('…continued — see the full invoice in store', M, y);
+        y += 4; black(); doc.setFontSize(10);
+        rowsCut = true;
+        break;
+      }
     }
 
     doc.text(nameLines, M, y);
@@ -346,13 +493,18 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); black();
   }
 
+  // ---- A second page, when the copy runs long (fitAroundPayments) -----
+  // Taken here unless the item rows already went on to it.
+  if (d.pageBreak && !brokeInItems) secondPageHead();
+
   // ---- Payments -----------------------------------------------------
-  if (d.payments?.length) {
+  const paymentRows = copyPaymentRows(d);
+  if (paymentRows.length) {
     y += 2;
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); grey();
     doc.text('PAYMENT METHODS', M, y); y += 4;
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); black();
-    for (const [k, v] of d.payments) {
+    for (const [k, v] of paymentRows) {
       doc.text(k, M, y); doc.text(v, cTot, y, { align: 'right' }); y += 4.6;
     }
   }
@@ -439,7 +591,7 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
     }
   }
 
-  return { out: doc, endY: y, creditBeside };
+  return { out: doc, endY: y, creditBeside, rowsCut };
 }
 
 /** The finished PDF as a Blob, ready to upload or download. */

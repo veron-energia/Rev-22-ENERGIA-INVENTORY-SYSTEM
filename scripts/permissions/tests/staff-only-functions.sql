@@ -134,9 +134,9 @@ begin
                  ('staff2', st_a), ('staff2', st_b), ('inactive', st_a), ('pending', st_a),
                  ('cancelled', st_a)) x(k, st);
 
-  insert into public.customers(full_name, phone, email) values ('SOFX Customer One', '+6591400101', 'sofx-c1@sig.invalid') returning id into c1;
-  insert into public.customers(full_name, phone, email) values ('SOFX Customer Two', '+6591400102', 'sofx-c2@sig.invalid') returning id into c2;
-  insert into public.customers(full_name, phone, email) values ('SOFX Affiliate', '+6591400103', 'sofx-ca@sig.invalid') returning id into ca;
+  insert into public.customers(full_name, phone, email) values ('SOFX Customer One', '+61491578957', 'sofx-c1@sig.invalid') returning id into c1;
+  insert into public.customers(full_name, phone, email) values ('SOFX Customer Two', '+61491579212', 'sofx-c2@sig.invalid') returning id into c2;
+  insert into public.customers(full_name, phone, email) values ('SOFX Affiliate', '+61491579455', 'sofx-ca@sig.invalid') returning id into ca;
   insert into public.customer_affiliates(customer_id, status, store_id, activated_at)
     values (ca, 'active', st_a, now()) returning id into aff;
   insert into public.affiliate_accounts(auth_user_id, customer_id, affiliate_id, status)
@@ -151,7 +151,7 @@ begin
   insert into sof values ('product', prod), ('cash', cash);
 
   insert into public.health_surveys(survey_no, customer_id, full_name, phone, source, store_id, submitted_at)
-    values ('SOFX-HS-1', c1, 'SOFX Customer One', '+6591400101', 'consultant', st_a, now()) returning id into s1;
+    values ('SOFX-HS-1', c1, 'SOFX Customer One', '+61491578957', 'consultant', st_a, now()) returning id into s1;
   insert into public.consultant_notes(survey_id, customer_id, acidity_result, health_goals, created_by)
     values (s1, c1, 'green', 'SOFX goal', pg_temp.sof_id('owner'));
   insert into sof values ('survey', s1);
@@ -289,7 +289,7 @@ declare
       'create_staff_transfer_request(jsonb,text,uuid)',
       'create_transfer_request(text,text,uuid,text,uuid,jsonb,text)', 'customer_credit_balances(uuid)',
       'customer_credit_statement(uuid,date,date)', 'delete_affiliate_account_claim(uuid)',
-      'delete_customer(uuid,text,text)', 'delete_invoice(uuid)', 'delete_survey_attachment(uuid)',
+      'delete_customer(uuid,text,text)', 'delete_survey_attachment(uuid)',
       'delete_therapy_closure_date(uuid,text)', 'delete_tiktok_batch(uuid)', 'delete_tiktok_row(uuid)',
       'edit_transfer_request(uuid,integer,text,location_type,uuid,location_type,uuid,jsonb,text)',
       -- 415: event_check_in (now five arguments) and event_set_guest_cancelled
@@ -556,7 +556,7 @@ begin
     ('qualification, B',       'b',      true,  false, 'select public.legacy_qualification_diagnose(@c2@, @store_b@, null)::text'),
     ('print, A',               'a',      true,  false, 'select public.record_document_printed(''invoice'', @inv_a@)::text'),
     ('print, B',               'b',      true,  false, 'select public.record_document_printed(''invoice'', @inv_b@)::text'),
-    ('send log',               'all',    true,  false, 'select public.record_document_send(''invoice'', ''SOFX-INV-A'', ''whatsapp'', @inv_a@, @c1@, ''+6591400101'', null, ''sent'', null)::text'),
+    ('send log',               'all',    true,  false, 'select public.record_document_send(''invoice'', ''SOFX-INV-A'', ''whatsapp'', @inv_a@, @c1@, ''+61491578957'', null, ''sent'', null)::text'),
     ('affiliate picker',       'all',    true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.active_affiliates_for_picker() x'),
     ('FOC reasons',            'all',    true,  false, 'select count(*)::text from public.active_foc_reasons()'),
     ('credit packages',        'all',    true,  false, 'select count(*)::text from public.credit_packages_for_store(@store_a@, null)'),
@@ -565,6 +565,9 @@ begin
     ('package preview',        'all',    true,  false, 'select public.credit_package_benefit_preview(null, @store_a@)::text'),
     ('bundle preview',         'all',    true,  false, 'select public.premium_bundle_benefit_preview(null, @store_a@)::text'),
     ('financial position',     'a~',     true,  false, 'select public.invoice_financial_position(@inv_a@)::text'),
+    -- 417: a request waiting on the invoice, or the last one, for its store's staff
+    ('request status',         'a',      true,  false, 'select public.invoice_request_status(@inv_a@)::text'),
+    ('request status, B',      'b',      true,  false, 'select public.invoice_request_status(@inv_b@)::text'),
     -- Exchanges
     ('service staff picker',   'all',    true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.store_commission_staff(@store_a@) x'),
     ('exchange eligibility',   'all',    true,  false, 'select public.exchange_ineligibility_reason(@inv_a@)'),
@@ -868,7 +871,7 @@ begin
     perform pg_temp.sof_fail('7: a deactivated login does not read exactly its own profile, or has a role');
   end if;
   -- A Manager's edit of a Staff member saves (ADMIN-AUTH-2)...
-  if pg_temp.sof_try('manager', format('with u as (update public.profiles set work_phone = ''+6591400199'' where id = %L returning 1) select count(*)::text from u', pg_temp.sof_id('staff2')))
+  if pg_temp.sof_try('manager', format('with u as (update public.profiles set work_phone = ''+61491579760'' where id = %L returning 1) select count(*)::text from u', pg_temp.sof_id('staff2')))
      <> 'ok' || chr(9) || '1' then
     perform pg_temp.sof_fail('7: a Manager''s edit of a Staff member saved nothing');
   end if;

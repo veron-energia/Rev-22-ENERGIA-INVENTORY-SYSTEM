@@ -14,3 +14,21 @@ export function calendarDateInRange(value: string | Date | null | undefined, fro
   const date = calendarDate(value, timeZone);
   return Boolean(date && (!from || date >= from) && (!to || date <= to));
 }
+/**
+ * A day as the business shows it, d/m/yyyy, in Singapore whatever the device's
+ * time zone (AFTER-16). A date-only value is that day; a timestamp is the day
+ * it was in Singapore. Empty when there is no date.
+ */
+export function displayDay(value: string | Date | null | undefined): string {
+  const day = calendarDate(value, 'Asia/Singapore');
+  if (!day) return '';
+  const [y, m, d] = day.split('-');
+  return `${Number(d)}/${Number(m)}/${y}`;
+}
+/** A moment as the business shows it: its Singapore day and time. */
+export function displayDateTime(value: string | Date | null | undefined): string {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return `${displayDay(date)}, ${new Intl.DateTimeFormat('en-SG', { timeZone: 'Asia/Singapore', hour: 'numeric', minute: '2-digit' }).format(date)}`;
+}

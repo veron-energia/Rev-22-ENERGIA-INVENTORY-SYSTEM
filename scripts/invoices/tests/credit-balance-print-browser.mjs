@@ -94,6 +94,8 @@ const tables = {
     inv('instalments', 'ann', { subtotal: 120, total_amount: 120, paid_amount: 120 }),
     // Twenty items: more than the PDF/image page lists.
     inv('long', 'ann', { subtotal: 2000, total_amount: 2000, paid_amount: 2000 }),
+    // Seven items and one payment: a full A5 page that still fits on one (B16).
+    inv('tight', 'ann', { subtotal: 700, total_amount: 700, paid_amount: 700 }),
     // One promotion line each, with the customer's own choice inside.
     inv('promoA', 'ann'), inv('promoB', 'ben'),
   ],
@@ -109,12 +111,13 @@ const tables = {
     pay('part', 'cash', 50),
     ...Array.from({ length: 12 }, () => pay('instalments', 'cash', 10)),
     pay('promoA', 'cash', 100), pay('promoB', 'cash', 100),
-    pay('long', 'cash', 2000),
+    pay('long', 'cash', 2000), pay('tight', 'cash', 700),
   ],
 };
 tables.invoice_items = tables.invoices.map(i => i.id.startsWith('promo')
   ? { ...line(i.id), line_kind: 'promotion', product_id: null, promotion_id: 'promo1' } : line(i.id));
 for (let n = 2; n <= 20; n++) tables.invoice_items.push({ ...line('long'), id: `line-long-${n}` });
+for (let n = 2; n <= 7; n++) tables.invoice_items.push({ ...line('tight'), id: `line-tight-${n}` });
 tables.promotions.push({ id: 'promo1', name: 'Test Promo', code: 'TP', ...common });
 tables.invoice_promotion_selections.push(
   { id: 'sel-A', invoice_item_id: 'line-promoA', group_id: 'g', product_id: 'socks', quantity: 1 },
@@ -194,6 +197,14 @@ const mock = `export const supabase = (() => {
         t().invoices[ix] = { ...was, paid_amount: paid, status: paid >= Number(was.total_amount) ? 'paid' : 'partially_paid', paid_at: at };
         return { data: { ok: true }, error: null };
       }
+      // W4-B04 (the split panels): one Credit Package and one Premium Bundle on
+      // sale at the store, only when the test offers them (window.__splitOffers).
+      case 'credit_packages_for_store': return { data: window.__splitOffers ? window.__splitOffers.packages : null, error: null };
+      case 'premium_bundles_for_store': return { data: window.__splitOffers ? window.__splitOffers.bundles : null, error: null };
+      case 'credit_package_benefit_preview': return { data: { found: true, package_name: 'Fixture Credit Package', customer_price: 500,
+        paid_credit_total: 500, bonus_total: 50, grants_reward: false, reward_voucher_total: 0 }, error: null };
+      case 'premium_bundle_benefit_preview': return { data: { found: true, bundle_name: 'Fixture Premium Bundle', customer_price: 600,
+        paid_credit_total: 600, bonus_total: 60, free_voucher_total: 0, allowed_vouchers: [] }, error: null };
       case 'my_assigned_store_id': return { data: window.__profile.role === 'staff' ? 'store' : null, error: null };
       case 'my_assigned_stores': return { data: window.__profile.role === 'staff' ? [{ store_id: 'store', store_name: 'Test Store', is_default: true }] : [], error: null };
       default: return { data: null, error: null };
@@ -210,8 +221,8 @@ const mock = `export const supabase = (() => {
     },
     createSignedUrl: async () => ({ data: { signedUrl: 'https://files.example.test/invoice.pdf' }, error: null }),
   }) };
-  // Email goes through the Edge Function with the PDF attached; kept for the test.
-  const functions = { invoke: async (fn, { body }) => { window.__emailed = body; return { data: { ok: true }, error: null }; } };
+  // B16 (Q6): no email-sending service is called any more; a call here is recorded so the test can say so.
+  const functions = { invoke: async (fn, { body }) => { window.__emailFunctionCalled = fn; return { data: { ok: true }, error: null }; } };
   return { from, rpc, channel, removeChannel: () => Promise.resolve('ok'), storage, functions,
     auth: { getSession: async () => ({ data: { session: { user: { id: window.__profile.id } } } }), onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }) } };
 })();`;
@@ -257,7 +268,10 @@ async function openPage(profile = owner) {
     window.open = (url) => {
       window.__calls.push({ name: 'window.open', url });
       if (url) { if (window.__openThrows) throw new Error('blocked'); window.__opened.push(url); return null; }
-      const w = { closed: !!window.__closePrintWindow, document: { body: { textContent: '' },
+      // B16 (AFTER-11): WhatsApp's window is opened blank in the click, then sent to the chat.
+      const w = { closed: !!window.__closePrintWindow, opener: window, close() { w.closed = true; },
+        location: { set href(u) { if (window.__openThrows) throw new Error('blocked'); window.__opened.push(u); } },
+        document: { body: { textContent: '' },
         open() { window.__calls.push({ name: 'print.document.open' }); },
         // window.__printWriteFails: writing the invoice itself fails.
         write: html => { if (window.__printWriteFails && html.includes('CUSTOMER COPY')) throw new Error('write failed'); window.__printed.push(html); },
@@ -305,7 +319,7 @@ async function view(page, id) {
   // The copy buttons come on once this invoice's own rows are in.
   await page.waitForFunction(() => modalButton('Print') && !modalButton('Print').disabled);
 }
-const COPY_BUTTONS = ['Print', 'PDF', 'Image', 'WhatsApp', 'Email'];
+const COPY_BUTTONS = ['Print', 'PDF', 'Image', 'WhatsApp', 'Email (from this device)'];
 const copyButtonsOff = page => page.evaluate(names => names.map(n => modalButton(n)?.disabled), COPY_BUTTONS);
 const CORRECT_TITLE = 'Correct this invoice with a reason and revision history';
 /** A detail-modal button's disabled state and its title ('' when it has none). */
@@ -480,7 +494,8 @@ try {
   // A send that fails part-way always gives its button back.
   await page.evaluate(() => { window.__openThrows = true; });
   await page.getByRole('button', { name: 'WhatsApp', exact: true }).click();
-  await page.locator('.modal .alert-danger').filter({ hasText: 'Could not send (blocked).' }).waitFor();
+  // B16 (AFTER-11): the browser refusing the chat is said as that, not as a send.
+  await page.locator('.modal .alert-danger').filter({ hasText: 'Your browser blocked the WhatsApp window.' }).waitFor();
   ok('a send that throws gives its button back and says it failed',
     (await page.evaluate(() => modalButton('WhatsApp')?.textContent.trim())) === 'WhatsApp' && page.errors.length === 0, page.errors.join(' | '));
   await page.evaluate(() => { window.__openThrows = false; });
@@ -755,6 +770,26 @@ try {
   await page.evaluate(() => { window.__uploadFails = false; });
   await page.getByRole('button', { name: 'WhatsApp', exact: true }).click();
   ok('one that went is', (await unreadNote(page, 'Sent without the credit balance — it could not be read.')) === 'Sent without the credit balance — it could not be read.', String(await unreadNote(page)));
+  // B16: a second tap while a send is under way opens no second window and
+  // sends nothing more; both buttons are off until it is done.
+  await page.getByRole('button', { name: 'WhatsApp', exact: true }).waitFor();
+  const opensBefore = await page.evaluate(() => window.__calls.filter(c => c.name === 'window.open').length);
+  const logsBefore = await page.evaluate(() => window.__calls.filter(c => c.name === 'record_document_send').length);
+  const busyButtons = await page.evaluate(async () => {
+    window.__balanceDelay = 300;   // the send stays under way long enough to look
+    const wa = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'WhatsApp');
+    wa.click(); wa.click();        // the second before the page has redrawn
+    await new Promise(r => setTimeout(r, 50));
+    const now = [...document.querySelectorAll('button')];
+    return { wa: now.find(b => b.textContent.includes('Preparing…'))?.disabled ?? null,
+             email: now.find(b => b.textContent.trim().startsWith('Email (from this device)'))?.disabled ?? null };
+  });
+  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'WhatsApp' && !b.disabled));
+  await page.evaluate(() => { window.__balanceDelay = 0; });
+  ok('a double tap on WhatsApp opens one window and sends once, with both send buttons off meanwhile',
+    await page.evaluate(([o, l]) => window.__calls.filter(c => c.name === 'window.open').length === o + 1
+      && window.__calls.filter(c => c.name === 'record_document_send').length <= l + 1, [opensBefore, logsBefore])
+      && busyButtons.wa === true && busyButtons.email === true, JSON.stringify(busyButtons));
   await page.evaluate(() => { window.__toBlobFails = true; });
   await page.getByRole('button', { name: 'Image', exact: true }).click();
   await page.locator('.modal .alert-danger').filter({ hasText: 'Could not save (Could not create the invoice image.).' }).waitFor();
@@ -776,18 +811,33 @@ try {
   pdfDoc = await downloadText(page, 'PDF');
   ok('a full page carries it too, beside the totals', pdfDoc.includes(LABEL) && pdfDoc.includes('continued') && (await unreadNote(page)) === null);
   // A device whose font draws the label wider than the column beside the
-  // totals: no room there, and none under the payments on a full page.
+  // totals. B16 (AFTER-8): twenty items run past one A5 page, so the copy
+  // takes a second one, where the line has room under the payments.
   await page.evaluate(() => { window.__wideLabel = true; });
   pdfDoc = await downloadText(page, 'PDF');
-  ok('with no room anywhere the PDF goes without the line', !pdfDoc.includes(LABEL) && pdfDoc.includes('INV-T-long'));
+  ok('a copy that runs long takes a second page, with the line on it and nothing said',
+    pdfDoc.includes(LABEL) && pdfDoc.includes('INV-T-long (continued)') && (await unreadNote(page)) === null);
+  await page.evaluate(() => { window.__imageCanvas = null; window.__imageText.length = 0; });
+  await downloadText(page, 'Image');
+  ok('its image grows taller instead, with the line on it',
+    await page.evaluate(l => window.__imageCanvas.height > 1680 && window.__imageText.includes(l), LABEL) && (await unreadNote(page)) === null,
+    String(await page.evaluate(() => window.__imageCanvas?.height)));
+  // Seven items and one payment: one full page, with no room beside the
+  // totals for that label, and none under the payments.
+  await view(page, 'tight');
+  pdfDoc = await downloadText(page, 'PDF');
+  ok('with no room anywhere the PDF goes without the line', !pdfDoc.includes(LABEL) && pdfDoc.includes('INV-T-tight') && !pdfDoc.includes('(continued)'));
   ok('and the page says it was saved without it, for want of room',
     (await unreadNote(page, 'Saved without the credit balance — no room on the page.')) === 'Saved without the credit balance — no room on the page.', String(await unreadNote(page)));
   await page.evaluate(() => { window.__imageCanvas = null; });
   await downloadText(page, 'Image');
   drawnText = await imageTexts(page);
-  ok('the image too', !drawnText.includes(LABEL) && drawnText.includes('INV-T-long')
-    && (await unreadNote(page, 'Saved without the credit balance — no room on the page.')) === 'Saved without the credit balance — no room on the page.',
-    JSON.stringify([await unreadNote(page), drawnText.filter(t => /INV|Credit/.test(t))]));
+  // The image measures its own page, so it may have room where the PDF has
+  // none; either way it says what it drew.
+  const imageNote = drawnText.includes(LABEL) ? await unreadNote(page) : await unreadNote(page, 'Saved without the credit balance — no room on the page.');
+  ok('the image says what it drew: the line, or that there was no room for it', drawnText.includes('INV-T-tight')
+    && (drawnText.includes(LABEL) ? imageNote === null : imageNote === 'Saved without the credit balance — no room on the page.'),
+    JSON.stringify([imageNote, drawnText.filter(t => /INV|Credit/.test(t))]));
   await page.evaluate(() => { window.__uploaded = null; });
   await page.getByRole('button', { name: 'WhatsApp', exact: true }).click();
   await page.waitForFunction(() => !!window.__uploaded);
@@ -819,10 +869,33 @@ try {
   await page.getByRole('button', { name: 'WhatsApp', exact: true }).click();
   await page.waitForFunction(() => window.__uploaded && window.__opened.some(u => u.startsWith('https://wa.me/')));
   ok('the PDF sent by WhatsApp carries the line', pdfText(await page.evaluate(() => Array.from(window.__uploaded))).includes(LABEL));
-  await page.getByRole('button', { name: 'Email', exact: true }).click();
-  await page.waitForFunction(() => !!window.__emailed);
-  const emailed = pdfText(Buffer.from(await page.evaluate(() => window.__emailed.pdfBase64), 'base64'));
+  ok('the WhatsApp window opened in the click, before the balance was read (AFTER-11)', await page.evaluate(() => {
+    const calls = window.__calls; const sent = calls.map(c => c.name).lastIndexOf('window.open');
+    return sent >= 0 && !calls[sent].url && calls.slice(sent).some(c => c.name === 'customer_credit_balances');
+  }));
+  ok('and the page says where to send it, not that it was sent',
+    (await page.locator('[data-testid="invoice-send-note"]').innerText()).includes('WhatsApp should now be open with the invoice link; send the message there.'));
+  // B16 (Q6): email goes from this device's mail app: on a phone the share sheet hands it the PDF.
+  await page.evaluate(() => {
+    window.__shared = null;
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+    Object.defineProperty(navigator, 'share', { configurable: true, value: async data => { window.__shared = data; } });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+  });
+  await page.getByRole('button', { name: 'Email (from this device)', exact: true }).click();
+  await page.waitForFunction(() => !!window.__shared);
+  const emailed = pdfText(await page.evaluate(async () => Array.from(new Uint8Array(await window.__shared.files[0].arrayBuffer()))));
   ok('the PDF sent by email carries the line', emailed.includes(LABEL) && emailed.includes('S$350.00'));
+  const emailNote = await page.locator('[data-testid="invoice-send-note"]').innerText();
+  ok('and the page says where it went, never that it was attached or sent',
+    emailNote.includes('went to the app you chose') && !/attached/i.test(emailNote), emailNote);
+  ok('no email-sending service is called (Q6)', await page.evaluate(() => !window.__emailFunctionCalled));
+  // A share sheet closed without choosing an app: "Not sent".
+  await page.evaluate(() => { Object.defineProperty(navigator, 'share', { configurable: true,
+    value: async () => { throw new DOMException('closed', 'AbortError'); } }); });
+  await page.getByRole('button', { name: 'Email (from this device)', exact: true }).click();
+  await page.locator('.modal .alert-danger').filter({ hasText: 'Not sent: the share sheet was closed.' }).waitFor();
+  ok('a closed share sheet is "Not sent"', true);
 
   // ---- Record Payment never offers the previous customer's wallet -------------
   await view(page, 'owed-ann');
@@ -945,6 +1018,12 @@ try {
           detailLines: detail.map(x => x.t),
           canvases: window.__canvases.length,
           released: window.__canvases.filter(c => c !== used).every(c => c.width === 0 && c.height === 0),
+          // B16 (AFTER-8): an image that runs long grows taller; its payments may shorten first.
+          height: used.height,
+          shortened: t.some(x => /^Payments: \d+; full list on the store copy$/.test(x.t)),
+          // AFTER-9: an A5 drawing stopped listing rows, so the copy went on to
+          // the growing drawing, which lists them all (more canvases).
+          cutOnA5: window.__canvases.some(c => c !== used && c.__texts.some(x => x.t.startsWith('…continued'))),
         };
       };
       const out = [];
@@ -957,19 +1036,44 @@ try {
           }
         }
       }
-      return { H, MM, out };
+      // B16 (AFTER-9): promotions list what is inside them. Every line is
+      // drawn, the image growing when it must; none is left off.
+      const promo = [];
+      for (const notes of [[4, 4, 0, 0, 0, 0], [9, 3, 0, 0], [3, 3, 3, 0]]) {
+        const lines = notes.map((k, i) => ({ name: `Promotion line ${i + 1} with a long fixture bundle name`, qty: 1, unit: 10, total: 10,
+          notes: Array.from({ length: k }, (_, j) => `Fixture content item ${j + 1} × 1 (included)`) }));
+        const d = { ...doc(lines.length, 1, null, 'part-paid'), lines };
+        window.__canvases = [];
+        await window.__image(d);
+        const t = window.__imageCanvas.__texts.map(x => x.t);
+        promo.push({ notes: notes.join(','), drawn: lines.filter(l => t.includes(l.name)).length, of: lines.length,
+          continued: t.some(x => x.startsWith('…continued')), contents: t.filter(x => x.startsWith('Fixture content item')).length,
+          wanted: notes.reduce((a, b) => a + b, 0) });
+      }
+      return { H, MM, out, promo };
     });
     await ip.close();
-    const { H, MM, out } = layout;
+    const { H, MM, out, promo } = layout;
+    ok('an image lists every promotion line and what is in it, with no row left off (AFTER-9)',
+      promo.every(p => p.drawn === p.of && !p.continued && p.contents === p.wanted), JSON.stringify(promo));
     const at = r => `${r.shape}/${r.n} items/${r.pays} payments/credit ${r.ci}`;
     const real = out.filter(r => r.shape !== 'no totals'), bare = out.filter(r => r.shape === 'no totals');
     ok('the image line never costs an item row, with a full footer and up to 12 payments',
       out.every(r => r.withLine.rows === r.without.rows && r.withLine.continued === r.without.continued),
       out.filter(r => r.withLine.rows !== r.without.rows).map(at).join('; '));
     // The footer's last baseline: no lower than without the line, or 8 mm above the edge if that is lower down.
+    // B16 (AFTER-8): an image that runs long grows taller instead, and then its
+    // footer is 8 mm above its own foot; the line never makes an A5 image grow.
+    const grown = r => r.height > H;
+    const onePage = r => !grown(r.withLine) && !grown(r.without);
     ok('and never pushes the footer lower than it was, or the on-page limit',
-      out.every(r => r.withLine.footer <= Math.max(r.without.footer, H - 8 * MM) + 0.5),
-      out.filter(r => !(r.withLine.footer <= Math.max(r.without.footer, H - 8 * MM) + 0.5)).map(r => `${at(r)}: ${r.without.footer} → ${r.withLine.footer}`).join('; '));
+      out.every(r => r.withLine.footer <= Math.max(r.without.footer, r.withLine.height - 8 * MM) + 0.5),
+      out.filter(r => !(r.withLine.footer <= Math.max(r.without.footer, r.withLine.height - 8 * MM) + 0.5)).map(r => `${at(r)}: ${r.without.footer} → ${r.withLine.footer}`).join('; '));
+    ok('the line never makes an image grow or shorten its payments',
+      out.every(r => grown(r.withLine) === grown(r.without) && r.withLine.shortened === r.without.shortened),
+      out.filter(r => !(grown(r.withLine) === grown(r.without) && r.withLine.shortened === r.without.shortened)).map(at).join('; '));
+    ok('a long image grows taller, with its footer at its own foot',
+      out.some(r => grown(r.withLine)) && out.filter(r => grown(r.withLine)).every(r => r.withLine.footer <= r.withLine.height - 8 * MM + 0.5));
     // The owner's example (two kinds) fits beside every totals block at every
     // length; so do all five kinds beside a part-paid invoice's four totals
     // rows. Five long kinds beside only Subtotal and Discount (nothing paid,
@@ -992,16 +1096,145 @@ try {
       real.filter(r => r.withLine.beside && !r.withLine.creditBox.every(b => b.right <= r.withLine.totalsBox.left - 3 * MM && b.y >= r.withLine.totalsBox.top && b.y <= r.withLine.totalsBox.bottom)).map(at).join('; '));
     ok('with no totals block to sit beside, the line is drawn whole, without its breakdown, or not at all', bare.every(r => r.withLine.detailWhole && !r.withLine.beside));
     const order = { full: 0, total: 1, none: 2 };
+    // While the image is one A5 page with every payment listed; once it grows
+    // or its payments shorten, the line has room again (B16).
+    const listed = r => onePage(r) && !r.withLine.shortened && !r.without.shortened;
     ok('and gives way in order as the page fills: the breakdown first, then the total',
-      bare.every(r => { const next = bare.find(q => q.ci === r.ci && q.pays === r.pays && q.n === r.n + 1); return !next || order[next.withLine.state] >= order[r.withLine.state]; }));
-    ok('that sweep reaches all three', ['full', 'total', 'none'].every(st => bare.some(r => r.withLine.state === st)));
+      bare.filter(listed).every(r => { const next = bare.find(q => q.ci === r.ci && q.pays === r.pays && q.n === r.n + 1); return !next || !listed(next) || order[next.withLine.state] >= order[r.withLine.state]; })
+        && bare.filter(r => !listed(r)).every(r => r.withLine.state !== 'none'));
+    ok('that sweep reaches all three', ['full', 'total', 'none'].every(st => bare.filter(listed).some(r => r.withLine.state === st)));
     ok('a short image is unchanged below the line, with the line in full',
       out.filter(r => r.pays === 2 && r.n <= 3).every(r => r.withLine.footer === r.without.footer && r.withLine.state === 'full'));
     ok('the breakdown wraps between kinds only',
       out.every(r => r.withLine.detailLines.every(ln => ln.split(' · ').every(k => /^(Paid|Bonus|Legacy|Promotional|Exchange) S\$[\d.]+$/.test(k)))));
+    // An image that runs long tries the shortened payments, then grows (each
+    // growing drawing measured once, then drawn), so it takes more canvases.
+    // B16 (AFTER-9): rows past the room an A5 page leaves above the
+    // signatures send the copy to the growing drawing, which lists them all;
+    // it stays one page tall when they fit.
+    ok('every row is listed on the image, however many (AFTER-9)',
+      out.every(r => r.withLine.rows.split(',').length === r.n && !r.withLine.continued && !r.without.continued)
+        && out.some(r => r.without.cutOnA5 && !grown(r.without)),
+      out.filter(r => r.withLine.rows.split(',').length !== r.n).map(at).join('; '));
     ok('one canvas an image beside the totals; at most three otherwise, and every one thrown away is released',
-      real.filter(fullBeside).every(r => r.withLine.canvases === 1) && out.every(r => r.withLine.canvases <= 3 && r.withLine.released && r.without.canvases === 1),
-      JSON.stringify(out.filter(r => !(r.withLine.canvases <= 3 && r.withLine.released)).map(r => [at(r), r.withLine.canvases])));
+      real.filter(fullBeside).filter(onePage).filter(r => !r.withLine.shortened && !r.withLine.cutOnA5).every(r => r.withLine.canvases === 1)
+        && out.filter(onePage).filter(r => !r.withLine.shortened && !r.withLine.cutOnA5 && !r.without.cutOnA5).every(r => r.withLine.canvases <= 3 && r.without.canvases === 1)
+        && real.filter(fullBeside).filter(r => r.withLine.cutOnA5 && !r.withLine.shortened).every(r => r.withLine.canvases <= 3)
+        && out.every(r => r.withLine.canvases <= 12 && r.withLine.released && r.without.released),
+      JSON.stringify([
+        ...real.filter(fullBeside).filter(onePage).filter(r => !r.withLine.shortened && !r.withLine.cutOnA5).filter(r => r.withLine.canvases !== 1),
+        ...out.filter(onePage).filter(r => !r.withLine.shortened && !r.withLine.cutOnA5 && !r.without.cutOnA5).filter(r => !(r.withLine.canvases <= 3 && r.without.canvases === 1)),
+        ...real.filter(fullBeside).filter(r => r.withLine.cutOnA5 && !r.withLine.shortened).filter(r => r.withLine.canvases > 3),
+        ...out.filter(r => !(r.withLine.canvases <= 12 && r.withLine.released && r.without.released)),
+      ].map(r => [at(r), r.withLine.canvases, r.without.canvases])));
+  }
+
+  // ---- W4-B16-PRICE-REASON (the Owner, 18 Oct 2026) --------------------------
+  // A hand-changed price's reason is internal, as an FOC reason is (Q7): every
+  // customer copy says 'Manual price override' only; staff see the reason on
+  // screen. Added after the pages above, so none of their invoices change.
+  const PRICE_REASON = 'Fixture reason: matched the old shelf tag';
+  tables.invoices.push(inv('priced', 'ben', { subtotal: 80, total_amount: 80, paid_amount: 80 }));
+  tables.invoice_items.push({ ...line('priced'), unit_price: 80, line_total: 80, price_overridden: true, override_reason: PRICE_REASON });
+  tables.invoice_payments.push(pay('priced', 'cash', 80));
+  {
+    const pp = await openPage(owner);
+    await view(pp, 'priced');
+    const onScreen = await pp.locator('[data-testid="invoice-line-price-override"]').innerText();
+    ok('staff see a hand-changed price and its internal reason on screen',
+      onScreen.includes('Manual price override') && onScreen.includes(`internal reason: ${PRICE_REASON}`), onScreen);
+    const printed = await print(pp);
+    ok('the printed copy says "Manual price override" on both halves, never its reason',
+      count(printed, 'Manual price override') === 2 && !printed.includes(PRICE_REASON) && !printed.includes('shelf tag'));
+    const pdfCopy = await downloadText(pp, 'PDF');
+    ok('nor does the PDF', pdfCopy.includes('Manual price override') && !pdfCopy.includes(PRICE_REASON) && !pdfCopy.includes('shelf tag'));
+    await pp.evaluate(() => { window.__imageCanvas = null; });
+    await downloadText(pp, 'Image');
+    const drawn = await imageTexts(pp);
+    ok('nor does the image', drawn.some(t => t.includes('Manual price override')) && !drawn.some(t => t.includes('shelf tag')), JSON.stringify(drawn));
+    await pp.evaluate(() => { window.__uploaded = null; window.__opened = []; });
+    await pp.getByRole('button', { name: 'WhatsApp', exact: true }).click();
+    await pp.waitForFunction(() => window.__uploaded && window.__opened.some(u => u.startsWith('https://wa.me/')));
+    const sentWa = pdfText(await pp.evaluate(() => Array.from(window.__uploaded)));
+    ok('nor the PDF sent by WhatsApp', sentWa.includes('Manual price override') && !sentWa.includes('shelf tag'));
+    await pp.evaluate(() => {
+      window.__shared = null;
+      Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+      Object.defineProperty(navigator, 'share', { configurable: true, value: async data => { window.__shared = data; } });
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+    });
+    await pp.getByRole('button', { name: 'Email (from this device)', exact: true }).click();
+    await pp.waitForFunction(() => !!window.__shared);
+    const sentEmail = pdfText(await pp.evaluate(async () => Array.from(new Uint8Array(await window.__shared.files[0].arrayBuffer()))));
+    ok('nor the PDF sent by email', sentEmail.includes('Manual price override') && !sentEmail.includes('shelf tag'));
+    ok('no browser errors (hand-changed price)', pp.errors.length === 0, pp.errors.join(' | '));
+    await pp.context().close();
+  }
+
+  // ---- W4-B04-IM-ADD-CUSTOMER (the Owner, 18 Oct 2026) ------------------------
+  // New Invoice's own Add customer button: Owners, Managers and Staff see it;
+  // Inventory Managers do not, and still search and pick a customer on file.
+  const inventoryManager = { id: 'im', full_name: 'Test Inventory Manager', role: 'inventory_manager', ...common };
+  const manager = { id: 'mgr', full_name: 'Test Manager', role: 'manager', ...common };
+  tables.profiles.push(inventoryManager, manager);
+  for (const [who, profile, shown] of [['an Owner', owner, true], ['a Manager', manager, true], ['Staff', staff, true], ['an Inventory Manager', inventoryManager, false]]) {
+    const np = await openPage(profile);
+    await np.getByRole('button', { name: 'New Invoice', exact: true }).click();
+    const field = np.locator('.customer-with-add');
+    await field.waitFor();
+    const buttons = await field.getByRole('button', { name: 'Add customer', exact: true }).count();
+    const search = await field.getByRole('button', { name: 'Search name, ID, phone or email…' }).count();
+    ok(`${who} ${shown ? 'sees' : 'does not see'} New Invoice's Add customer button, and can still search for a customer`,
+      buttons === (shown ? 1 : 0) && search === 1, `buttons ${buttons}, search ${search}`);
+    ok(`no browser errors (${who}, New Invoice)`, np.errors.length === 0, np.errors.join(' | '));
+    await np.context().close();
+  }
+
+  // The same rule in the split panels (a Credit Package or a Premium Bundle
+  // divided across customers): each row's + opens the same Add a customer
+  // window, so an Inventory Manager is not shown it either, and still picks
+  // each row's customer from those on file. The button that only adds a row
+  // says 'Add another person', not 'Add Customer'.
+  for (const [who, profile, shown] of [['an Owner', owner, true], ['a Manager', manager, true], ['Staff', staff, true], ['an Inventory Manager', inventoryManager, false]]) {
+    const np = await openPage(profile);
+    await np.evaluate(() => { window.__splitOffers = {
+      packages: [{ id: 'pkg', name: 'Fixture Credit Package', code: 'FCP', customer_price: 500 }],
+      bundles: [{ id: 'bundle', name: 'Fixture Premium Bundle', code: 'FPB', customer_payment_amount: 600, grants_reward: false, free_voucher_qty: 0 }],
+    }; });
+    await np.getByRole('button', { name: 'New Invoice', exact: true }).click();
+    // Staff with one store have it fixed; everyone else chooses it.
+    if (profile.role !== 'staff') await np.locator('select', { has: np.locator('option', { hasText: '— Select store —' }) }).selectOption('store');
+    for (const [kind, placeholder, name] of [['credit_package', 'Search Credit Package…', 'Fixture Credit Package'],
+                                             ['premium_bundle', 'Search Premium Bundle…', 'Fixture Premium Bundle']]) {
+      await np.locator('.invoice-editor-line select').first().selectOption(kind);
+      await np.getByRole('button', { name: placeholder }).click();
+      await np.getByText(`💳 ${name} — `).click();
+      await np.getByRole('button', { name: 'Split Across Customers', exact: true }).click();
+      await np.getByText(`Customer Allocation — ${name}`).waitFor();
+      const panel = np.locator('table', { has: np.locator('th', { hasText: 'Paid Credit' }) });
+      await np.getByRole('button', { name: '+ Add another person', exact: true }).click();
+      const rows = await panel.locator('tbody tr').count();
+      const pluses = await panel.locator('button[title="Add a customer for this row"]').count();
+      const searches = await panel.getByRole('button', { name: 'Search name, ID, phone or email…' }).count();
+      const oldLabel = await np.getByRole('button', { name: '+ Add Customer', exact: true }).count();
+      ok(`${who} ${shown ? 'sees' : 'does not see'} each row's + in the ${name.replace('Fixture ', '')} split, and can still search for each row's customer`,
+        rows === 3 && pluses === (shown ? 3 : 0) && searches === 3 && oldLabel === 0,
+        `rows ${rows}, pluses ${pluses}, searches ${searches}, '+ Add Customer' ${oldLabel}`);
+      if (shown) {
+        await panel.locator('button[title="Add a customer for this row"]').first().click();
+        const dialog = np.locator('.quick-customer[role="dialog"]');
+        await dialog.waitFor();
+        ok(`${who}: a row's + opens the Add a customer window (${name.replace('Fixture ', '')})`,
+          (await dialog.locator('#qc-title').innerText()).includes('Add a customer'));
+        await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await dialog.waitFor({ state: 'detached' });
+      }
+      ok(`${who} is never shown the Add a customer window from the ${name.replace('Fixture ', '')} split unasked`,
+        (await np.locator('.quick-customer[role="dialog"]').count()) === 0);
+      await np.getByRole('button', { name: 'Single Customer', exact: true }).click();
+    }
+    ok(`no browser errors (${who}, split panels)`, np.errors.length === 0, np.errors.join(' | '));
+    await np.context().close();
   }
 
   console.log(`\nPASS credit-balance-print-browser: ${checks} checks`);

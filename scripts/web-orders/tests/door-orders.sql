@@ -1076,7 +1076,7 @@ end $$;
 -- The invoice is deleted.
 select pg_temp.as_user('owner');
 do $$ begin
-  perform public.delete_invoice(pg_temp.fx('inv_pos'));
+  perform public.delete_invoice(pg_temp.fx('inv_pos'), 'D16 made by mistake');  -- 417: a reason is needed
   insert into tx values ('pos_4', pg_temp.sold(pg_temp.sync_now(), pg_temp.no_of('inv_pos'))::text);
 end $$;
 select pg_temp.check(pg_temp.people(pg_temp.tx('pos_1')::jsonb) = '1:Pos One:registered, 2:Pos Two:registered, 3:Pos Three:registered'

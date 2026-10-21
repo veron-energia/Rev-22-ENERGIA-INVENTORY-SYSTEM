@@ -126,7 +126,13 @@ test('a long part-paid invoice shortens the lists, then puts the goods in its te
   const items = drawn(d);
   const all = items.map(i => i.text).join(' ');
   assert.ok(footerY(items) >= Math.min(footerY(drawn(before399(d))), 8 * PT_PER_MM) - 0.01);
-  if (/GOODS: \d+ COLLECTED/.test(all)) {
+  if (items.some(i => /^Payments: \d+; full list on the store copy$/.test(i.text)) || buildDocumentPdf(d).getNumberOfPages() === 2) {
+    // B16 (AFTER-8): this copy ran off the page even with the goods in its
+    // terms, so its payments shortened to one row, or it took a second page;
+    // the goods then have room again, and the footer is on its page.
+    assert.ok(footerY(items) >= 8 * PT_PER_MM - 0.01, 'the footer is on the page');
+    assert.ok(items.some(i => /^Collected:/.test(i.text)) && items.some(i => /^To collect:/.test(i.text)), 'both lists');
+  } else if (/GOODS: \d+ COLLECTED/.test(all)) {
     const c = copyCollection('partially_paid', goods(7, longName));
     const n = l => l.reduce((a, i) => a + i.qty, 0);
     assert.match(all, new RegExp(`NEITHER REFUNDABLE NOR EXCHANGEABLE\\. ?GOODS: ${n(c.collected)} COLLECTED, ${n(c.toCollect)} TO COLLECT\\.`));

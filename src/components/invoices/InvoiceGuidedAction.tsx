@@ -6,8 +6,12 @@ import './invoice-controls.css';
 import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
 import { type WaitingAnswers, unansweredItems, waitingAnswerList, waitingAnswersOf, waitingItemLabel,
   withWaitingAnswers } from '../../lib/special/waitingItems';
+import { type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs,
+  receivedChoices, receivedText, rentalsToReceive } from '../../lib/special/rentalReturn';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
+const actionWords = (a?: string | null) =>
+  a === 'cancel' ? 'cancellation' : a === 'refund_partial' ? 'partial refund' : 'full refund';
 
 /** What moved between the plan a request was raised with and the plan now, in
  *  words. The server only says "changed"; the approver needs to know what. */
@@ -41,6 +45,13 @@ const readableDate = (iso?: string | null) => {
   const month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1];
   return `${Number(m[3])} ${month} ${m[1]}`;
 };
+/** A timestamp as its Singapore calendar day, e.g. 9 Oct 2026. */
+const sgDay = (ts?: string | null) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return '';
+  return readableDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d));
+};
 
 type Action = 'cancel' | 'refund_full' | 'refund_partial';
 type PlanLine = { invoice_item_id: string; name: string; line_kind: string; quantity: number; selected_quantity: number; amount: number };
@@ -55,6 +66,10 @@ type Plan = {
   status?: string;
   /** The money the invoice holds now (invoice_net_received). */
   net_held?: number;
+  /** 417 (the Owner, 9 Oct 2026): a cancellation whose customer already had
+   *  part of what it sold. Not all the money held is owed back: the Owner or
+   *  Manager states how much is. Null when nothing was used. */
+  refund_owed?: { needed: boolean; held: number; used: string[]; message: string } | null;
   /** Money, credits, stock and overrides kept apart — the review renders these
    *  rather than inferring one quantity from another. */
   effects?: {
@@ -67,7 +82,19 @@ type Plan = {
     therapy_closed?: { entitlement_no: string; package?: string; used: boolean; benefit?: string | null; line?: string }[];
     /** Used therapy on no invoice line (a correction removed it), which the action leaves running. */
     therapy_left?: { entitlement_no: string; package?: string; line?: string }[];
+    /** 417: a credit package's reward entitlements, settled with this action:
+     *  those not claimed yet are withdrawn, those already activated or claimed
+     *  stay with the customer. */
+    rewards?: { withdrawn: string[]; kept: string[] };
   };
+};
+/** invoice_request_status (417): the request waiting on this invoice, or the last one.
+ *  It never carries the requester's own reason; approvers read that in the request. */
+type RequestStatus = {
+  invoice_id: string; pending: boolean; can_review?: boolean;
+  request: null | { request_id: string; status: string; action: string; requested_by?: string | null;
+    requested_at?: string | null; resolved_by?: string | null; resolved_at?: string | null;
+    rejection_reason?: string | null; legacy?: boolean };
 };
 
 /**
@@ -103,7 +130,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const [overrideAmounts, setOverrideAmounts] = useState<Record<string, string>>({});
   /** One override's own key: an override that names its line is that line's
    *  alone, so two lines needing the same override each get their own reason
-   *  and amount (the server matches them by line, 363). */
+   *  and amount (the server matches them by line, 363 and 417). */
   const overrideKey = (o: Plan['overrides_required'][number]) =>
     o.invoice_item_id ? `${o.code}:${o.invoice_item_id}` : o.code;
   /** The line an override belongs to, by name, for its labels. */
@@ -128,8 +155,11 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       return 'Give a reason for each override.';
     return null;
   })();
+  /** The action the plan on screen is for. The label, the refund tick and the
+   *  review follow it, never a choice the plan has not caught up with. */
+  const planAction: Action | null = plan?.action ?? action;
   /** What the plan returns: a refund's amount, or on a cancellation the refund due. */
-  const planFigure = Number((plan?.action === 'cancel' ? plan?.refund_due : plan?.refund_amount) ?? 0);
+  const planFigure = Number((planAction === 'cancel' ? plan?.refund_due : plan?.refund_amount) ?? 0);
   /** What will actually be refunded: the plan, with each stated amount in place of its line's figure. */
   const statedRefund = (() => {
     const base = planFigure;
@@ -137,23 +167,56 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     return amountOverrides.reduce((sum, o) => sum - Number(o.default_amount ?? 0) + (Number(typedAmount(o)) || 0), base);
   })();
   const [recordRefund, setRecordRefund] = useState(false);
+  // 417 (the Owner, 9 Oct 2026): on a cancellation whose customer already had
+  // part of it, the Owner or Manager states how much is owed back when the
+  // money is not paid back now. It starts at the figure the review works out.
+  const [owedText, setOwedText] = useState<string | null>(null);
+  const owedNeeded = canApprove && planAction === 'cancel' && !!plan?.refund_owed?.needed && !recordRefund;
+  const owedValue = owedText ?? (Math.round(Math.max(statedRefund, 0) * 100) / 100).toFixed(2);
+  const owedProblem = (() => {
+    if (!owedNeeded) return null;
+    const n = Number(owedValue.trim());
+    if (owedValue.trim() === '' || !Number.isFinite(n) || n < 0) return 'Enter how much is owed back to the customer (S$0 or more).';
+    const held = Number(plan?.refund_owed?.held ?? plan?.net_held ?? Infinity);
+    if (n > held + 0.004) return `That is more than the ${money(held)} this invoice holds.`;
+    return null;
+  })();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState<string>('');
-  const [requestId] = useState(() => crypto.randomUUID());
-  const reviewing = Boolean(reviewRequestId);
+  // A request ID names one request. It is renewed when a request this window
+  // raised is withdrawn for a different choice (417, AFTER-M2).
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  /** The request this window raised, while it is still waiting (its approval
+   *  failed or asked for confirmation). Choosing something else withdraws it. */
+  const [ownRequest, setOwnRequest] = useState<{ id: string; action: Action; lines: string } | null>(null);
+  // 417: a request already waiting on this invoice. An Owner or Manager reviews
+  // it here; anyone else is told it is waiting.
+  const [foundReviewId, setFoundReviewId] = useState<string | null>(null);
+  const [waitingRequest, setWaitingRequest] = useState<RequestStatus['request']>(null);
+  const activeReviewId = reviewRequestId ?? foundReviewId ?? undefined;
+  const reviewing = Boolean(activeReviewId);
+  const reviewingRef = useRef(reviewing);
+  reviewingRef.current = reviewing;
   const [detail, setDetail] = useState<any>(null);
   const [rejecting, setRejecting] = useState(false);
+  // 417 (AFTER-14): the approver's own note, empty until they write one. It is
+  // the reason given for a rejection and the note kept with an approval. The
+  // requester's reason is shown, not reused.
+  const [approverNote, setApproverNote] = useState('');
   // A refresh that fails after a successful save must never look like a failed
   // save, and retrying it must never resubmit the action.
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  // Rentals still with the customer when the invoice is cancelled. Receiving
-  // them is a separate confirmed event with a destination and a condition.
-  const [awaiting, setAwaiting] = useState<any[]>([]);
+  // 417 (AFTER-7): rentals the finished action left with the customer.
+  // Receiving one is its own confirmed event, recorded only when the item is
+  // actually back: every item starts as "Not back yet".
+  const [toReceive, setToReceive] = useState<AwaitingRental[]>([]);
+  const [receiveChoice, setReceiveChoice] = useState<Record<string, ReceiveChoice>>({});
+  const [receivedNotes, setReceivedNotes] = useState<string[]>([]);
+  const [receiveError, setReceiveError] = useState('');
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
-  const [whFilter, setWhFilter] = useState('');
-  const [rentalReturn, setRentalReturn] = useState<Record<string, { warehouse_id: string; condition: string }>>({});
+  const [approvedRequestId, setApprovedRequestId] = useState<string | null>(null);
   // 393: special products and rentals still waiting for a warehouse. A partial
   // refund asks, for each, whether the customer is still taking it; the
   // answers go with the request and are honoured when it is approved.
@@ -163,6 +226,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   // all of it closes the invoice, which cancels every waiting item whatever
   // was answered, so it is not asked about and the review says so.
   const [fullPlan, setFullPlan] = useState<Plan | null>(null);
+  /** The plan the header describes: the one worked out last, or the first. */
+  const shownPlan = plan ?? fullPlan;
   const coversWholeInvoice = (() => {
     if (action !== 'refund_partial' || !fullPlan?.lines?.length) return false;
     // Choosing: every line still refundable, at its full quantity.
@@ -222,8 +287,13 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       p_invoice_id: invoiceId, p_action: next, p_lines: lines,
     });
     setBusy(false);
-    if (error) { setError(error.message); return null; }
+    // 417 (AFTER-15): a plan that could not be worked out leaves none on
+    // screen, so no earlier plan is reviewed under this choice.
+    if (error) { setError(error.message); setPlan(null); setStockConfirm({}); return null; }
     const p = data as Plan;
+    // A request found waiting on this invoice is being reviewed now: its own
+    // plan is the one shown.
+    if (reviewingRef.current) return p;
     setPlan(p);
     // Propose the goods as returned and sellable; the person confirms or edits.
     setStockConfirm(Object.fromEntries((p.stock ?? []).map(s => [s.movement_id,
@@ -231,38 +301,40 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     return p;
   }, [invoiceId]);
 
-  // Active warehouses are the only valid destinations; the server checks again.
-  useEffect(() => {
-    supabase.from('warehouses').select('id,name').eq('is_active', true).is('deleted_at', null)
-      .order('name').then(({ data }) => setWarehouses((data as any[]) ?? []));
-    supabase.rpc('invoice_rentals_awaiting_return', { p_invoice_id: invoiceId })
-      .then(({ data }) => {
-        const rows = (data as any[]) ?? [];
-        setAwaiting(rows);
-        setRentalReturn(Object.fromEntries(rows.map(r =>
-          [r.rental_id, { warehouse_id: r.default_warehouse_id ?? '', condition: 'good' }])));
-      });
-  }, [invoiceId]);
-
   // Step 1 needs the line list, which the plan already carries.
   useEffect(() => {
-    if (reviewing) return;
+    if (reviewRequestId) return;
     void derive('refund_full', {}).then(p => { if (p) setFullPlan(p); });
-  }, [derive, reviewing]);
+  }, [derive, reviewRequestId]);
+
+  // 417 (AFTER-M2, AFTER-14): a request already waiting on this invoice. An
+  // Owner or Manager reviews that one rather than raising a second; anyone
+  // else is told it is waiting. Unreadable: the server still refuses a second.
+  useEffect(() => {
+    if (reviewRequestId) return;
+    let cancelled = false;
+    supabase.rpc('invoice_request_status', { p_invoice_id: invoiceId }).then(({ data, error }) => {
+      if (cancelled || error || !data) return;
+      const s = data as RequestStatus;
+      if (!s.pending || !s.request) return;
+      if (canApprove) setFoundReviewId(s.request.request_id);
+      else setWaitingRequest(s.request);
+    });
+    return () => { cancelled = true; };
+  }, [invoiceId, reviewRequestId, canApprove]);
 
   // Approval mode: load the request, then show its CURRENT effects.
   useEffect(() => {
-    if (!reviewRequestId) return;
+    if (!activeReviewId) return;
     let cancelled = false;
     setBusy(true);
-    supabase.rpc('invoice_action_request_detail', { p_request_id: reviewRequestId }).then(({ data, error }) => {
+    supabase.rpc('invoice_action_request_detail', { p_request_id: activeReviewId }).then(({ data, error }) => {
       if (cancelled) return;
       setBusy(false);
       if (error) { setError(error.message); return; }
       const d = data as any;
       setDetail(d);
       setAction(d.action as Action);
-      setReason(d.reason ?? '');
       setQuantities(Object.fromEntries((d.requested_lines ?? []).map((l: any) => [l.invoice_item_id, l.quantity])));
       const p = (d.current_plan ?? d.requested_plan) as Plan | null;
       if (p) {
@@ -280,20 +352,21 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       }
     });
     return () => { cancelled = true; };
-  }, [reviewRequestId, invoiceId]);
+  }, [activeReviewId, invoiceId]);
 
   const chooseAction = async (next: Action) => {
-    setAction(next);
+    setAction(next); setOwedText(null);
     if (next === 'refund_partial') { setStep(2); return; }
-    await derive(next, {});
-    setStep(3);
+    // 417 (AFTER-15): only a plan that was worked out moves on.
+    const p = await derive(next, {});
+    if (p) setStep(3);
   };
 
   const reject = async () => {
-    if (!reviewRequestId || !reason.trim()) { setError('Give the requester a reason for the rejection.'); return; }
+    if (!activeReviewId || !approverNote.trim()) { setError('Give the requester a reason for the rejection.'); return; }
     setBusy(true); setError('');
     const { data, error } = await supabase.rpc('resolve_invoice_action_v2', {
-      p_request_id: reviewRequestId, p_approve: false, p_note: reason.trim(),
+      p_request_id: activeReviewId, p_approve: false, p_note: approverNote.trim(),
     });
     setBusy(false);
     if (error) { setError(error.message); return; }
@@ -302,23 +375,51 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     const restored = (data as any)?.invoice_status_restored as string | null | undefined;
     setDone(restored
       ? `Request rejected. The invoice is back to ${restored.replace(/_/g, ' ')}, as its payments show. Nothing else on it has changed.`
-      : 'Request rejected. The requester sees the reason on the invoice. Nothing on the invoice has changed.');
+      : 'Request rejected. The invoice shows it was rejected, with your reason, to the staff of its store. Nothing on the invoice has changed.');
     try { await onDone(); } catch { /* the rejection is recorded either way */ }
   };
 
+  /**
+   * 417 (AFTER-M2): a request this window raised whose approval failed is
+   * still waiting. Submitting something different withdraws it first (an
+   * Owner or Manager's own rejection, with the reason said here) and raises
+   * the new one under a new request ID. The same choice again is the same
+   * request, which the server returns as it is.
+   */
+  const withdrawOwnRequest = async (nextAction: Action, linesKey: string): Promise<string | null> => {
+    if (!ownRequest) return requestId;
+    if (ownRequest.action === nextAction && ownRequest.lines === linesKey) return requestId;
+    const { error } = await supabase.rpc('resolve_invoice_action_v2', {
+      p_request_id: ownRequest.id, p_approve: false,
+      p_note: `Replaced by a different choice (${actionWords(nextAction)}) in the same window.`,
+    });
+    if (error) { setError(`The earlier request could not be withdrawn, so nothing new was raised: ${error.message}`); return null; }
+    const fresh = crypto.randomUUID();
+    setOwnRequest(null); setRequestId(fresh);
+    return fresh;
+  };
+
   const submit = async () => {
-    if (reviewing) { await approve(reviewRequestId!); return; }
+    if (reviewing) { await approve(activeReviewId!); return; }
     if (!action || !reason.trim()) { setError('Enter a reason for the audit history.'); return; }
+    if (plan && plan.action !== action) {
+      setError(`The review shows a ${actionWords(plan.action)}, not a ${actionWords(action)}. Go back and choose again.`); return;
+    }
     setBusy(true); setError('');
     const chosen = Object.entries(quantities).filter(([, q]) => q > 0)
       .map(([invoice_item_id, quantity]) => ({ invoice_item_id, quantity }));
     // Only a partial refund that leaves the invoice open asks; one that takes
-    // it all back, a full refund or a cancellation closes them all.
-    const lines = action === 'refund_partial' && !coversWholeInvoice
-      ? withWaitingAnswers(chosen, waitingItems, waitingAnswers) : chosen;
+    // it all back, a full refund or a cancellation closes them all. Only a
+    // partial refund names lines: a full refund or a cancellation covers every
+    // line, whatever was typed at step 2 before choosing it.
+    const lines = action !== 'refund_partial' ? []
+      : coversWholeInvoice ? chosen : withWaitingAnswers(chosen, waitingItems, waitingAnswers);
+    const linesKey = JSON.stringify(lines);
+    const rid = await withdrawOwnRequest(action, linesKey);
+    if (!rid) { setBusy(false); return; }
     const { data, error } = await supabase.rpc('request_invoice_action_v2', {
       p_invoice_id: invoiceId, p_action: action, p_lines: lines,
-      p_reason: reason.trim(), p_return_notes: returnNotes.trim() || null, p_request_id: requestId,
+      p_reason: reason.trim(), p_return_notes: returnNotes.trim() || null, p_request_id: rid,
     });
     setBusy(false);
     if (error) { setError(error.message); return; }
@@ -327,22 +428,46 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       await onDone();
       return;
     }
-    await approve((data as any).request_id);
+    const created = (data as any).request_id as string;
+    setOwnRequest({ id: created, action, lines: linesKey });
+    await approve(created);
+  };
+
+  /** After an approval: the rentals it left with the customer, on the lines it covered. */
+  const loadToReceive = async (p: Plan | null) => {
+    if (!p) return;
+    const { data, error } = await supabase.rpc('invoice_rentals_awaiting_return', { p_invoice_id: invoiceId });
+    if (error) return;
+    const rows = rentalsToReceive(data as AwaitingRental[], p.action, (p.lines ?? []).map(l => l.invoice_item_id));
+    setToReceive(rows);
+    setReceiveChoice(Object.fromEntries(rows.map(r => [r.rental_id, NOT_BACK_YET])));
+    if (rows.length) {
+      // Active warehouses are the only other destinations; the server checks again.
+      supabase.from('warehouses').select('id,name').eq('is_active', true).is('deleted_at', null)
+        .order('name').then(({ data: w }) => setWarehouses((w as any[]) ?? []));
+    }
   };
 
   const approve = async (requestRecordId: string) => {
     setBusy(true); setError('');
     const stock = Object.entries(stockConfirm).map(([movement_id, q]) => ({ movement_id, ...q }));
     if (amountProblem) { setBusy(false); setError(amountProblem); return; }
-    const overrides = (plan?.overrides_required ?? []).map(o => {
+    if (owedProblem) { setBusy(false); setError(owedProblem); return; }
+    const overrides: Record<string, unknown>[] = (plan?.overrides_required ?? []).map(o => {
       const typed = typedAmount(o);
       const line = o.invoice_item_id ? { invoice_item_id: o.invoice_item_id } : {};
       return o.amount_required
         ? { code: o.code, reason: overrideReasons[overrideKey(o)] ?? '', amount: typed.trim() === '' ? null : Number(typed), ...line }
         : { code: o.code, reason: overrideReasons[overrideKey(o)] ?? '', ...line };
     });
+    // 417: the amount owed back on a part-used cancellation, as stated.
+    if (owedNeeded) {
+      overrides.push({ code: 'refund_owed', amount: Math.round(Number(owedValue) * 100) / 100,
+        reason: (reviewing ? approverNote.trim() || detail?.reason : reason.trim()) || 'Stated when cancelling' });
+    }
+    const note = reviewing ? (approverNote.trim() || null) : reason.trim();
     const { data, error } = await supabase.rpc('resolve_invoice_action_v2', {
-      p_request_id: requestRecordId, p_approve: true, p_note: reason.trim(),
+      p_request_id: requestRecordId, p_approve: true, p_note: note,
       p_plan_hash: plan?.plan_hash ?? null, p_overrides: overrides,
       p_stock: stock.length ? stock : null, p_record_refund: recordRefund,
     });
@@ -350,15 +475,22 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     if (error) { setError(error.message); return; }
     const r = data as any;
     if (r?.confirmation_required) {
-      setPlan(r.revised_plan);
+      const revised = r.revised_plan as Plan | null;
+      // 417 (AFTER-M2): the request waiting is for another action. Its plan is
+      // not shown under this choice, and nothing is confirmed.
+      if (revised?.action && plan?.action && revised.action !== plan.action) {
+        setError(`The request waiting on this invoice is for a ${actionWords(revised.action)}, not a ${actionWords(plan.action)}. Nothing was changed. Close this window and open the invoice again.`);
+        return;
+      }
+      setPlan(revised);
       // The revised plan can list goods the first one did not (a promotion's
       // stock, since 361); give each its default so the fields show and the
       // next confirmation carries them. Figures already entered are kept.
       setStockConfirm(cur => ({
-        ...Object.fromEntries(((r.revised_plan?.stock ?? []) as PlanStock[]).map(s => [s.movement_id,
+        ...Object.fromEntries(((revised?.stock ?? []) as PlanStock[]).map(s => [s.movement_id,
           { sellable_quantity: s.proposed_sellable, damaged_quantity: 0, not_returned_quantity: 0 }])),
         ...Object.fromEntries(Object.entries(cur).filter(([id]) =>
-          ((r.revised_plan?.stock ?? []) as PlanStock[]).some(s => s.movement_id === id))),
+          ((revised?.stock ?? []) as PlanStock[]).some(s => s.movement_id === id))),
       }));
       setError('What this would do has changed since the request was raised. The revised effects are shown below — review them and confirm again.');
       return;
@@ -372,21 +504,38 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     if (Number(r?.refund_still_due ?? 0) > 0) {
       parts.push(`${money(r.refund_still_due)} is still due back to the customer — record it when the money actually goes back.`);
     }
-    setDone(parts.join(' ') || 'Done.');
-    // Items physically handed back are recorded as their own event, against
-    // the destination and condition the person actually confirmed.
-    for (const r of awaiting) {
-      const choice = rentalReturn[r.rental_id];
-      if (!choice?.warehouse_id) continue;
-      const { error: rerr } = await supabase.rpc('receive_returned_rental', {
-        p_rental_id: r.rental_id, p_warehouse_id: choice.warehouse_id,
-        p_condition: choice.condition, p_reason: reason.trim() || 'Received with the cancellation',
-        p_request_id: requestId,
-      });
-      if (rerr) { setError(`The invoice was saved. The rental return could not be recorded: ${rerr.message}`); break; }
+    if (r?.refund_owed != null && Number(r?.refund_still_due ?? 0) <= 0 && !r?.refund_recorded) {
+      parts.push('Nothing is owed back: the money it holds is kept for what the customer used.');
     }
+    setOwnRequest(null);
+    setApprovedRequestId(requestRecordId);
+    setDone(parts.join(' ') || 'Done.');
+    // 417 (AFTER-7): rentals the action left with the customer are received on
+    // the next screen, once they are actually back.
+    await loadToReceive(plan);
     // A save that worked must not be lost because the refresh failed.
     try { setRefreshFailed(false); await onDone(); } catch { setRefreshFailed(true); }
+  };
+
+  /** Records each rental marked as back, one call each, as its own event. */
+  const recordReceived = async () => {
+    const rows = receivedChoices(toReceive, receiveChoice);
+    if (!rows.length) return;
+    setBusy(true); setReceiveError('');
+    const note = (reviewing ? detail?.reason : reason)?.trim() || 'Received after the cancellation';
+    const notes: string[] = [];
+    const left: AwaitingRental[] = [];
+    for (const r of toReceive) {
+      const c = receiveChoice[r.rental_id] ?? NOT_BACK_YET;
+      if (!c.outcome) { left.push(r); continue; }
+      const { data, error } = await supabase.rpc('receive_returned_rental', receiveRpcArgs(r, c, note, approvedRequestId));
+      if (error) { setReceiveError(`${r.rental_no} could not be recorded: ${error.message}`); left.push(r); continue; }
+      notes.push(receivedText(r, c.outcome, data));
+    }
+    setBusy(false);
+    setReceivedNotes(n => [...n, ...notes]);
+    setToReceive(left);
+    if (notes.length) { try { await onDone(); } catch { setRefreshFailed(true); } }
   };
 
   const line = (id: string) => plan?.lines.find(l => l.invoice_item_id === id);
@@ -395,7 +544,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const hasUnsavedInput = () =>
     (!reviewing && reason.trim().length > 0)
     || returnNotes.trim().length > 0
-    || Object.values(quantities).some(q => q > 0)
+    || approverNote.trim().length > 0
+    || (!reviewing && Object.values(quantities).some(q => q > 0))
     || Object.values(overrideReasons).some(r => (r ?? '').trim().length > 0)
     || Object.keys(overrideAmounts).length > 0
     || (!reviewing && Object.keys(waitingAnswers).length > 0);
@@ -415,11 +565,50 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
       <div className="invoice-guided invoice-guided--done" role="dialog" aria-modal="true" aria-labelledby="ga-done" ref={dialog}>
         <h3 id="ga-done">Done</h3>
         <p>{done}</p>
+        {receivedNotes.length > 0 && <ul aria-label="Rented items recorded">{receivedNotes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
+        {canApprove && toReceive.length > 0 && (
+          <fieldset className="invoice-guided-stock">
+            <legend>Rented items still with the customer</legend>
+            <p className="muted">Cancelling ends the rental but does not bring the item back. Record each one only
+              when it is actually in your hands. Damaged and lost items are never put back on sale. An item not back
+              yet stays on the invoice, where it can be received later.</p>
+            {toReceive.map(r => {
+              const c = receiveChoice[r.rental_id] ?? NOT_BACK_YET;
+              const set = (next: Partial<ReceiveChoice>) => setReceiveChoice(v => ({ ...v, [r.rental_id]: { ...c, ...next } }));
+              return (
+                <div key={r.rental_id} className="invoice-guided-stock-row invoice-guided-receive-row">
+                  <span>{r.item} <small>· {r.rental_no} · {r.quantity} out</small></span>
+                  <label>What happened
+                    <select value={c.outcome} aria-label={`What happened to ${r.rental_no}`}
+                      onChange={e => set({ outcome: e.target.value as ReceiveChoice['outcome'] })}>
+                      <option value="">Not back yet</option>
+                      <option value="good">Back in good condition — on sale again</option>
+                      <option value="damaged">Back but damaged — not for sale</option>
+                      <option value="lost">Lost — never came back</option>
+                    </select>
+                  </label>
+                  {c.outcome === 'good' && (
+                    <label>Goes back to
+                      <select value={c.warehouseId} aria-label={`Where ${r.rental_no} goes back to`}
+                        onChange={e => set({ warehouseId: e.target.value })}>
+                        <option value="">{receiveHomeLabel(r)}</option>
+                        {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                      </select>
+                    </label>)}
+                </div>);
+            })}
+            {receiveError && <p className="invoice-guided-warn" role="alert">{receiveError}</p>}
+            <div className="invoice-guided-foot">
+              <button className="btn" disabled={busy || receivedChoices(toReceive, receiveChoice).length === 0}
+                onClick={recordReceived}>{busy ? 'Recording…' : 'Record what came back'}</button>
+            </div>
+          </fieldset>
+        )}
         {refreshFailed && (
           <div className="invoice-guided-warn" role="status">
             <strong>This was saved.</strong> The invoice on screen could not be reloaded, so what
             you can see behind this message may be out of date. Retrying only re-reads the
-            invoice — it does not repeat the {action === 'cancel' ? 'cancellation' : 'refund'}.
+            invoice — it does not repeat the {planAction === 'cancel' ? 'cancellation' : 'refund'}.
             <div className="invoice-guided-foot">
               <button className="btn" disabled={refreshing} onClick={async () => {
                 setRefreshing(true);
@@ -438,14 +627,14 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     <div className="invoice-guided-backdrop" onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
       <div className="invoice-guided" role="dialog" aria-modal="true" aria-labelledby="ga-title" ref={dialog}>
         <div className="invoice-guided-head">
-          <h3 id="ga-title">Refund or cancel{plan?.invoice_no ? ` ${plan.invoice_no}` : ''}</h3>
+          <h3 id="ga-title">Refund or cancel{shownPlan?.invoice_no ? ` ${shownPlan.invoice_no}` : ''}</h3>
           <button type="button" className="invoice-guided-close" aria-label="Close without saving"
             onClick={requestClose}>&times;</button>
         </div>
-        {plan && (
+        {shownPlan && (
           <p className="invoice-guided-status">
-            {plan.status ? <span className="invoice-guided-chip">{String(plan.status).replace(/_/g, ' ')}</span> : null}
-            {plan.window ? <span>Created {readableDate(plan.window.created_on)}</span> : null}
+            {shownPlan.status ? <span className="invoice-guided-chip">{String(shownPlan.status).replace(/_/g, ' ')}</span> : null}
+            {shownPlan.window ? <span>Created {readableDate(shownPlan.window.created_on)}</span> : null}
           </p>
         )}
         <ol className="invoice-guided-steps" aria-label="Progress">
@@ -468,17 +657,25 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             <ul>{plan.blockers.map(b => <li key={b.code}>{b.message}</li>)}</ul>
           </div>
         )}
+        {waitingRequest && !reviewing && (
+          <p className="invoice-guided-warn" role="status" data-testid="request-waiting">
+            A {actionWords(waitingRequest.action)} request for this invoice is already waiting for approval
+            {waitingRequest.requested_at ? ` since ${sgDay(waitingRequest.requested_at)}` : ''}
+            {waitingRequest.requested_by ? ` (raised by ${waitingRequest.requested_by})` : ''}.
+            Nothing more can be asked until an Owner or Manager decides on it.
+          </p>
+        )}
 
         {step === 1 && plan?.blocked && (
           <p className="muted">Every action is unavailable until the review above is resolved.</p>
         )}
         {step === 1 && (
           <div className="invoice-guided-choices">
-            <button className="btn" disabled={busy || plan?.blocked} onClick={() => chooseAction('cancel')}>
+            <button className="btn" disabled={busy || plan?.blocked || !!waitingRequest} onClick={() => chooseAction('cancel')}>
               <strong>Cancel invoice</strong><span>Cancel this purchase. Any refund due is shown before confirmation.</span></button>
-            <button className="btn" disabled={busy || plan?.blocked || nothingToRefund} onClick={() => chooseAction('refund_full')}>
+            <button className="btn" disabled={busy || plan?.blocked || nothingToRefund || !!waitingRequest} onClick={() => chooseAction('refund_full')}>
               <strong>Full refund</strong><span>Review the remaining refundable items and amount.</span></button>
-            <button className="btn" disabled={busy || plan?.blocked || nothingToRefund} onClick={() => chooseAction('refund_partial')}>
+            <button className="btn" disabled={busy || plan?.blocked || nothingToRefund || !!waitingRequest} onClick={() => chooseAction('refund_partial')}>
               <strong>Partial refund</strong><span>Choose the items and quantities to refund.</span></button>
           </div>
         )}
@@ -491,7 +688,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
         {step === 2 && (
           <fieldset className="invoice-guided-lines">
             <legend>Which items are coming back?</legend>
-            {(plan?.lines ?? []).map(l => (
+            {/* Every line still refundable, whatever plan was worked out last. */}
+            {((fullPlan ?? plan)?.lines ?? []).map(l => (
               <label key={l.invoice_item_id}>
                 <span>{l.name} <small>({l.line_kind.replace(/_/g, ' ')}, {l.quantity} sold)</small></span>
                 <input type="number" min={0} max={l.quantity} inputMode="numeric"
@@ -533,7 +731,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               {detail.action === 'cancel' ? 'cancel this invoice'
                 : detail.action === 'refund_partial' ? 'refund some items' : 'refund everything'}
               {' '}· {detail.store}</div>
-            <div className="muted">“{detail.reason}”{detail.return_notes ? ` · ${detail.return_notes}` : ''}</div>
+            <div className="muted">Their reason: “{detail.reason}”{detail.return_notes ? ` · ${detail.return_notes}` : ''}</div>
             {detail.action === 'cancel'
               ? detail.requested_plan && <div>Refund due when asked: {money(detail.requested_plan.refund_due)}</div>
               : detail.requested_amount != null && <div>Amount when asked: {money(detail.requested_amount)}</div>}
@@ -564,10 +762,10 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               <p className="muted">Rejecting it puts the invoice back to the status its payments show
                 (it reads “{String(detail.invoice_status).replace(/_/g, ' ')}” until then).</p>)}
             <label>Reason for the requester
-              <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
+              <textarea value={approverNote} onChange={e => setApproverNote(e.target.value)} rows={2} /></label>
             <div className="invoice-guided-foot">
               <button className="btn" onClick={onClose}>Close</button>
-              <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Reject</button>
+              <button className="btn btn-danger" disabled={busy || !approverNote.trim()} onClick={reject}>Reject</button>
             </div>
           </div>
         )}
@@ -579,6 +777,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               const fx = plan.effects;
               if (!fx) return <ul className="invoice-guided-summary">{plan.summary.map((s, n) => <li key={n}>{s}</li>)}</ul>;
               const credits = (fx.benefits ?? []).filter(b => b.credit_removed != null || b.units_revoked != null);
+              const withdrawn = fx.rewards?.withdrawn ?? [];
+              const kept = fx.rewards?.kept ?? [];
               return (<>
                 {Number(fx.money_returned?.total ?? 0) > 0 && (
                   <section className="invoice-guided-section">
@@ -591,14 +791,14 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                       the money was returned; making the payment is a separate act.</p>
                   </section>
                 )}
-                {action === 'cancel' && Number(plan.refund_due ?? 0) > 0 && !recordRefund && (
+                {planAction === 'cancel' && Number(plan.refund_due ?? 0) > 0 && !recordRefund && (
                   <section className="invoice-guided-section">
                     <h5>Refund due</h5>
-                    <p className="invoice-guided-figure">{money(plan.refund_due)}</p>
+                    <p className="invoice-guided-figure">{money(owedNeeded ? Number(owedValue) || 0 : plan.refund_due)}</p>
                     <p className="muted">Nothing is recorded as returned until someone confirms it was.</p>
                   </section>
                 )}
-                {credits.length > 0 && (
+                {(credits.length > 0 || withdrawn.length > 0 || kept.length > 0) && (
                   <section className="invoice-guided-section">
                     <h5>Credits and benefits cancelled</h5>
                     <ul>{credits.map((b, n) => (
@@ -608,7 +808,10 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                           : <>{b.units_revoked} unused voucher unit{Number(b.units_revoked) === 1 ? '' : 's'}</>}
                         {b.holder ? <> — {b.holder}</> : null}
                         {b.line ? <span className="muted"> ({b.line})</span> : null}
-                      </li>))}</ul>
+                      </li>))}
+                      {withdrawn.length > 0 && <li>Reward entitlements withdrawn: {withdrawn.join(', ')}</li>}
+                      {kept.length > 0 && <li>Reward entitlements kept (already activated or claimed, with their history): {kept.join(', ')}</li>}
+                    </ul>
                   </section>
                 )}
                 {(fx.therapy_closed ?? []).length > 0 && (
@@ -708,42 +911,9 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               </fieldset>
             )}
 
-            {canApprove && awaiting.length > 0 && (
-              <fieldset className="invoice-guided-stock">
-                <legend>Rented items still out</legend>
-                <p className="muted">Cancelling the invoice ends the rental but does not bring the item
-                  back. Record where it goes and what state it is in only when it is actually in your hands —
-                  damaged and lost items are never put back on sale.</p>
-                <label>Find a warehouse
-                  <input type="search" value={whFilter} onChange={e => setWhFilter(e.target.value)}
-                    placeholder="Type to filter destinations" aria-label="Filter warehouses" /></label>
-                {awaiting.map(r => (
-                  <div key={r.rental_id} className="invoice-guided-stock-row">
-                    <span>{r.item} <small>· {r.rental_no} · {r.quantity} out</small></span>
-                    <label>Destination
-                      <select value={rentalReturn[r.rental_id]?.warehouse_id ?? ''}
-                        aria-label={`Destination warehouse for ${r.rental_no}`}
-                        onChange={e => setRentalReturn({ ...rentalReturn,
-                          [r.rental_id]: { ...rentalReturn[r.rental_id], warehouse_id: e.target.value } })}>
-                        <option value="">Not back yet</option>
-                        {warehouses
-                          .filter(w => !whFilter || w.name.toLowerCase().includes(whFilter.toLowerCase()))
-                          .map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-                      </select>
-                    </label>
-                    <label>Condition
-                      <select value={rentalReturn[r.rental_id]?.condition ?? 'good'}
-                        aria-label={`Condition of ${r.rental_no}`}
-                        onChange={e => setRentalReturn({ ...rentalReturn,
-                          [r.rental_id]: { ...rentalReturn[r.rental_id], condition: e.target.value } })}>
-                        <option value="good">Good — back on sale</option>
-                        <option value="damaged">Damaged — not for sale</option>
-                        <option value="lost">Lost — never came back</option>
-                      </select>
-                    </label>
-                  </div>
-                ))}
-              </fieldset>
+            {canApprove && planAction === 'cancel' && plan.lines.some(l => l.line_kind === 'rental') && (
+              <p className="muted">A rented item still with the customer stays out until it comes back. After the
+                cancellation you can record it as back, damaged or lost.</p>
             )}
 
             {canApprove && plan.overrides_required.length > 0 && (
@@ -774,7 +944,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               </fieldset>
             )}
 
-            {canApprove && action === 'cancel' && (plan.refund_due ?? 0) > 0 && (
+            {canApprove && planAction === 'cancel' && (plan.refund_due ?? 0) > 0 && (
               <label className="invoice-guided-refunddue">
                 <input type="checkbox" checked={recordRefund} onChange={e => setRecordRefund(e.target.checked)} />
                 <span>The {money(plan.refund_due)} has actually gone back to the customer now.
@@ -782,10 +952,34 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               </label>
             )}
 
+            {owedNeeded && (
+              <fieldset className="invoice-guided-overrides" data-testid="refund-owed">
+                <legend>Owed back to the customer</legend>
+                <p className="muted">{plan.refund_owed?.message}</p>
+                <label><span>Amount owed back (S$)</span>
+                  <input type="number" min={0} step="0.01" required value={owedValue}
+                    aria-label="Amount owed back to the customer"
+                    onChange={e => setOwedText(e.target.value)} />
+                </label>
+                <p className="muted">This shows as the refund due until it is recorded as paid back. The rest of the
+                  money is kept for what the customer used.</p>
+                {owedProblem && <p className="invoice-guided-warn" role="alert">{owedProblem}</p>}
+              </fieldset>
+            )}
+
+            {canApprove && reviewing && !rejecting && (
+              <label className="invoice-guided-why">Your note <small>(optional, kept with the approval)</small>
+                <textarea value={approverNote} onChange={e => setApproverNote(e.target.value)} rows={2} /></label>
+            )}
+
             {error && <p className="invoice-guided-warn" role="alert">{error}</p>}
             {reviewing && rejecting && (
               <label className="invoice-guided-why">Reason for rejecting
-                <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} autoFocus /></label>
+                <textarea value={approverNote} onChange={e => setApproverNote(e.target.value)} rows={2} autoFocus
+                  placeholder="Why this is refused, in your own words" /></label>
+            )}
+            {reviewing && rejecting && (
+              <p className="muted">The invoice shows that this request was rejected, with this reason, to the staff of its store.</p>
             )}
             {!canApprove && <p className="muted">This will be sent to an Owner or Manager. Nothing changes until they approve it.</p>}
           </div>
@@ -803,11 +997,11 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             <button type="button" className="btn" onClick={() => setStep(1)}>Back</button>
             <button type="button" className="btn btn-primary"
               disabled={busy || !Object.values(quantities).some(q => q > 0) || waitingLeft.length > 0}
-              onClick={async () => { await derive('refund_partial', quantities); setStep(3); }}>Continue</button>
+              onClick={async () => { const p = await derive('refund_partial', quantities); if (p) setStep(3); }}>Continue</button>
           </>)}
           {step === 3 && (<>
             <button type="button" className="btn" onClick={() => setStep(action === 'refund_partial' ? 2 : 1)}>Back</button>
-            <button type="button" className="btn btn-primary" disabled={!reason.trim()}
+            <button type="button" className="btn btn-primary" disabled={!reason.trim() || !plan}
               onClick={() => setStep(4)}>Continue</button>
           </>)}
           {step === 4 && plan && !(reviewing && detail?.legacy) && (<>
@@ -819,16 +1013,17 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               <button className="btn btn-danger" disabled={busy || detail?.status !== 'pending'}
                 onClick={() => setRejecting(true)}>Reject</button>)}
             {reviewing && rejecting
-              ? <button className="btn btn-danger" disabled={busy || !reason.trim()} onClick={reject}>Confirm rejection</button>
+              ? <button className="btn btn-danger" disabled={busy || !approverNote.trim()} onClick={reject}>Confirm rejection</button>
               : <button className="btn btn-primary"
-                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending') || (canApprove && !!amountProblem)} onClick={submit}>
+                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending')
+                    || (canApprove && (!!amountProblem || !!owedProblem))} onClick={submit}>
                   {(() => {
                     // The amount an Owner/Manager stated for an override is what is refunded.
                     const amount = canApprove ? statedRefund : Number(plan.refund_amount ?? 0);
                     if (!canApprove && !reviewing) {
-                      return action === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
+                      return planAction === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
                     }
-                    if (action === 'cancel') {
+                    if (planAction === 'cancel') {
                       return recordRefund && Number(plan.refund_due ?? 0) > 0
                         ? `Confirm cancellation and ${money(canApprove ? statedRefund : plan.refund_due)} refund`
                         : 'Confirm cancellation';

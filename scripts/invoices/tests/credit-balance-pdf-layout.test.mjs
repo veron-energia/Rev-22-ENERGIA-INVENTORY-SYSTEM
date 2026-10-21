@@ -31,6 +31,12 @@
 // always fits beside a totals block, so a copy from the invoice page is never
 // left without the line; that happens only on a copy with no totals block.
 // Invented amounts only.
+//
+// B16 (AFTER-8): all of that holds while the copy fits one A5 page with every
+// payment listed. A copy that still runs off the page once the goods and the
+// line have given way shortens its payments to one row, and if even that
+// does not fit, takes a second page; there the line has room again. The line
+// itself never causes either. AFTER-9: an exchange note under the header.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -85,6 +91,10 @@ function drawnPdf(pdf) {
   return items;
 }
 const drawn = d => drawnPdf(buildDocumentPdf(d));
+/** How many pages the copy took (B16: a second one when it runs long). */
+const pageCount = d => buildDocumentPdf(d).getNumberOfPages();
+/** The payments were shortened to one row (B16, AFTER-8). */
+const paymentsShortened = items => items.some(i => /^Payments: \d+; full list on the store copy$/.test(i.text));
 const yOf = (items, text) => { const it = items.find(i => i.text === text); assert.ok(it, `"${text}" was not drawn`); return it.y; };
 /** The last footer line's baseline, in points above the bottom edge. */
 const footerY = items => { const f = items.filter(i => i.text.includes('Co. Reg No.')); assert.ok(f.length, 'footer drawn'); return f[f.length - 1].y; };
@@ -198,15 +208,26 @@ test('at every length and with long payment lists: the same item rows, and the f
 test('with nothing to sit beside, the line gives way in order: the breakdown first, then the total', () => {
   // Grow the payment list on a one-item copy with no totals block: the line
   // shows in full under the payments, then without the breakdown, then not at
-  // all — never the other way round.
+  // all — never the other way round — while every payment is listed. B16
+  // (AFTER-8): once the listed payments themselves would run the footer off
+  // the page, they shorten to one row, and the line has room again, in full.
   const order = { full: 0, total: 1, none: 2 };
   let last = 'full';
   const states = [];
+  let shortened = false;
   for (let pays = 0; pays <= 24; pays++) {
-    const now = lineShown(drawn(doc(1, pays, CREDIT, NO_TOTALS)), CREDIT);
+    const items = drawn(doc(1, pays, CREDIT, NO_TOTALS));
+    const now = lineShown(items, CREDIT);
+    if (paymentsShortened(items)) {
+      shortened = true;
+      assert.equal(now, 'full', `${pays} payments, shortened to one row: ${now}`);
+      continue;
+    }
+    assert.ok(!shortened, `${pays} payments: listed again after a shorter list was shortened`);
     assert.ok(order[now] >= order[last], `${pays} payments: ${now} after ${last}`);
     states.push(now); last = now;
   }
+  assert.ok(shortened, 'a long enough list is shortened');
   assert.ok(states.includes('full') && states.includes('total') && states.includes('none'), states.join(','));
 });
 
@@ -222,8 +243,11 @@ test('a breakdown too long for the column goes under the payments; on a full pag
   assert.ok(yOf(roomy, LABEL) < yOf(roomy, 'Cash · 01/10/2026'), 'below the last payment row');
   assert.equal(yOf(roomy, big.amount), yOf(roomy, LABEL), 'its total on the label\'s line, at the right');
   // A page already full: under the payments would push the footer, so the
-  // breakdown goes and the total alone sits beside the totals.
-  const full = drawn(doc(9, 2, big, short)), bare = drawn(doc(9, 2, null, short));
+  // breakdown goes and the total alone sits beside the totals. (At 9 items the
+  // copy ran off the page even without the line; since B16 it takes a second
+  // page, where the line has room: see the second-page test below.)
+  const full = drawn(doc(7, 2, big, short)), bare = drawn(doc(7, 2, null, short));
+  assert.equal(pageCount(doc(7, 2, big, short)), 1);
   assert.equal(lineShown(full, big), 'total');
   assert.ok(beside(full));
   assert.ok(yOf(full, big.amount) < yOf(full, LABEL), 'the total on its own line under the label');
@@ -240,9 +264,19 @@ test('where it still gives way, stated: a breakdown too wide for the column besi
       const at = `${n} items, ${pays} payments`;
       const withLine = drawn(doc(n, pays, big, { totals: TOTALS['S$0 owed, nothing paid'] }));
       const without = drawn(doc(n, pays, null, { totals: TOTALS['S$0 owed, nothing paid'] }));
-      assert.equal(lineShown(withLine, big), n < from ? 'full' : 'total', at);
-      // In full it is under the payments; the total alone, beside the totals.
-      assert.equal(beside(withLine), n >= from, `${at}: beside`);
+      const bareDoc = doc(n, pays, null, { totals: TOTALS['S$0 owed, nothing paid'] });
+      if (pageCount(bareDoc) === 1 && !paymentsShortened(without)) {
+        assert.equal(lineShown(withLine, big), n < from ? 'full' : 'total', at);
+        // In full it is under the payments; the total alone, beside the totals.
+        assert.equal(beside(withLine), n >= from, `${at}: beside`);
+      } else {
+        // B16 (AFTER-8): the copy runs off the page without the line, so its
+        // payments shorten or it takes a second page. The line never causes
+        // either, and there it has room: never left off.
+        assert.equal(pageCount(doc(n, pays, big, { totals: TOTALS['S$0 owed, nothing paid'] })), pageCount(bareDoc), `${at}: pages`);
+        assert.equal(paymentsShortened(withLine), paymentsShortened(without), `${at}: payments`);
+        assert.notEqual(lineShown(withLine, big), 'none', at);
+      }
       assert.deepEqual(rowNames(withLine), rowNames(without), `${at}: rows`);
       assert.ok(footerY(withLine) >= Math.min(footerY(without), ON_PAGE) - 0.01, `${at}: footer`);
     }
@@ -261,10 +295,15 @@ test('the copy remembers how the line came out, for the page to say when it was 
   assert.equal(creditBalanceShown(d1), null, 'not drawn yet');
   buildDocumentPdf(d1);
   assert.equal(creditBalanceShown(d1), 'full');
-  const d2 = doc(1, 20, CREDIT, NO_TOTALS);
+  const d2 = doc(1, 17, CREDIT, NO_TOTALS);
   buildDocumentPdf(d2);
   assert.equal(creditBalanceShown(d2), 'none', 'left off for space');
   assert.equal(lineShown(drawnPdf(buildDocumentPdf(d2)), CREDIT), 'none');
+  // B16: with the payments shortened to one row the line has room, and that is what is remembered.
+  const d5 = doc(1, 20, CREDIT, NO_TOTALS);
+  buildDocumentPdf(d5);
+  assert.equal(creditBalanceShown(d5), 'full');
+  assert.ok(paymentsShortened(drawnPdf(buildDocumentPdf(d5))));
   const d3 = doc(1, 15, CREDIT, NO_TOTALS);
   buildDocumentPdf(d3);
   assert.equal(creditBalanceShown(d3), 'total');
@@ -338,4 +377,148 @@ test('without a credit line nothing changes', () => {
   const items = drawn(doc(5, 2));
   assert.ok(!items.some(i => i.text.startsWith('Credit balance')));
   assert.deepEqual(rowNames(drawn(doc(30, 2))), rowNames(drawn(doc(30, 2, null))));
+});
+
+// ── B16 (AFTER-8, AFTER-9): a copy that runs long, and what is on it ─────────
+/** Every string drawn, page by page: each page's own content stream. */
+function drawnPages(pdf) {
+  const out = pdf.output();
+  const streams = out.split('endstream').slice(0, -1).map(s => s.slice(s.lastIndexOf('stream') + 6));
+  const re = /(-?[\d.]+) (-?[\d.]+) Td\s*\(((?:\\.|[^\\)])*)\) Tj/g;
+  return streams.map(st => {
+    const items = [];
+    for (let m; (m = re.exec(st));) items.push({ x: Number(m[1]), y: Number(m[2]), text: winAnsi(m[3].replace(/\\([()\\])/g, '$1')) });
+    return items;
+  }).filter(p => p.length);
+}
+// As long as the longest policy any store has in production (195 characters,
+// one paragraph, read 18 Oct 2026). The words are invented.
+const POLICY_195 = 'Items may be exchanged within 7 days with the receipt and the original box, after a check in store. '
+  + 'Orders paid by deposit are final. Therapy packages run 12 months from the day they start.';
+/** Six lines as a real invoice has them: each with an FOC or discount note, a promotion with its contents. */
+const realLines = () => [
+  { name: 'Far-Infrared Bio-Ceramic Pillow (Queen)', qty: 2, unit: 180, total: 180, notes: ['FOC 1 of 2 free — value S$180.00'] },
+  { name: 'Germanium Wellness Socks (L)', qty: 3, unit: 25, total: 70, notes: ['Discount -S$5.00'] },
+  { name: 'Promotion: Fixture Wellness Bundle', qty: 1, unit: 500, total: 500,
+    notes: ['Tourmaline Knee Support Band × 2 (included)', 'Negative Ion Water Bottle 750ml × 1 (chosen)', 'incl. top-up S$20.00'] },
+  { name: 'Voucher: Fixture Massage Voucher', qty: 1, unit: 80, total: 80, notes: [] },
+  { name: 'Posture Corrector Corset (M)', qty: 1, unit: 120, total: 120, notes: ['Manual price override'] },
+  { name: 'Heated Lumbar Pad with Controller', qty: 1, unit: 150, total: 150, notes: ['Voucher Ten -S$15.00'] },
+];
+const lastPage = pdf => drawnPages(pdf).at(-1);
+
+test('a 6-line, 4-payment invoice with the longest store policy keeps everything on its page', () => {
+  for (const totals of Object.values(TOTALS)) {
+    const d = doc(6, 4, OWNERS, { lines: realLines(), policyText: POLICY_195, totals });
+    const pdf = buildDocumentPdf(d);
+    const pages = drawnPages(pdf);
+    assert.equal(pages.length, pdf.getNumberOfPages(), 'one content stream a page');
+    const last = pages.at(-1);
+    // The footer's last line at least 8 mm above the edge of its page, and nothing cut off.
+    assert.ok(footerY(last) >= ON_PAGE - 0.01, `the footer is ${(footerY(last) / PT_PER_MM).toFixed(1)} mm from the foot`);
+    for (const t of ['Staff Signature', 'Customer Signature', 'CANCELLATION / EXCHANGE / REFUND POLICY', 'How to pay']) {
+      assert.ok(last.some(i => i.text === t), `"${t}" is on the copy`);
+    }
+    assert.ok(pages.flat().every(i => i.y >= ON_PAGE - 0.01 - 3 * PT_PER_MM), 'nothing drawn off the foot of a page');
+    // Every line is listed, with its notes.
+    for (const l of realLines()) assert.ok(pages[0].some(i => i.text === l.name), `"${l.name}" is listed`);
+    assert.ok(pages[0].some(i => i.text === 'Negative Ion Water Bottle 750ml × 1 (chosen)'), 'a promotion lists what is in it');
+  }
+});
+
+test('payments that would run the footer off the page shorten to one row, with their count and total', () => {
+  const d = doc(7, 2);
+  assert.equal(pageCount(d), 1);
+  const items = drawn(d);
+  assert.ok(paymentsShortened(items), 'one row for the payments');
+  assert.equal(items.find(i => i.text === 'Payments: 2; full list on the store copy') && items.some(i => i.text === 'S$10.00'), true);
+  assert.ok(!items.some(i => i.text.startsWith('Cash · ')), 'the list itself is left for the store copy');
+  assert.ok(footerY(items) >= ON_PAGE - 0.01, 'and the footer is on the page');
+  // With room for the list, it is listed as before.
+  assert.ok(!paymentsShortened(drawn(doc(3, 2))));
+  assert.equal(drawn(doc(3, 2)).filter(i => i.text.startsWith('Cash · ')).length, 2);
+});
+
+test('when even one row does not fit, the copy takes a second page, with every payment there', () => {
+  // Nine items and twelve payments: the items stay on page 1 with their totals.
+  const short = buildDocumentPdf(doc(9, 12));
+  assert.equal(short.getNumberOfPages(), 2);
+  const [p1, p2] = drawnPages(short);
+  assert.ok(p1.some(i => i.text === 'Continued on page 2'), 'page 1 says it goes on');
+  assert.ok(p1.some(i => i.text === 'Total'), 'the totals stay with the items');
+  assert.equal(rowNames(p1).length, 9);
+  assert.ok(p2.some(i => i.text === 'INV-T-0001 (continued)') && p2.some(i => i.text === 'Page 2 of 2'));
+  assert.equal(p2.filter(i => i.text.startsWith('Cash · ')).length, 12, 'every payment, listed');
+  assert.ok(!paymentsShortened(p2));
+  assert.ok(footerY(p2) >= ON_PAGE - 0.01, 'the footer on the second page, on the page');
+  assert.ok(p2.some(i => i.text === 'Staff Signature') && !p1.some(i => i.text === 'Staff Signature'));
+  // B16 (AFTER-9): fourteen items are more than page 1 lists. The rows carry
+  // on to page 2 under the column heads, with the totals after the last one;
+  // none is left for the store copy.
+  const d = doc(14, 12);
+  const pdf = buildDocumentPdf(d);
+  assert.equal(pdf.getNumberOfPages(), 2);
+  const [first, second] = drawnPages(pdf);
+  assert.ok(first.some(i => i.text === 'Continued on page 2'), 'page 1 says it goes on');
+  assert.ok(!first.some(i => i.text === 'Total') && second.some(i => i.text === 'Total'), 'the totals follow the last row');
+  assert.ok(second.some(i => i.text === 'ITEM') && second.some(i => i.text === 'QTY'), 'the column heads again');
+  assert.deepEqual([...rowNames(first), ...rowNames(second)], Array.from({ length: 14 }, (_, n) => `Test item ${n + 1}`), 'every row, in order');
+  assert.ok(!continued(first) && !continued(second), 'no row left off');
+  assert.equal(second.filter(i => i.text.startsWith('Cash · ')).length, 12, 'every payment, listed');
+  assert.ok(footerY(second) >= ON_PAGE - 0.01, 'the footer on the second page, on the page');
+  assert.ok(second.some(i => i.text === 'Staff Signature') && !first.some(i => i.text === 'Staff Signature'));
+  assert.equal(first.filter(i => i.text === 'Continued on page 2').length, 1, 'said once');
+});
+
+test('more rows than two pages hold with the footer: drawn as before, the footer still on the copy', () => {
+  for (const pays of [1, 12]) {
+    const pdf = buildDocumentPdf(doc(40, pays));
+    assert.equal(pdf.getNumberOfPages(), 2);
+    const [first, second] = drawnPages(pdf);
+    assert.ok(continued(first), `${pays}: the rows page 1 holds, then the continued note`);
+    assert.deepEqual(rowNames(first), rowNames(drawn(doc(9, 0))), `${pays}: page 1's rows`);
+    assert.ok(first.some(i => i.text === 'Total'), `${pays}: the totals stay with the items`);
+    assert.ok(footerY(second) >= ON_PAGE - 0.01, `${pays}: the footer on the second page, on the page`);
+  }
+});
+
+test('promotion contents never push a row off the copy (AFTER-9)', () => {
+  /** `notes[i]` content lines under line i, as a promotion lists what is inside it. */
+  const promoLines = notes => notes.map((n, i) => ({
+    name: `Promotion line ${i + 1} with a long fixture bundle name`, qty: 1, unit: 10, total: 10,
+    notes: Array.from({ length: n }, (_, k) => `Fixture content item ${k + 1} × 1 (included)`),
+  }));
+  for (const notes of [[4, 4, 0, 0, 0, 0], [9, 3, 0, 0], [3, 3, 3, 0], [9, 0, 0, 0, 0]]) {
+    for (const pays of [1, 2]) {
+      const lines = promoLines(notes);
+      const d = doc(lines.length, pays, null, { lines, policyText: POLICY_195 });
+      const pdf = buildDocumentPdf(d);
+      const pages = drawnPages(pdf);
+      const at = `notes ${notes.join(',')}, ${pays} payment(s)`;
+      for (const l of lines) assert.ok(pages.flat().some(i => i.text === l.name), `${at}: "${l.name}" is drawn`);
+      assert.ok(!pages.flat().some(i => i.text.startsWith('…continued')), `${at}: no row left off`);
+      for (const n of notes.keys()) {
+        for (let k = 1; k <= notes[n]; k++) assert.ok(pages.flat().some(i => i.text === `Fixture content item ${k} × 1 (included)`), `${at}: content ${k}`);
+      }
+      assert.ok(footerY(pages.at(-1)) >= ON_PAGE - 0.01, `${at}: the footer on its page`);
+      assert.ok(pages.flat().every(i => i.y >= ON_PAGE - 0.01 - 3 * PT_PER_MM), `${at}: nothing drawn off the foot of a page`);
+    }
+  }
+});
+
+test('a payment list too long even for a second page is shortened there', () => {
+  const d = doc(14, 40);
+  const pdf = buildDocumentPdf(d);
+  assert.equal(pdf.getNumberOfPages(), 2);
+  const second = lastPage(pdf);
+  assert.ok(paymentsShortened(second));
+  assert.ok(second.some(i => i.text === 'S$200.00'), 'the 40 payments\' total');
+  assert.ok(footerY(second) >= ON_PAGE - 0.01);
+});
+
+test('an exchange invoice says so under its header (AFTER-9)', () => {
+  const note = 'Exchange invoice: replaces items from INV-T-0000';
+  const items = drawn(doc(2, 1, null, { headerNote: note }));
+  assert.ok(yOf(items, note) > yOf(items, 'BILL TO'), 'above Bill To');
+  assert.ok(!drawn(doc(2, 1)).some(i => i.text.startsWith('Exchange invoice')), 'and only on an exchange');
 });

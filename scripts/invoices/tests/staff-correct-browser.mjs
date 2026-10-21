@@ -10,6 +10,13 @@
 // a saved price sent with another item to anyone but an Owner or Manager).
 // Choosing the item the line already has (a therapy session or a ticket
 // option too) keeps its saved price, and a therapy session its quantity.
+//
+// B16: the correction summary is sent the corrected lines and shows the
+// total, the status and what is owing, says payment changes are checked only
+// on saving, locks the form while open, and reviews again a form changed
+// after it (416 rule 11, CREATE-5); a payment row fits a phone (CREATE-13);
+// the request banner and button (417); Confirm FOC asks first, Remove FOC
+// takes a reason, and neither is offered to Inventory Managers (CREATE-19).
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -134,6 +141,17 @@ const scenarios = {
   // Two sessions at an older S$60.00 (S$80.00 today).
   therapy: paidWith(lineOf({ line_kind: 'therapy', product_id: null, therapy_service_id: 'massage', therapy_service_name_snapshot: 'Test Massage',
     quantity: 2, unit_price: 60, line_total: 120 })),
+  // B16: a completed FOC invoice, and an unpaid one that is fully FOC (S$0).
+  foc_done: {
+    tables: { ...base, invoices: [invoice({ status: 'completed_foc', paid_amount: 0, total_amount: 0, subtotal: 0, is_full_foc: true, foc_total: 100 })],
+      invoice_items: [lineOf({ foc_quantity: 1, foc_amount: 100, is_foc: true, line_total: 0, foc_reason: 'Fixture reason' })], invoice_payments: [] },
+    financial: { total: 0, net_received: 0, outstanding: 0, refund_due: 0, refunded: 0, status: 'completed_foc' },
+  },
+  foc_open: {
+    tables: { ...base, invoices: [invoice({ status: 'unpaid', paid_amount: 0, total_amount: 0, subtotal: 0, is_full_foc: true, foc_total: 100 })],
+      invoice_items: [lineOf({ foc_quantity: 1, foc_amount: 100, is_foc: true, line_total: 0, foc_reason: 'Fixture reason' })], invoice_payments: [] },
+    financial: { total: 0, net_received: 0, outstanding: 0, refund_due: 0, refunded: 0, status: 'unpaid' },
+  },
   // Two people at the early-bird S$30.00 (S$60.00 now) on a two-day pass.
   ticket: paidWith(lineOf({ line_kind: 'event_ticket', product_id: null, event_ticket_option_id: 'day-pass', event_days: EVENT_DAYS,
     item_name_snapshot: 'Fixture Fest — Day Pass', quantity: 2, unit_price: 30, line_total: 60 })),
@@ -162,7 +180,12 @@ const mock = `export const supabase={ from(table) {
    sources:Number(window.__financial?.refund_due||0)>0?[{payment_id:'payment',method:'Cash',wallet:false,remaining:Number(window.__financial.net_received)}]:[]};
  if(name==='invoice_benefit_review_options')data={lines:[]};
  if(name==='invoice_action_plan'&&window.__plan)data=window.__plan;
- if(name==='preview_invoice_correction')data={invoice_no:'INV-TEST',status:'paid',effects:[],needs_review:[],blocking:false};
+ if(name==='preview_invoice_correction')data={invoice_no:'INV-TEST',status:'paid',effects:[{area:'total',change:'changed',from:'100.00',to:'120.00',detail:'The total goes from S$100.00 to S$120.00.'}],needs_review:[],blocking:false,
+   // 416 rule 11: sent the corrected lines, it says what they make of the invoice.
+   ...(Array.isArray(args.p_header&&args.p_header.items)?{outcome:{checked:true,total_before:100,total_after:120,status_before:'paid',status_after:'partially_paid',
+     charge_after:120,paid_after:100,outstanding_after:20,refund_due_after:0,lines:[{change:'changed',label:'Long Energia Socks',quantity_before:1,quantity_after:1,charged_before:100,charged_after:120}]}}:{})};
+ // 417: the request on the invoice, waiting or last (window.__requestStatus).
+ if(name==='invoice_request_status')data={invoice_id:args.p_invoice_id,pending:false,request:null,...(window.__requestStatus||{})};
  if(name==='credit_packages_for_store')data=window.__tables.credit_packages;
  if(name==='premium_bundles_for_store')data=window.__tables.premium_bundles;
  // A staff member works at the test store, and the server says whether they may correct.
@@ -202,16 +225,16 @@ const ok = (label, condition, detail = '') => {
   checks++; console.log(`  ok  ${label}`);
 };
 
-const mount = async (page, scenario, role, { staffMayCorrect = true } = {}) => {
+const mount = async (page, scenario, role, { staffMayCorrect = true, requestStatus = null } = {}) => {
   const s = scenarios[scenario];
   // Everything except the fixture page is refused, so nothing can reach out.
   await page.route('**/*', route => route.request().url() === 'https://invoice.test/'
     ? route.fulfill({ contentType: 'text/html', body: '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div></body></html>' })
     : route.abort());
   await page.goto('https://invoice.test/');
-  await page.evaluate(([t, f, r, may, tickets, plan]) => { window.__tables = JSON.parse(JSON.stringify(t)); window.__financial = f; window.__calls = [];
-    window.__role = r; window.__staffMayCorrect = may; window.__ticketOptions = tickets; window.__plan = plan; },
-    [s.tables, s.financial, role, staffMayCorrect, TICKET_OPTIONS, s.plan ?? null]);
+  await page.evaluate(([t, f, r, may, tickets, plan, rs]) => { window.__tables = JSON.parse(JSON.stringify(t)); window.__financial = f; window.__calls = [];
+    window.__role = r; window.__staffMayCorrect = may; window.__ticketOptions = tickets; window.__plan = plan; window.__requestStatus = rs; },
+    [s.tables, s.financial, role, staffMayCorrect, TICKET_OPTIONS, s.plan ?? null, requestStatus]);
   await page.addStyleTag({ content: css.replace(/^@import.*$/gm, '') });
   await page.addScriptTag({ content: bundle });
   await page.getByRole('button', { name: 'View', exact: true }).first().click();
@@ -492,6 +515,126 @@ try {
     swap = await save(page, 'Mattress at an agreed price');
     item = swap?.args?.p_items?.[0] ?? {};
     ok('and a price the Owner types is sent', item.product_id === 'mattress' && item.unit_price === 150, sent(swap));
+
+    // --- B16: the correction summary (416 rule 11, CREATE-5, CREATE-M1) -----
+    await mount(page, 'paid', 'owner');
+    modal = await openCorrection(page);
+    // CREATE-13: an Owner's payment row fits a phone, its Remove button too.
+    const remove = modal.getByRole('button', { name: 'Remove', exact: true });
+    await remove.scrollIntoViewIfNeeded();
+    const removeBox = await remove.boundingBox();
+    ok('an Owner\'s payment row fits the screen, Remove included',
+       !!removeBox && removeBox.x >= 0 && removeBox.x + removeBox.width <= width + 1
+       && await page.evaluate(() => [...document.querySelectorAll('.modal-body')].every(e => e.scrollWidth <= e.clientWidth + 1)),
+       `${width}px ${JSON.stringify(removeBox)}`);
+    ok('and the date received cannot be after today (Singapore)',
+       /^\d{4}-\d{2}-\d{2}$/.test(await modal.getByLabel('Date received', { exact: true }).getAttribute('max') ?? ''));
+    // Its label holds the textarea, whose text then joins the label's own.
+    const notes = modal.locator('label', { hasText: /^Notes/ }).locator('textarea');
+    await notes.fill('First note');
+    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    await page.getByTestId('correction-preview').waitFor();
+    const previewCall = await page.evaluate(() => window.__calls.findLast(c => c.name === 'preview_invoice_correction'));
+    ok('the summary is sent the corrected lines (416 rule 11)',
+       Array.isArray(previewCall?.args?.p_header?.items) && previewCall.args.p_header.items[0]?.invoice_item_id === 'line'
+       && previewCall.args.p_header.notes === 'First note');
+    ok('the summary is brought into view, not left below the locked form', await page.getByTestId('correction-preview').evaluate(e => {
+       const r = e.getBoundingClientRect(); return r.top >= 0 && r.top < window.innerHeight; }));
+    const outcome = await page.getByTestId('correction-outcome').innerText();
+    ok('it shows what the total and status become, and what is owing',
+       outcome.includes('Total S$100.00 → S$120.00') && outcome.includes('Status Paid → Part paid') && outcome.includes('S$20.00 owing'), outcome);
+    ok('and says payment changes are checked only on saving, so it is not a promise',
+       (await page.getByTestId('correction-checked-note').innerText()).includes('Payment changes are checked only when you save'));
+    await page.screenshot({ path: `.invoice-test/browser/b16-summary-${width}.png`, fullPage: true });
+    ok('the form is locked while the summary is open',
+       await page.getByTestId('invoice-editor').evaluate(e => e.disabled) && await notes.isDisabled());
+    await page.getByRole('button', { name: 'Back to the form', exact: true }).click();
+    ok('Back to the form unlocks it', !(await notes.isDisabled()));
+    await notes.fill('Second note');
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    await page.getByTestId('correction-preview').waitFor();
+    ok('reviewing again sends the form as it is now',
+       await page.evaluate(() => window.__calls.findLast(c => c.name === 'preview_invoice_correction').args.p_header.notes) === 'Second note');
+    // A change that reaches the form while its summary is open (here forced
+    // past the lock) is never saved unreviewed: it is reviewed again.
+    await page.getByTestId('invoice-editor').evaluate(e => e.removeAttribute('disabled'));
+    await notes.fill('Changed after the review');
+    const previewsBefore = await page.evaluate(() => window.__calls.filter(c => c.name === 'preview_invoice_correction').length);
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    await page.getByText('You changed the invoice after reviewing it. Review the changes again.').waitFor();
+    ok('a form changed after its review is reviewed again, not saved', await page.evaluate(n =>
+       !window.__calls.some(c => c.name === 'correct_invoice')
+       && window.__calls.filter(c => c.name === 'preview_invoice_correction').length === n + 1
+       && window.__calls.findLast(c => c.name === 'preview_invoice_correction').args.p_header.notes === 'Changed after the review', previewsBefore));
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    await page.waitForFunction(() => window.__calls.some(c => c.name === 'correct_invoice'));
+    ok('then it saves what was reviewed',
+       await page.evaluate(() => window.__calls.findLast(c => c.name === 'correct_invoice').args.p_header.notes) === 'Changed after the review');
+    // A summary left open when the form is closed goes with it: the next
+    // Correct Invoice opens unlocked, with no summary (CREATE-5).
+    await mount(page, 'paid', 'owner');
+    modal = await openCorrection(page);
+    await modal.locator('label', { hasText: /^Notes/ }).locator('textarea').fill('Left open');
+    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    await page.getByTestId('correction-preview').waitFor();
+    await modal.locator('.modal-footer').getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('button', { name: 'View', exact: true }).first().click();
+    modal = await openCorrection(page);
+    await page.getByTestId('invoice-editor').waitFor();
+    ok('a summary left open when the form closed does not lock the next correction',
+       !(await page.getByTestId('invoice-editor').evaluate(e => e.disabled))
+       && await page.getByTestId('correction-preview').count() === 0
+       && await page.getByRole('button', { name: 'Review Changes', exact: true }).count() === 1);
+
+    // --- B16: a request waiting on the invoice (417, AFTER-14) ----------------
+    const waiting = { pending: true, can_review: false, request: { request_id: 'req-1', status: 'pending', action: 'refund_full',
+      requested_by: 'Test Staff', requested_at: '2026-09-02T01:00:00Z' } };
+    await mount(page, 'paid', 'staff', { requestStatus: waiting });
+    await page.getByTestId('invoice-request-banner').waitFor();
+    ok('the invoice says a request is waiting, since when and who raised it',
+       (await page.getByTestId('invoice-request-banner').innerText()).includes('A refund request is waiting for approval since 2/9/2026 (raised by Test Staff).'));
+    ok('staff see the button as Request waiting', await page.getByRole('button', { name: 'Request waiting', exact: true }).count() === 1);
+    await mount(page, 'paid', 'owner', { requestStatus: { ...waiting, can_review: true } });
+    await page.getByRole('button', { name: 'Review request', exact: true }).waitFor();
+    ok('an Owner sees it as Review request', true);
+    await mount(page, 'paid', 'staff', { requestStatus: { pending: false, request: { request_id: 'req-2', status: 'rejected', action: 'cancel',
+      requested_by: 'Test Staff', requested_at: '2026-09-02T01:00:00Z', resolved_by: 'Test Owner', resolved_at: '2026-09-03T01:00:00Z',
+      rejection_reason: 'The customer kept the item' } } });
+    await page.getByTestId('invoice-request-banner').waitFor();
+    ok('a rejection shows on the invoice with the approver\'s reason',
+       (await page.getByTestId('invoice-request-banner').innerText()).includes('The cancellation request was rejected by Test Owner on 3/9/2026: The customer kept the item'));
+    ok('and the button is Request refund / cancel again', await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).count() === 1);
+
+    // --- B16: FOC (CREATE-14, CREATE-19) ----------------------------------------
+    await mount(page, 'foc_done', 'staff');
+    await page.getByRole('button', { name: 'Request refund / cancel', exact: true }).waitFor();
+    ok('a completed FOC invoice can be undone with the guided Cancel', true);
+    ok('and has no payment entry', await page.getByText('Record Payment', { exact: false }).count() === 0);
+    ok('its FOC reason is shown to staff on screen, but never on the print or PDF (Q7)',
+       (await page.locator('.modal').last().innerText()).includes('Fixture reason'));
+    await mount(page, 'foc_open', 'owner');
+    await page.getByRole('button', { name: 'Confirm FOC Invoice', exact: true }).click();
+    await page.getByTestId('confirm-foc-question').waitFor();
+    ok('Confirm FOC asks first, and nothing is confirmed yet',
+       (await page.getByTestId('confirm-foc-question').innerText()).includes('free of charge and takes the stock')
+       && await page.evaluate(() => !window.__calls.some(c => c.name === 'confirm_foc_invoice')));
+    await page.getByRole('button', { name: 'Confirm FOC', exact: true }).click();
+    await page.waitForFunction(() => window.__calls.some(c => c.name === 'confirm_foc_invoice'));
+    ok('confirming it confirms it', true);
+    await mount(page, 'foc_open', 'owner');
+    await page.getByRole('button', { name: 'Remove FOC', exact: true }).first().click();
+    await page.getByLabel('Reason (optional)', { exact: true }).fill('Charged after all');
+    await page.locator('.modal').last().getByRole('button', { name: 'Remove FOC', exact: true }).click();
+    await page.waitForFunction(() => window.__calls.some(c => c.name === 'remove_line_foc'));
+    ok('Remove FOC sends the reason given', await page.evaluate(() =>
+       window.__calls.findLast(c => c.name === 'remove_line_foc').args.p_reason) === 'Charged after all');
+    await mount(page, 'foc_open', 'inventory_manager');
+    await page.getByRole('button', { name: 'Close', exact: true }).first().waitFor();
+    ok('an Inventory Manager is not offered Confirm FOC or Remove FOC (the database refuses them)',
+       await page.getByRole('button', { name: 'Confirm FOC Invoice', exact: true }).count() === 0
+       && await page.getByRole('button', { name: 'Remove FOC', exact: true }).count() === 0);
 
     ok('no unexpected browser errors', errors.length === 0, errors.join(' | '));
     await page.close();

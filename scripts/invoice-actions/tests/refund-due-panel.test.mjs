@@ -27,12 +27,23 @@ if (!globalThis.crypto?.randomUUID) {
 
 const calls = [];
 const stub = {
-  options: null, refundError: null, plan: null,
-  from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: [], error: null }),
-    is: () => ({ order: () => Promise.resolve({ data: [], error: null }) }) }) }),
+  options: null, refundError: null, plan: null, awaiting: null, warehouses: [],
+  // A query of any shape: awaited, it is empty; ordered, it is the warehouses.
+  from: () => {
+    const q = { select: () => q, eq: () => q, is: () => q,
+      order: () => Promise.resolve({ data: stub.warehouses, error: null }),
+      then: (res, rej) => Promise.resolve({ data: [], error: null }).then(res, rej) };
+    return q;
+  },
   rpc: (name, args) => {
     calls.push({ name, args });
     if (name === 'invoice_refund_options') return Promise.resolve({ data: stub.options, error: null });
+    if (name === 'invoice_rentals_awaiting_return') return Promise.resolve({ data: stub.awaiting ?? [], error: null });
+    if (name === 'receive_returned_rental') {
+      stub.awaiting = (stub.awaiting ?? []).filter(r => r.rental_id !== args.p_rental_id);
+      return Promise.resolve({ data: { rental_id: args.p_rental_id, returned_quantity: args.p_condition === 'good' ? 1 : 0,
+        location_name: args.p_warehouse_id ? 'Overflow Warehouse' : 'Fixture Store' }, error: null });
+    }
     if (name === 'refund_invoice_recorded') return Promise.resolve(stub.refundError
       ? { data: null, error: { message: stub.refundError } } : { data: { success: true, refunded_amount: 1000 }, error: null });
     if (name === 'invoice_action_plan') return Promise.resolve({ data: stub.plan, error: null });
@@ -50,7 +61,7 @@ const cancelledBundle = (over = {}) => ({
 const built = await build({
   stdin: {
     contents: `
-      export { InvoiceFinancePanel, splitRefundDue } from './src/components/invoices/InvoiceFinancePanel';
+      export { InvoiceFinancePanel, splitRefundDue, paymentDay } from './src/components/invoices/InvoiceFinancePanel';
       export { usedValueCodes, usedValueText } from './src/lib/invoices/business';
       export { createRoot } from 'react-dom/client';
       export { act } from 'react-dom/test-utils';
@@ -67,7 +78,7 @@ const built = await build({
   } }],
 });
 globalThis.__supabase = stub;
-const { InvoiceFinancePanel, splitRefundDue, usedValueCodes, usedValueText, createRoot, act, React } =
+const { InvoiceFinancePanel, splitRefundDue, paymentDay, usedValueCodes, usedValueText, createRoot, act, React } =
   await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 
 const root = createRoot(document.getElementById('root'));
@@ -199,6 +210,79 @@ check('with nothing used there is no such note', !document.querySelector('[data-
 await render({ requestedMode: null, usedValue: ['session_used'], canManage: false });
 check('staff do not see it (they cannot record refunds)', !document.querySelector('[data-testid="refund-due-used"]'));
 stub.options = cancelledBundle();
+
+// ---- 417 (the Owner's Q2): the amount owed back was stated when cancelling --
+// Its refund due is that amount, recorded here like any other; the rest is
+// kept for what the customer used.
+calls.length = 0;
+stub.options = cancelledBundle({ total: 900, net_received: 500, refund_due: 250, refund_owed_stated: true, kept_for_used: 250 });
+await render({ requestedMode: null, usedValue: ['session_used'] });
+const owedNote = document.querySelector('[data-testid="refund-owed-stated"]');
+check('the stated amount owed back is shown, and what is kept for what was used',
+  !!owedNote && owedNote.textContent.includes('S$250.00, as stated') && owedNote.textContent.includes('S$250.00 is kept'), owedNote?.textContent);
+check('the "not all of it is owed back" refusal is not shown', !document.querySelector('[data-testid="refund-due-used"]'));
+const panelRecord = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Record refund paid');
+check('the panel offers "Record refund paid" itself (the footer leaves this invoice out)', !!panelRecord);
+await click(panelRecord);
+const owedInput = document.querySelector('input[aria-label^="Bank transfer"]');
+check('prefilled with the amount owed back, not all the money held', owedInput && Number(owedInput.value) === 250, owedInput?.value);
+await render({ requestedMode: null, usedValue: [] });
+check('with nothing used the footer offers it, so the panel does not',
+  !Array.from(document.querySelectorAll('button')).some(b => b.textContent === 'Record refund paid'));
+stub.options = cancelledBundle();
+
+// ---- 417 (AFTER-7): a rented item still with the customer after the
+// cancellation, received from the finance section ----------------------------
+calls.length = 0; changed = 0;
+stub.options = cancelledBundle({ refund_due: 0, net_received: 0 });
+stub.awaiting = [{ rental_id: 'R1', rental_no: 'RNT-2026-9201', quantity: 1, item: 'Fixture Machine', invoice_item_id: 'L1',
+  source_type: 'store', source_name: 'Fixture Store' }];
+stub.warehouses = [{ id: 'wh-2', name: 'Overflow Warehouse' }];
+await render({ requestedMode: null });
+check('a cancelled invoice lists the rented item still out, by name and number',
+  text().includes('still with the customer after the cancellation: Fixture Machine (RNT-2026-9201)'));
+const receiveButton = byText('button', 'Receive RNT-2026-9201');
+check('with a "Receive" action, short enough for a phone, that names the item to a screen reader',
+  receiveButton?.textContent.trim() === 'Receive RNT-2026-9201'
+  && receiveButton?.getAttribute('aria-label') === 'Receive returned item: Fixture Machine (RNT-2026-9201)',
+  receiveButton?.outerHTML);
+await click(receiveButton);
+const outcomeSelect = document.querySelector('select[aria-label="What happened to RNT-2026-9201"]');
+check('nothing is chosen for the person', outcomeSelect?.value === '' && byText('button', 'Record what came back')?.disabled === true);
+await act(async () => {
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(outcomeSelect), 'value').set;
+  setter.call(outcomeSelect, 'good'); outcomeSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+});
+await flush();
+const homeSelect = document.querySelector('select[aria-label="Where RNT-2026-9201 goes back to"]');
+check('a good item goes back where it came from by default, named', homeSelect?.value === '' && homeSelect.options[0].textContent.includes('Fixture Store'));
+check('or to another active warehouse', Array.from(homeSelect?.options ?? []).some(o => o.textContent === 'Overflow Warehouse'));
+check('not without a note', byText('button', 'Record what came back')?.disabled === true);
+await type(document.querySelector('textarea'), 'Machine collected from the customer');
+await click(byText('button', 'Record what came back'));
+const got = calls.filter(c => c.name === 'receive_returned_rental');
+check('it is recorded once, to where it came from',
+  got.length === 1 && got[0].args.p_rental_id === 'R1' && got[0].args.p_warehouse_id === null && got[0].args.p_condition === 'good'
+  && got[0].args.p_reason === 'Machine collected from the customer' && !!got[0].args.p_request_id, JSON.stringify(got[0]?.args));
+check('what happened is said, and the item is no longer listed',
+  text().includes('RNT-2026-9201 is back in good condition and on sale again at Fixture Store') && !byText('button', 'Receive RNT-'));
+check('and the invoice is reloaded', changed === 1);
+stub.awaiting = [{ rental_id: 'R2', rental_no: 'RNT-2026-9202', quantity: 1, item: 'Fixture Chair', invoice_item_id: 'L1',
+  source_type: 'warehouse', source_name: 'Main Warehouse' }];
+await render({ requestedMode: null, canManage: false });
+check('staff are not offered it (an Owner or Manager receives)', !byText('button', 'Receive RNT-'));
+await render({ requestedMode: null });
+check('an Owner or Manager is', byText('button', 'Receive RNT-2026-9202')?.getAttribute('aria-label')
+  === 'Receive returned item: Fixture Chair (RNT-2026-9202)');
+stub.awaiting = null; stub.options = cancelledBundle();
+
+// ---- 417 (AFTER-16): payment days in Singapore time, never in the future ----
+check('a payment at 00:30 in Singapore is that Singapore day, whatever the device\'s zone',
+  paymentDay('2026-10-08T16:30:00Z') === '9/10/2026' && paymentDay('2026-10-09') === '9/10/2026' && paymentDay(null) === '', paymentDay('2026-10-08T16:30:00Z'));
+const panelSrc = readFileSync('src/components/invoices/InvoiceFinancePanel.tsx', 'utf8');
+check('the actual payment date cannot be after today in Singapore',
+  /Actual payment date<input type="date" value=\{date\} max=\{singaporeToday\(\)\}/.test(panelSrc)
+  && panelSrc.includes("if (mode === 'payment' && date > singaporeToday())") && !panelSrc.includes("toLocaleDateString('en-SG')"));
 
 // ---- the page wires it: Owner/Manager, cancelled or refunded, refund due ---
 const page = readFileSync('src/pages/InvoicesPage.tsx', 'utf8');

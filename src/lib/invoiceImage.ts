@@ -1,5 +1,5 @@
-import { PdfDoc, PdfLine, CopyDrawing, fitAroundCreditBalance, fitAroundCollection, creditBesideTotals, copyTerms,
-  copyCollectionDrawn } from './invoicePdf';
+import { PdfDoc, PdfLine, CopyDrawing, fitCreditBalanceDrawing, fitAroundCollection, fitAroundPayments, creditBesideTotals, copyTerms,
+  copyCollectionDrawn, copyPaymentRows } from './invoicePdf';
 import { wrapCreditDetail } from './invoices/creditBalanceLine.mjs';
 
 /**
@@ -32,8 +32,12 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
     // thrown away is released at once: phones cap the canvas memory a page
     // may hold.
     const release = (old: HTMLCanvasElement) => { old.width = 0; old.height = 0; };
-    c = fitAroundCreditBalance(d, dd => fitAroundCollection(dd, drawDocumentImage, H - (M / 2), release),
-                               H - (M / 2), release);
+    // When the copy still runs off the A5 page, the payments shorten to one
+    // row, then the image grows taller (fitAroundPayments), as the PDF takes
+    // a second page.
+    c = fitAroundPayments(d, dd => fitCreditBalanceDrawing(dd,
+      ddd => fitAroundCollection(ddd, drawDocumentImage, H - (M / 2), release), H - (M / 2), release),
+      H - (M / 2), release, true);
   } catch (e) {
     return Promise.reject(e);
   }
@@ -42,10 +46,40 @@ export function documentImageBlob(d: PdfDoc): Promise<Blob> {
   });
 }
 
-/** One drawing of the copy, and how far down the image it ran. */
+/** How far down an image may run and still be one A5 page. */
+const FOOT = H - M / 2;
+
+/**
+ * One drawing of the copy, and how far down the image it ran.
+ *
+ * A copy that runs long (pageBreak) grows instead of taking a second page
+ * (B16, AFTER-8): it is measured on a canvas three pages tall, then drawn
+ * again on one exactly as tall as it needs, never shorter than an A5 page. A
+ * canvas that grows always fits, so nothing above has to give way for it.
+ *
+ * As on the PDF, an A5 drawing lists the item rows only down to the room the
+ * signatures need; past that the copy goes to the growing drawing, which
+ * lists every row down to three pages (B16, AFTER-9). If that copy fits one
+ * A5 page once its goods and credit line are left off, those give way as on
+ * an A5 copy (it says how far down it really ran), so they never make the
+ * image grow.
+ */
 function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
+  if (!d.pageBreak) return paintDocumentImage(d, H, H - 70 * MM);
+  const rowLimit = H * 3 - 70 * MM;
+  const probe = paintDocumentImage(d, H * 3, rowLimit);
+  probe.out.width = 0; probe.out.height = 0;
+  const grown = paintDocumentImage(d, Math.max(H, Math.ceil(probe.endY + M / 2)), rowLimit);
+  const { bareEndY, ...drawing } = grown;
+  return { ...drawing, endY: bareEndY <= FOOT + 0.01 ? grown.endY : Math.min(grown.endY, FOOT) };
+}
+
+/** The copy drawn on a canvas of the given height, its item rows listed
+ *  while they end above `rowLimit`; and how far down it would have run
+ *  without its goods and credit line (`bareEndY`). */
+function paintDocumentImage(d: PdfDoc, height: number, rowLimit: number): CopyDrawing<HTMLCanvasElement> & { bareEndY: number } {
   const c = document.createElement('canvas');
-  c.width = W; c.height = H;
+  c.width = W; c.height = height;
   const x = c.getContext('2d');
   if (!x) throw new Error('This browser cannot render the invoice image.');
 
@@ -66,7 +100,7 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
     return out;
   };
 
-  x.fillStyle = '#ffffff'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, W, c.height);
   x.textBaseline = 'alphabetic';
   let y = M + 4 * MM;
 
@@ -91,6 +125,13 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
   x.strokeStyle = BLACK; x.lineWidth = 0.4 * MM;
   x.beginPath(); x.moveTo(M, y); x.lineTo(RIGHT, y); x.stroke();
   y += 5 * MM;
+
+  // ---- A note under the header (an exchange invoice), as on the PDF --
+  if (d.headerNote) {
+    font(3.12, 'bold'); x.fillStyle = BLACK;
+    for (const ln of wrap(d.headerNote, RIGHT - M)) { x.fillText(ln, M, y); y += 3.9 * MM; }
+    y += 1.5 * MM;
+  }
 
   // ---- Customer -----------------------------------------------------
   font(3.12, 'bold'); x.fillStyle = GREY;
@@ -132,13 +173,17 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
     y = sepY + 5.4 * MM;
   };
 
+  // B16 (AFTER-9): a row's height as it is drawn (names 4.2 mm a line, notes
+  // 3.6 mm each), so a promotion's contents never push a row past the limit.
+  let rowsCut = false;
   font(3.64);
   for (const l of d.lines) {
-    const rowH = wrap(l.name, cQty - M - 3 * MM).length * 3.4 * MM + (l.notes?.length ?? 0) * 3 * MM + 1.6 * MM;
-    if (y + rowH > H - 70 * MM) {
+    const rowH = wrap(l.name, cQty - M - 3 * MM).length * 4.2 * MM + (l.notes?.length ?? 0) * 3.6 * MM + 1.6 * MM;
+    if (y + rowH > rowLimit) {
       font(3.12); x.fillStyle = GREY;
       x.fillText('…continued — see the full invoice in store', M, y);
       y += 4 * MM; x.fillStyle = BLACK;
+      rowsCut = true;
       break;
     }
     drawLine(l);
@@ -187,16 +232,18 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
     font(3.64); x.fillStyle = BLACK;
   }
 
-  // ---- Payments -----------------------------------------------------
-  if (d.payments?.length) {
+  // ---- Payments: every one, or one summary row (fitAroundPayments) ----
+  const paymentRows = copyPaymentRows(d);
+  if (paymentRows.length) {
     y += 2 * MM;
     font(3.12, 'bold'); x.fillStyle = GREY;
     x.fillText('PAYMENT METHODS', M, y); y += 4 * MM;
     font(3.64); x.fillStyle = BLACK;
-    for (const [k, v] of d.payments) { x.fillText(k, M, y); right(v, cTot, y); y += 4.6 * MM; }
+    for (const [k, v] of paymentRows) { x.fillText(k, M, y); right(v, cTot, y); y += 4.6 * MM; }
   }
 
   // ---- Credit balance under the payments, when not beside the totals ----
+  const yBeforeExtras = y;
   if (d.creditBalance && !creditBeside) {
     y += 1.5 * MM;
     font(3.64, 'bold'); x.fillStyle = BLACK;
@@ -222,7 +269,10 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
   font(3.64);
 
   // ---- Signatures ---------------------------------------------------
+  // Without the goods and the credit line the signatures would sit here.
+  const bareSigY = Math.max(yBeforeExtras + 4 * MM, H - 56 * MM);
   y = Math.max(y + 4 * MM, H - 56 * MM);
+  const extrasH = y - bareSigY;
   const colW = (RIGHT - M - 6 * MM) / 2;
   if (d.staffName) { font(3.9, 'bold italic'); x.fillStyle = BLACK; x.fillText(d.staffName, M, y); }
   x.strokeStyle = '#333333'; x.lineWidth = 0.25 * MM;
@@ -240,7 +290,10 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
   x.beginPath(); x.moveTo(M, y); x.lineTo(RIGHT, y); x.stroke();
   y += 3.4 * MM;
   font(2.6, 'bold'); x.fillStyle = BLACK;
-  for (const ln of wrap(copyTerms(d).toUpperCase(), RIGHT - M)) { x.fillText(ln, M, y); y += 3.2 * MM; }
+  const termsLines = wrap(copyTerms(d).toUpperCase(), RIGHT - M);
+  for (const ln of termsLines) { x.fillText(ln, M, y); y += 3.2 * MM; }
+  // Goods put in the terms can make them a line longer.
+  const termsExtraH = (termsLines.length - wrap(copyTerms({ ...d, collection: null }).toUpperCase(), RIGHT - M).length) * 3.2 * MM;
 
   if (d.policyText) {
     y += 1.2 * MM;
@@ -271,5 +324,5 @@ function drawDocumentImage(d: PdfDoc): CopyDrawing<HTMLCanvasElement> {
     x.textAlign = 'left';
   }
 
-  return { out: c, endY: y, creditBeside };
+  return { out: c, endY: y, creditBeside, rowsCut, bareEndY: y - extrasH - termsExtraH };
 }

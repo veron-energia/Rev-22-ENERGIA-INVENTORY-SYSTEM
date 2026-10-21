@@ -7,9 +7,20 @@ import { InvoiceBenefitEvidenceReview } from './InvoiceBenefitEvidenceReview';
 import { InvoiceRewardResolution } from './InvoiceRewardResolution';
 import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
 import { type WaitingAnswers, unansweredItems, withWaitingAnswers } from '../../lib/special/waitingItems';
+import { calendarDate } from '../../lib/calendarDates';
+import { type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs,
+  receivedText } from '../../lib/special/rentalReturn';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
 const cents = (n: unknown) => Math.round((Number(n) || 0) * 100) / 100;
+/** 417 (AFTER-16): a payment's day as it was in Singapore, whatever the
+ *  device's time zone, written d/m/yyyy as the rest of the invoice is. */
+export function paymentDay(value: string | null | undefined): string {
+  const d = calendarDate(value, 'Asia/Singapore');
+  if (!d) return '';
+  const [y, m, dd] = d.split('-');
+  return `${Number(dd)}/${Number(m)}/${y}`;
+}
 
 /** 409: the refund still due, taken from the original payments in the order
  *  listed, each up to what it still holds. */
@@ -25,7 +36,9 @@ export function splitRefundDue(due: number, sources: { payment_id: string; remai
 // 'refund_due' (409): the refund still owed on a cancelled or refunded invoice,
 // recorded when it has actually gone back. 'refund' is the line-by-line form,
 // reached from it when the money must go back through a purchase's benefits.
-type Mode = '' | 'refund' | 'refund_due' | 'payment' | 'reopen' | 'transfer';
+// 'receive' (417): a rented item still with the customer after the invoice
+// was cancelled, recorded when it is back.
+type Mode = '' | 'refund' | 'refund_due' | 'payment' | 'reopen' | 'transfer' | 'receive';
 type Source = { payment_id: string; method: string; wallet: boolean; remaining: number };
 type Benefit = { id: string; invoice_item_id: string; customer_name?: string; customer_id?: string; store_id?: string; benefit_kind?: string; cancelled_unused_value?: number; remaining_value: number; max_refund: number; reward_voucher_id?: string };
 type Stock = { movement_id: string; product_name: string; quantity: number; resolved_quantity: number };
@@ -88,6 +101,13 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   const wholeInvoice = !!options?.lines?.length && options.lines.every(l =>
     Number(l.remaining) <= 0.005 || (lineAmounts[l.invoice_item_id] ?? 0) >= Number(l.remaining) - 0.005);
   const waitingLeft = wholeInvoice ? [] : unansweredItems(waitingItems, waitingAnswers);
+  // 417 (AFTER-7): rented items still with the customer after the invoice was
+  // cancelled. Each is recorded when it is back, by an Owner or Manager.
+  const [awaitingRentals, setAwaitingRentals] = useState<AwaitingRental[]>([]);
+  const [receiveFor, setReceiveFor] = useState<AwaitingRental | null>(null);
+  const [receiveChoice, setReceiveChoice] = useState<ReceiveChoice>(NOT_BACK_YET);
+  const [receivedNote, setReceivedNote] = useState('');
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
   useEffect(() => {
     let cancelled = false;
     setOptions(null);
@@ -96,12 +116,26 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     });
     return () => { cancelled = true; };
   }, [invoiceId, payments]);
-  const close = () => { setMode(''); onRequestHandled?.(); onActiveChange?.(false); };
+  const cancelledNow = options?.financial?.status === 'cancelled';
+  const loadAwaiting = () => supabase.rpc('invoice_rentals_awaiting_return', { p_invoice_id: invoiceId })
+    .then(({ data, error }) => setAwaitingRentals(error ? [] : ((data as AwaitingRental[]) ?? [])));
+  useEffect(() => {
+    if (!canManage || !cancelledNow) { setAwaitingRentals([]); return; }
+    void loadAwaiting();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoiceId, canManage, cancelledNow, payments]);
+  const close = () => { setMode(''); setReceiveFor(null); onRequestHandled?.(); onActiveChange?.(false); };
   const open = async (next: Mode) => {
     onActiveChange?.(true);
     setMode(next); setError(''); setReason(''); setRequestId(crypto.randomUUID()); setConfirmed(false); setBenefitOverpayment(false);
     setLineAmounts({}); setBenefitAmounts({}); setSourceAmounts({}); setStock({}); setPreview(null); setWaitingAnswers({});
     setTransferBenefit(''); setTransferCustomer(''); setTransferStore(''); setDueByLine(false); setDueTouched(false);
+    setReceiveChoice(NOT_BACK_YET); setReceivedNote('');
+    if (next === 'receive' && !warehouses.length) {
+      // Active warehouses are the only other destinations; the server checks again.
+      supabase.from('warehouses').select('id,name').eq('is_active', true).is('deleted_at', null)
+        .order('name').then(({ data }) => setWarehouses((data as any[]) ?? []));
+    }
     if (next === 'refund' && ['cancelled', 'refunded'].includes(options?.financial?.status)) {
       // From "Record refund paid": what a cancellation would return, line by
       // line with each line's benefits, as the guided flow works it out. The
@@ -124,10 +158,15 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   // "Record refund paid" starts from what is still due, taken from the
   // original payments in the order listed, each up to what it still holds.
   // The person can change it; the server holds it to the refund due.
+  // 417 (the Owner, 9 Oct 2026): a part-used sale cancelled with the amount
+  // owed back stated has that amount as its refund due, recorded here like any
+  // other; one cancelled without it is not prefilled (not all of it is owed).
+  const owedStated = !!options?.financial?.refund_owed_stated;
+  const usedNotStated = (usedValue?.length ?? 0) > 0 && !owedStated;
   useEffect(() => {
-    if (mode !== 'refund_due' || !options || dueTouched || (usedValue?.length ?? 0) > 0) return;
+    if (mode !== 'refund_due' || !options || dueTouched || usedNotStated) return;
     setSourceAmounts(splitRefundDue(Number(options.financial?.refund_due ?? 0), options.sources));
-  }, [mode, options, dueTouched, usedValue]);
+  }, [mode, options, dueTouched, usedNotStated]);
   const currentPayments = payments.filter(p => p.entry_kind !== 'correction_reversal' && !payments.some(r => r.corrects_payment_id === p.id && r.entry_kind === 'correction_reversal'));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => { onActiveChange?.(false); }, []);
@@ -154,7 +193,19 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   };
   const submit = async () => {
     if (!reason.trim()) { setError('Enter a reason for the audit history.'); return; }
+    if (mode === 'receive') {
+      if (!receiveFor || !receiveChoice.outcome) { setError('Choose what happened to the item.'); return; }
+      setBusy(true); setError('');
+      const { data, error } = await supabase.rpc('receive_returned_rental',
+        receiveRpcArgs(receiveFor, receiveChoice, reason, requestId));
+      setBusy(false);
+      if (error) { setError(error.message); return; }
+      const said = receivedText(receiveFor, receiveChoice.outcome, data);
+      close(); setReceivedNote(said); void loadAwaiting(); await onChanged();
+      return;
+    }
     if (mode === 'refund_due' && dueProblem) { setError(dueProblem); return; }
+    if (mode === 'payment' && date > singaporeToday()) { setError('A payment cannot be dated in the future.'); return; }
     if (mode === 'refund' && !confirmed) { setError('Confirm the actual refund and stock outcomes before recording.'); return; }
     if (mode === 'refund' && waitingLeft.length) { setError('Say whether the customer is still taking each item waiting for a warehouse.'); return; }
     setBusy(true); setError('');
@@ -225,20 +276,56 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       }} />}
     {options?.review_notes?.map(note => <p role="status" key={note}>{note}</p>)}
     {f && <p>Net payments held: <strong>{money(f.net_received)}</strong> · Outstanding: <strong>{money(f.outstanding)}</strong> · Refund due: <strong>{money(f.refund_due)}</strong> · Refunded: {money(f.refunded)}</p>}
-    {canManage && f?.status === 'cancelled' && Number(f?.refund_due) > 0.005 && (usedValue?.length ?? 0) > 0 &&
+    {canManage && f?.status === 'cancelled' && Number(f?.refund_due) > 0.005 && usedNotStated &&
       <p role="status" data-testid="refund-due-used">This cancelled invoice still holds {money(f.refund_due)}, but its customer already had
-        part of what it sold ({usedValueText(usedValue ?? [])}), which the cancellation kept. Not all of it is owed back, so it cannot be
-        recorded as paid back here; how much goes back is for the Owner to decide.</p>}
+        part of what it sold ({usedValueText(usedValue ?? [])}), which the cancellation kept, and no amount owed back was stated when it was
+        cancelled. Not all of it is owed back, so it cannot be recorded as paid back here.</p>}
+    {canManage && f?.status === 'cancelled' && owedStated &&
+      <p role="status" data-testid="refund-owed-stated">Owed back to the customer: <strong>{money(f.refund_due)}</strong>, as stated
+        when it was cancelled.{Number(f.kept_for_used) > 0.005 ? ` ${money(f.kept_for_used)} is kept for what the customer already used.` : ''}</p>}
+    {receivedNote && <p role="status">{receivedNote}</p>}
+    {canManage && !mode && awaitingRentals.length > 0 &&
+      <div role="status" data-testid="rentals-still-out">
+        <p>Rented {awaitingRentals.length === 1 ? 'item' : 'items'} still with the customer after the cancellation:{' '}
+          {awaitingRentals.map(r => `${r.item} (${r.rental_no})`).join(', ')}. Record each one when it is
+          back. Damaged and lost items are never put back on sale.</p>
+      </div>}
     {/* Refund and cancellation are one footer action now, and payment correction
         sits with the payments it corrects. Only what has no other home remains. */}
     {canManage && !mode && <div className="invoice-finance-actions">
       {!!options?.benefits.some(b => Number(b.remaining_value) > 0) && !['cancelled', 'refunded', 'cancellation_requested', 'refund_requested'].includes(f?.status) &&
         <button className="btn btn-secondary" onClick={() => open('transfer')}>Correct unused benefit recipient</button>}
+      {/* The footer's "Record refund paid" leaves out a cancelled invoice whose
+          customer had part of it; with the amount owed back stated, it is here. */}
+      {f?.status === 'cancelled' && owedStated && (usedValue?.length ?? 0) > 0 && Number(f?.refund_due) > 0.005 &&
+        <button className="btn btn-primary" onClick={() => open('refund_due')}>Record refund paid</button>}
+      {awaitingRentals.map(r =>
+        // The item's name is in the note above; the button stays short enough for a phone.
+        <button key={r.rental_id} className="btn btn-secondary" aria-label={`Receive returned item: ${r.item} (${r.rental_no})`}
+          onClick={() => { setReceiveFor(r); void open('receive'); }}>
+          Receive {r.rental_no}</button>)}
       {['cancelled', 'refunded'].includes(f?.status) &&
         <button className="btn btn-secondary" onClick={() => open('reopen')}>Preview reopening</button>}
     </div>}
     {mode && <div className="form-grid">
-      <strong>{mode === 'refund' ? 'Record money or credit actually returned' : mode === 'refund_due' ? 'Record refund paid' : mode === 'payment' ? 'Correct a recorded payment' : mode === 'transfer' ? 'Move unused credit or vouchers' : 'Reopen invoice'}</strong>
+      <strong>{mode === 'refund' ? 'Record money or credit actually returned' : mode === 'refund_due' ? 'Record refund paid' : mode === 'payment' ? 'Correct a recorded payment' : mode === 'transfer' ? 'Move unused credit or vouchers' : mode === 'receive' ? 'Receive returned item' : 'Reopen invoice'}</strong>
+      {mode === 'receive' && receiveFor && <>
+        <p>{receiveFor.item} · {receiveFor.rental_no} · {receiveFor.quantity} out. Record it only when it is actually in your hands.</p>
+        <label>What happened
+          <select aria-label={`What happened to ${receiveFor.rental_no}`} value={receiveChoice.outcome}
+            onChange={e => setReceiveChoice(c => ({ ...c, outcome: e.target.value as ReceiveChoice['outcome'] }))}>
+            <option value="">Choose…</option>
+            <option value="good">Back in good condition — on sale again</option>
+            <option value="damaged">Back but damaged — not for sale</option>
+            <option value="lost">Lost — never came back</option>
+          </select></label>
+        {receiveChoice.outcome === 'good' && <label>Goes back to
+          <select aria-label={`Where ${receiveFor.rental_no} goes back to`} value={receiveChoice.warehouseId}
+            onChange={e => setReceiveChoice(c => ({ ...c, warehouseId: e.target.value }))}>
+            <option value="">{receiveHomeLabel(receiveFor)}</option>
+            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select></label>}
+      </>}
       {mode === 'refund_due' && options && <>
         <p>This invoice is {String(f?.status ?? '').replace(/_/g, ' ')} and still holds <strong>{money(refundDue)}</strong> that has not been
           recorded as returned to the customer. Record it here once it has actually gone back: recording does not send money anywhere. It is
@@ -305,9 +392,10 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       </>}
       {mode === 'payment' && <>
         <p>The original payment stays in history. This records a reversal and replacement, with a reason. It does not record a customer refund.</p>
-        <InvoiceSearchSelect label="Recorded payment" value={paymentId} onChange={choosePayment} options={currentPayments.map(p => ({ value: p.id, label: `${methods.find(m => m.id === p.payment_method_id)?.name || 'Payment'} · ${money(p.amount)} · ${new Date(p.effective_at || p.created_at).toLocaleDateString('en-SG')}` }))} />
+        <InvoiceSearchSelect label="Recorded payment" value={paymentId} onChange={choosePayment} options={currentPayments.map(p => ({ value: p.id, label: `${methods.find(m => m.id === p.payment_method_id)?.name || 'Payment'} · ${money(p.amount)} · ${paymentDay(p.effective_at || p.created_at)}` }))} />
         <label>Correct amount<input type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(Number(e.target.value))} /></label>
-        <label>Actual payment date<input type="date" value={date} onChange={e => setDate(e.target.value)} /></label>
+        {/* 417 (AFTER-16): a payment is never dated in the future (Singapore). */}
+        <label>Actual payment date<input type="date" value={date} max={singaporeToday()} onChange={e => setDate(e.target.value)} /></label>
         <InvoiceSearchSelect value={methodId} onChange={setMethodId} options={methods.filter(m => m.is_active && !m.deleted_at).map(m => ({ value: m.id, label: m.name }))} />
       </>}
       {mode === 'reopen' && (preview ? <>
@@ -322,8 +410,8 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       <label>Reason (required)<textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
       <div className="invoice-finance-actions">
         <button className="btn btn-secondary" disabled={busy} onClick={close}>Back</button>
-        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0)) || (mode === 'refund_due' && !!dueProblem)} onClick={submit}>
-          {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'refund_due' ? `Record ${money(dueTotal)} refund paid` : 'Record with audit history'}
+        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0)) || (mode === 'refund_due' && !!dueProblem) || (mode === 'receive' && !receiveChoice.outcome)} onClick={submit}>
+          {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'refund_due' ? `Record ${money(dueTotal)} refund paid` : mode === 'receive' ? 'Record what came back' : 'Record with audit history'}
         </button>
       </div>
     </div>}

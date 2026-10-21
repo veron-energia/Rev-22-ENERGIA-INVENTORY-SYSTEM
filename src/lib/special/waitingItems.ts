@@ -118,10 +118,24 @@ export function specialSaleBadge(s: { status: string; notes?: string | null; sto
   }
 }
 
-/** A rental's status as the Rentals tab shows it; a cancelled one says why. */
-export function rentalStatusLabel(status: RentalStatus | string, notes?: string | null): string {
+/**
+ * 417: a rental cancelled while the item was still with the customer, as
+ * rental_awaiting_return has it: cancelled, not yet received back, and it had
+ * gone out (released from a warehouse or a store, or activated). It stays
+ * listed until an Owner or Manager records it as back, damaged or lost.
+ */
+export function rentalStillWithCustomer(r: { status: string; stock_returned?: boolean | null;
+  fulfilled_at?: string | null; activated_at?: string | null } | null | undefined): boolean {
+  return !!r && r.status === 'cancelled' && !r.stock_returned && !!(r.fulfilled_at || r.activated_at);
+}
+
+/** A rental's status as the Rentals tab shows it; a cancelled one says why.
+ *  Given the rental's own row, one still with the customer says so (417). */
+export function rentalStatusLabel(status: RentalStatus | string, notes?: string | null,
+  rental?: { stock_returned?: boolean | null; fulfilled_at?: string | null; activated_at?: string | null } | null): string {
   const base = RENTAL_STATUS_LABELS[status as RentalStatus] ?? humanise(String(status));
   if (status !== 'cancelled') return base;
+  if (rental && rentalStillWithCustomer({ status: String(status), ...rental })) return 'Cancelled, still with customer';
   const why = cancelledBecause(notes);
   return why ? `${base} (${why})` : base;
 }

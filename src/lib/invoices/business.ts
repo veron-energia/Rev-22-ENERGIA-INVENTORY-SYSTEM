@@ -235,3 +235,71 @@ export function sortInvoices<T>(
 ): T[] {
   return [...rows].sort((a, b) => compareInvoices(a, b, field, dir, ctx));
 }
+
+/* ---- B16: page checks the server makes too (416, 417) ----------------------
+   Each says the server's rule first, in the same words, so a refusal does not
+   arrive as a surprise after a round trip. The server has the final say. */
+
+/** An amount with no more than 2 decimal places (416 refuses more, never
+ *  rounds). A typed "99.995" is refused; "0.07" is not, despite 0.07 * 100. */
+export function hasAtMostTwoDecimals(value: number | string | null | undefined): boolean {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return false;
+  const scaled = n * 100;
+  return Math.abs(scaled - Math.round(scaled)) < 1e-6;
+}
+export const TWO_DECIMALS_MESSAGE = 'Payment amounts can have at most 2 decimal places.';
+
+/**
+ * The invoice's business date as the form holds it (416 rule 3): never after
+ * today in Singapore, and a date once set cannot be cleared. A new invoice
+ * needs one; an old invoice saved with no date may stay undated.
+ */
+export function businessDateProblem(value: string, opts: { editing: boolean; savedDate?: string | null; today: string }): string | null {
+  if (!value) {
+    if (!opts.editing) return 'Choose the invoice business date.';
+    if (opts.savedDate) return 'Keep the invoice date; it cannot be cleared.';
+    return null;
+  }
+  if (value > opts.today) return 'The invoice date cannot be after today.';
+  return null;
+}
+
+/** On sale on this Singapore day: switched on, started and not ended. A
+ *  voucher (valid_from, valid_until) or a promotion (start_date, end_date). */
+export function liveOnDay(
+  row: { is_active?: boolean | null; valid_from?: string | null; valid_until?: string | null; start_date?: string | null; end_date?: string | null },
+  day: string,
+): boolean {
+  if (row.is_active === false) return false;
+  const from = row.valid_from ?? row.start_date ?? null;
+  const until = row.valid_until ?? row.end_date ?? null;
+  return (!from || String(from).slice(0, 10) <= day) && (!until || String(until).slice(0, 10) >= day);
+}
+
+/** Who may make, remove or confirm FOC: the database refuses Inventory
+ *  Managers (416 rule 7), so the page does not offer it to them. */
+export function canGiveFoc(role: string | null | undefined): boolean {
+  return !!role && role !== 'inventory_manager';
+}
+
+/** Who sees the Invoices page's Add customer buttons (the Owner, 18 Oct 2026,
+ *  W4-B04-IM-ADD-CUSTOMER): the New Invoice form's own button and each row's
+ *  + in the Credit Package and Premium Bundle split panels. Owners, Managers
+ *  and Staff, and the old Admin role, so not Inventory Managers (Q13: they
+ *  look after stock and products; they still find and pick customers already
+ *  on file). The same roles as B04's 418 in the database, but this does not
+ *  depend on 418 being live. */
+export function canAddCustomer(role: string | null | undefined): boolean {
+  return ['owner', 'admin', 'manager', 'staff'].includes(String(role ?? ''));
+}
+
+/** Delete is offered only where it can succeed (417; the Owner, Q4 = A): a
+ *  draft or unpaid invoice with nothing paid, not a top-up or an exchange.
+ *  The list's rows (invoice_list_page) do not carry is_topup or is_exchange,
+ *  so for them only the status and paid checks apply here; the page reads
+ *  the two flags when Delete is pressed (InvoicesPage askDelete). */
+export function canDeleteInvoice(inv: { status?: string | null; paid_amount?: unknown; is_topup?: unknown; is_exchange?: unknown }): boolean {
+  return ['draft', 'unpaid'].includes(String(inv.status ?? ''))
+    && Number(inv.paid_amount ?? 0) === 0 && !inv.is_topup && !inv.is_exchange;
+}

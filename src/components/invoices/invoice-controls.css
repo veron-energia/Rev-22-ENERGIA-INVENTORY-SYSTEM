@@ -257,6 +257,10 @@
 .invoice-guided-stock-row input, .invoice-guided-stock-row select {
   width: 84px; min-height: 36px; font-size: 16px;
 }
+/* 417: receiving a rented item. Each choice takes the whole row, so what was
+   chosen can be read; the 84px boxes above are for quantities only. */
+.invoice-guided-receive-row label { flex: 1 1 100%; min-width: 0; }
+.invoice-guided-receive-row select { width: 100%; }
 .invoice-guided-refunddue {
   display: flex; gap: 7px; align-items: flex-start; font-size: 12px;
   padding: 8px 9px; background: var(--surface-2); border-radius: 7px; margin-bottom: 9px;
@@ -409,6 +413,39 @@
 @media (max-width: 560px) {
   .correction-actions { flex-direction: column-reverse; }
   .correction-actions .btn { width: 100%; min-height: 44px; }
+}
+/* B16: the corrected total, status and refund due (416, rule 11), and why a
+   summary was asked for again (CREATE-5). */
+.correction-outcome {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; margin-bottom: 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 3px;
+}
+.correction-notice {
+  margin: 0 0 8px; padding: 7px 10px; border-radius: 7px; font-size: 12px;
+  background: #fff4e5; color: #7a4100; border: 1px solid #ffcc80;
+}
+/* B16: the invoice's own window wraps its footer at every width, so a long
+   row of buttons (the copies, "Email (from this device)", Correct Invoice,
+   Refund / Cancel, Record Payment) never runs off the side. */
+.modal:has(.invoice-finance) .modal-footer { flex-wrap: wrap; row-gap: 8px; }
+/* B16 (CREATE-5): the form is locked while its summary is open. A fieldset
+   carries the lock to every control in it; it keeps the form's own layout. */
+.invoice-editor-lock { border: 0; margin: 0; padding: 0; min-width: 0; }
+.invoice-editor-lock:disabled { opacity: 0.6; }
+
+/* B16 (CREATE-13): a payment row in Correct Invoice: amount, date received,
+   method and Remove/Keep. Under 480px it is two columns, the method and the
+   button each on a full row, so nothing runs off a phone's screen. */
+.invoice-correction-payment-part {
+  display: grid; grid-template-columns: 104px 148px minmax(140px, 1fr) auto;
+  gap: 8px; align-items: center; margin-bottom: 4px;
+}
+.invoice-correction-payment-part > * { min-width: 0; }
+@media (max-width: 480px) {
+  .invoice-correction-payment-part { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .invoice-correction-payment-part > .invoice-correction-payment-method,
+  .invoice-correction-payment-part > .invoice-correction-payment-action { grid-column: 1 / -1; }
+  .invoice-correction-payment-part > .invoice-correction-payment-action { justify-self: start; min-height: 44px; }
 }
 
 

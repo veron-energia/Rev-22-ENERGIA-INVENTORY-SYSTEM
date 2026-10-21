@@ -1,5 +1,6 @@
 import React from 'react';
 import { AlertTriangle, ArrowRight, Check } from 'lucide-react';
+import { outcomeLines, type CorrectionOutcome } from '../../lib/invoices/correctionReview';
 import './invoice-controls.css';
 
 type Effect = { area: string; change: string; from?: string | null; to?: string | null;
@@ -10,6 +11,8 @@ type Preview = {
   invoice_no: string; status: string; effects: Effect[];
   needs_review: Review[]; blocking: boolean;
   affiliate?: { explanation?: string };
+  /** 416 (rule 11): what the corrected lines make of the invoice, when they were sent. */
+  outcome?: CorrectionOutcome | null;
 };
 
 const AREA: Record<string, string> = {
@@ -17,6 +20,8 @@ const AREA: Record<string, string> = {
   customer: 'Customer', benefits: 'Customer benefits', store: 'Store',
   voucher_ownership: 'Voucher ownership', payments: 'Payments',
   vouchers: 'Vouchers given free',
+  // 416: the corrected total and status, and a save the lines would be refused for.
+  total: 'Total and status', correction: 'The corrected lines',
 };
 
 /**
@@ -26,22 +31,50 @@ const AREA: Record<string, string> = {
  * believes they changed which is not in the payload saves successfully and
  * alters nothing. Stating it here is the only place that distinction is
  * visible, so it is shown rather than filtered out as uninteresting.
+ *
+ * B16: with the corrected lines sent (416, rule 11), the total, the status,
+ * what is owing and any refund due come first, with what was checked and what
+ * was not. `notice` says why a summary was asked for again.
  */
 export const CorrectionPreview: React.FC<{
   preview: Preview;
   saving: boolean;
   onConfirm: () => void;
   onBack: () => void;
-}> = ({ preview, saving, onConfirm, onBack }) => (
-  <div className="correction-preview">
+  notice?: string | null;
+}> = ({ preview, saving, onConfirm, onBack, notice }) => {
+  // The summary opens under the form, which is locked: bring it into view, so
+  // on a phone it is not left below where the person was looking.
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => { ref.current?.scrollIntoView?.({ block: 'start' }); }, [preview]);
+  const outcome = outcomeLines(preview.outcome);
+  // The outcome block says what the 'total' entry says, so it is not said twice.
+  const effects = outcome ? preview.effects.filter(e => e.area !== 'total') : preview.effects;
+  return (
+  <div className="correction-preview" data-testid="correction-preview" ref={ref}>
     <h4>Before saving — {preview.invoice_no}</h4>
 
-    {preview.effects.length === 0 && (
+    {notice && <p className="correction-notice" role="alert">{notice}</p>}
+
+    {outcome && (
+      <div className="correction-outcome" data-testid="correction-outcome">
+        <div><strong>{outcome.total}</strong></div>
+        <div>{outcome.status}{outcome.money.length ? ` · ${outcome.money.join(' · ')}` : ''}</div>
+        {outcome.lines.length > 0 && (
+          <ul className="correction-items">
+            {outcome.lines.map((l, i) => <li key={i}>{l}</li>)}
+          </ul>
+        )}
+        <p className="correction-hint" data-testid="correction-checked-note">{outcome.note}</p>
+      </div>
+    )}
+
+    {effects.length === 0 && !outcome && (
       <p className="correction-none">Nothing in this save changes the invoice.</p>
     )}
 
     <ul className="correction-effects">
-      {preview.effects.map((e, i) => (
+      {effects.map((e, i) => (
         <li key={i} className={e.change === 'unchanged' ? 'is-unchanged' : ''}>
           <span className="correction-area">{AREA[e.area] ?? e.area}</span>
           {e.change === 'unchanged'
@@ -95,4 +128,5 @@ export const CorrectionPreview: React.FC<{
       </p>
     )}
   </div>
-);
+  );
+};
