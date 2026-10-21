@@ -103,6 +103,12 @@ update r439 set after1 = pg_temp.row_counts();
 set local lock_timeout = '10s';
 set local statement_timeout = '300s';
 create temp table failed(n serial, msg text);
+-- 441 (the owner, 21 Oct 2026, ~11:40) closed one of 439's NOT COVERED: a registration made after a merge
+-- on a phone or inbox only the retired record had is held for the kept record. MD2, MD3, MR1 and MR3 check
+-- 441's outcome where it is installed (its own suite, event-website-441.sql, has the rest), 439's where not.
+create function pg_temp.has441() returns boolean language sql as
+$$ select pg_get_functiondef('public.event_web_match_customer(text,text,text)'::regprocedure) like '%-- 441 (the owner, 21 Oct 2026, ~11:40)%' $$;
+select pg_temp.has441() as has441 \gset
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $$begin
   if ok is distinct from true then insert into failed(msg) values (msg); raise notice 'FAIL  %', msg;
@@ -200,6 +206,31 @@ $$ insert into customers(full_name, phone, email) values (sfx_name, phone, email
 create function pg_temp.merge(keep text, gone text) returns text language sql as
 $$ select pg_temp.err(format('select public.merge_customer_records(%L, %L, %L, %L)', pg_temp.fx(keep), pg_temp.fx(gone),
                              'The same person (test)', gen_random_uuid())) $$;
+-- 440 (where it is applied) reads an affiliate login's sign-up details from the server's own copy
+-- (affiliate_signup_identities), not from its user metadata. A fixture login is given that copy too, made
+-- the way 440's backfill makes it from the login (its email and raw_user_meta_data), so every check below
+-- reads the same with or without 440. Without 440 the table is not there and this does nothing.
+create function pg_temp.signup_copy(p_login uuid) returns void language plpgsql as
+$$begin
+  if to_regclass('public.affiliate_signup_identities') is null then return; end if;
+  execute $q$
+    insert into public.affiliate_signup_identities (auth_user_id, affiliate_account_id, customer_id, first_name, last_name,
+        full_name, phone, email, source, name_from, phone_from)
+    select u.id, a.id, a.customer_id, m.first_name, m.last_name,
+           coalesce(nullif(btrim(coalesce(m.first_name, '') || ' ' || coalesce(m.last_name, '')), ''), m.full_name),
+           m.phone, nullif(lower(btrim(coalesce(u.email, ''))), ''), 'backfill',
+           case when m.first_name is not null or m.last_name is not null or m.full_name is not null then 'user_metadata' end,
+           case when m.phone is not null then 'user_metadata' end
+      from auth.users u
+      join public.affiliate_accounts a on a.auth_user_id = u.id
+      cross join lateral (
+        select nullif(btrim(coalesce(u.raw_user_meta_data ->> 'first_name', '')), '') as first_name,
+               nullif(btrim(coalesce(u.raw_user_meta_data ->> 'last_name', '')), '') as last_name,
+               nullif(btrim(coalesce(u.raw_user_meta_data ->> 'full_name', '')), '') as full_name,
+               nullif(btrim(coalesce(u.raw_user_meta_data ->> 'phone', '')), '') as phone) m
+     where u.id = $1
+       and not exists (select 1 from public.affiliate_signup_identities x where x.auth_user_id = u.id)$q$ using p_login;
+end$$;
 
 -- ═════ Fixtures ═════
 do $$
@@ -279,15 +310,16 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
                                      ('public.event_web_referral_note(uuid)', false), ('public.event_web_new_customer(uuid)', false),
                                      ('public.event_web_guest_extras(uuid)', true), ('public.event_registration_attach(uuid,uuid,text)', true)) x(f, page)),
   'G2 the six changed functions keep 436''s grants (the page''s two signed-in staff''s, the four others the service role''s)');
-select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = x.m)
+-- (440, where it is applied, patched two of them: their AFTER is 439's or 440's.)
+select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_web_kept_customer(uuid)', 'cb0720c1088df9209da45e46b91601f4'),
-                                     ('public.event_web_affiliate_contact(uuid)', 'e4adbd007d847daee24e8d5d28b96b75'),
-                                     ('public.event_web_check_self_referral(uuid,uuid)', '11475114504d5bab79981ed8bb8c12b0'),
+                                     ('public.event_web_affiliate_contact(uuid)', 'e4adbd007d847daee24e8d5d28b96b75 3c81727e93dc5b73ca1d8833d95f75bb'),
+                                     ('public.event_web_check_self_referral(uuid,uuid)', '11475114504d5bab79981ed8bb8c12b0 2a5ab36c3d878197c21221a9a1ff193f'),
                                      ('public.event_web_referral_note(uuid)', 'd68893db63938cc774b157708bd341f1'),
                                      ('public.event_web_new_customer(uuid)', 'a253f76a9db721212a9c110bc41ff483'),
                                      ('public.event_web_guest_extras(uuid)', '18b56a28bb4965b2188cd73dde056209'),
                                      ('public.event_registration_attach(uuid,uuid,text)', 'b31be4d82d20000df026e7cfa9b24095')) x(f, m)),
-  'G3 the seven functions have 439''s AFTER md5s');
+  'G3 the seven functions have 439''s AFTER md5s (440''s for the two it patched, where it is applied)');
 select pg_temp.check((select bool_and(pg_get_functiondef(x.f::regprocedure) ~ E'\nbegin\n  perform public\\.require_active_staff\\(')
                         from (values ('public.event_web_guest_extras(uuid)'), ('public.event_registration_attach(uuid,uuid,text)')) x(f)),
   'G4 the two page functions still call require_active_staff first');
@@ -508,10 +540,29 @@ select pg_temp.check(pg_temp.tx('md_m1') = 'ok' and (pg_temp.pp('md1')).hold_rea
     and (pg_temp.pp('md1')).candidate_customer_ids = array[pg_temp.fx('kim_k')]
     and pg_temp.note('md1') like 'Their phone is on another customer''s record. If this is that customer, link their record:%',
   'MD1 merged before, the kept record has the phone: held on it, 436''s note: ' || pg_temp.note('md1'));
+\if :has441
+select pg_temp.check(pg_temp.tx('md_m2') = 'ok' and (pg_temp.pp('md2')).match = 'held' and (pg_temp.pp('md2')).hold_reason = 'phone_in_use'
+    and (pg_temp.pp('md2')).candidate_customer_ids = array[pg_temp.fx('moe')] and (pg_temp.pp('md2')).referral_outcome = 'held'
+    and (pg_temp.pp('md2')).customer_id is null and pg_temp.cands('md2') = array[pg_temp.fx('moe_k')],
+  'MD2 (441) merged before, the kept record without the phone: held for the kept record (the retired one the candidate), not referred at once');
+select pg_temp.check((pg_temp.pp('md3')).match = 'held' and (pg_temp.pp('md3')).hold_reason = 'phone_in_use'
+    and (pg_temp.pp('md3')).candidate_customer_ids = array[pg_temp.fx('cora')] and (pg_temp.pp('md3')).referral_outcome = 'held'
+    and pg_temp.note('md3') = format('Shares the phone of Cora Testold, the affiliate whose link (%s) was used. If this is Cora Testold, '
+          || 'link that record: not referred. If it is someone else, make a new customer: they become Cora Testold''s referral once an Owner '
+          || 'or Manager checks them as a different person (Affiliates page), and no commission comes before that.', pg_temp.tx('code_cora')),
+  'MD3 (441) the affiliate''s record merged before (its phone dropped): someone else on that phone is held first, as on her live phone: ' || pg_temp.note('md3'));
+select pg_temp.as_user('staff');
+select pg_temp.put('md3_make', pg_temp.err(format('select public.event_registration_create_customer(%L, %L)', pg_temp.fx('md3'), 'Her niece')));
+select pg_temp.as_service();
+\else
 select pg_temp.check(pg_temp.tx('md_m2') = 'ok' and (pg_temp.pp('md2')).match = 'new_customer' and (pg_temp.pp('md2')).referral_outcome = 'created'
     and (select referred_by from customers where id = (pg_temp.pp('md2')).customer_id) = pg_temp.fx('alma'),
   'MD2 merged before, the kept record without the phone: nobody has it, so a new customer referred at once (436''s rule; NOT COVERED)');
-select pg_temp.check(pg_temp.tx('md_m3') = 'ok' and (pg_temp.pp('md3')).match = 'new_customer' and (pg_temp.pp('md3')).referral_outcome = 'check_waiting'
+select pg_temp.put('md3_make', 'ok');
+\endif
+select pg_temp.check(pg_temp.tx('md_m3') = 'ok' and pg_temp.tx('md3_make') = 'ok'
+    and (pg_temp.pp('md3')).match = case when pg_temp.has441() then 'staff_created' else 'new_customer' end
+    and (pg_temp.pp('md3')).referral_outcome = 'check_waiting'
     and (select referred_by from customers where id = (pg_temp.pp('md3')).customer_id) is null
     and (pg_temp.check_of((pg_temp.pp('md3')).customer_id)).referrer_customer_id = pg_temp.fx('cora_k')
     and pg_temp.note('md3') = format('Waiting for a check: shares the phone of Cora Testold, the affiliate whose link (%s) was used. They become '
@@ -614,6 +665,7 @@ do $$ declare xa uuid; xl uuid := gen_random_uuid(); begin
   insert into auth.users(id, email, raw_user_meta_data)
   values (xl, pg_temp.mail('mr-xlogin'), jsonb_build_object('first_name', 'Xavi', 'last_name', 'Loginname', 'phone', pg_temp.ph(506)));
   insert into affiliate_accounts(auth_user_id, customer_id, affiliate_id, status) values (xl, pg_temp.fx('mr_x'), xa, 'claimed');
+  perform pg_temp.signup_copy(xl);
 end $$;
 select pg_temp.reg1('mr1', 'Zed', 'Stranger', pg_temp.ph(502), pg_temp.mail('mr-zed1'), pg_temp.tx('code_alma'));
 select pg_temp.reg1('mr2', 'Pat', 'Other', pg_temp.ph(501), pg_temp.mail('mr-pat'), pg_temp.tx('code_alma'));
@@ -630,17 +682,36 @@ select pg_temp.check((select bool_and((pg_temp.pp(t)).match = 'new_customer' and
                                       and (pg_temp.pp(t)).referral_self_by is null
                                       and public.event_web_affiliate_contact(pg_temp.fx(t)) is null
                                       and (select referred_by from customers where id = (pg_temp.pp(t)).customer_id) = pg_temp.fx('alma'))
-                        from unnest(array['mr1', 'mr2']) t),
-  'MR1 Zed''s name on a new phone, and someone else on Zed''s phone, through Alma''s link: neither is her (X was restored before Zed was merged into it): referred at once, as anyone new');
+                        from unnest(case when pg_temp.has441() then array['mr1'] else array['mr1', 'mr2'] end) t)
+    and (not pg_temp.has441()
+         or ((pg_temp.pp('mr2')).match = 'held' and (pg_temp.pp('mr2')).hold_reason = 'phone_in_use'
+             and (pg_temp.pp('mr2')).candidate_customer_ids = array[pg_temp.fx('mr_z')] and (pg_temp.pp('mr2')).referral_outcome = 'held'
+             and (pg_temp.pp('mr2')).referral_self_by is null and public.event_web_affiliate_contact(pg_temp.fx('mr2')) is null
+             and pg_temp.cands('mr2') = array[pg_temp.fx('mr_x')])),
+  case when pg_temp.has441()
+       then 'MR1 (441) Zed''s name on a new phone through Alma''s link is not her (X was restored before Zed was merged into it): referred at once; someone else on Zed''s phone is held for X (not her either)'
+       else 'MR1 Zed''s name on a new phone, and someone else on Zed''s phone, through Alma''s link: neither is her (X was restored before Zed was merged into it): referred at once, as anyone new' end);
 select pg_temp.check((select bool_and((pg_temp.pp(t)).match = 'new_customer' and (pg_temp.pp(t)).referral_outcome = 'created'
                                       and (pg_temp.pp(t)).referral_self_by is null
                                       and (select referred_by from customers where id = (pg_temp.pp(t)).customer_id) = pg_temp.fx('alma'))
                         from unnest(array['mr3', 'mr4'])  t),
   'MR2 the restored record''s own login (its name; its sign-up phone and email) is not Alma''s: referred at once');
-select pg_temp.check(pg_temp.tx('mr_m3') = 'ok' and pg_temp.tx('mr_m4') = 'ok'
+\if :has441
+select pg_temp.check((pg_temp.pp('mr6')).match = 'held' and (pg_temp.pp('mr6')).hold_reason = 'phone_in_use'
+    and (pg_temp.pp('mr6')).candidate_customer_ids = array[pg_temp.fx('mr_v')] and (pg_temp.pp('mr6')).referral_outcome = 'held'
+    and pg_temp.cands('mr6') = array[pg_temp.fx('alma')],
+  'MR3 (441) someone else on Vic''s phone (Vic into Quo, Quo into Alma) is held first, for Alma''s record, as on her live phone');
+select pg_temp.as_user('staff');
+select pg_temp.put('mr6_make', pg_temp.err(format('select public.event_registration_create_customer(%L, %L)', pg_temp.fx('mr6'), 'Someone else')));
+select pg_temp.as_service();
+\else
+select pg_temp.put('mr6_make', 'ok');
+\endif
+select pg_temp.check(pg_temp.tx('mr_m3') = 'ok' and pg_temp.tx('mr_m4') = 'ok' and pg_temp.tx('mr6_make') = 'ok'
     and (pg_temp.pp('mr5')).hold_reason = 'affiliate_name' and (pg_temp.pp('mr5')).referral_outcome = 'self'
     and (pg_temp.pp('mr5')).referral_self_by = array['name']
-    and (pg_temp.pp('mr6')).match = 'new_customer' and (pg_temp.pp('mr6')).referral_outcome = 'check_waiting'
+    and (pg_temp.pp('mr6')).match = case when pg_temp.has441() then 'staff_created' else 'new_customer' end
+    and (pg_temp.pp('mr6')).referral_outcome = 'check_waiting'
     and (select referred_by from customers where id = (pg_temp.pp('mr6')).customer_id) is null
     and public.event_web_affiliate_contact(pg_temp.fx('mr6')) = array['phone'],
   'MR3 a chain merged into hers (Vic into Quo, Quo into Alma) is still hers: Vic''s name is held as herself, someone else on Vic''s phone waits for a check');
@@ -678,6 +749,7 @@ do $$ declare m uuid; u3 uuid; rl uuid; n uuid; nl uuid; begin
   values (rl, pg_temp.mail('rachel'), jsonb_build_object('first_name', 'Rachel', 'last_name', 'Testmum', 'phone', '+61491570737'));
   insert into affiliate_accounts(auth_user_id, customer_id, affiliate_id, status)
   values (rl, m, (select id from customer_affiliates where customer_id = m), 'claimed');
+  perform pg_temp.signup_copy(rl);
   n := pg_temp.cust('Nora Testrec', pg_temp.ph(60), pg_temp.mail('nora'));
   insert into customer_affiliates(customer_id, status, referral_code) values (n, 'active', 'HO' || pg_temp.tx('sfx'));
   nl := gen_random_uuid();
@@ -686,6 +758,7 @@ do $$ declare m uuid; u3 uuid; rl uuid; n uuid; nl uuid; begin
   values (nl, pg_temp.mail('nora-login'), jsonb_build_object('first_name', 'Nora', 'last_name', 'Testrec', 'phone', '+61491570006'));
   insert into affiliate_accounts(auth_user_id, customer_id, affiliate_id, status)
   values (nl, n, (select id from customer_affiliates where customer_id = n), 'claimed');
+  perform pg_temp.signup_copy(nl);
   insert into fx values ('mum', m), ('mum_up', u3), ('nora', n);
   insert into tx values ('code_mum', 'HL' || pg_temp.tx('sfx')), ('code_nora', 'HO' || pg_temp.tx('sfx'));
 end $$;
