@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   uploadSurveyAttachment, removeSurveyAttachment, downloadAttachment,
-  signedUrl, isImage, prettySize, MAX_BYTES,
+  signedUrl, isImage, prettySize, MAX_BYTES, ACCEPT,
 } from '../lib/surveyAttachments';
+import { sgDate } from '../lib/survey/links.mjs';
 import { Paperclip, UploadCloud, Trash2, Download, FileText, FileSpreadsheet,
-         RefreshCw, X, Eye, Lock, ImageIcon, CheckCircle2 } from 'lucide-react';
+         RefreshCw, X, Eye, ImageIcon, CheckCircle2 } from 'lucide-react';
 
 type Upload = { name: string; status: 'pending' | 'doing' | 'done' | 'error'; msg?: string };
 
@@ -34,10 +35,18 @@ const Thumb: React.FC<{ path: string; mime?: string | null }> = ({ path, mime })
   return <img src={url} alt="" style={{ width: '100%', height: 96, objectFit: 'cover', display: 'block' }} />;
 };
 
+/**
+ * The files on a health survey. Shown only to Owners and Managers (the
+ * consultant section), who may add and remove them. When the customer has
+ * no survey yet, getTarget makes it first (CUSTOMERS-5: the record is made by
+ * the first real save, a file included).
+ */
 const SurveyAttachments: React.FC<{
-  surveyId: string; storeId: string; attachments: any[];
-  onChanged: () => void; readOnly?: boolean;
-}> = ({ surveyId, storeId, attachments, onChanged, readOnly }) => {
+  surveyId: string | null; storeId: string | null; attachments: any[];
+  onChanged: () => void;
+  /** Makes the survey when there is none yet; returns where the files go. */
+  getTarget?: () => Promise<{ surveyId: string; storeId: string | null } | null>;
+}> = ({ surveyId, storeId, attachments, onChanged, getTarget }) => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [drag, setDrag] = useState(false);
@@ -46,10 +55,15 @@ const SurveyAttachments: React.FC<{
   const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
 
   const handle = async (files: FileList | File[] | null) => {
-    if (!files || readOnly) return;
+    if (!files) return;
     const list = Array.from(files as File[]);
     if (!list.length) return;
     setErr(null); setBusy(true);
+    let target = surveyId ? { surveyId, storeId } : null;
+    if (!target && getTarget) {
+      try { target = await getTarget(); } catch (e: any) { target = null; setErr(e?.message ?? 'Could not start the survey.'); }
+    }
+    if (!target) { setBusy(false); return; }
     setQueue(list.map(f => ({ name: f.name, status: 'pending' })));
 
     let any = false;
@@ -58,7 +72,7 @@ const SurveyAttachments: React.FC<{
       setQueue(q => q.map((x, j) => j === i ? { ...x, status: 'doing' } : x));
       try {
         if (f.size > MAX_BYTES) throw new Error(`Larger than 10 MB (${prettySize(f.size)})`);
-        await uploadSurveyAttachment(storeId, surveyId, f);
+        await uploadSurveyAttachment(target.storeId, target.surveyId, f);
         setQueue(q => q.map((x, j) => j === i ? { ...x, status: 'done' } : x));
         any = true;
       } catch (e: any) {
@@ -94,42 +108,32 @@ const SurveyAttachments: React.FC<{
           <Paperclip size={13} /> Attachments
           {attachments.length > 0 && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({attachments.length})</span>}
         </label>
-        {readOnly && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-            <Lock size={11} /> View only
-          </span>
-        )}
       </div>
 
-      {err && <div className="alert alert-danger" style={{ marginBottom: 8 }}><span>⚠</span><div>{err}</div></div>}
+      {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 8 }}><span>⚠</span><div>{err}</div></div>}
 
-      {/* Drop zone — Owner/Manager only */}
-      {!readOnly && (
-        <>
-          <input ref={fileRef} type="file" multiple hidden
-            accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.heic"
-            onChange={e => handle(e.target.files)} />
-          <div
-            onClick={() => !busy && fileRef.current?.click()}
-            onDragOver={e => { e.preventDefault(); setDrag(true); }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={e => { e.preventDefault(); setDrag(false); handle(e.dataTransfer.files); }}
-            style={{
-              border: `2px dashed ${drag ? 'var(--primary)' : 'var(--border)'}`,
-              background: drag ? 'var(--success-light)' : 'var(--surface-2)',
-              borderRadius: 'var(--radius-sm)', padding: '18px 12px', textAlign: 'center',
-              cursor: busy ? 'default' : 'pointer', transition: 'all .15s', marginBottom: 10,
-            }}>
-            <UploadCloud size={22} style={{ color: drag ? 'var(--primary)' : 'var(--text-muted)' }} />
-            <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>
-              {busy ? 'Uploading…' : drag ? 'Drop to upload' : 'Drag files here, or click to browse'}
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
-              Photos, scans, PDFs or reports · up to 10 MB each · multiple allowed
-            </div>
-          </div>
-        </>
-      )}
+      <input ref={fileRef} type="file" multiple hidden accept={ACCEPT}
+        data-survey-files
+        onChange={e => handle(e.target.files)} />
+      <div
+        onClick={() => !busy && fileRef.current?.click()}
+        onDragOver={e => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={e => { e.preventDefault(); setDrag(false); handle(e.dataTransfer.files); }}
+        style={{
+          border: `2px dashed ${drag ? 'var(--primary)' : 'var(--border)'}`,
+          background: drag ? 'var(--success-light)' : 'var(--surface-2)',
+          borderRadius: 'var(--radius-sm)', padding: '18px 12px', textAlign: 'center',
+          cursor: busy ? 'default' : 'pointer', transition: 'all .15s', marginBottom: 10,
+        }}>
+        <UploadCloud size={22} style={{ color: drag ? 'var(--primary)' : 'var(--text-muted)' }} />
+        <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>
+          {busy ? 'Uploading…' : drag ? 'Drop to upload' : 'Drag files here, or click to browse'}
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+          Photos, scans, PDFs or reports · up to 10 MB each · multiple allowed
+        </div>
+      </div>
 
       {/* Per-file progress */}
       {queue.length > 0 && (
@@ -173,20 +177,20 @@ const SurveyAttachments: React.FC<{
               <div style={{ padding: '7px 8px' }}>
                 <div title={a.file_name} style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.file_name}</div>
                 <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 1 }}>
-                  {prettySize(a.byte_size)} · {new Date(a.uploaded_at).toLocaleDateString()}
+                  {prettySize(a.byte_size)} · {sgDate(a.uploaded_at)}
                 </div>
                 {a.uploaded_by_name && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{a.uploaded_by_name}</div>}
                 <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
                   <button className="btn btn-secondary btn-sm" style={{ flex: 1, padding: '3px 6px' }}
+                    aria-label={`Download ${a.file_name}`}
                     onClick={() => downloadAttachment(a.storage_path, a.file_name).catch(e => setErr(e?.message))}>
                     <Download size={11} />
                   </button>
-                  {!readOnly && (
-                    <button className="btn btn-danger btn-sm" style={{ flex: 1, padding: '3px 6px' }}
-                      disabled={busy} onClick={() => remove(a)}>
-                      <Trash2 size={11} />
-                    </button>
-                  )}
+                  <button className="btn btn-danger btn-sm" style={{ flex: 1, padding: '3px 6px' }}
+                    aria-label={`Remove ${a.file_name}`}
+                    disabled={busy} onClick={() => remove(a)}>
+                    <Trash2 size={11} />
+                  </button>
                 </div>
               </div>
             </div>
@@ -202,7 +206,7 @@ const SurveyAttachments: React.FC<{
         }}>
           <img src={lightbox.url} alt="" style={{ maxWidth: '100%', maxHeight: 'calc(100% - 40px)', borderRadius: 6 }} />
           <div style={{ color: '#fff', fontSize: 12.5, marginTop: 10 }}>{lightbox.name}</div>
-          <button className="btn btn-secondary btn-sm btn-icon" style={{ position: 'absolute', top: 16, right: 16 }}><X size={14} /></button>
+          <button className="btn btn-secondary btn-sm btn-icon" aria-label="Close" style={{ position: 'absolute', top: 16, right: 16 }}><X size={14} /></button>
         </div>
       )}
     </div>

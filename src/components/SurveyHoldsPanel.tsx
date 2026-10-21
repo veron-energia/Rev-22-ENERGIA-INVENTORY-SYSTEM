@@ -11,6 +11,11 @@ export interface HoldCandidate {
   phone_matches: boolean; email_matches: boolean; name_matches: boolean;
   /** The customer's own survey, if they have one: a customer has only one. */
   survey_no: string | null;
+  /**
+   * 419 (Q10): that survey is a consultant's record the customer has not
+   * signed, so the form's answers can go into it. Missing before 419.
+   */
+  survey_takes_form?: boolean | null;
 }
 
 /** A QR form the server held for staff instead of making a second customer (433). */
@@ -76,7 +81,7 @@ const SurveyHoldsPanel: React.FC<{
   const confirm = async () => {
     if (!action) return;
     setBusy(true); setErr(null);
-    let res: { error: { message: string } | null };
+    let res: { data?: any; error: { message: string } | null };
     if (action.kind === 'attach') {
       res = await supabase.rpc('attach_held_health_survey', {
         p_survey_id: action.form.survey_id, p_customer_id: action.customer?.customer_id ?? otherId, p_note: note.trim(),
@@ -97,8 +102,12 @@ const SurveyHoldsPanel: React.FC<{
       return;
     }
     const f = action.form;
+    const into = action.kind === 'attach' ? (res.data as any)?.signed_into_survey_no as string | undefined : undefined;
     setDone(action.kind === 'attach'
-      ? (action.customer ? `${f.survey_no} is now ${action.customer.full_name}'s survey.` : `${f.survey_no} is now attached to the customer you chose.`)
+      ? (into
+          // 419 (Q10): the answers went into the customer's unsigned record.
+          ? `The answers on ${f.survey_no} went into ${action.customer?.full_name ?? 'the customer'}'s survey ${into}, which is now signed.`
+          : action.customer ? `${f.survey_no} is now ${action.customer.full_name}'s survey.` : `${f.survey_no} is now attached to the customer you chose.`)
       : action.kind === 'create' ? `A new customer was made from ${f.survey_no}, and the form is theirs.`
       : `${f.survey_no} was closed without a customer.`);
     setAction(null);
@@ -154,8 +163,11 @@ const SurveyHoldsPanel: React.FC<{
             <table>
               <thead><tr><th>May belong to</th><th>Contact</th><th>Date of birth</th><th>Same</th><th>Survey</th><th></th></tr></thead>
               <tbody>{f.candidates.map(c => {
+                // 419 (Q10): a consultant's record the customer has not signed
+                // takes the form's answers; any other survey is their one survey.
                 const blocked = c.deleted ? 'This customer record was retired.'
-                  : c.survey_no ? `This customer already has a survey (${c.survey_no}); a customer can have only one.` : null;
+                  : c.survey_no && !c.survey_takes_form
+                    ? `This customer already has a survey (${c.survey_no}); a customer can have only one.` : null;
                 return (
                   <tr key={c.customer_id}>
                     <td style={{ fontWeight: 600 }}>{c.full_name}{c.deleted && <span className="badge badge-muted" style={{ marginLeft: 6 }}>Retired</span>}</td>
@@ -166,7 +178,10 @@ const SurveyHoldsPanel: React.FC<{
                       {c.email_matches && <span className="badge badge-success" style={{ marginRight: 4 }}>Email</span>}
                       {c.name_matches && <span className="badge badge-success">Name</span>}
                     </td>
-                    <td style={{ fontSize: 12 }}>{c.survey_no ?? '—'}</td>
+                    <td style={{ fontSize: 12 }}>{c.survey_no ?? '—'}
+                      {c.survey_no && c.survey_takes_form && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Not signed yet: the form's answers go into it</div>
+                      )}</td>
                     <td style={{ textAlign: 'right' }}>
                       <button className="btn btn-primary btn-sm" disabled={!!blocked} title={blocked ?? undefined}
                         data-attach={c.customer_id}
@@ -212,11 +227,19 @@ const SurveyHoldsPanel: React.FC<{
           </>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
-            {action.kind === 'attach' && action.customer && (
+            {action.kind === 'attach' && action.customer && !action.customer.survey_takes_form && (
               <p style={{ margin: 0, fontSize: 13.5 }}>
                 The form <strong>{action.form.full_name}</strong> sent becomes <strong>{action.customer.full_name}</strong>'s
                 health survey. Their name and phone stay as they are; empty details (email, date of birth, sex,
                 occupation, how they heard about us) are filled from the form.
+              </p>
+            )}
+            {action.kind === 'attach' && action.customer?.survey_takes_form && (
+              <p style={{ margin: 0, fontSize: 13.5 }} data-takes-form>
+                <strong>{action.customer.full_name}</strong> has a consultant's survey ({action.customer.survey_no}) they
+                have not signed. The answers, signature and signed PDF of the form <strong>{action.form.full_name}</strong> sent
+                go into it. The consultant's notes, findings and files stay, and where the two differ the customer's own
+                answers are kept. Their name and phone stay as they are.
               </p>
             )}
             {action.kind === 'attach' && !action.customer && (

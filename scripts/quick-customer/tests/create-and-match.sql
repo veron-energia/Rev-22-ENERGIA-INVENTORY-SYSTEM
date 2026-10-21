@@ -21,7 +21,14 @@ begin;
 \if :{?prelude}
 \i :prelude
 \endif
+-- 418 is applied only where it is not in yet: once 419 is in, 418's own
+-- guards refuse a second run (419 changed customer_survey_overview), as in
+-- rls-policies.sql.
+select to_regprocedure('public.update_customer(uuid,jsonb,text,timestamptz)') is not null as t418_in \gset
+\if :t418_in
+\else
 \ir ../../../supabase/418_customer_edits_audited_and_phone_search.sql
+\endif
 do $$
 declare own uuid:=gen_random_uuid(); aff_uid uuid:=gen_random_uuid();
  r jsonb; c1 uuid; c2 uuid; c3 uuid; deleted_id uuid; rq uuid:=gen_random_uuid(); n int;

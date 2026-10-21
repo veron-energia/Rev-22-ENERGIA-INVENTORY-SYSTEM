@@ -858,6 +858,8 @@ export interface TherapyDateChangeRequest {
 export interface SurveyLink {
   id: string; token: string; store_id: string; event_name: string | null;
   is_active: boolean; expires_at: string | null; created_by: string | null; created_at: string;
+  /** 419: how an event link's customers heard about us (Event or RoadShow). */
+  source_option_id?: string | null;
 }
 export interface HealthSymptomOption {
   id: string; category: string; label: string; sort_order: number; is_active: boolean;
@@ -866,7 +868,7 @@ export interface HealthSurvey {
   id: string; survey_no: string; store_id: string; survey_link_id: string | null;
   customer_id: string | null; event_name: string | null;
   full_name: string; date_of_birth: string | null; age: number | null;
-  sex: 'male' | 'female' | null; phone: string; email: string | null; occupation: string | null;
+  sex: 'male' | 'female' | 'other' | null; phone: string; email: string | null; occupation: string | null;
   has_medical_condition: boolean | null; drinks_alcohol: boolean | null;
   smokes: boolean | null; on_treatment: boolean | null;
   treatment_list: string | null; others_text: string | null;

@@ -39,7 +39,8 @@ const dir = await mkdtemp(join(tmpdir(), 'energia-survey-page-'));
 const STUBS = {
   'rrd': 'export const useParams = () => ({ token: "tok" });',
   'sb': 'export const supabase = new Proxy({}, { get: (_t, p) => globalThis.__SB__[p] });',
-  'pdf': 'export const buildSurveyPdf = () => "JVBER";',
+  // 419: a test may make the PDF fail (globalThis.__PDF_FAIL__ = 'why').
+  'pdf': 'export const buildSurveyPdf = () => { if (globalThis.__PDF_FAIL__) throw new Error(globalThis.__PDF_FAIL__); return "JVBER"; };',
   'types': 'export {};',
   'css': '',
   'lucide': `
@@ -83,6 +84,7 @@ const SOURCES = [
   { id: 's1', label: 'Facebook', requires_details: false },
   { id: 's2', label: 'A friend', requires_details: true },
   { id: 's3', label: 'Roadshow / Event', requires_details: false },
+  { id: 's4', label: 'RoadShow', requires_details: false },
 ];
 
 function makeSupabase({ linkInfo, submit } = {}) {
@@ -261,6 +263,77 @@ test('event-linked survey link hides the "how did you hear" question', async () 
     await ui.click('#stub-sign');
     await ui.submitForm();
     assert.ok(/Thank you/.test(ui.text()));
+  } finally { ui.close(); }
+});
+
+// ── 419 ─────────────────────────────────────────────────────────────────
+async function sendValid(ui, opts = {}) {
+  await ui.change('#sv-first-name', 'Mary Ann');
+  await ui.change('#sv-last-name', 'Tan');
+  await ui.change('.phone-input select', 'AU');
+  await ui.change('.phone-input input', '491570006');   // the ACMA's fictional range
+  await ui.change('#sv-email', 'maryann@example.com');
+  if (!opts.event) await ui.change('#sv-source', 's1');
+  await ui.click('#stub-sign');
+  await ui.submitForm();
+}
+
+test('419: the first and last name go as typed, so the server keeps "Mary Ann" whole (CUSTOMERS-8)', async () => {
+  let sent = null;
+  const ui = await mount({ submit: p => { sent = p; return { data: { survey_no: 'HS-1' } }; } });
+  try {
+    await sendValid(ui);
+    assert.equal(sent.p_payload.first_name, 'Mary Ann');
+    assert.equal(sent.p_payload.last_name, 'Tan');
+    assert.equal(sent.p_payload.full_name, 'Mary Ann Tan');
+  } finally { ui.close(); }
+});
+
+test('419: an event link with its own source sends that source, not the first event-like one (CUSTOMERS-12)', async () => {
+  let sent = null;
+  const ui = await mount({
+    linkInfo: { valid: true, store_name: 'Van', event_name: 'Fair 2026', source_option_id: 's4', source_label: 'RoadShow' },
+    submit: p => { sent = p; return { data: { survey_no: 'HS-2' } }; },
+  });
+  try {
+    assert.equal(ui.$('#sv-source'), null, 'the question is skipped');
+    await sendValid(ui, { event: true });
+    assert.equal(sent.p_payload.source_option_id, 's4');
+    assert.equal(sent.p_payload.source_details, 'Fair 2026');
+  } finally { ui.close(); }
+});
+
+test('419: an older event link without a source keeps the first event-like source, as before', async () => {
+  let sent = null;
+  const ui = await mount({
+    linkInfo: { valid: true, store_name: 'Van', event_name: 'Old Fair' },
+    submit: p => { sent = p; return { data: { survey_no: 'HS-3' } }; },
+  });
+  try {
+    await sendValid(ui, { event: true });
+    assert.equal(sent.p_payload.source_option_id, 's3');
+  } finally { ui.close(); }
+});
+
+test('419: a signed PDF that cannot be built is reported with the form, which is still sent (CUSTOMERS-16)', async () => {
+  let sent = null;
+  globalThis.__PDF_FAIL__ = 'Font failed';
+  const ui = await mount({ submit: p => { sent = p; return { data: { survey_no: 'HS-4' } }; } });
+  try {
+    await sendValid(ui);
+    assert.ok(/Thank you/.test(ui.text()));
+    assert.equal(sent.p_pdf_base64, null);
+    assert.equal(sent.p_payload.pdf_error, 'Font failed');
+  } finally { ui.close(); globalThis.__PDF_FAIL__ = null; }
+});
+
+test('419: a PDF built as usual sends no pdf_error', async () => {
+  let sent = null;
+  const ui = await mount({ submit: p => { sent = p; return { data: { survey_no: 'HS-5' } }; } });
+  try {
+    await sendValid(ui);
+    assert.equal(sent.p_pdf_base64, 'JVBER');
+    assert.ok(!('pdf_error' in sent.p_payload));
   } finally { ui.close(); }
 });
 

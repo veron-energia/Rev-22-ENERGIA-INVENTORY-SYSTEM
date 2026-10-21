@@ -67,11 +67,21 @@
 -- email below is invented; the phones are +65 8433 01xx.
 \set ON_ERROR_STOP on
 begin;
+-- Once 419 is applied, 433 cannot run again (419 changed four of its
+-- functions, so its guards refuse). The checks then run on 419's versions,
+-- which keep 433's rules; Edit details is 419's (update_survey_particulars_v2).
+select to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null as has419 \gset
+\if :has419
+create temp table m433 as
+  select p.oid::regprocedure::text as fn, md5(pg_get_functiondef(p.oid)) as md5
+    from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f';
+\else
 \ir ../../../supabase/433_qr_survey_holds_unsure_forms_for_staff.sql
 create temp table m433 as
   select p.oid::regprocedure::text as fn, md5(pg_get_functiondef(p.oid)) as md5
     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f';
 \ir ../../../supabase/433_qr_survey_holds_unsure_forms_for_staff.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '120s';
 create temp table failed(n serial, msg text);
@@ -126,6 +136,32 @@ create function pg_temp.close(key text, reason text default 'Sent twice') return
 $$ select pg_temp.err(format('select public.close_held_health_survey(%L, %L)', pg_temp.fx('hs:' || key), reason)) $$;
 create function pg_temp.visits(key text) returns int language sql as
 $$ select count(*)::int from public.customer_centre_visit_days() v where v.survey_id = pg_temp.fx('hs:' || key) $$;
+-- Edit details on a form, as the Surveys page saves it, with the date of
+-- birth set to dob; back as user_key afterwards. Before 419 the page sent
+-- every field (update_survey_particulars). From 419 it sends only what
+-- changed (update_survey_particulars_v2), and a date of birth already filled
+-- in is an Owner's or Manager's to change, with a reason (Q9).
+create function pg_temp.edit_details(key text, dob text, user_key text) returns text language plpgsql as
+$$declare r text; v_dob date;
+begin
+  if to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null then
+    select date_of_birth into v_dob from public.health_surveys where id = pg_temp.fx('hs:' || key);
+    perform pg_temp.as_user('o');
+    r := pg_temp.err(format('select public.update_survey_particulars_v2(%L, %L::jsonb, %L)', pg_temp.fx('hs:' || key),
+           case when v_dob is distinct from dob::date then jsonb_build_object('date_of_birth', dob) else '{}'::jsonb end,
+           'Checked her IC'));
+    perform pg_temp.as_user(user_key);
+    return r;
+  end if;
+  return pg_temp.err(format(
+    'select public.update_survey_particulars(%L, %L, %L, %L, %L, %L::date, %L, %L, %L, %L::uuid, %L, null, null, null, null, null, null)',
+    pg_temp.fx('hs:' || key),
+    (select first_name from health_surveys where id = pg_temp.fx('hs:' || key)),
+    (select last_name from health_surveys where id = pg_temp.fx('hs:' || key)),
+    (select phone from health_surveys where id = pg_temp.fx('hs:' || key)),
+    (select email from health_surveys where id = pg_temp.fx('hs:' || key)),
+    dob, 'female', 'Tester', null, pg_temp.fx('src'), null));
+end$$;
 
 select pg_temp.check(to_regclass('public.health_survey_holds') is not null
     and position('433:' in (select prosrc from pg_proc where oid = to_regprocedure('public.submit_health_survey(text,jsonb,jsonb,text)'))) > 0
@@ -331,14 +367,7 @@ select pg_temp.check((select full_name = 'Siew Lan (Office) Testchua' and phone 
   'A the form carries the customer''s name and keeps the phone and email typed; the Audit Log has what was typed');
 -- Edit details on the attached form, as the Surveys page saves it: the form's
 -- own values, with only the date of birth changed.
-insert into tx values ('edit_q5', pg_temp.err(format(
-  'select public.update_survey_particulars(%L, %L, %L, %L, %L, %L::date, %L, %L, %L, %L::uuid, %L, null, null, null, null, null, null)',
-  pg_temp.fx('hs:q5'),
-  (select first_name from health_surveys where id = pg_temp.fx('hs:q5')),
-  (select last_name from health_surveys where id = pg_temp.fx('hs:q5')),
-  (select phone from health_surveys where id = pg_temp.fx('hs:q5')),
-  (select email from health_surveys where id = pg_temp.fx('hs:q5')),
-  '1980-02-04', 'female', 'Tester', null, pg_temp.fx('src'), null)));
+insert into tx values ('edit_q5', pg_temp.edit_details('q5', '1980-02-04', 's'));
 select pg_temp.check(pg_temp.tx('edit_q5') = 'ok'
     and (select full_name from customers where id = pg_temp.fx('c5')) = 'Siew Lan (Office) Testchua'
     and (select date_of_birth from customers where id = pg_temp.fx('c5')) = '1980-02-04',
@@ -374,14 +403,7 @@ insert into tx values ('attach_q1w', pg_temp.attach('q1w', 'c1w'));
 select pg_temp.check(pg_temp.tx('attach_q1w') = 'ok'
     and (select full_name = 'Annx' and first_name = 'Annx' and last_name is null from health_surveys where id = pg_temp.fx('hs:q1w')),
   'A a customer with a one-word name: the form takes it as it is, not mixed with the surname typed');
-insert into tx values ('edit_q1w', pg_temp.err(format(
-  'select public.update_survey_particulars(%L, %L, %L, %L, %L, %L::date, %L, %L, %L, %L::uuid, %L, null, null, null, null, null, null)',
-  pg_temp.fx('hs:q1w'),
-  (select first_name from health_surveys where id = pg_temp.fx('hs:q1w')),
-  (select last_name from health_surveys where id = pg_temp.fx('hs:q1w')),
-  (select phone from health_surveys where id = pg_temp.fx('hs:q1w')),
-  (select email from health_surveys where id = pg_temp.fx('hs:q1w')),
-  '1980-02-03', 'female', 'Tester', null, pg_temp.fx('src'), null)));
+insert into tx values ('edit_q1w', pg_temp.edit_details('q1w', '1980-02-03', 'o'));
 select pg_temp.check(pg_temp.tx('edit_q1w') = 'ok' and (select full_name from customers where id = pg_temp.fx('c1w')) = 'Annx',
   'A saving that form''s details leaves the customer''s one-word name alone: ' || pg_temp.tx('edit_q1w'));
 insert into tx values ('attach_q6', pg_temp.attach('q6', 'cOut', 'She is not either of the two; her own record was made at the counter'));
@@ -511,14 +533,17 @@ select pg_temp.check(not exists (select 1 from m433 m
                                   where p.oid is null or md5(pg_get_functiondef(p.oid)) <> m.md5)
     and (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f') = (select count(*) from m433),
   'M running 433 a second time changed no function');
-select pg_temp.check(bool_and(md5(pg_get_functiondef(to_regprocedure(fn))) = ok),
-  'M the functions are 433''s AFTER versions')
-  from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab'),
-               ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978'),
-               ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b'),
-               ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f'),
-               ('public.create_customer_from_held_survey(uuid,text)',   'd503d8b599f90768c8d909b91cd453e1'),
-               ('public.close_held_health_survey(uuid,text)',           'ee4789b1d716e4fbf498a5f38e722735')) t(fn, ok);
+-- With 419 applied, four of them are 419's AFTER versions (its header).
+select pg_temp.check(bool_and(md5(pg_get_functiondef(to_regprocedure(fn)))
+                              = case when to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null
+                                     then coalesce(ok419, ok) else ok end),
+  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied)')
+  from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185'),
+               ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978', null),
+               ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b', '0487502f033b56452140c81e108a8ebc'),
+               ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249'),
+               ('public.create_customer_from_held_survey(uuid,text)',   'd503d8b599f90768c8d909b91cd453e1', '733db65d708db7c64b5c4de03493d409'),
+               ('public.close_held_health_survey(uuid,text)',           'ee4789b1d716e4fbf498a5f38e722735', null)) t(fn, ok, ok419);
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;

@@ -181,7 +181,10 @@ declare
                              'invoice_voucher_stock_unrecorded',
                              -- 423: the trigger function that writes every change to a voucher
                              -- and to its store prices into the audit log
-                             'trg_audit_voucher_change'];
+                             'trg_audit_voucher_change',
+                             -- 419: a customer's signed QR form into their consultant record,
+                             -- called inside submit_health_survey and attach_held_health_survey
+                             'health_survey_sign_into_record'];
   bad text; n int;
 begin
   -- 1. Nothing outside the five signed-out endpoints is callable with the anon

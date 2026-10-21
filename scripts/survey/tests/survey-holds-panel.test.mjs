@@ -91,7 +91,7 @@ const FORMS = [
                  cand('c-p3', 'Pei Qi (old) Testng', { phone: true, name: true }, null, true)] },
 ];
 
-async function mount({ canClose = false, reply = () => ({ data: { ok: true }, error: null }) } = {}) {
+async function mount({ canClose = false, reply = () => ({ data: { ok: true }, error: null }), forms = FORMS } = {}) {
   const calls = [];
   let changed = 0;
   globalThis.__SB__ = { rpc: async (name, args) => { calls.push({ name, args }); return reply(name, args); } };
@@ -99,7 +99,7 @@ async function mount({ canClose = false, reply = () => ({ data: { ok: true }, er
   document.body.appendChild(node);
   const root = createRoot(node);
   await act(async () => {
-    root.render(React.createElement(SurveyHoldsPanel, { forms: FORMS, canClose, onChanged: () => { changed += 1; } }));
+    root.render(React.createElement(SurveyHoldsPanel, { forms, canClose, onChanged: () => { changed += 1; } }));
   });
   const $ = sel => document.querySelector(sel);
   return {
@@ -234,5 +234,32 @@ test('the last success message clears when the next action opens', async () => {
     assert.match(ui.text(), /A new customer was made from/);
     await ui.click('[data-other="hs-2"]');
     assert.doesNotMatch(ui.text(), /A new customer was made from/);
+  } finally { ui.close(); }
+});
+
+// ── 419 (Q10) ───────────────────────────────────────────────────────────
+// A customer whose survey is a consultant's record they have not signed can
+// take a held form: its answers go into that record.
+const TAKES = [{
+  ...FORMS[0], survey_id: 'hs-9', survey_no: 'HS-20261018-q10000', full_name: 'Faye Testsix', phone: '+61491578148',
+  candidates: [{ ...cand('c-fay', 'Fay Testsix', { phone: true }, 'HS-20261001-cons01'), phone: '+61491578148',
+                 survey_takes_form: true },
+               { ...cand('c-esme', 'Esme Testfive', { email: true }, 'HS-20261001-sign01'), phone: '+61491578888',
+                 survey_takes_form: false }],
+}];
+
+test('419 (Q10): a customer with an unsigned consultant survey can take the form; a signed survey still blocks', async () => {
+  const ui = await mount({ forms: TAKES, reply: () => ({ data: { ok: true, survey_no: 'HS-20261018-q10000',
+                                                                  signed_into_survey_no: 'HS-20261001-cons01' }, error: null }) });
+  try {
+    assert.equal(ui.$('[data-attach="c-fay"]').disabled, false);
+    assert.match(ui.text(), /Not signed yet: the form's answers go into it/);
+    assert.equal(ui.$('[data-attach="c-esme"]').disabled, true);
+    await ui.click('[data-attach="c-fay"]');
+    assert.ok(ui.$('[data-takes-form]'), 'the window says the answers go into her survey');
+    await ui.type('[data-note]', 'Checked her IC');
+    await ui.click('[data-confirm]');
+    assert.equal(ui.calls[0].name, 'attach_held_health_survey');
+    assert.match(ui.text(), /The answers on HS-20261018-q10000 went into Fay Testsix's survey HS-20261001-cons01, which is now signed\./);
   } finally { ui.close(); }
 });

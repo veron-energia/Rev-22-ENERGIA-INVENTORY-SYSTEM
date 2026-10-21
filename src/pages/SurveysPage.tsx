@@ -1,14 +1,16 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import QRCode from 'qrcode';
 import { supabase } from '../lib/supabase';
 import { esc } from '../lib/printDoc';
 import { useAuth } from '../context/AuthContext';
-import { Store, SurveyLink, HealthSurvey, isOwnerOrManager } from '../types';
+import { Store, SurveyLink, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import SurveyDetailModal from '../components/SurveyDetailModal';
+import type { SurveyCustomer, SurveyStoreOption } from '../components/SurveyDetailModal';
 import SourceOptionsModal from '../components/SourceOptionsModal';
 import SurveyHoldsPanel, { HeldForm } from '../components/SurveyHoldsPanel';
-import { RefreshCw, Plus, QrCode, Copy, ClipboardList, Search, Link2, Check, Eye, FileText } from 'lucide-react';
+import { linkExpiryFromDay, linkStatus, sgDate, sgDateTime } from '../lib/survey/links.mjs';
+import { RefreshCw, Plus, QrCode, Copy, ClipboardList, Search, Link2, Check, Eye } from 'lucide-react';
 
 const randomToken = () => {
   const a = new Uint8Array(16);
@@ -16,12 +18,17 @@ const randomToken = () => {
   return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
 };
 
+type SourceOption = { id: string; label: string; requires_details: boolean };
+/** The source an event link starts with: "Event Name", as before 419. */
+const defaultEventSource = (opts: SourceOption[]) =>
+  opts.find(o => /^event/i.test(o.label)) ?? opts.find(o => /event|roadshow/i.test(o.label)) ?? null;
+
 const SurveysPage: React.FC = () => {
   const { profile } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
-  // Health declarations and the consultant's survey are not an Inventory
-  // Manager's (health_survey_detail and, since 406, upsert_consultant_survey
-  // refuse them), so they are not offered Start survey / Open.
+  // Health declarations, the consultant's survey and the remarks are not an
+  // Inventory Manager's (the server refuses them all, 406 and 419), so they
+  // are not offered Start survey, Open or Remarks.
   const canOpenSurvey = profile?.role !== 'inventory_manager';
   const [tab, setTab] = useState<'submissions' | 'to_match' | 'links'>('submissions');
   // 433: QR forms the server held for staff instead of making a second
@@ -53,19 +60,30 @@ const SurveysPage: React.FC = () => {
   const [custPage, setCustPage] = useState(0);
   const [custTotal, setCustTotal] = useState(0);
   const [custLoading, setCustLoading] = useState(false);
+  const [custErr, setCustErr] = useState<string | null>(null);
   const CUST_PAGE = 50;
+  // Only the newest request may fill the list: a slow older answer is dropped.
+  const custSeq = useRef(0);
 
   const loadCustomers = useCallback(async () => {
+    // 419: the list shows the consultant's findings, so the server refuses it
+    // to Inventory Managers; it is not asked for.
+    if (!canOpenSurvey) { setCustRows([]); setCustTotal(0); return; }
+    const seq = ++custSeq.current;
     setCustLoading(true);
-    const { data } = await supabase.rpc('customer_survey_overview', {
+    const { data, error } = await supabase.rpc('customer_survey_overview', {
       p_query: custDebounced.trim() || null, p_filter: custFilter,
       p_limit: CUST_PAGE, p_offset: custPage * CUST_PAGE,
     });
+    if (seq !== custSeq.current) return;
+    setCustLoading(false);
+    // CUSTOMERS-6: a failed load says so, instead of "No customers match".
+    if (error) { setCustErr(error.message); return; }
+    setCustErr(null);
     const list = (data as any[]) ?? [];
     setCustRows(list);
     setCustTotal(list.length > 0 ? Number(list[0].total_count) : 0);
-    setCustLoading(false);
-  }, [custDebounced, custFilter, custPage]);
+  }, [custDebounced, custFilter, custPage, canOpenSurvey]);
 
   useEffect(() => { if (tab === 'submissions') void loadCustomers(); }, [tab, loadCustomers]);
   useEffect(() => {
@@ -74,92 +92,103 @@ const SurveysPage: React.FC = () => {
   }, [custSearch]);
   useEffect(() => { setCustPage(0); }, [custFilter]);
 
-  // Every customer opens the SAME consultant dialog. If they have no survey yet
-  // one is created on the spot, so a customer who never used the public QR form
-  // still gets the full Consultant section rather than a cut-down form.
-  const [startingFor, setStartingFor] = useState<string | null>(null);
-  const openCustomerSurvey = async (row: any) => {
-    if (row.survey_id) { setDetailId(row.survey_id); return; }
-    setStartingFor(row.customer_id); setErr(null);
-    const { data, error } = await supabase.rpc('upsert_consultant_survey', {
-      p_customer_id: row.customer_id,
-      p_remarks_condition: null, p_remarks_recommendation: null,
-      p_acidity_result: null, p_health_goals: null,
-      p_has_medical_condition: null, p_drinks_alcohol: null,
-      p_smokes: null, p_on_treatment: null, p_treatment_list: null,
-      // Only meaningful when there is a single store; otherwise the
-      // function picks a sensible default itself.
-      p_store_id: stores.length === 1 ? stores[0].id : null,
-    });
-    setStartingFor(null);
-    if (error) { setErr(error.message); return; }
-    await loadCustomers();
-    setDetailId(data as string);
+  // CUSTOMERS-5: every customer opens the same consultant window. With no
+  // survey yet, nothing is made until the first real save in that window, so
+  // a customer only looked at can still fill in the QR form.
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [startFor, setStartFor] = useState<SurveyCustomer | null>(null);
+  const openCustomerSurvey = (row: any) => {
+    if (row.survey_id) { setStartFor(null); setDetailId(row.survey_id); return; }
+    setDetailId(null);
+    setStartFor({ customer_id: row.customer_id, full_name: row.full_name, phone: row.phone, email: row.email });
   };
 
   // Remarks log.
   const [remarksFor, setRemarksFor] = useState<any | null>(null);
   const [remarkList, setRemarkList] = useState<any[]>([]);
+  const [remarkErr, setRemarkErr] = useState<string | null>(null);
   const [newRemark, setNewRemark] = useState('');
   const [remarkType, setRemarkType] = useState('consultation');
   const [rBusy, setRBusy] = useState(false);
   const openRemarks = async (row: any) => {
-    setRemarksFor(row); setNewRemark(''); setRemarkType('consultation');
-    const { data } = await supabase.from('customer_remarks').select('*')
+    setRemarksFor(row); setNewRemark(''); setRemarkType('consultation'); setRemarkErr(null);
+    const { data, error } = await supabase.from('customer_remarks').select('*')
       .eq('customer_id', row.customer_id).order('created_at', { ascending: false });
+    if (error) setRemarkErr(`The remarks could not be loaded: ${error.message}`);
     setRemarkList((data as any[]) ?? []);
   };
   const addRemark = async () => {
     if (!remarksFor || !newRemark.trim()) return;
-    setRBusy(true);
+    setRBusy(true); setRemarkErr(null);
     const { error } = await supabase.rpc('add_customer_remark', {
       p_customer_id: remarksFor.customer_id, p_remark: newRemark.trim(),
       p_remark_type: remarkType, p_survey_id: remarksFor.survey_id ?? null,
     });
     setRBusy(false);
-    if (error) { setErr(error.message); return; }
+    // Shown inside the Remarks window, where it was asked for.
+    if (error) { setRemarkErr(error.message); return; }
     setNewRemark(''); await openRemarks(remarksFor); void loadCustomers();
   };
   const [links, setLinks] = useState<SurveyLink[]>([]);
-  const [surveys, setSurveys] = useState<HealthSurvey[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [myStores, setMyStores] = useState<SurveyStoreOption[]>([]);
+  const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
+  const [linksErr, setLinksErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
 
+  // CUSTOMERS-6: the QR links, stores and sources; no longer every survey
+  // with its signature (it was never shown).
   const load = useCallback(async () => {
     setLoading(true);
-    const [l, s, st] = await Promise.all([
+    const [l, st, mine, src] = await Promise.all([
       supabase.from('survey_links').select('*').order('created_at', { ascending: false }),
-      supabase.from('health_surveys').select('*').order('submitted_at', { ascending: false }),
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
+      supabase.rpc('my_assigned_stores'),
+      supabase.rpc('active_customer_source_options'),
     ]);
+    setLinksErr(l.error ? l.error.message : null);
     setLinks((l.data as SurveyLink[]) ?? []);
-    setSurveys((s.data as HealthSurvey[]) ?? []);
     setStores((st.data as Store[]) ?? []);
+    setMyStores(((mine.data as any[]) ?? []).map(x => ({ store_id: x.store_id, store_name: x.store_name })));
+    setSourceOptions((src.data as SourceOption[]) ?? []);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+  // Refresh, and every save in a survey window, reload the lists shown.
+  const refreshAll = () => { void load(); void loadHolds(); void loadCustomers(); };
 
   const sName = (id: string) => stores.find(s => s.id === id)?.name ?? '—';
+  const srcName = (id?: string | null) => (id ? sourceOptions.find(o => o.id === id)?.label ?? null : null);
   const urlFor = (t: string) => `${window.location.origin}/survey/${t}`;
 
   // ---- Create link ----
   const [addOpen, setAddOpen] = useState(false);
-  const [nf, setNf] = useState<any>({ store_id: '', event_name: '', expires_at: '' });
+  const emptyLink = { store_id: '', event_name: '', expires_at: '', source_option_id: '' };
+  const [nf, setNf] = useState<any>(emptyLink);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const create = async () => {
     if (!nf.store_id) { setErr('Select a store.'); return; }
+    const event = nf.event_name.trim();
+    // CUSTOMERS-12: an event's link says how its customers heard about us.
+    if (event && !nf.source_option_id) { setErr('Choose how these customers heard about us.'); return; }
     setBusy(true); setErr(null);
     const { error } = await supabase.from('survey_links').insert({
       token: randomToken(), store_id: nf.store_id,
-      event_name: nf.event_name.trim() || null,
-      expires_at: nf.expires_at ? new Date(nf.expires_at).toISOString() : null,
+      event_name: event || null,
+      source_option_id: event ? nf.source_option_id : null,
+      // CUSTOMERS-7: the link works to the end of the chosen day in Singapore.
+      expires_at: linkExpiryFromDay(nf.expires_at),
       created_by: profile?.id ?? null,
     });
     setBusy(false);
     if (error) { setErr(error.message); return; }
-    setAddOpen(false); setNf({ store_id: '', event_name: '', expires_at: '' }); load();
+    setAddOpen(false); setNf(emptyLink); load();
+  };
+  const openNewLink = () => {
+    setErr(null);
+    setNf({ ...emptyLink, source_option_id: defaultEventSource(sourceOptions)?.id ?? '' });
+    setAddOpen(true);
   };
 
   const toggleActive = async (l: SurveyLink) => {
@@ -168,7 +197,6 @@ const SurveysPage: React.FC = () => {
   };
 
   // ---- QR ----
-  const [detailId, setDetailId] = useState<string | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [qrFor, setQrFor] = useState<SurveyLink | null>(null);
   const [qrImg, setQrImg] = useState('');
@@ -197,16 +225,14 @@ const SurveysPage: React.FC = () => {
     w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
   };
 
-  const q = search.trim().toLowerCase();
-
   return (
     <div>
       <div className="page-header">
         <div><h2>Health Surveys</h2><p>Every customer, with their health survey and consultation remarks. Public QR submissions appear here too.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-secondary" onClick={() => { void load(); void loadHolds(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
+          <button className="btn btn-secondary" onClick={refreshAll}><RefreshCw size={15} className={loading || custLoading ? 'spin' : ''} /> Refresh</button>
           {canManage && <button className="btn btn-secondary" onClick={() => setSourcesOpen(true)}>Customer Sources</button>}
-          {canManage && tab === 'links' && <button className="btn btn-primary" onClick={() => { setAddOpen(true); setErr(null); }}><Plus size={16} /> New QR Link</button>}
+          {canManage && tab === 'links' && <button className="btn btn-primary" onClick={openNewLink}><Plus size={16} /> New QR Link</button>}
         </div>
       </div>
 
@@ -218,7 +244,13 @@ const SurveysPage: React.FC = () => {
         ))}
       </div>
 
-      {tab === 'submissions' && (
+      {tab === 'submissions' && !canOpenSurvey && (
+        <div className="card"><div className="empty-state" data-no-health-data>
+          <ClipboardList size={32} style={{ opacity: 0.3 }} />
+          <p style={{ fontWeight: 600, marginTop: 8 }}>Health surveys are for Owners, Managers and Staff.</p>
+        </div></div>
+      )}
+      {tab === 'submissions' && canOpenSurvey && (
         <>
           {holds && holds.length > 0 && (
             <div className="alert alert-warning" style={{ marginBottom: 12, alignItems: 'center' }}>
@@ -227,6 +259,13 @@ const SurveysPage: React.FC = () => {
                 {holds.length === 1 ? '1 QR form is' : `${holds.length} QR forms are`} waiting to be matched to a customer.
               </div>
               <button className="btn btn-secondary btn-sm" onClick={() => setTab('to_match')}>Open To match</button>
+            </div>
+          )}
+          {custErr && (
+            <div className="alert alert-danger" role="alert" data-cust-error style={{ marginBottom: 12, alignItems: 'center' }}>
+              <span>⚠</span>
+              <div style={{ flex: 1 }}>Could not load customers ({custErr}).</div>
+              <button className="btn btn-secondary btn-sm" onClick={() => void loadCustomers()}>Retry</button>
             </div>
           )}
           <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -244,7 +283,7 @@ const SurveysPage: React.FC = () => {
             <div className="table-wrap">
               {custLoading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
                 : custRows.length === 0 ? <div className="empty-state"><ClipboardList size={32} style={{ opacity: 0.3 }} />
-                    <p style={{ fontWeight: 600, marginTop: 8 }}>No customers match</p></div>
+                    <p style={{ fontWeight: 600, marginTop: 8 }}>{custErr ? 'Could not load customers' : 'No customers match'}</p></div>
                 : <table>
                     <thead><tr>
                       <th>Customer</th><th>Contact</th><th>Survey</th><th>Condition</th>
@@ -270,16 +309,15 @@ const SurveysPage: React.FC = () => {
                           {Number(r.remark_count) > 0
                             ? <>{r.remark_count}
                                 <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                                  {r.last_remark_at ? new Date(r.last_remark_at).toLocaleDateString('en-GB') : ''}
+                                  {r.last_remark_at ? sgDate(r.last_remark_at) : ''}
                                 </div></>
                             : '—'}
                         </td>
                         <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                          <button className="btn btn-secondary btn-sm" onClick={() => openRemarks(r)}>Remarks</button>
-                          {canOpenSurvey && <button className="btn btn-primary btn-sm"
-                            disabled={startingFor === r.customer_id}
+                          {canOpenSurvey && <button className="btn btn-secondary btn-sm" data-remarks={r.customer_id} onClick={() => openRemarks(r)}>Remarks</button>}
+                          {canOpenSurvey && <button className="btn btn-primary btn-sm" data-open-survey={r.customer_id}
                             onClick={() => openCustomerSurvey(r)}>
-                            <Eye size={12} /> {startingFor === r.customer_id ? 'Opening…' : r.survey_id ? 'Open' : 'Start survey'}
+                            <Eye size={12} /> {r.survey_id ? 'Open' : 'Start survey'}
                           </button>}
                         </div></td>
                       </tr>
@@ -311,6 +349,7 @@ const SurveysPage: React.FC = () => {
         <Modal title={`Remarks — ${remarksFor.full_name}`} maxWidth={560} onClose={() => setRemarksFor(null)}
           footer={<button className="btn btn-secondary" onClick={() => setRemarksFor(null)}>Close</button>}>
           <div className="form-grid">
+            {remarkErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{remarkErr}</div></div>}
             {canManage && (
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Add a remark</label>
@@ -338,7 +377,7 @@ const SurveysPage: React.FC = () => {
                       <div key={r.id} style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
                         <div style={{ fontSize: 12.5 }}>{r.remark}</div>
                         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                          {String(r.remark_type).replace('_', ' ')} · {new Date(r.created_at).toLocaleString('en-GB')}
+                          {String(r.remark_type).replace('_', ' ')} · {sgDateTime(r.created_at)}
                         </div>
                       </div>
                     ))}
@@ -364,18 +403,26 @@ const SurveysPage: React.FC = () => {
 
       {tab === 'links' && (
         <div className="card"><div className="table-wrap">
+          {linksErr && <div className="alert alert-danger" role="alert" style={{ margin: 12 }}><span>⚠</span><div>The QR links could not be loaded ({linksErr}).</div></div>}
           {links.length === 0 ? <div className="empty-state"><QrCode size={32} style={{ opacity: 0.3 }} />
               <p style={{ fontWeight: 600, marginTop: 8 }}>No QR links yet</p>
               <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Create one per store or event.</p></div>
             : <table>
-                <thead><tr><th>Store</th><th>Event</th><th>Link</th><th>Expires</th><th>Status</th><th></th></tr></thead>
-                <tbody>{links.map(l => (
-                  <tr key={l.id}>
+                <thead><tr><th>Store</th><th>Event</th><th>Link</th><th>Last day</th><th>Status</th><th></th></tr></thead>
+                <tbody>{links.map(l => {
+                  const status = linkStatus(l);
+                  return (
+                  <tr key={l.id} data-link={l.id}>
                     <td><strong>{sName(l.store_id)}</strong></td>
-                    <td style={{ fontSize: 12.5 }}>{l.event_name || '—'}</td>
+                    <td style={{ fontSize: 12.5 }}>{l.event_name || '—'}
+                      {l.event_name && srcName(l.source_option_id) && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Heard about us: {srcName(l.source_option_id)}</div>
+                      )}</td>
                     <td style={{ fontSize: 11.5, color: 'var(--text-muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{urlFor(l.token)}</td>
-                    <td style={{ fontSize: 12.5 }}>{l.expires_at ? new Date(l.expires_at).toLocaleDateString() : '—'}</td>
-                    <td>{l.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
+                    <td style={{ fontSize: 12.5 }}>{l.expires_at ? sgDate(l.expires_at) : '—'}</td>
+                    <td>{status === 'active' ? <span className="badge badge-success">Active</span>
+                      : status === 'expired' ? <span className="badge badge-danger">Expired</span>
+                      : <span className="badge badge-muted">Inactive</span>}</td>
                     <td>
                       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => setQrFor(l)}><QrCode size={12} /> QR</button>
@@ -384,24 +431,42 @@ const SurveysPage: React.FC = () => {
                       </div>
                     </td>
                   </tr>
-                ))}</tbody>
+                  );
+                })}</tbody>
               </table>}
         </div></div>
       )}
-      {detailId && <SurveyDetailModal surveyId={detailId} onClose={() => setDetailId(null)} onSaved={load} />}
-      {sourcesOpen && <SourceOptionsModal onClose={() => setSourcesOpen(false)} />}
+      {(detailId || startFor) && (
+        <SurveyDetailModal key={detailId ?? startFor?.customer_id}
+          surveyId={detailId} customer={detailId ? null : startFor} stores={myStores}
+          onClose={() => { setDetailId(null); setStartFor(null); }}
+          onSaved={() => { void loadCustomers(); }} />
+      )}
+      {sourcesOpen && <SourceOptionsModal onClose={() => { setSourcesOpen(false); void load(); }} />}
 
       {addOpen && (
         <Modal title="New Customer Form — QR Link" maxWidth={440} onClose={() => setAddOpen(false)}
-          footer={<><button className="btn btn-secondary" onClick={() => setAddOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={create} disabled={busy}>{busy ? 'Creating…' : 'Create'}</button></>}>
+          footer={<><button className="btn btn-secondary" onClick={() => setAddOpen(false)}>Cancel</button><button className="btn btn-primary" data-create-link onClick={create} disabled={busy}>{busy ? 'Creating…' : 'Create'}</button></>}>
           <div className="form-grid">
-            {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
-            <div className="form-group"><label>Store *</label>
-              <select value={nf.store_id} onChange={e => setNf({ ...nf, store_id: e.target.value })}>
+            {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
+            <div className="form-group"><label htmlFor="link-store">Store *</label>
+              <select id="link-store" value={nf.store_id} onChange={e => setNf({ ...nf, store_id: e.target.value })}>
                 <option value="">— Select —</option>{stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select></div>
-            <div className="form-group"><label>Event (optional)</label><input value={nf.event_name} onChange={e => setNf({ ...nf, event_name: e.target.value })} placeholder="e.g. Roadshow @ Adelphi" /></div>
-            <div className="form-group"><label>Expires (optional)</label><input type="date" value={nf.expires_at} onChange={e => setNf({ ...nf, expires_at: e.target.value })} /></div>
+            <div className="form-group"><label htmlFor="link-event">Event (optional)</label><input id="link-event" value={nf.event_name} onChange={e => setNf({ ...nf, event_name: e.target.value })} placeholder="e.g. Roadshow @ Adelphi" /></div>
+            {nf.event_name.trim() && (
+              <div className="form-group"><label htmlFor="link-source">How these customers heard about us *</label>
+                <select id="link-source" value={nf.source_option_id} onChange={e => setNf({ ...nf, source_option_id: e.target.value })}>
+                  <option value="">— Choose —</option>
+                  {sourceOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                  The form does not ask them; every form from this link records this, with the event's name.
+                </div></div>
+            )}
+            <div className="form-group"><label htmlFor="link-expiry">Last day the link works (optional)</label>
+              <input id="link-expiry" type="date" value={nf.expires_at} onChange={e => setNf({ ...nf, expires_at: e.target.value })} />
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>It works until midnight that day, Singapore time.</div></div>
             <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span>
               <div>Anyone with this link can submit a survey — but it can never read customer or health data. Deactivate it when the event ends.</div></div>
           </div>
@@ -416,7 +481,7 @@ const SurveysPage: React.FC = () => {
             {qrFor.event_name && <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{qrFor.event_name}</div>}
             <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
               <input readOnly value={urlFor(qrFor.token)} style={{ fontSize: 11.5 }} onFocus={e => e.target.select()} />
-              <button className="btn btn-secondary btn-sm" onClick={() => copy(qrFor.token)}>{copied ? <Check size={12} /> : <Link2 size={12} />}</button>
+              <button className="btn btn-secondary btn-sm" aria-label="Copy link" onClick={() => copy(qrFor.token)}>{copied ? <Check size={12} /> : <Link2 size={12} />}</button>
             </div>
           </div>
         </Modal>

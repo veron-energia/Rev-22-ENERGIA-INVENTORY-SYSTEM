@@ -160,10 +160,16 @@ const PublicSurveyPage: React.FC = () => {
   const setDur = (id: string, d: string) => setTicks(t => ({ ...t, [id]: { on: t[id]?.on ?? true, duration: d } }));
 
   // When the QR link carries an Event, the source is known — the customer came
-  // through that event. The question is skipped and the submission auto-uses the
-  // Roadshow/Event source with the event name as details.
+  // through that event. The question is skipped and the submission uses the
+  // link's source (Event or RoadShow, chosen when the link was made; 419,
+  // CUSTOMERS-12) with the event name as details; the server records the
+  // link's source itself. An older link without one keeps the first
+  // Event/RoadShow source, as before.
   const eventSource = link?.event_name
-    ? sourceOptions.find(o => /event|roadshow/i.test(o.label))
+    ? (link.source_option_id
+        ? sourceOptions.find(o => o.id === link.source_option_id)
+          ?? { id: String(link.source_option_id), label: String(link.source_label ?? 'Event'), requires_details: false }
+        : sourceOptions.find(o => /event|roadshow/i.test(o.label)))
     : undefined;
   const effSourceId = eventSource?.id ?? f.source_option_id;
   const effSourceDetails = eventSource ? String(link.event_name) : f.source_details;
@@ -273,8 +279,11 @@ const PublicSurveyPage: React.FC = () => {
 
     // Build the signed PDF in the browser and send it with the submission, so
     // the signed record is frozen exactly as the customer saw it. Loaded on
-    // demand to keep the form light on mobile data. A PDF failure never blocks.
+    // demand to keep the form light on mobile data. A PDF failure never blocks,
+    // but it is sent along (pdf_error), so staff see the form came without
+    // its PDF (419, CUSTOMERS-16).
     let pdf: string | null = null;
+    let pdfError: string | null = null;
     try {
       const { buildSurveyPdf } = await import('../lib/surveyPdf');
       pdf = buildSurveyPdf({
@@ -287,7 +296,7 @@ const PublicSurveyPage: React.FC = () => {
         phone: f.phone,
         email: f.email,
         occupation: f.occupation,
-        source_label: sourceOptions.find(o => o.id === effSourceId)?.label ?? null,
+        source_label: eventSource?.label ?? sourceOptions.find(o => o.id === effSourceId)?.label ?? null,
         source_details: effSourceDetails,
         has_medical_condition: f.has_medical_condition,
         drinks_alcohol: f.drinks_alcohol,
@@ -306,8 +315,9 @@ const PublicSurveyPage: React.FC = () => {
           return { category: o.category, label: o.label, duration_text: v.duration };
         }),
       });
-    } catch {
+    } catch (e: any) {
       pdf = null;
+      pdfError = String(e?.message ?? e ?? 'unknown').slice(0, 200) || 'unknown';
     }
 
     try {
@@ -319,6 +329,7 @@ const PublicSurveyPage: React.FC = () => {
           source_option_id: effSourceId,
           source_details: effSourceDetails,
           device_info: navigator.userAgent?.slice(0, 250) ?? null,
+          ...(pdfError ? { pdf_error: pdfError } : {}),
         },
         p_symptoms: symptoms,
         p_pdf_base64: pdf,

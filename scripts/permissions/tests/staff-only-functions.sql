@@ -264,7 +264,6 @@ declare
       'add_consultant_note(uuid,uuid,text,text,text,text,jsonb)',
       'add_legacy_credit(uuid,text,numeric,date,uuid,text,text,date,uuid)',
       'add_promotion_item(uuid,promotion_item_type,uuid,uuid,uuid,text,integer,text,uuid,uuid)',
-      'add_survey_attachment(uuid,text,text,text,integer,text)',
       'adjust_customer_credit(uuid,text,text,numeric,text,text,date,text,uuid,uuid)',
       'affiliate_admin_directory()', 'affiliate_pending_claims()', 'affiliate_rejected_claims()',
       'apply_commission_rebase_all()', 'apply_line_foc(uuid,integer,uuid,text)',
@@ -319,7 +318,7 @@ declare
       'resolve_invoice_action_v2(uuid,boolean,text,text,jsonb,jsonb,boolean)',
       'resolve_transfer_discrepancy(uuid,jsonb,text)', 'restore_customer_with_phone(uuid,text,text)',
       'return_rental_with_fee(uuid,return_condition,boolean,date,boolean,integer,numeric,text,numeric,numeric,text,uuid,text,uuid,text)',
-      'review_and_dispatch_transfer(uuid,jsonb,text)', 'review_health_survey(uuid,text,text,text,text)',
+      'review_and_dispatch_transfer(uuid,jsonb,text)',
       'save_therapy_package(uuid,text,text,text,boolean,text,integer,integer,uuid,uuid[],uuid[])',
       'set_catalogue_reward(text,uuid,boolean)', 'set_catalogue_sku(text,uuid,text)',
       'set_commission_rates(numeric,numeric,numeric,numeric)',
@@ -350,7 +349,6 @@ declare
       'transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)',
       'update_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text)',
       'update_pending_rental(uuid,integer,special_rate_type,integer,date,date,text)',
-      'update_survey_particulars(uuid,text,text,text,text,date,text,text,text,uuid,text,boolean,boolean,boolean,boolean,text,jsonb)',
       'upsert_credit_package(uuid,text,numeric,numeric,boolean,date,date,text,boolean,numeric,numeric,numeric,numeric,text,uuid[],uuid[],boolean,boolean,boolean,boolean,boolean,boolean,boolean,boolean,text,numeric)',
       'upsert_customer_source_option(text,integer,boolean,boolean,uuid)',
       'upsert_legacy_rule(uuid,uuid,text,numeric,text,integer,integer,integer,boolean,date,text)',
@@ -376,7 +374,7 @@ declare
       'credit_lot_allows_category(uuid,text)', 'credit_lot_policy_for(uuid)',
       'customer_stock_loans(uuid)',
       'dashboard_sales(text,date,date,uuid)', 'dashboard_sales_by_store(text,date,date)',
-      'events_list()', 'health_survey_detail(uuid)',
+      'events_list()',
       'invite_user_begin(text,text,text,user_role,text,text,text,uuid[])',
       'invite_user_cancel(uuid,text)', 'invite_user_prepare_resend(uuid)',
       'invoice_credit_reward_entitlements(uuid,uuid)', 'invoice_display_names(uuid)',
@@ -536,10 +534,17 @@ begin
     ('profile figures',        'om',     true,  false, 'select public.customer_profile_stats(@c1@)::text'),
     ('purchase history',       'om',     true,  true,  'select public.customer_purchase_timeline(@c1@)::text'),
     -- Surveys
-    ('survey list',            'all',    true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.customer_survey_overview(null, ''all'', 50, 0) x'),
+    -- 419: the survey list shows the consultant's findings: not Inventory Managers'
+    ('survey list',            'notinv', true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.customer_survey_overview(null, ''all'', 50, 0) x'),
     ('consultant notes',       'notinv', true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.consultant_notes_for(@survey@, null) x'),
     ('open a survey',          'notinv', true,  false, 'select public.upsert_consultant_survey(@c1@)::text'),
-    ('start a survey',         'notinv', true,  false, 'select public.upsert_consultant_survey(@c2@)::text'),
+    -- 419: a new survey's store is chosen when it starts (the caller's one
+    -- store when they have one; otherwise it must be chosen)
+    ('start a survey',         'notinv', true,  false, 'select public.upsert_consultant_survey(@c2@, p_store_id => @store_a@)::text'),
+    ('survey detail',          'notinv', true,  true,  'select public.health_survey_detail(@survey@)::text'),
+    ('edit details (419)',     'notinv', true,  false, 'select public.update_survey_particulars_v2(@survey@, ''{}''::jsonb, null)::text'),
+    ('save review (419)',      'om',     true,  false, 'select public.review_health_survey(@survey@, null, ''SOFX review'', null, null)::text'),
+    ('add a file (419)',       'om',     false, false, 'select public.add_survey_attachment(@survey@, ''SOFX/none.pdf'', ''none.pdf'', null, null, null)::text'),
     ('add a remark',           'om',     true,  false, 'select public.add_customer_remark(@c1@, ''SOFX remark'', ''consultation'', @survey@)::text'),
     -- Invoices: the invoice's store
     ('bill-to, store A',       'a',      true,  true,  'select public.invoice_bill_to_source(@inv_a@) || (select invoice_no from public.invoices where id = @inv_a@)'),
