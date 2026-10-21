@@ -9,9 +9,16 @@
 -- Disposable database only; everything is rolled back.
 \set ON_ERROR_STOP on
 begin;
+-- 425 rebuilt sign-up on top of 392 (it keeps the label); 392 then refuses to
+-- run again, and is not needed: the checks below test what is installed.
+select position('425:' in coalesce((select prosrc from pg_proc
+         where oid = to_regprocedure('public.affiliate_referral_signup(text,text,text,text,text,text)')), '')) > 0 as has425 \gset
+\if :has425
+\else
 \ir ../../../supabase/392_referral_booking_names_the_affiliate.sql
 -- Run twice: the second run must change nothing.
 \ir ../../../supabase/392_referral_booking_names_the_affiliate.sql
+\endif
 
 do $$
 declare mgr uuid := gen_random_uuid(); aff_cust uuid; code text; sus_code text; prior uuid;
@@ -108,9 +115,9 @@ begin
   end;
   execute 'reset role';
 
-  -- ── Installed as the migration says ────────────────────────────────────────
+  -- ── Installed as the migration says (392's, or 425's built on it) ─────────
   if md5(pg_get_functiondef('affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure))
-       <> '5b8363a3f87a4c89f2866f3ba0f32b55'
+       not in ('5b8363a3f87a4c89f2866f3ba0f32b55', '35def9a1a663d6180d15ab8ea049de35')
      or md5(pg_get_functiondef('affiliate_calendar_label(text)'::regprocedure))
        <> 'af4eecdcf978c19b3effb6af3a897165' then
     raise exception 'FAIL: the functions are not the versions 392 records'; end if;

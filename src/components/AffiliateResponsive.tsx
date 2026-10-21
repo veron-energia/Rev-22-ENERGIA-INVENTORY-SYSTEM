@@ -40,3 +40,12 @@ export const MCard: React.FC<{ title?: React.ReactNode; rows: [React.ReactNode, 
 export const EmptyNote: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 12 }}>{children}</p>
 );
+
+// A portal page whose figures could not be loaded says so, with Try again,
+// instead of "Loading…" for ever (AFFILIATES-7).
+export const PortalError: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
+  <div className="card portal-break" role="alert" data-portal-error style={{ padding: 14, marginBottom: 18, borderColor: 'var(--danger)' }}>
+    <p style={{ color: 'var(--danger)', fontSize: 13.5, marginBottom: 10 }}>This page could not be loaded: {message}</p>
+    <button type="button" className="btn btn-secondary" style={{ minHeight: 44 }} onClick={onRetry}>Try again</button>
+  </div>
+);

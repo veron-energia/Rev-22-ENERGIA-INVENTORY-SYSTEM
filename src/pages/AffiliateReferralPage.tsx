@@ -1,13 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
 import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
-import { portalRpc } from '../lib/affiliatePortal';
+import { usePortalRpc } from '../lib/affiliatePortal';
+import { PortalError } from '../components/AffiliateResponsive';
 import { AlertTriangle } from 'lucide-react';
 
 const AffiliateReferralPage: React.FC = () => {
-  const [info, setInfo] = useState<any>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { portalRpc('affiliate_portal_referral_info').then(setInfo).catch(e => setErr(e.message)); }, []);
+  const { data: info, err, retry } = usePortalRpc<any>('affiliate_portal_referral_info');
 
   const url = info?.referral_code ? `${publicAppUrl()}/r/${info.referral_code}` : '';
 
@@ -17,8 +16,7 @@ const AffiliateReferralPage: React.FC = () => {
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>
         Share your personal Energia referral QR or link. Friends and family who register through it will be placed directly under you as a referral.
       </p>
-      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
-      {!info ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
+      {err ? <PortalError message={err} onRetry={retry} /> : !info ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           {info.accepting === false && (
             <div className="card" style={{ padding: 14, marginBottom: 18, display: 'flex', gap: 10, alignItems: 'flex-start', borderColor: 'var(--danger)' }}>

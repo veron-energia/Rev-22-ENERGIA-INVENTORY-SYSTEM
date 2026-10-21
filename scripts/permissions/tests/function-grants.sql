@@ -311,9 +311,24 @@ begin
   if bad is not null then
     raise exception 'FAIL: a view that reads past row-level security is readable by a client role: %', bad; end if;
 
+  -- 12. The legacy affiliate objects stay gone (425): the empty tables
+  --     affiliates and affiliate_commissions, which nothing read, and
+  --     create_commission_payout, which only refused. Re-running an old
+  --     migration would bring them back. Its shared-phone checks
+  --     (referral_signup_checks) are reached through its functions only, so
+  --     no client role holds the table.
+  if to_regclass('public.affiliates') is not null or to_regclass('public.affiliate_commissions') is not null
+     or exists (select 1 from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
+                 where n2.nspname = 'public' and p.proname = 'create_commission_payout') then
+    raise exception 'FAIL: a legacy affiliate object is back (affiliates, affiliate_commissions or create_commission_payout); 425 dropped them'; end if;
+  if to_regclass('public.referral_signup_checks') is not null
+     and (has_table_privilege('anon', 'public.referral_signup_checks', 'select,insert,update,delete,truncate,references,trigger')
+          or has_table_privilege('authenticated', 'public.referral_signup_checks', 'select,insert,update,delete,truncate,references,trigger')) then
+    raise exception 'FAIL: referral_signup_checks is open to a client role'; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, and no client role reads a view past row-level security', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, and the legacy affiliate objects are gone', n;
 end $$;

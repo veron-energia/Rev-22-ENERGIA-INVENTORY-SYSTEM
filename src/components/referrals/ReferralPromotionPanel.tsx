@@ -7,7 +7,9 @@ import { sgDate, sgDayOf, statusNote, rewardItems, windowLabel, notYetVisited, n
 import type { CampaignInfo } from '../../lib/referral/campaign.mjs';
 import { RefreshCw, Gift, ChevronDown, ChevronRight, Undo2, Plus, Trash2 } from 'lucide-react';
 
-interface Friend { customer_id: string; name: string; phone: string | null; referred_on: string; first_visit_on: string | null; counted: boolean; }
+interface Friend { customer_id: string; name: string; phone: string | null; referred_on: string; first_visit_on: string | null; counted: boolean;
+  /** 425: signed up on a customer's phone under another name; counts once checked on the Affiliates page. */
+  needs_check?: boolean; }
 interface Reward {
   reward_id: string; tier: number; friends_counted: number; given_at: string; given_by_name: string | null;
   store_id: string; store_name: string | null; note: string | null;
@@ -17,6 +19,8 @@ interface ReferrerRow {
   referrer_customer_id: string; name: string; phone: string | null; is_affiliate: boolean;
   /** 404: friends referred in the window who have not visited yet (absent before 404). */
   counted: number; not_yet_visited?: number;
+  /** 425: friends waiting for a check because they share a customer's phone (absent before 425). */
+  waiting_check?: number;
   tier_reached: number | null; next_tier: number | null; to_next: number | null;
   reward: Reward | null; friends: Friend[];
 }
@@ -222,7 +226,9 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
                       </button>
                     </td>
                     <td><strong>{r.name}</strong>{r.is_affiliate && <span className="badge badge-primary" style={{ marginLeft: 6, fontSize: 10 }}>Affiliate</span>}
-                      {waitingLine && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{waitingLine}</div>}</td>
+                      {waitingLine && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{waitingLine}</div>}
+                      {Number(r.waiting_check ?? 0) > 0 && <div data-waiting-check style={{ fontSize: 11, color: 'var(--warning)' }}>
+                        {Number(r.waiting_check) === 1 ? '1 friend waits for a check (shares a phone)' : `${r.waiting_check} friends wait for a check (share a phone)`}. See Check these sign-ups on the Affiliates tab.</div>}</td>
                     <td style={{ fontFamily: 'var(--font-display)', fontSize: 13 }}>{r.phone ?? '—'}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.counted}</td>
                     <td style={{ textAlign: 'right' }}>{r.tier_reached ?? '—'}</td>

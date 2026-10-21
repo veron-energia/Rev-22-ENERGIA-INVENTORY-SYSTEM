@@ -105,6 +105,9 @@ export function notYetVisitedLine(n, status) {
  *  friends whose first visit fell outside the window. */
 export function friendStatus(friend, status) {
   if (friend?.counted) return 'Yes';
+  // 425: a link sign-up on a customer's phone under another name counts once
+  // an Owner or Manager checks them as a different person (Q19 = A).
+  if (friend?.needs_check) return 'Waiting for a check (shares a phone)';
   if (!friend?.first_visit_on) return status === 'final' ? 'No visit during the promotion' : 'Not yet visited';
   return 'Visit outside the window';
 }

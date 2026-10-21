@@ -600,6 +600,11 @@ begin
     -- refusal, never 42501, to those who may)
     ('mark as settled',        'om',     false, false, 'select public.record_affiliate_deduction_settlement(@c1@, 1, current_date, ''written_off'', ''SOFX'', gen_random_uuid())::text'),
     ('void a settlement',      'om',     false, false, 'select public.void_affiliate_deduction_settlement(gen_random_uuid(), ''SOFX'', gen_random_uuid())::text'),
+    -- Affiliates (425): the sign-ups that share a customer's phone, and their
+    -- check, Owners and Managers (no check in the fixture, so the check
+    -- answers its own refusal, never 42501, to those who may)
+    ('sign-ups to check',      'om',     true,  false, 'select public.referral_signup_checks_pending()::text'),
+    ('check a sign-up',        'om',     false, false, 'select public.decide_referral_signup_check(gen_random_uuid(), ''different_person'', ''SOFX'')::text'),
     -- Transfers and stock loans (the person's own records, X-5)
     ('cancel a transfer',      'all',    false, false, 'select public.cancel_transfer_request(gen_random_uuid())::text'),
     ('take back a loan',       'all',    false, false, 'select public.return_stock_loan(gen_random_uuid(), ''[]'', null, null)::text'),

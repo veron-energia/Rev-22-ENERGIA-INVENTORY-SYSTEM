@@ -3,9 +3,9 @@ import { CustomerSearchSelect } from '../components/SearchSelect';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isOwner, isOwnerOrManager } from '../types';
-import { Modal } from '../components/ui';
+import { Modal, ReasonModal } from '../components/ui';
 import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
-import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink, Gift } from 'lucide-react';
+import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink, Gift, PhoneCall } from 'lucide-react';
 import DownlineModal from '../components/referrals/DownlineModal';
 import ReferralPromotionPanel from '../components/referrals/ReferralPromotionPanel';
 import { owedSplit } from '../lib/affiliatePayoutPresentation';
@@ -22,6 +22,17 @@ interface DirRow {
    *  unpaid itself could be negative. */
   deduction?: number;
 }
+/** 425: a customer made through a referral link with the phone of a customer
+ *  already there, under another name. They count for a referral promotion
+ *  once an Owner or Manager checks them as a different person (Q19 = A). */
+interface SignupCheck {
+  check_id: string; customer_id: string; customer_name: string; phone: string | null; customer_deleted?: boolean;
+  referrer_customer_id: string | null; referrer_name: string | null; referral_code: string | null; signed_up_at: string;
+  shares_with: { customer_id: string; name: string; deleted?: boolean; paid_invoices: number }[];
+}
+/** The affiliate's current referrer, read when Correct Referrer opens. */
+interface CurrentReferrer { id: string | null; name: string | null; since: string | null }
+
 /** What a staff login may see: enough to identify an affiliate and hand over
  *  their link. Nothing about money, purchases, claims or accounts. */
 interface StaffRow { customer_id: string; full_name: string; referral_code: string | null; status: string; link_usable: boolean; }
@@ -132,10 +143,29 @@ const AffiliatesPage: React.FC = () => {
   const [staffPage, setStaffPage] = useState(1);
   const [staffQ, setStaffQ] = useState('');
   const staffTicket = React.useRef(0);
+  // The search and page the directory on screen was loaded for. A Refresh
+  // reads them, so it never needs the newest keystroke (AFFILIATES-10).
+  const staffQRef = React.useRef('');
+  const staffPageRef = React.useRef(1);
+  const firstStaffSearch = React.useRef(true);
 
   // Correct-referrer modal
   const [fixFor, setFixFor] = useState<DirRow | null>(null);
   const [fixRef, setFixRef] = useState(''); const [fixReason, setFixReason] = useState('');
+  // Who refers this affiliate now (null while it loads), and the tick that
+  // removing them needs (AFFILIATES-8).
+  const [fixCurrent, setFixCurrent] = useState<CurrentReferrer | null>(null);
+  const [fixCurrentErr, setFixCurrentErr] = useState<string | null>(null);
+  const [fixRemove, setFixRemove] = useState(false);
+  const fixTicket = React.useRef(0);
+  // Suspend asks for its reason in a window (AFFILIATES-8).
+  const [suspendFor, setSuspendFor] = useState<DirRow | null>(null);
+  // 425: sign-ups that share a customer's phone, and the one being checked.
+  const [signupChecks, setSignupChecks] = useState<SignupCheck[]>([]);
+  const [signupChecksErr, setSignupChecksErr] = useState<string | null>(null);
+  const [decideFor, setDecideFor] = useState<{ check: SignupCheck; decision: 'different_person' | 'same_person' } | null>(null);
+  const [decideNote, setDecideNote] = useState('');
+  const [decideErr, setDecideErr] = useState<string | null>(null);
   // Resolve-claim modal
   const [resolveFor, setResolveFor] = useState<ClaimRow | null>(null);
   const [resolveCust, setResolveCust] = useState(''); const [resolveNote, setResolveNote] = useState('');
@@ -194,20 +224,28 @@ const AffiliatesPage: React.FC = () => {
   }, []);
 
   const load = useCallback(async () => {
-    if (!canManage) { await loadStaffDirectory(staffQ, staffPage); return; }
+    if (!canManage) { await loadStaffDirectory(staffQRef.current, staffPageRef.current); return; }
     setLoading(true); setErr(null);
-    const [dir, cl, rj] = await Promise.all([
+    const [dir, cl, rj, chk] = await Promise.all([
       supabase.rpc('affiliate_admin_directory'),
       supabase.rpc('affiliate_pending_claims'),
       supabase.rpc('affiliate_rejected_claims'),
+      supabase.rpc('referral_signup_checks_pending'),
     ]);
     if (dir.error) setErr(dir.error.message);
     setRows((dir.data as DirRow[]) ?? []);
     setClaims((cl.data as ClaimRow[]) ?? []);
     setRejected((rj.data as ClaimRow[]) ?? []);
+    // A failed claims list says so, rather than looking like there are none.
+    setClaimsErr(cl.error?.message ?? rj.error?.message ?? null);
+    // Before 425 the sign-up checks are not on the server: no list, no error.
+    setSignupChecks(chk.error ? [] : ((chk.data as SignupCheck[]) ?? []));
+    setSignupChecksErr(chk.error && !missingFunction(chk.error) ? chk.error.message : null);
     setLoading(false);
-  }, [canManage, loadStaffDirectory, staffQ, staffPage]);
-  useEffect(() => { load(); }, [load]);
+  }, [canManage, loadStaffDirectory]);
+  // An Owner or Manager: everything at once. Staff: the directory loads from
+  // the search box and the page buttons below, the claims on their own.
+  useEffect(() => { if (canManage) void load(); }, [load, canManage]);
   // Staff's claims: once, then after each change and on Refresh; not on every
   // search or page of the directory.
   useEffect(() => { if (isStaff) void loadClaims(); }, [isStaff, loadClaims]);
@@ -215,12 +253,19 @@ const AffiliatesPage: React.FC = () => {
   const reload = useCallback(async () => {
     await Promise.all([load(), isStaff ? loadClaims() : Promise.resolve()]);
   }, [load, isStaff, loadClaims]);
-  // A request per keystroke would be one per letter of a name.
+  // Staff's directory, one page. A new search starts at page 1.
+  const loadStaffPage = useCallback((page: number) => {
+    staffPageRef.current = page; setStaffPage(page);
+    return loadStaffDirectory(staffQRef.current, page);
+  }, [loadStaffDirectory]);
+  // A request per keystroke would be one per letter of a name: the search
+  // waits 300 ms after the last key. The first load does not wait.
   useEffect(() => {
     if (canManage) return;
-    const t = setTimeout(() => { setStaffPage(1); void loadStaffDirectory(staffQ, 1); }, 300);
+    if (firstStaffSearch.current) { firstStaffSearch.current = false; staffQRef.current = staffQ; void loadStaffPage(1); return; }
+    const t = setTimeout(() => { staffQRef.current = staffQ; void loadStaffPage(1); }, 300);
     return () => clearTimeout(t);
-  }, [staffQ, canManage, loadStaffDirectory]);
+  }, [staffQ, canManage, loadStaffPage]);
 
   const act = async (fn: string, args: any, key: string, okMsg?: string) => {
     setBusy(key); setErr(null); setSuccess(null);
@@ -237,19 +282,71 @@ const AffiliatesPage: React.FC = () => {
     await reload(); return true;
   };
 
-  const suspend = (r: DirRow) => {
-    const reason = window.prompt(`Suspend ${r.name}? Enter a reason:`);
-    if (reason == null) return;
-    act('suspend_affiliate', { p_customer_id: r.customer_id, p_reason: reason || 'Suspended' }, r.customer_id, 'Affiliate suspended.');
+  // The reason is required: the window refuses a blank one, and the server
+  // too (no 'Suspended' stand-in any more).
+  const submitSuspend = async (reason: string): Promise<string | null> => {
+    if (!suspendFor) return null;
+    const r = suspendFor;
+    setBusy(r.customer_id); setErr(null); setSuccess(null);
+    const { error } = await supabase.rpc('suspend_affiliate', { p_customer_id: r.customer_id, p_reason: reason.trim() });
+    setBusy(null);
+    if (error) return error.message;
+    setSuccess(`${r.name} is suspended. Their link no longer registers new referrals.`);
+    await reload();
+    return null;
   };
   const reactivate = (r: DirRow) => act('reactivate_affiliate', { p_customer_id: r.customer_id }, r.customer_id, 'Affiliate reactivated.');
 
+  // Correct Referrer: who refers this affiliate now, and since when.
+  const openFix = async (r: DirRow) => {
+    const ticket = ++fixTicket.current;
+    setFixFor(r); setFixRef(''); setFixReason(''); setFixRemove(false); setFixCurrent(null); setFixCurrentErr(null);
+    const { data, error } = await supabase.from('customers').select('referred_by, referred_at, created_at').eq('id', r.customer_id).maybeSingle();
+    if (ticket !== fixTicket.current) return;
+    if (error) { setFixCurrentErr(error.message); return; }
+    const refId = (data as any)?.referred_by ?? null;
+    let name: string | null = null;
+    if (refId) {
+      const n = await supabase.from('customers').select('full_name').eq('id', refId).maybeSingle();
+      if (ticket !== fixTicket.current) return;
+      if (n.error) { setFixCurrentErr(n.error.message); return; }
+      name = (n.data as any)?.full_name ?? null;
+    }
+    setFixCurrent({ id: refId, name, since: refId ? ((data as any)?.referred_at ?? (data as any)?.created_at ?? null) : null });
+  };
+  const closeFix = () => { fixTicket.current++; setFixFor(null); };
+  const fixRemoving = !!fixCurrent?.id && !fixRef;
+  const fixUnchanged = !!fixCurrent && (fixRef || null) === (fixCurrent.id ?? null);
+  const fixBlocked = !fixCurrent || fixUnchanged || !fixReason.trim() || (fixRemoving && !fixRemove);
+
   const submitFix = async () => {
-    if (!fixFor) return;
-    if (!fixReason.trim()) { setErr('A reason is required to correct a referrer.'); return; }
+    if (!fixFor || fixBlocked) return;
     const ok = await act('reassign_customer_referrer',
-      { p_customer_id: fixFor.customer_id, p_new_referrer_id: fixRef || null, p_reason: fixReason.trim() }, fixFor.customer_id, 'Referrer updated successfully.');
-    if (ok) { setFixFor(null); setFixRef(''); setFixReason(''); }
+      { p_customer_id: fixFor.customer_id, p_new_referrer_id: fixRef || null, p_reason: fixReason.trim() }, fixFor.customer_id,
+      fixRemoving ? 'Referrer removed.' : 'Referrer updated successfully.');
+    if (ok) { setFixFor(null); setFixRef(''); setFixReason(''); setFixRemove(false); }
+  };
+
+  // 425: an Owner or Manager checks a sign-up that shares a customer's phone.
+  const submitDecide = async () => {
+    if (!decideFor) return;
+    const note = decideNote.trim();
+    if (!note) { setDecideErr('Write how you checked this sign-up.'); return; }
+    const { check, decision } = decideFor;
+    setBusy(check.check_id); setDecideErr(null); setErr(null); setSuccess(null);
+    const { data, error } = await supabase.rpc('decide_referral_signup_check',
+      { p_check_id: check.check_id, p_decision: decision, p_note: note });
+    setBusy(null);
+    if (error) { setDecideErr(error.message); return; }
+    if (data && typeof data === 'object' && (data as any).ok === false) {
+      setDecideErr((data as any).message ?? 'This sign-up was already checked.');
+      await reload(); return;
+    }
+    setDecideFor(null); setDecideNote('');
+    setSuccess(decision === 'different_person'
+      ? `${check.customer_name} is checked as a different person and now counts for referral promotions.`
+      : `${check.customer_name} is checked as the same person and does not count for referral promotions.`);
+    await reload();
   };
 
   useEffect(() => {
@@ -501,6 +598,47 @@ const AffiliatesPage: React.FC = () => {
         </div>
       )}
 
+      {/* 425: link sign-ups on a customer's phone under another name. They
+          count for a referral promotion once checked as a different person. */}
+      {canManage && signupChecksErr && <div className="card" data-error="signup-checks" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>The sign-ups to check could not be loaded: {signupChecksErr}</div>}
+      {canManage && signupChecks.length > 0 && (
+        <div className="card" data-section="signup-checks" style={{ padding: 16, marginBottom: 16, borderColor: 'var(--warning)' }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <PhoneCall size={16} /> Check these sign-ups ({signupChecks.length})
+          </h3>
+          <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Each signed up through a referral link with the phone of a customer we already have, under another name.
+            It may be a family member, or the same person writing their name another way. They do not count for a
+            referral promotion until you check them as a different person.
+          </p>
+          <div style={{ overflow: 'auto' }}>
+            <table className="table" style={{ width: '100%' }}>
+              <thead><tr><th>Signed up as</th><th>Phone</th><th>Referred by</th><th>Phone already used by</th><th>When</th><th></th></tr></thead>
+              <tbody>
+                {signupChecks.map(c => (
+                  <tr key={c.check_id} data-check={c.check_id}>
+                    <td>{c.customer_name}{c.customer_deleted && <small style={{ color: 'var(--text-muted)' }}> (deleted)</small>}</td>
+                    <td>{c.phone ?? '—'}</td>
+                    <td>{c.referrer_name ?? '—'}</td>
+                    <td>{c.shares_with.length === 0 ? '—' : c.shares_with.map(o => (
+                      <div key={o.customer_id}>{o.name}{o.deleted ? ' (deleted)' : ''}
+                        <small style={{ color: 'var(--text-muted)' }}> · {o.paid_invoices === 1 ? '1 paid invoice' : `${o.paid_invoices} paid invoices`}</small></div>
+                    ))}</td>
+                    <td>{d(c.signed_up_at)}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-secondary btn-sm" disabled={busy === c.check_id} style={{ marginRight: 6 }}
+                        onClick={() => { setDecideFor({ check: c, decision: 'different_person' }); setDecideNote(''); setDecideErr(null); }}>Different person</button>
+                      <button className="btn btn-secondary btn-sm" disabled={busy === c.check_id}
+                        onClick={() => { setDecideFor({ check: c, decision: 'same_person' }); setDecideNote(''); setDecideErr(null); }}>Same person</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {canManage && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }} role="tablist" aria-label="Affiliates view">
           <button type="button" role="tab" aria-selected={view === 'affiliates'} className={`btn btn-sm ${view === 'affiliates' ? 'btn-primary' : 'btn-secondary'}`}
@@ -543,8 +681,8 @@ const AffiliatesPage: React.FC = () => {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', fontSize: 12.5, color: 'var(--text-muted)', flexWrap: 'wrap', gap: 8 }}>
             <span>{staffTotal === 0 ? 'No affiliates' : `${(staffPage - 1) * STAFF_PAGE + 1}–${Math.min(staffPage * STAFF_PAGE, staffTotal)} of ${staffTotal}`}</span>
             <span style={{ display: 'flex', gap: 6 }}>
-              <button type="button" className="btn btn-secondary btn-sm" disabled={staffPage <= 1} onClick={() => setStaffPage(p => p - 1)}>Previous</button>
-              <button type="button" className="btn btn-secondary btn-sm" disabled={staffPage * STAFF_PAGE >= staffTotal} onClick={() => setStaffPage(p => p + 1)}>Next</button>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={staffPage <= 1} onClick={() => void loadStaffPage(staffPage - 1)}>Previous</button>
+              <button type="button" className="btn btn-secondary btn-sm" disabled={staffPage * STAFF_PAGE >= staffTotal} onClick={() => void loadStaffPage(staffPage + 1)}>Next</button>
             </span>
           </div>
         </div>
@@ -592,10 +730,10 @@ const AffiliatesPage: React.FC = () => {
                         onClick={() => setLinkFor({ name: r.name, code: r.referral_code, usable: !suspended && r.status === 'active', status: suspended ? 'suspended' : r.status })}><QrCode size={14} /></button>
                       <button className="btn btn-secondary btn-sm" title="Downline: Tier 1 and Tier 2, with visits" aria-label={`Downline of ${r.name}`}
                         onClick={() => setDownlineFor(r)} style={{ marginRight: 6 }}><Users size={14} /></button>
-                      <button className="btn btn-secondary btn-sm" title="Correct referrer" onClick={() => { setFixFor(r); setFixRef(''); setFixReason(''); }} style={{ marginRight: 6 }}><Edit3 size={14} /></button>
+                      <button className="btn btn-secondary btn-sm" title="Correct referrer" aria-label={`Correct referrer of ${r.name}`} onClick={() => void openFix(r)} style={{ marginRight: 6 }}><Edit3 size={14} /></button>
                       {suspended
                         ? <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => reactivate(r)} style={{ gap: 4 }}><PlayCircle size={14} /> Reactivate</button>
-                        : <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => suspend(r)} style={{ gap: 4 }}><Ban size={14} /> Suspend</button>}
+                        : <button className="btn btn-secondary btn-sm" disabled={busy === r.customer_id} onClick={() => setSuspendFor(r)} style={{ gap: 4 }}><Ban size={14} /> Suspend</button>}
                     </td>
                   )}
                 </tr>
@@ -637,18 +775,55 @@ const AffiliatesPage: React.FC = () => {
 
       {/* Correct Referrer */}
       {fixFor && (
-        <Modal title={`Correct Referrer — ${fixFor.name}`} onClose={() => setFixFor(null)}>
+        <Modal title={`Correct Referrer — ${fixFor.name}`} onClose={closeFix} confirmClose={!!fixRef || !!fixReason.trim()}>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>
-            First valid referral wins, so referrers can only be changed here with a reason (this is audited). Leave the customer blank to clear the referrer.
+            First valid referral wins, so referrers can only be changed here with a reason (this is audited).
           </p>
+          <div data-current-referrer style={{ fontSize: 13, marginBottom: 12, padding: 10, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+            {fixCurrentErr ? <span style={{ color: 'var(--danger)' }}>The current referrer could not be read: {fixCurrentErr}</span>
+              : !fixCurrent ? <span style={{ color: 'var(--text-muted)' }}>Reading the current referrer…</span>
+              : fixCurrent.id ? <>Current referrer: <strong>{fixCurrent.name ?? 'Name unavailable'}</strong>{fixCurrent.since ? `, since ${d(fixCurrent.since)}` : ''}</>
+              : <>Current referrer: <strong>None</strong></>}
+          </div>
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>New Referrer (customer)</label>
-          <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={fixRef} onChange={setFixRef} /></div>
+          <div style={{ marginBottom: 12 }}><CustomerSearchSelect value={fixRef} onChange={v => { setFixRef(v); setFixRemove(false); }} /></div>
+          {fixUnchanged && fixCurrent?.id && <div data-note="same-referrer" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 12 }}>This is already the referrer. Choose another customer, or leave it blank to remove the referrer.</div>}
+          {fixRemoving && (
+            <label data-remove-referrer style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, marginBottom: 12, color: 'var(--danger)' }}>
+              <input type="checkbox" checked={fixRemove} onChange={e => setFixRemove(e.target.checked)} style={{ marginTop: 3 }} />
+              <span>Remove {fixCurrent?.name ?? 'the current referrer'} as the referrer. {fixFor.name} will have no referrer, and no one earns commission on their purchases from now on.</span>
+            </label>
+          )}
           <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Reason (required)</label>
           <textarea className="input" rows={3} value={fixReason} onChange={e => setFixReason(e.target.value)} style={{ marginBottom: 14 }} />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button className="btn btn-secondary" onClick={() => setFixFor(null)}>Cancel</button>
-            <button className="btn btn-primary" disabled={busy === fixFor.customer_id} onClick={submitFix}>Save Correction</button>
+            <button className="btn btn-secondary" onClick={closeFix}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy === fixFor.customer_id || fixBlocked} onClick={submitFix}>{fixRemoving ? 'Remove Referrer' : 'Save Correction'}</button>
           </div>
+        </Modal>
+      )}
+
+      {/* Suspend: the reason is required (AFFILIATES-8). */}
+      {suspendFor && (
+        <ReasonModal title={`Suspend ${suspendFor.name}?`} label="Reason" placeholder="Why is this affiliate suspended?"
+          confirmLabel="Suspend" onSubmitAsync={submitSuspend} onClose={() => setSuspendFor(null)} />
+      )}
+
+      {/* 425: check a sign-up that shares a customer's phone. */}
+      {decideFor && (
+        <Modal title={decideFor.decision === 'different_person' ? `${decideFor.check.customer_name} is a different person` : `${decideFor.check.customer_name} is the same person`}
+          onClose={() => setDecideFor(null)} confirmClose={!!decideNote.trim()}
+          footer={<><button className="btn btn-secondary" onClick={() => setDecideFor(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy === decideFor.check.check_id || !decideNote.trim()} onClick={() => void submitDecide()}>
+              {decideFor.decision === 'different_person' ? 'Count them' : 'Do not count them'}</button></>}>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            {decideFor.decision === 'different_person'
+              ? `${decideFor.check.customer_name} shares a phone with ${decideFor.check.shares_with.map(o => o.name).join(', ') || 'another customer'} but is someone else. They count for referral promotions from now on.`
+              : `${decideFor.check.customer_name} is ${decideFor.check.shares_with.map(o => o.name).join(' or ') || 'a customer we already have'}, written another way. They never count for a referral promotion. The two records stay as they are; ask the Owner to merge them.`}
+          </p>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>How did you check? (required)</label>
+          <textarea className="input" rows={3} value={decideNote} onChange={e => { setDecideNote(e.target.value); setDecideErr(null); }} />
+          {decideErr && <div role="alert" style={{ fontSize: 12.5, color: 'var(--danger)', marginTop: 6 }}>{decideErr}</div>}
         </Modal>
       )}
 

@@ -75,12 +75,28 @@ const ReferralSignupPage: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // The link could not be checked (no answer from the server, or an error):
+  // not the same as a link that is not valid (AFFILIATES-7).
+  const [unreachable, setUnreachable] = useState(false);
+  const [checkTick, setCheckTick] = useState(0);
   const on = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
 
   useEffect(() => {
-    supabase.rpc('public_affiliate_referral_info', { p_code: referralCode })
-      .then(({ data }) => setInfo(data ?? { valid: false }));
-  }, [referralCode]);
+    let live = true;
+    setUnreachable(false);
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('public_affiliate_referral_info', { p_code: referralCode });
+        if (!live) return;
+        // Only the server's own answer says whether the link is valid.
+        if (error || !data) { setUnreachable(true); return; }
+        setInfo(data);
+      } catch {
+        if (live) setUnreachable(true);
+      }
+    })();
+    return () => { live = false; };
+  }, [referralCode, checkTick]);
 
   const submit = async () => {
     setErr(null);
@@ -120,6 +136,16 @@ const ReferralSignupPage: React.FC = () => {
       </div>
       <p className="rl-foot">1 Coleman Street #B1-37, The Adelphi, Singapore 179803 · near City Hall MRT</p>
     </div>
+  );
+
+  if (unreachable && !info) return (
+    <Shell><div className="rl-done" data-state="unreachable">
+      <h2>We could not check this link</h2>
+      <p>Please check your connection and try again.</p>
+      <p style={{ marginTop: 14 }}>
+        <button type="button" className="rl-cta" onClick={() => setCheckTick(t => t + 1)}>Try again</button>
+      </p>
+    </div></Shell>
   );
 
   if (info && !info.valid) return (

@@ -1,12 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, money, dateStr, statusLabel, earningsFigures, settledFigure, DEDUCTION_NOTE } from '../lib/affiliatePortal';
-import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
+import { usePortalRpc, money, dateStr, statusLabel, earningsFigures, settledFigure, DEDUCTION_NOTE } from '../lib/affiliatePortal';
+import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote, PortalError } from '../components/AffiliateResponsive';
 
 const AffiliateEarningsPage: React.FC = () => {
-  const [e, setE] = useState<any>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { portalRpc('affiliate_portal_earnings').then(setE).catch(x => setErr(x.message)); }, []);
+  const { data: e, err, retry } = usePortalRpc<any>('affiliate_portal_earnings');
 
   const byMonth: any[] = e?.by_month ?? [];
   const byPurchase: any[] = e?.by_purchase ?? [];
@@ -16,8 +14,7 @@ const AffiliateEarningsPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Earnings</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>A full breakdown of the commission your network has generated.</p>
-      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
-      {!e ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
+      {err ? <PortalError message={err} onRetry={retry} /> : !e ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <StatGrid>
             <Stat label="Lifetime Earned" value={money(e.summary?.lifetime)} />

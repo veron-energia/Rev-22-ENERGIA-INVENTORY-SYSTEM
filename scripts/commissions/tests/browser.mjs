@@ -33,6 +33,8 @@ try {
  await page.getByRole('button',{name:'Retry names'}).waitFor();assert.match(await page.locator('body').innerText(),/Name unavailable/);
  await page.getByRole('button',{name:'Retry names'}).click();await page.getByText('Active Affiliate',{exact:true}).waitFor();
  assert.match(await page.locator('body').innerText(),/Historical Affiliate \(deleted\)/);assert.match(await page.locator('body').innerText(),/Name unavailable · missing-/);
+ // 410's balances: a Payable now column beside Remaining.
+ assert.match(await page.locator('thead').first().innerText(),/Payable now/i);
  await page.getByRole('button',{name:'Record payout',exact:true}).first().click();
  const modal=page.locator('.modal');await modal.getByLabel('Amount (S$)',{exact:true}).fill('150');
  await modal.getByRole('button',{name:'Payment method',exact:true}).click();await modal.getByRole('combobox').fill('bank');await modal.getByRole('combobox').press('Enter');
@@ -43,13 +45,13 @@ try {
  await page.getByRole('button',{name:'Refresh payouts'}).click();await page.waitForFunction(()=>document.body.innerText.includes('Remaining payable: S$150.00'));
  await page.getByRole('button',{name:'Show history'}).click();await page.getByRole('button',{name:'Edit payout'}).click();
  await modal.getByLabel('Amount (S$)',{exact:true}).fill('100');await modal.getByLabel('Correction reason (required)').fill('Receipt verified');
- await modal.getByLabel('Payment date (Singapore)').fill('2020-02-02');await modal.getByLabel('Notes (optional)').fill('Receipt checked');
+ await modal.getByLabel('Payment date (Singapore)').fill('2020-02-02');await modal.getByLabel('Internal notes (not shown to the affiliate)').fill('Receipt checked');
  await modal.getByRole('button',{name:'Save correction'}).click();await page.waitForFunction(()=>!document.querySelector('.modal'));
  assert.match(await page.locator('body').innerText(),/2020-02-02/);assert.match(await page.locator('body').innerText(),/Receipt checked/);
  await page.getByLabel('Payment date from').fill('2020-02-03');assert.equal(await page.getByRole('button',{name:'Edit payout'}).count(),0);
  await page.getByLabel('Payment date from').fill('2020-02-01');await page.getByRole('button',{name:'History & allocations'}).click();
  await page.getByText('INV-123').waitFor();await page.getByText('Version 2',{exact:false}).click();assert.match(await modal.innerText(),/Receipt verified/);assert.match(await modal.innerText(),/S\$150.00/);assert.match(await modal.innerText(),/S\$100.00/);
- await modal.getByRole('button',{name:'✕'}).click();await page.getByRole('button',{name:'Show balances'}).click();
+ await modal.getByRole('button',{name:'Close'}).click();await page.getByRole('button',{name:'Show balances'}).click();
  assert.match(await page.locator('body').innerText(),/Remaining payable: S\$200.00/);
  await page.getByRole('button',{name:'Record payout',exact:true}).first().click();await modal.getByRole('button',{name:'Payment method',exact:true}).click();await modal.getByRole('option',{name:'Bank Transfer'}).click();
  await page.evaluate(()=>window.loseSave=true);await modal.getByRole('button',{name:'Record payout',exact:true}).click();await modal.getByRole('button',{name:'Retry same save'}).waitFor();

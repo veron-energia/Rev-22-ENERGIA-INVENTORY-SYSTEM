@@ -1,12 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, money, dateStr } from '../lib/affiliatePortal';
-import { DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
+import { usePortalRpc, money, dateStr } from '../lib/affiliatePortal';
+import { DesktopTableCard, MobileCards, MCard, EmptyNote, PortalError } from '../components/AffiliateResponsive';
 
 const AffiliatePayoutsPage: React.FC = () => {
-  const [rows, setRows] = useState<any[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { portalRpc('affiliate_portal_payouts').then(setRows).catch(e => setErr(e.message)); }, []);
+  const { data: rows, err, retry } = usePortalRpc<any[]>('affiliate_portal_payouts');
 
   const badge = (s: string) => <span className={'badge ' + (s === 'paid' ? 'badge-success' : 'badge-muted')}>{s === 'paid' ? 'Paid' : 'Cancelled'}</span>;
 
@@ -14,8 +12,7 @@ const AffiliatePayoutsPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Payout History</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Payouts issued to you by Energia.</p>
-      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
-      {!rows ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
+      {err ? <PortalError message={err} onRetry={retry} /> : !rows ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <DesktopTableCard>
             <table className="table" style={{ width: '100%' }}>

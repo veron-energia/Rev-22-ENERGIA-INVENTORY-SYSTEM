@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { PasswordInput } from '../components/PasswordInput';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, dateStr } from '../lib/affiliatePortal';
+import { usePortalRpc, dateStr } from '../lib/affiliatePortal';
+import { PortalError } from '../components/AffiliateResponsive';
 import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
@@ -12,13 +13,10 @@ const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value
 );
 
 const AffiliateAccountPage: React.FC = () => {
-  const [me, setMe] = useState<any>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const { data: me, err, retry } = usePortalRpc<any>('affiliate_portal_me');
   const [current, setCurrent] = useState('');
   const [pw, setPw] = useState(''); const [confirm, setConfirm] = useState('');
   const [pwMsg, setPwMsg] = useState<string | null>(null); const [pwBusy, setPwBusy] = useState(false);
-
-  useEffect(() => { portalRpc('affiliate_portal_me').then(setMe).catch(e => setErr(e.message)); }, []);
 
   // Goes through the auth-change-password Edge Function rather than
   // supabase.auth.updateUser, so the "your password was changed" notification is
@@ -43,8 +41,7 @@ const AffiliateAccountPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Account</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your affiliate account details.</p>
-      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
-      {!me ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
+      {err ? <PortalError message={err} onRetry={retry} /> : !me ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <div className="card" style={{ padding: 18, marginBottom: 20 }}>
             <Row label="Name" value={me.name} />

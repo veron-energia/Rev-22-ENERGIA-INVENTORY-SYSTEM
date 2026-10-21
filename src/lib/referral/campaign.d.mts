@@ -32,7 +32,7 @@ export function progressLine(p: PortalProgress | null | undefined): string;
 /** 404: "{n} friends you referred during the promotion haven't visited yet."; '' at 0, without the figure, or after the end. */
 export function portalNotYetVisitedLine(p: PortalProgress | null | undefined): string;
 /** A friend as referral_campaign_report lists them. */
-export interface PromotionFriend { counted: boolean; first_visit_on: string | null; }
+export interface PromotionFriend { counted: boolean; first_visit_on: string | null; /** 425: waits for a check (shares a customer's phone). */ needs_check?: boolean; }
 /** not_yet_visited when the report sends it (404), else the friends listed without a visit. */
 export function notYetVisited(row: { not_yet_visited?: number | null; friends?: readonly PromotionFriend[] | null } | null | undefined): number;
 /** The line under a referrer's name; '' when none of their friends is waiting for a first visit. */

@@ -1,15 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
-import { portalRpc, money, dateStr, earningsFigures, settledFigure, DEDUCTION_NOTE } from '../lib/affiliatePortal';
+import { usePortalRpc, money, dateStr, earningsFigures, settledFigure, DEDUCTION_NOTE } from '../lib/affiliatePortal';
 import { Users, TrendingUp, Wallet, Clock } from 'lucide-react';
-import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote } from '../components/AffiliateResponsive';
+import { Stat, StatGrid, DesktopTableCard, MobileCards, MCard, EmptyNote, PortalError } from '../components/AffiliateResponsive';
 
 const tierLabel = (t: string) => (t === 'tier1' ? 'Tier 1' : 'Tier 2');
 
 const AffiliateDashboardPage: React.FC = () => {
-  const [d, setD] = useState<any>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { portalRpc('affiliate_portal_dashboard').then(setD).catch(e => setErr(e.message)); }, []);
+  const { data: d, err, retry } = usePortalRpc<any>('affiliate_portal_dashboard');
 
   const recent: any[] = d?.recent ?? [];
   const owed = earningsFigures(d?.earnings);
@@ -18,8 +16,7 @@ const AffiliateDashboardPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your Energia affiliate overview</p>
-      {err && <p className="portal-break" style={{ color: 'var(--danger)' }}>{err}</p>}
-      {!d ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
+      {err ? <PortalError message={err} onRetry={retry} /> : !d ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <>
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>My Network</h3>
           <StatGrid>

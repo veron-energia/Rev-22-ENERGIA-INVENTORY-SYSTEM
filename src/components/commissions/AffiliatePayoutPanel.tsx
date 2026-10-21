@@ -266,7 +266,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
       <fieldset disabled={busy || uncertain} style={{ border: 0, padding: 0, minWidth: 0 }} className="form-grid">
         {field('Amount (S$)', 'amount', 'number')}
         <div className="form-group"><label>Payment method (required)</label><InvoiceSearchSelect value={form.method} onChange={v => update('method', v)} options={methods.filter(m => (m.is_active && !m.deleted_at && !m.is_wallet_credit) || m.id === form.payout?.payment_method_id).map(m => ({ value: m.id, label: m.name + (!m.is_active || m.deleted_at ? ' (historical, inactive)' : '') }))} /></div>
-        {field('Payment date (Singapore)', 'date', 'date')}{field('Reference (optional)', 'reference')}{field('Notes (optional)', 'notes')}{form.payout && field('Correction reason (required)', 'reason')}
+        {field('Payment date (Singapore)', 'date', 'date')}{field('Reference (optional)', 'reference')}{field('Internal notes (not shown to the affiliate)', 'notes')}{form.payout && field('Correction reason (required)', 'reason')}
       </fieldset>
     </Modal>}
     {settleForm && <Modal title="Mark deduction as settled" maxWidth={560} onClose={() => { if (!actBusy && !actUncertain) setSettleForm(null); }} footer={<>

@@ -76,7 +76,10 @@ begin
  perform set_config('request.jwt.claim.sub',manager_id::text,true);
  begin perform affiliate_payout_overview();raise exception 'Inactive manager accepted';exception when insufficient_privilege then null;end;
  perform set_config('request.jwt.claim.sub',owner_id::text,true);
- begin perform create_commission_payout(ref,v_month,method,null,null);raise exception 'Legacy writer bypass accepted';exception when others then if sqlerrm not like '%screen needs an update%' then raise;end if;end;
+ -- The legacy writer only refused (410), and 425 dropped it: either way it writes nothing.
+ if to_regprocedure('public.create_commission_payout(uuid,date,uuid,text,text)') is not null then
+  begin perform create_commission_payout(ref,v_month,method,null,null);raise exception 'Legacy writer bypass accepted';exception when others then if sqlerrm not like '%screen needs an update%' then raise;end if;end;
+ end if;
  perform pg_temp.check(not has_function_privilege('anon','public.record_affiliate_payout(uuid,date,numeric,uuid,date,text,text,uuid)','execute'),'anonymous RPC denied');
  execute 'set local role authenticated';
  begin update public.commission_payouts set total_amount=1 where id=p1;raise exception 'Direct write accepted';exception when insufficient_privilege then null;end;
