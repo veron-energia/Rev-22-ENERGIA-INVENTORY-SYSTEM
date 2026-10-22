@@ -83,7 +83,9 @@
 --      reopened again: the reopening queues one unit too few (446 takes the
 --      second unit off the queue and 417's "only what is more" then queues
 --      nothing for it; before 446 it was right), settled the customer holds
---      1 voucher for S$60, and 448 reads the unit never given as redeemed;
+--      1 voucher for S$60, and 448 reads the unit never given as redeemed
+--      (where 451 is in, checked the fixed way: 2 wait, 2 vouchers for S$60
+--      once settled, nothing asked; printed as FIXED);
 --      (2) a refunded credit line, the buyer merged away, cancelled, reopened
 --      and settled: the refund is reinstated on the merged-away record's lot
 --      (there before 448), and it reads as spent; (3) a partly refunded
@@ -115,6 +117,10 @@ create function pg_temp.t448_fingerprint() returns text language sql as $f$
   select md5(string_agg(md5(pg_get_functiondef(p.oid)), '' order by p.oid::regprocedure::text)) || ' ' || count(*)
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.prokind in ('f', 'p') $f$;
+-- 451 (448's NOT COVERED 1 fixed): the reopening queues a unit refunded on
+-- each side of an earlier reopening.
+create function pg_temp.t448_451_in() returns boolean language sql as $f$
+  select position('-- 451 (the Owner' in pg_get_functiondef('public.reopen_invoice(uuid,text,uuid)'::regprocedure)) > 0 $f$;
 create function pg_temp.t448_in() returns boolean language sql as $f$
   select to_regprocedure('public.invoice_benefit_unused_elsewhere(uuid)') is not null
      and position('-- 448:' in pg_get_functiondef('public.cancelled_invoice_used_value(uuid)'::regprocedure)) > 0
@@ -1065,16 +1071,33 @@ begin
   perform pg_temp.t448_check(pg_temp.t448_cline_back(inv, 1) = 'recorded', '8 (1) the other unit refunded by line while waiting');
   perform pg_temp.t448_check(pg_temp.t448_used(inv) = '-', '8 (1) the other unit refunded while waiting reads ' || pg_temp.t448_used(inv));
   perform pg_temp.t448_reopened(inv);
-  perform pg_temp.t448_check((select sum(quantity) from invoice_reopen_vouchers where invoice_id = inv and applied_at is null) = 1
-    and invoice_charge_total(inv) = 60 and pg_temp.t448_codes(inv, 'cancel') = 'voucher_redeemed',
-    '8 (1) now waits ' || coalesce((select sum(quantity) from invoice_reopen_vouchers where invoice_id = inv and applied_at is null), 0)
-    || ' for S$' || invoice_charge_total(inv) || ' and asks ' || pg_temp.t448_codes(inv, 'cancel') || ': look at 448''s NOT COVERED 1 and this case again');
-  perform pg_temp.t448_pay(inv);
-  held := pg_temp.t448_held(inv);
-  perform pg_temp.t448_check(held = 1 and invoice_net_received(inv) = 60 and pg_temp.t448_codes(inv, 'cancel') = 'voucher_redeemed',
-    '8 (1) settled: ' || pg_temp.t448_money_of(inv) || ', asks ' || pg_temp.t448_codes(inv, 'cancel')
-    || ': look at 448''s NOT COVERED 1 and this case again');
-  insert into t448_known values ('8.1', pg_temp.t448_money_of(inv));
+  if pg_temp.t448_451_in() then
+    -- 451 (the Owner, 22 Oct 2026: "fix the rare 446 voucher case too"): the
+    -- reopening takes off only the cancellation's part of what waits, so the
+    -- second unit is queued: 2 wait for the S$60, nothing asked; settled, 2
+    -- vouchers for S$60.
+    perform pg_temp.t448_check((select sum(quantity) from invoice_reopen_vouchers where invoice_id = inv and applied_at is null) = 2
+      and invoice_charge_total(inv) = 60 and pg_temp.t448_codes(inv, 'cancel') = '-',
+      '8 (1) with 451 waits ' || coalesce((select sum(quantity) from invoice_reopen_vouchers where invoice_id = inv and applied_at is null), 0)
+      || ' for S$' || invoice_charge_total(inv) || ' and asks ' || pg_temp.t448_codes(inv, 'cancel'));
+    perform pg_temp.t448_pay(inv);
+    held := pg_temp.t448_held(inv);
+    perform pg_temp.t448_check(held = 2 and invoice_net_received(inv) = 60 and pg_temp.t448_codes(inv, 'cancel') = '-'
+      and pg_temp.t448_codes(inv, 'refund_full') = '-',
+      '8 (1) with 451, settled: ' || pg_temp.t448_money_of(inv) || ', asks ' || pg_temp.t448_codes(inv, 'cancel'));
+    insert into t448_known values ('8.1', 'FIXED by 451: ' || pg_temp.t448_money_of(inv));
+  else
+    perform pg_temp.t448_check((select sum(quantity) from invoice_reopen_vouchers where invoice_id = inv and applied_at is null) = 1
+      and invoice_charge_total(inv) = 60 and pg_temp.t448_codes(inv, 'cancel') = 'voucher_redeemed',
+      '8 (1) now waits ' || coalesce((select sum(quantity) from invoice_reopen_vouchers where invoice_id = inv and applied_at is null), 0)
+      || ' for S$' || invoice_charge_total(inv) || ' and asks ' || pg_temp.t448_codes(inv, 'cancel') || ': look at 448''s NOT COVERED 1 and this case again');
+    perform pg_temp.t448_pay(inv);
+    held := pg_temp.t448_held(inv);
+    perform pg_temp.t448_check(held = 1 and invoice_net_received(inv) = 60 and pg_temp.t448_codes(inv, 'cancel') = 'voucher_redeemed',
+      '8 (1) settled: ' || pg_temp.t448_money_of(inv) || ', asks ' || pg_temp.t448_codes(inv, 'cancel')
+      || ': look at 448''s NOT COVERED 1 and this case again');
+    insert into t448_known values ('8.1', pg_temp.t448_money_of(inv));
+  end if;
   -- (2) S$40 of a package refunded, the buyer merged into another record,
   -- cancelled, reopened and settled: the S$40 is reinstated on the merged
   -- record's emptied lot (the reopening puts a refund back on the lot it
@@ -1106,8 +1129,15 @@ begin
   end;
   perform pg_temp.t448_check(msg like '%Partly spent%', '8 (3) a customer change after S$40 was refunded: ' || msg
     || ': look at 448''s NOT COVERED 3 and this case again');
-  raise notice 'KNOWN 8: (not covered by 448; there before it) (1) one unit of a line of two refunded, cancelled, reopened, cancelled again, the other unit refunded by line while waiting, reopened again: the reopening queues 1 unit for the S$60 the line charges again (446 took the second unit off the queue; 417''s "only what is more" then queues nothing for it), and once settled the customer holds 1 voucher for S$60 (%); before 446 it was 2; 448 reads the unit never given as redeemed. (2) S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the S$40 is reinstated on the merged-away record''s lot, the kept record''s lot holds S$60, and it reads credit_used. (3) a credit lot partly refunded blocks a customer change as "Partly spent": %',
-    (select v from t448_known where k = '8.1'), msg;
+  if pg_temp.t448_451_in() then
+    raise notice 'FIXED 8 (1) (451 in): one unit of a line of two refunded, cancelled, reopened, cancelled again, the other unit refunded by line while waiting, reopened again: 2 units wait for the S$60 the line charges again, nothing asked; once settled the customer holds 2 vouchers for S$60 (%)',
+      (select v from t448_known where k = '8.1');
+    raise notice 'KNOWN 8: (not covered by 448; there before it) (2) S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the S$40 is reinstated on the merged-away record''s lot, the kept record''s lot holds S$60, and it reads credit_used. (3) a credit lot partly refunded blocks a customer change as "Partly spent": %',
+      msg;
+  else
+    raise notice 'KNOWN 8: (not covered by 448; there before it) (1) one unit of a line of two refunded, cancelled, reopened, cancelled again, the other unit refunded by line while waiting, reopened again: the reopening queues 1 unit for the S$60 the line charges again (446 took the second unit off the queue; 417''s "only what is more" then queues nothing for it), and once settled the customer holds 1 voucher for S$60 (%); before 446 it was 2; 448 reads the unit never given as redeemed (451 fixes it). (2) S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the S$40 is reinstated on the merged-away record''s lot, the kept record''s lot holds S$60, and it reads credit_used. (3) a credit lot partly refunded blocks a customer change as "Partly spent": %',
+      (select v from t448_known where k = '8.1'), msg;
+  end if;
 end $$;
 
 rollback;
