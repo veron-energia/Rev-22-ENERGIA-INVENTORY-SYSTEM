@@ -57,9 +57,18 @@
 --      reopening's vouchers wait, the rest paid: the customer holds 2
 --      vouchers for S$30 net; the plans asked voucher_redeemed before 438
 --      and ask nothing with it; the guided Refund in full pays back the S$30
---      and line A's voucher stays held. (5) credit taken along by a customer
+--      and line A's voucher stays held. Where 446 is in (it fixes (4)): 1
+--      voucher held (line B's) for S$30 net, Refund in full asks nothing and
+--      takes it back, Cancel asks voucher_redeemed for the refunded unit
+--      (NOT COVERED 2; 446's NOT COVERED 1). (5) credit taken along by a customer
 --      change: no transfer row, credit_used asked; cancelled, credit_used, the
---      friend keeps the S$100, and both refund calls are refused.
+--      friend keeps the S$100, and both refund calls are refused. Where 447
+--      is in (the Owner, 22 Oct 2026: the invoice's records follow the
+--      credit), (5) is checked as fixed instead and printed as FIXED: still
+--      no transfer row, but the benefit value names the friend's lot,
+--      Refund in full asks nothing; cancelled, nothing used, the friend's
+--      S$100 taken back, and the line refund records the S$100 ("Record
+--      refund paid" as one line stays refused for any credit invoice).
 --  10. Installed twice: the second run changes nothing (function
 --      fingerprint); both functions keep their grants and have no overload.
 --
@@ -76,6 +85,8 @@ create temp table t438(k text primary key, id uuid);
 create temp table t438_controls(k text primary key, before jsonb, after jsonb);
 create temp table t438_fp(k text primary key, fp text);
 create temp table t438_known(k text primary key, before text);
+-- 446: whether it was in when U4 was made (U4 is checked the fixed way then).
+create temp table t438_446(k text primary key, v boolean);
 create function pg_temp.t438_id(p_k text) returns uuid language sql as $f$ select id from t438 where k = p_k $f$;
 create function pg_temp.t438_check(p_ok boolean, p_label text) returns void language plpgsql as $f$
 begin
@@ -88,6 +99,11 @@ create function pg_temp.t438_fingerprint() returns text language sql as $f$
 create function pg_temp.t438_in() returns boolean language sql as $f$
   select position('-- 438:' in pg_get_functiondef('public.cancelled_invoice_used_value(uuid)'::regprocedure)) > 0
      and position('-- 438:' in pg_get_functiondef('public.invoice_action_plan(uuid,text,jsonb)'::regprocedure)) > 0 $f$;
+-- 447 (NOT COVERED 5 fixed): a customer change's credit is followed by the
+-- invoice's own records.
+create function pg_temp.t447_in() returns boolean language sql as $f$
+  select position('-- 447 (the Owner, 22 Oct 2026)' in
+                  pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)) > 0 $f$;
 
 do $$
 declare own uuid := gen_random_uuid(); st uuid; c uuid; c2 uuid; pm uuid; v uuid; vl uuid; cp uuid;
@@ -293,6 +309,8 @@ begin
   -- S$30 vouchers sold and paid, cancelled, S$30 recorded as paid back,
   -- reopened (part-paid: both vouchers wait), line A refunded through the
   -- guided "Refund some items", the S$30 outstanding paid.
+  insert into t438_446 values ('U4', position('-- 446 (the Owner' in
+    pg_get_functiondef('public.refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)'::regprocedure)) > 0);
   inv := pg_temp.t438_sale('v', 2, 1);
   perform cancel_invoice_recorded(inv, 'T438 U4 cancel', gen_random_uuid());
   perform pg_temp.t438_check(pg_temp.t438_record_refund(inv, 30) = 'recorded', 'fixture U4: the S$30 paid back');
@@ -567,12 +585,20 @@ begin
     '9 a unit refunded by line now reads ' || pg_temp.t438_codes(pg_temp.t438_id('K7'), 'refund_full')
     || ': look at 438''s NOT COVERED 2 and this case again');
   -- NOT COVERED 4: a line refunded while the reopening's vouchers wait.
+  -- 446 (the Owner, 22 Oct 2026) fixes it: where 446 was in when U4 was
+  -- made, the refund took line A's unit off the queue, so the payment gave
+  -- only line B's voucher; Cancel then asks voucher_redeemed for the refunded
+  -- unit, as for any refunded unit (NOT COVERED 2; 446's NOT COVERED 1).
   inv := pg_temp.t438_id('U4');
   perform pg_temp.t438_check((select status::text from invoices where id = inv) = 'paid' and invoice_net_received(inv) = 30
-    and (select count(*) from invoice_refunds where invoice_id = inv) = 2 and pg_temp.t438_held(inv) = 2,
+    and (select count(*) from invoice_refunds where invoice_id = inv) = 2
+    and pg_temp.t438_held(inv) = case when (select v from t438_446 where k = 'U4') then 1 else 2 end,
     '9 U4 now ends ' || (select status::text from invoices where id = inv) || ', net ' || invoice_net_received(inv) || ', '
-    || pg_temp.t438_held(inv) || ' vouchers held: look at 438''s NOT COVERED 4 and this case again');
-  perform pg_temp.t438_check(pg_temp.t438_codes(inv, 'refund_full') = '-' and pg_temp.t438_codes(inv, 'cancel') = '-',
+    || pg_temp.t438_held(inv) || ' vouchers held (446 '
+    || case when (select v from t438_446 where k = 'U4') then 'in' else 'not in' end
+    || '): look at 438''s NOT COVERED 4 (446) and this case again');
+  perform pg_temp.t438_check(pg_temp.t438_codes(inv, 'refund_full') = '-'
+    and pg_temp.t438_codes(inv, 'cancel') = case when (select v from t438_446 where k = 'U4') then 'voucher_redeemed' else '-' end,
     '9 U4 with 438 asks ' || pg_temp.t438_codes(inv, 'refund_full') || ' / ' || pg_temp.t438_codes(inv, 'cancel'));
   perform pg_temp.t438_check(coalesce((select before from t438_known where k = 'U4 refund_full'), 'voucher_redeemed') = 'voucher_redeemed'
     and coalesce((select before from t438_known where k = 'U4 cancel'), 'voucher_redeemed,voucher_redeemed') = 'voucher_redeemed,voucher_redeemed',
@@ -580,23 +606,34 @@ begin
   perform pg_temp.t438_check(pg_temp.t438_guided(inv, 'refund_full', null, '[]', true) = '-', '9 U4 Refund in full asked an override');
   perform pg_temp.t438_check((select status::text from invoices where id = inv) = 'refunded' and invoice_net_received(inv) = 0
     and (select coalesce(sum(v.quantity), 0) from invoice_benefit_values bv join customer_reward_vouchers v on v.id = bv.reward_voucher_id
-          where bv.invoice_id = inv and v.status = 'held' and bv.invoice_item_id = pg_temp.t438_id('U4A')) = 1
-    and pg_temp.t438_held(inv) = 1,
+          where bv.invoice_id = inv and v.status = 'held' and bv.invoice_item_id = pg_temp.t438_id('U4A'))
+        = case when (select v from t438_446 where k = 'U4') then 0 else 1 end
+    and pg_temp.t438_held(inv) = case when (select v from t438_446 where k = 'U4') then 0 else 1 end,
     '9 U4 Refund in full now ends ' || (select status::text from invoices where id = inv) || ', net ' || invoice_net_received(inv) || ', '
-    || pg_temp.t438_held(inv) || ' vouchers held: look at 438''s NOT COVERED 4 and this case again');
-  -- NOT COVERED 5: credit taken along by a customer change.
+    || pg_temp.t438_held(inv) || ' vouchers held: look at 438''s NOT COVERED 4 (446) and this case again');
+  -- NOT COVERED 5: credit taken along by a customer change. 447 (the
+  -- Owner, 22 Oct 2026) makes the invoice's own records follow the credit to
+  -- the new customer's lot: checked as fixed where 447 is in, as before where
+  -- it is not.
   inv := pg_temp.t438_id('K11');
   perform pg_temp.t438_check(not exists (select 1 from invoice_benefit_transfers t join invoice_benefit_values bv on bv.id = t.source_benefit_id
                                           where bv.invoice_id = inv)
     and (select sum(l.remaining_amount) from customer_credit_lots l where l.id in (select lot_id from invoice_credit_lot_ids(inv))
           and l.customer_id = pg_temp.t438_id('friend') and l.status = 'active') = 100
-    and pg_temp.t438_codes(inv, 'refund_full') = 'credit_used',
-    '9 credit taken along by a customer change now reads ' || pg_temp.t438_codes(inv, 'refund_full') || ': look at 438''s NOT COVERED 5 and this case again');
+    and pg_temp.t438_codes(inv, 'refund_full') = case when pg_temp.t447_in() then '-' else 'credit_used' end
+    and (select count(*) from invoice_benefit_values bv join customer_credit_lots l on l.id = bv.lot_id
+          where bv.invoice_id = inv and l.customer_id = pg_temp.t438_id('friend')) = case when pg_temp.t447_in() then 1 else 0 end,
+    '9 credit taken along by a customer change now reads ' || pg_temp.t438_codes(inv, 'refund_full')
+    || case when pg_temp.t447_in() then ' (447 in)' else ' (447 not in)' end || ': look at 438''s NOT COVERED 5 and this case again');
   inv := pg_temp.t438_id('K12');
-  perform pg_temp.t438_check(pg_temp.t438_used(inv) = 'credit_used' and (invoice_financial_position(inv)->>'refund_due')::numeric = 100
+  perform pg_temp.t438_check(pg_temp.t438_used(inv) = case when pg_temp.t447_in() then '-' else 'credit_used' end
+    and (invoice_financial_position(inv)->>'refund_due')::numeric = 100
     and (select sum(l.remaining_amount) from customer_credit_lots l where l.id in (select lot_id from invoice_credit_lot_ids(inv))
-          and l.customer_id = pg_temp.t438_id('friend') and l.status = 'active') = 100,
-    '9 credit taken along by a customer change, cancelled, now reads ' || pg_temp.t438_used(inv) || ': look at 438''s NOT COVERED 5 and this case again');
+          and l.customer_id = pg_temp.t438_id('friend') and l.status = 'active') = case when pg_temp.t447_in() then 0 else 100 end,
+    '9 credit taken along by a customer change, cancelled, now reads ' || pg_temp.t438_used(inv)
+    || case when pg_temp.t447_in() then ' (447 in)' else ' (447 not in)' end || ': look at 438''s NOT COVERED 5 and this case again');
+  -- "Record refund paid" as one line with no item is refused for any credit
+  -- invoice (the panel then goes line by line), with 447 or without.
   msg := pg_temp.t438_record_refund(inv, 100);
   perform pg_temp.t438_check(msg like 'Allocate a correction refund to the original unused purchased benefits%',
     '9 K12 Record refund paid: ' || msg || ': look at 438''s NOT COVERED 5 and this case again');
@@ -611,11 +648,26 @@ begin
     msg := 'recorded';
   exception when others then msg := sqlerrm;
   end;
-  perform pg_temp.t438_check(msg like 'Refund exceeds the unused paid value of this benefit%',
-    '9 K12 line refund: ' || msg || ': look at 438''s NOT COVERED 5 and this case again');
+  if pg_temp.t447_in() then
+    perform pg_temp.t438_check(msg = 'recorded' and (invoice_financial_position(inv)->>'refund_due')::numeric = 0,
+      '9 K12 line refund (447 in): ' || msg || ', refund due ' || (invoice_financial_position(inv)->>'refund_due') || ': look at 447 and this case again');
+  else
+    perform pg_temp.t438_check(msg like 'Refund exceeds the unused paid value of this benefit%',
+      '9 K12 line refund (447 not in): ' || msg || ': look at 438''s NOT COVERED 5 and this case again');
+  end if;
   raise notice 'KNOWN 9: (not covered by 438) (1) the FOC taken off with 2 given and 1 charged, paid: Refund in full still asks voucher_redeemed; the FOC taken off with the voucher swapped, paid: sold anew with no reopening row, Refund in full and Cancel ask voucher_redeemed, and once cancelled the S$30 is refused. (2) one unit of two refunded by line: Refund in full still asks voucher_redeemed';
-  raise notice 'KNOWN 9: (not covered by 438; there before it) (4) a line refunded while the reopening''s vouchers waited, then paid: 2 vouchers held for S$30 net; the plans asked % before 438 and ask nothing with it; Refund in full pays back the S$30 and line A''s voucher stays held. (5) credit taken along by a customer change: credit_used before and after 438; cancelled, the friend keeps S$100 and both refund calls are refused',
-    coalesce((select string_agg(k || ' ' || before, ', ' order by k) from t438_known), '(not read: 438 was in)');
+  if (select v from t438_446 where k = 'U4') then
+    raise notice 'FIXED 9 by 446: (4) a line refunded while the reopening''s vouchers waited, then paid: 1 voucher held (line B''s) for S$30 net; Refund in full asks nothing and pays back the S$30, taking it back; Cancel asks voucher_redeemed for the refunded unit (NOT COVERED 2; 446''s NOT COVERED 1); the plans asked % before 438',
+      coalesce((select string_agg(k || ' ' || before, ', ' order by k) from t438_known), '(not read: 438 was in)');
+  else
+    raise notice 'KNOWN 9: (not covered by 438; there before it; 446 not in) (4) a line refunded while the reopening''s vouchers waited, then paid: 2 vouchers held for S$30 net; the plans asked % before 438 and ask nothing with it; Refund in full pays back the S$30 and line A''s voucher stays held',
+      coalesce((select string_agg(k || ' ' || before, ', ' order by k) from t438_known), '(not read: 438 was in)');
+  end if;
+  if pg_temp.t447_in() then
+    raise notice 'FIXED 9 by 447: (5) credit taken along by a customer change: the invoice''s benefit value names the friend''s lot, Refund in full asks nothing; cancelled, the S$100 comes back from the friend, nothing reads as used, and the S$100 is recorded by line ("Record refund paid" as one line is refused for any credit invoice, by design)';
+  else
+    raise notice 'KNOWN 9: (not covered by 438; there before it; 447 not in) (5) credit taken along by a customer change: credit_used before and after 438; cancelled, the friend keeps S$100 and both refund calls are refused';
+  end if;
 end $$;
 
 rollback;

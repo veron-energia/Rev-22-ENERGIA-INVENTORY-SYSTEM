@@ -27,6 +27,8 @@
 --      KNOWN GAP that predates 355/356 and is listed under NOT CHANGED in 356's
 --      header: those loops do not follow the move either, so the new customer
 --      keeps everything. It is reported, not asserted, and not fixed here.
+--      447 closes it (the customer change makes the invoice's records name the
+--      new customer's lots): where 447 is in, 6b is a hard check.
 --   7. (355) A Make-FOC package kept in a correction: another FOC reason is
 --      refused; the same reason goes through and the line stays free. 7c: a
 --      Make-FOC bundle kept with its FOC and reason but another voucher choice
@@ -745,7 +747,16 @@ begin
   -- numbers printed are the gap, not the intended result (which is 0 left with
   -- the new customer). Once the loops are fixed this prints PASS 6b; then make
   -- it a hard check again.
-  if pg_temp.held(c2) <> 0 or pg_temp.held(c2, 'bonus') <> 0 then
+  -- 447 (the Owner, 22 Oct 2026) closes it the other way round: the customer
+  -- change makes the invoice's records name the replacement lots, so the
+  -- loops find the new customer's credit. Where 447 is in, a hard check.
+  if position('-- 447 (the Owner, 22 Oct 2026)' in
+              pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)) > 0 then
+    if pg_temp.held(c2) <> 0 or pg_temp.held(c2, 'bonus') <> 0 then
+      raise exception 'FAIL 6b: with 447 in, after cancelling the moved, settled bundle the new customer still holds % paid (the released lot''s replacement holds % of it) and % bonus, where 0 is intended',
+        pg_temp.held(c2), (select l.remaining_amount from customer_credit_lots l where l.id = repl), pg_temp.held(c2, 'bonus'); end if;
+    raise notice 'PASS 6b: the cancel took back everything the new customer held from the invoice (447: the invoice''s records follow the credit to the replacement lots)';
+  elsif pg_temp.held(c2) <> 0 or pg_temp.held(c2, 'bonus') <> 0 then
     raise notice 'KNOWN GAP 6b (pre-existing, documented in 356 NOT CHANGED; not fixed here): after cancelling the moved, settled bundle the new customer still holds % paid (the released lot''s replacement holds % of it) and % bonus, where 0 is intended. cancel_invoice_recorded''s benefit loop reads the benefit rows'' own lots, which the move emptied, and does not follow credit_lot_current. Reported only; not counted as a failure.',
       pg_temp.held(c2), (select l.remaining_amount from customer_credit_lots l where l.id = repl), pg_temp.held(c2, 'bonus');
   else
@@ -1077,8 +1088,10 @@ end $$;
 -- Two lines of a S$500 package; 600 then 400, so line 1 releases 500 and line
 -- 2 100 before settling. The settled invoice is then moved to another customer
 -- with benefit_action 'transfer': every lot is emptied and replaced, and the
--- benefit rows stay on the emptied pre-move lots. The released-lot benefit's
--- lot is now the first lot of its chain, not the current one. Before 356 the
+-- benefit rows stay on the emptied pre-move lots (until 447; with 447 they
+-- follow the credit to the replacements, the chain's current lot). Before
+-- 447 the released-lot benefit's lot is the first lot of its chain, not the
+-- current one. Before 356 the
 -- released-lot branch matched only credit_lot_current(release lot), found no
 -- source, and a refund's commission recalculation stopped with 'Commission
 -- review required'.
@@ -1103,13 +1116,20 @@ begin
   if pg_temp.held(c2) <> 1000 or pg_temp.held(c1) <> 0 then
     raise exception 'FAIL 9 (fixture): the settled credit did not move (new customer holds %, old %)', pg_temp.held(c2), pg_temp.held(c1); end if;
 
+  -- 447: a customer change's benefit rows now follow the credit to the
+  -- replacement lots; before 447 they stayed on the emptied pre-move lots.
+  -- Either way the released-lot benefit is on a lot of its release's chain,
+  -- and its commission source must be its own line's sale.
   for b in select x.*, pl.lot_id as release_lot from invoice_benefit_values x
-             join credit_package_progress_lots pl on pl.invoice_item_id = x.invoice_item_id and pl.lot_id = x.lot_id
+             join credit_package_progress_lots pl on pl.invoice_item_id = x.invoice_item_id and x.lot_id = any (credit_lot_chain(pl.lot_id))
             where x.invoice_id = inv order by x.invoice_item_id loop
-    -- The benefit sits on the pre-move lot; the credit has moved on along the chain.
-    if credit_lot_current(b.lot_id) = b.lot_id
-       or (select l.customer_id from customer_credit_lots l where l.id = credit_lot_current(b.lot_id)) <> c2 then
-      raise exception 'FAIL 9 (fixture): line %''s released lot did not move on (current lot %)', b.invoice_item_id, credit_lot_current(b.lot_id); end if;
+    -- The credit has moved on along the chain; the benefit sits on the
+    -- pre-move lot (before 447) or on the replacement (447).
+    if credit_lot_current(b.release_lot) = b.release_lot
+       or (select l.customer_id from customer_credit_lots l where l.id = credit_lot_current(b.release_lot)) <> c2
+       or b.lot_id not in (b.release_lot, credit_lot_current(b.release_lot)) then
+      raise exception 'FAIL 9 (fixture): line %''s released lot did not move on (current lot %, benefit on %)',
+        b.invoice_item_id, credit_lot_current(b.release_lot), b.lot_id; end if;
     begin
       src := invoice_commission_benefit_source(b.id);
     exception when others then
@@ -1124,7 +1144,11 @@ begin
     n := n + 1;
   end loop;
   if n <> 2 then raise exception 'FAIL 9: expected a released-lot benefit on each of the 2 lines, found %', n; end if;
-  raise notice 'PASS 9: after moving the settled invoice, both released-lot benefits (left on the pre-move lots, credit now on the replacements) resolve to exactly their own line''s sale';
+  raise notice 'PASS 9: after moving the settled invoice, both released-lot benefits (%) resolve to exactly their own line''s sale',
+    case when exists (select 1 from invoice_benefit_values x join credit_package_progress_lots pl
+                        on pl.invoice_item_id = x.invoice_item_id and pl.lot_id = x.lot_id where x.invoice_id = inv)
+         then 'left on the pre-move lots, credit now on the replacements'
+         else 'moved with the credit to the replacements (447)' end;
 end $$;
 
 -- ── 10. money moving between credit lines without a payment ─────────────────
