@@ -9,7 +9,7 @@ import {
 /*
  * Event → Planning (436 round 7, S2): what the guests answered, for the kitchen
  * and the organiser. One card per day (food counts, allergies, who arrives late
- * or leaves early, what to prepare), the VIPs for the dinner with the founder
+ * or leaves early, what to prepare), the VIP guests' food and allergies
  * (VIP payments still waiting are counted apart), the talks they are
  * interested in, how they heard about the seminar, and their questions for the
  * speakers. Counted by the server (event_planning_summary) over the guests
@@ -141,7 +141,7 @@ export const PlanningTab: React.FC<{ event: EventRow; hasWebsite: boolean }> = (
         {s.vip && (
           <div className="card events-plan-card events-plan-vip-card" data-planning-vip>
             <div className="events-plan-card-head">
-              <strong><Crown size={13} /> VIP guests (dinner with the founder)</strong>
+              <strong><Crown size={13} /> VIP guests</strong>
               <span className="events-sub">{s.vip.count} VIP{s.vip.count === 1 ? '' : 's'} · {s.vip.answered} answered</span>
               {s.vip.waiting > 0 && (
                 <span className="events-sub" data-plan-vip-waiting>

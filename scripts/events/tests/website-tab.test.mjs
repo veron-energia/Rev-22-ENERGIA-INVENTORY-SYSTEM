@@ -376,9 +376,10 @@ test('guests: VIP badge, VIP waiting, To match and Website badges merged by gues
   assert.deepEqual(callsOf('event_web_guest_extras').map(c => c.args), [{ p_event_id: 'ev-1' }]);
   const vip = row('g-vip');
   assert.ok(vip.querySelector('.events-badge-vip'), 'the VIP has a VIP badge');
-  assert.ok(vip.querySelector('.events-badge-vip').title.includes('dinner with the founder, Ms Veronica'), 'the perks are on the badge');
-  assert.ok(vip.querySelector('.events-vip-perks').textContent.includes('dinner with the founder, Ms Veronica'),
+  assert.equal(vip.querySelector('.events-badge-vip').title, 'Priority for the free therapies · personalised seating · VIP name tag', 'the perks are on the badge');
+  assert.equal(vip.querySelector('.events-vip-perks').textContent, 'Priority for the free therapies · personalised seating · VIP name tag',
     'and written out under the name (a phone shows no hover)');
+  assert.ok(!/dinner/i.test(vip.textContent), 'no dinner with the founder any more (the owner, 22 Oct 2026)');
   assert.equal(row('g-free').querySelector('.events-vip-perks'), null, 'not for a guest who is not VIP');
   assert.ok(row('g-free').textContent.includes('VIP waiting · PayNow'), 'a VIP payment waiting says by what');
   assert.ok(row('g-held').textContent.includes('To match'));
@@ -525,6 +526,7 @@ test('check-in: a VIP has a badge and their perks; once in, the gifts with the s
   const r = () => checkRow('g-vip');
   assert.ok(r().querySelector('.events-badge-vip'));
   assert.ok(r().textContent.includes('Priority for the free therapies'));
+  assert.ok(!/dinner/i.test(r().textContent), 'no dinner with the founder at the door (the owner, 22 Oct 2026)');
   assert.equal(r().querySelector('.events-gift-picker'), null, 'no gift before they are in');
   assert.equal(checkRow('g-free').querySelector('.events-badge-vip'), null, 'a free guest is not VIP');
   await click(button('Check in', r()));

@@ -4148,7 +4148,7 @@ select pg_temp.check((pg_temp.tx('pl14')::jsonb)->'vip'->'food' = '{"no_preferen
     and (pg_temp.tx('pl14')::jsonb)->'heard_from_other' = '[]'::jsonb
     and pg_temp.names((pg_temp.tx('pl14')::jsonb)->'questions') = 'Pia Planner*,Walt Walkin'
     and (pg_temp.tx('pl14')::jsonb)->>'registered' = '8' and (pg_temp.tx('pl14')::jsonb)->>'answered' = '7',
-  'PL14 the VIPs (Pia, Ravi, Ula and the counter VIP, each once): food and allergies for the dinner; the talks with 0 for unchosen titles and a renamed one "no longer listed"; how they heard; the questions: '
+  'PL14 the VIPs (Pia, Ravi, Ula and the counter VIP, each once): the VIP guests'' food and allergies; the talks with 0 for unchosen titles and a renamed one "no longer listed"; how they heard; the questions: '
   || ((pg_temp.tx('pl14')::jsonb) - 'days')::text);
 
 -- PL15 the person and the sync carry a website person's answers (by person); staff and counter guests' never leave the app

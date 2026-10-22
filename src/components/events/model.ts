@@ -669,8 +669,8 @@ export function vipCheckoutCloseNote(c: VipCheckout): string {
   return `${vipCheckoutText(c)}: their HitPay checkout ${c.order_id} is closed too${c.people == null ? ' (for everyone on it)' : ''}.`
     + `${vipCheckoutGroupText(c.people)} If HitPay reports a payment for it later, it waits on Website orders to be refunded.`;
 }
-/** The perks a VIP gets, as the guest list and the door show them (the owner, 20 Oct 2026). */
-export const VIP_PERKS = 'Priority for the free therapies · personalised seating · VIP name tag · dinner with the founder, Ms Veronica';
+/** The perks a VIP gets, as the guest list and the door show them (the owner, 20 Oct 2026; the founder meal taken off 22 Oct 2026). */
+export const VIP_PERKS = 'Priority for the free therapies · personalised seating · VIP name tag';
 
 export interface GuestGift {
   gift_id: string; product_id: string; product_name: string; use_no: string | null; day: string | null;

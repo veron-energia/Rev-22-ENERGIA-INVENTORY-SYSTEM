@@ -19,8 +19,8 @@
 //     read keeps the badges and says so; the answers are read at most every 2
 //     minutes while Check-in is open (K13).
 //   * Planning (S2): per day food, allergies (VIP marked), late and early by
-//     time, what to prepare; the VIPs for the dinner, with the VIP payments
-//     still waiting counted apart (K30); talks with "no longer listed"; how they
+//     time, what to prepare; the VIP guests' food and allergies, with the VIP
+//     payments still waiting counted apart (K30); talks with "no longer listed"; how they
 //     heard; the questions; the tab shows only with a website or answers.
 //   * Website tab (S4): the talk titles, pre-filled with the suggested list,
 //     reordered, removed, added (at most 20, 120 characters) and saved by an
@@ -714,7 +714,8 @@ test('planning: per day food counts, allergies (VIP marked), late and early by t
   assert.ok(day2.querySelector('[data-plan-early]').textContent.includes('Leaving early (1)3:00 pm (1)3:00 pm · Hana Held'));
   assert.ok(day2.querySelector('[data-plan-access]').textContent.includes('Hana Held — Wheelchair access; Seat near the front (hearing or sight); Other: Needs a quiet corner'));
   const vip = document.querySelector('[data-planning-vip]');
-  assert.ok(vip.textContent.includes('VIP guests (dinner with the founder)'));
+  assert.equal(vip.querySelector('.events-plan-card-head strong').textContent.trim(), 'VIP guests');
+  assert.ok(!/dinner/i.test(vip.textContent), 'no dinner with the founder any more (the owner, 22 Oct 2026)');
   assert.ok(vip.textContent.includes('1 VIP · 1 answered'));
   assert.equal(vip.querySelector('[data-plan-vip-waiting]').textContent, '3 more VIP payments wait to be confirmed (not counted here).', 'K30');
   const talks = document.querySelector('[data-planning-talks]');

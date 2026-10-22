@@ -197,7 +197,7 @@ export const GuestModal: React.FC<{
         </div>
         <div className="form-group">
           <label>Notes</label>
-          <textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. VEG, Free Sock" />
+          <textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. VEG" />
         </div>
       </div>
     </Modal>
