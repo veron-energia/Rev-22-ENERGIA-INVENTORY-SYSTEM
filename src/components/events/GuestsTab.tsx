@@ -7,10 +7,10 @@ import { GuestModal, GuestSaved } from './GuestModal';
 import { RegistrationHoldsPanel } from './RegistrationHoldsPanel';
 import { GuestPlanningModal } from './GuestPlanningModal';
 import {
-  DayLoad, EventPlanning, EventRow, EventWebExtras, Guest, GuestExtra, ONLINE_PAYMENT_NOT_PAID, PLAN_BADGE_CLASS, PlanningState, StaffOption,
-  TWO_VIP_PAYMENTS, VIP_PERKS,
+  DayLoad, EventPlanning, EventRow, EventWebExtras, Guest, GuestExtra, ONLINE_PAYMENT_NOT_PAID, PLAN_BADGE_CLASS, PlanningState, SIGNED_UP_AGAIN,
+  StaffOption, TWO_VIP_PAYMENTS, VIP_PERKS,
   VIP_PROVIDER_LABELS, accessCell, allergyCell, answersUpdatedCell, dayLabel, extraOf, fmtDayMonth, fmtTime, fmtWeekday, foodCell,
-  guestDay, heardFromCell, invoiceStatusLabel, isVipDouble, isVipGuest, normalizeGuestRestored, paymentLabel, paymentTone, planningBadges,
+  fmtDayList, guestDay, heardFromCell, invoiceStatusLabel, isVipDouble, isVipGuest, normalizeGuestRestored, paymentLabel, paymentTone, planningBadges,
   planningOf, slug, talksCell, timingCell, vipCheckoutText, vipLink,
 } from './model';
 
@@ -22,8 +22,9 @@ const WEB_FILTERS: { value: WebFilter; label: string }[] = [
   { value: 'all', label: 'All guests' }, { value: 'vip', label: 'VIP' }, { value: 'website', label: 'Website' },
   { value: 'match', label: 'To match' },
 ];
+// 449: To match also shows the cancelled row of someone taken off the list who signed up again (they wait there too).
 const webShown = (g: Guest, x: GuestExtra | null, f: WebFilter) =>
-  f === 'all' || (f === 'vip' ? isVipGuest(g, x) : f === 'website' ? !!x?.website : !!x?.hold);
+  f === 'all' || (f === 'vip' ? isVipGuest(g, x) : f === 'website' ? !!x?.website : !!x?.hold || !!x?.signed_up_again);
 
 /** The cell of an answer column while the answers could not be read (K14: never left out silently). */
 export const NOT_LOADED = 'Not loaded';
@@ -309,7 +310,7 @@ export const GuestsTab: React.FC<{
                   <tr key={g.guest_id} data-guest={g.guest_id} className={g.status === 'cancelled' ? 'events-row-cancelled' : undefined}>
                     <td>
                       <strong>{g.name}</strong>
-                      {(double || (x && (vip || x.vip_waiting || x.hold || x.website))) && (
+                      {(double || (x && (vip || x.vip_waiting || x.hold || x.signed_up_again || x.website))) && (
                         <div className="events-badges">
                           {vip && <span className="badge events-badge-vip" title={VIP_PERKS}><Crown size={11} /> VIP</span>}
                           {double && (
@@ -331,6 +332,13 @@ export const GuestsTab: React.FC<{
                             </span>
                           )}
                           {x?.hold && <span className="badge badge-danger" title="Waiting for staff to link them to a customer">To match</span>}
+                          {/* 449 (the owner, 22 Oct 2026): taken off, then signed up again on the website: staff decide under To match */}
+                          {x?.signed_up_again && g.status === 'cancelled' && (
+                            <span className="badge badge-danger" data-signed-up-again
+                              title={`${SIGNED_UP_AGAIN}${x.signed_up_again.days.length ? `, asking for ${fmtDayList(x.signed_up_again.days)}` : ''}. Put them back on the list (Restore, or To match above), or an Owner or Manager closes it there.`}>
+                              Signed up again
+                            </span>
+                          )}
                           {x?.website && (
                             <span className="badge badge-muted" title={x.registration_id ? `${x.registration_id} · ${x.position} of ${x.group_size}` : undefined}>
                               Website

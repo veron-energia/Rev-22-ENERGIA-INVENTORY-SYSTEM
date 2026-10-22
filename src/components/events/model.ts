@@ -224,12 +224,17 @@ export function normalizeOverCapacity(v: unknown): OverCapacity[] {
     .filter(o => o.day);
 }
 
-/** 415: what restoring a free guest answers: the days dropped (the event no longer has them) and any day now over capacity. */
-export interface GuestRestored { days_dropped: string[]; over_capacity: OverCapacity[]; }
+/**
+ * 415: what restoring a free guest answers: the days dropped (the event no longer has them) and any day now over capacity.
+ * 449: someone who signed up again on the website after being taken off the list also gets the days they asked for then
+ * (days_added; none before 449, or when they had them already).
+ */
+export interface GuestRestored { days_dropped: string[]; over_capacity: OverCapacity[]; days_added: string[]; }
 export function normalizeGuestRestored(v: any): GuestRestored {
   return {
     days_dropped: arr(v?.days_dropped).map(d => dateOnly(d) ?? '').filter(Boolean),
     over_capacity: normalizeOverCapacity(v?.over_capacity),
+    days_added: arr(v?.days_added).map(d => dateOnly(d) ?? '').filter(Boolean),
   };
 }
 
@@ -570,7 +575,7 @@ export function slug(s: string): string {
 export type VipState = 'none' | 'pending' | 'paid' | 'refunded';
 export type VipProvider = 'hitpay' | 'paynow' | 'bank';
 export type HoldReason = 'phone_in_use' | 'email_in_use' | 'phone_and_email_in_use' | 'several_name_matches' | 'legacy_ambiguous'
-  | 'affiliate_name';
+  | 'affiliate_name' | 'signed_up_again';
 const VIP_STATES: VipState[] = ['none', 'pending', 'paid', 'refunded'];
 const VIP_PROVIDERS: VipProvider[] = ['hitpay', 'paynow', 'bank'];
 const vipState = (v: unknown): VipState => (VIP_STATES.includes(v as VipState) ? v as VipState : 'none');
@@ -586,7 +591,51 @@ export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   legacy_ambiguous: 'An old record with the same name has a phone that could be this one.',
   // 436 (the owner, 21 Oct 2026): through an affiliate's link, her name on a phone and email not on her record.
   affiliate_name: 'Their name is the affiliate\'s (whose link was used), on a phone and email not on her record.',
+  // 449 (the owner, 22 Oct 2026): staff took them off the guest list, and they signed up again on the website.
+  signed_up_again: 'Signed up again after being taken off the list.',
 };
+/**
+ * 449 (the owner, 22 Oct 2026: "Hold for staff to decide"): someone staff took off the guest list who signed up again on
+ * the website (their own email) waits under To match until staff put them back on the list (any staff: their days and
+ * the days they asked for now) or an Owner or Manager closes it (they stay off; signing up again shows them here
+ * again). The website told them their place will be confirmed; they cannot buy VIP meanwhile.
+ */
+export interface SignedUpAgain {
+  /** When they first signed up again since being taken off (the hold's start). */
+  held_at: string | null;
+  /** Every day they asked for since (added when they are put back). */
+  days: string[];
+  /** Why and when staff took them off (their guest record's cancellation); null on the guest list's row. */
+  removed_reason: string | null;
+  removed_at: string | null;
+}
+export const SIGNED_UP_AGAIN = 'Signed up again after being taken off the list';
+function normalizeSignedUpAgain(v: any): SignedUpAgain | null {
+  if (!v || typeof v !== 'object') return null;
+  return {
+    held_at: str(v.held_at), days: arr(v.days).map(d => dateOnly(d) ?? '').filter(Boolean),
+    removed_reason: str(v.removed_reason), removed_at: str(v.removed_at),
+  };
+}
+/** "Taken off the list (Cannot come · Wed 21 Oct 2026, 14:05); signed up again Thu 22 Oct 2026, 09:10, asking for Mon 23 Nov & Tue 24 Nov 2026." */
+export function signedUpAgainText(s: SignedUpAgain): string {
+  const removed = [s.removed_reason, s.removed_at ? fmtDateTime(s.removed_at) : null].filter(Boolean).join(' · ');
+  return `Taken off the list${removed ? ` (${removed})` : ''}; signed up again${s.held_at ? ` ${fmtDateTime(s.held_at)}` : ''}`
+    + `${s.days.length ? `, asking for ${fmtDayList(s.days)}` : ''}.`;
+}
+/**
+ * What staff do after Put back: the website sends them nothing (no email, no personal link) and told them the team would
+ * confirm their place on WhatsApp and send their personal link then.
+ */
+export const PUT_BACK_TELL_THEM = 'The website sends them nothing: let them know on WhatsApp that their place is confirmed, and send their'
+  + ' VIP link (Guests tab, Copy VIP link) so they can buy VIP or change their answers.';
+/** What "Put back on the list" does, for its window. */
+export function putBackText(name: string, s: SignedUpAgain): string {
+  return `${name} comes back on the guest list for the days they had${s.days.length ? ` and the days they asked for now (${fmtDayList(s.days)})` : ''}`
+    + ` (days the event no longer has are left out). They can then buy VIP and save their answers on the website. ${PUT_BACK_TELL_THEM}`;
+}
+/** What Close does to a signed-up-again hold, for its window. */
+export const SIGNED_UP_AGAIN_CLOSE_TEXT = 'They stay off the guest list (their registration stays as it is). If they sign up again, they show here again.';
 /**
  * 444 (the owner, 21 Oct 2026: "Staff can close it"): a HitPay checkout opened and left without paying (HitPay has
  * reported no payment for it), still open until expires_at. The page says "Online payment started, not paid (until
@@ -642,6 +691,8 @@ export interface GuestExtra {
   /** 444: an online payment started and not paid (a HitPay checkout still open), else null (and before 444). */
   vip_checkout: VipCheckout | null;
   hold: { reason: HoldReason; held_at: string | null } | null;
+  /** 449: on a cancelled free record while its person, taken off the list, signed up again and waits under To match. */
+  signed_up_again: { held_at: string | null; days: string[] } | null;
   closed: boolean;
   /** note: the plain note on the referral: the affiliate themself (not referred, no commission); an existing customer
    *  (not referred again, their referral stands); someone else on the affiliate's phone or email (held, waiting for an
@@ -687,6 +738,8 @@ export interface RegistrationHold {
   /** R6-4 (the owner, 21 Oct 2026): for an affiliate_name hold, the affiliate whose name they gave (when the server
    *  names her; else the page takes the candidate with the same name, or their own name). */
   affiliate_name: string | null;
+  /** 449: taken off the list and signed up again (reason signed_up_again; on a To match entry too), else null. */
+  signed_up_again: SignedUpAgain | null;
 }
 export interface GiftChoice { product_id: string; name: string; stock: number; }
 export interface EventWebExtras {
@@ -722,6 +775,9 @@ export function normalizeWebExtras(v: any): EventWebExtras {
       parked: bool(g.parked), vip: vipState(g.vip), vip_guest: bool(g.vip_guest), vip_invoice_no: str(g.vip_invoice_no),
       vip_waiting: vipProvider(g.vip_waiting), vip_checkout: normalizeVipCheckout(g.vip_checkout),
       hold: g.hold && typeof g.hold === 'object' ? { reason: g.hold.reason as HoldReason, held_at: str(g.hold.held_at) } : null,
+      // 449: absent before 449.
+      signed_up_again: g.signed_up_again && typeof g.signed_up_again === 'object'
+        ? { held_at: str(g.signed_up_again.held_at), days: arr(g.signed_up_again.days).map(d => dateOnly(d) ?? '').filter(Boolean) } : null,
       closed: bool(g.closed),
       referral: g.referral && typeof g.referral === 'object' ? {
         code: str(g.referral.code), state: str(g.referral.state), outcome: str(g.referral.outcome),
@@ -760,6 +816,9 @@ export function normalizeWebExtras(v: any): EventWebExtras {
       vip_checkout: normalizeVipCheckout(h?.vip_checkout), vip_checkout_known: typeof h === 'object' && h !== null && 'vip_checkout' in h,
       referral_note: str(h?.referral_note),
       affiliate_name: str(h?.affiliate_name),
+      // 449: absent before 449; a signed_up_again entry from a server that sent no details still gets them (empty).
+      signed_up_again: normalizeSignedUpAgain(h?.signed_up_again)
+        ?? (h?.reason === 'signed_up_again' ? { held_at: str(h?.held_at), days: [], removed_reason: null, removed_at: null } : null),
     })).filter(h => h.person_id),
     gift_choices: arr(v?.gift_choices).map(c => ({ product_id: String(c?.product_id ?? ''), name: String(c?.name ?? ''), stock: num(c?.stock) }))
       .filter(c => c.product_id),

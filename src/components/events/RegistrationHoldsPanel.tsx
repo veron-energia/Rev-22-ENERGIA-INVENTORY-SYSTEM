@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { AlertTriangle, Link2, UserPlus, Users, XCircle } from 'lucide-react';
+import { AlertTriangle, Link2, RotateCcw, UserPlus, Users, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
 import { CustomerSearchSelect } from '../SearchSelect';
 import {
-  EventWebExtras, Guest, HOLD_REASON_LABELS, HoldCandidate, RegistrationHold, candidateGuestText, candidateMergedText, doubleVipWarning, fmtDateTime,
-  fmtDayList, holdVipBadge, pickedCustomerCandidate, vipCheckoutCloseNote,
+  EventWebExtras, Guest, HOLD_REASON_LABELS, HoldCandidate, PUT_BACK_TELL_THEM, RegistrationHold, SIGNED_UP_AGAIN_CLOSE_TEXT, candidateGuestText,
+  candidateMergedText, doubleVipWarning, fmtDateTime, fmtDayList, holdVipBadge, normalizeGuestRestored, pickedCustomerCandidate, putBackText,
+  signedUpAgainText, vipCheckoutCloseNote,
 } from './model';
 
 /*
@@ -45,6 +46,15 @@ import {
  * closing the registration: the checkout closes with it (if HitPay reports a payment for it later, it waits on Website
  * orders for a refund). A payment taken or a transfer sent still waits on Website orders first, and the refusal says
  * what to do there.
+ *
+ * 449 (the owner, 22 Oct 2026: "Hold for staff to decide"): someone staff took off the guest list who signs up again on
+ * the website with their own email waits here too, as "Signed up again after being taken off the list" (who took them
+ * off and why, when they signed up again, the days they asked for). Any staff "Put back on the list" (the Guests tab's
+ * Restore: their days and the days asked for now; the hold ends; the website sends them nothing, so staff tell them on
+ * WhatsApp and send their VIP link); an Owner or Manager may Close it (they stay off, and an unpaid HitPay checkout of
+ * theirs closes with it, as above; if they sign up again they show here again). They already have their customer, so
+ * there is nothing to link or make.
+ * Someone also waiting to be matched shows once, with both.
  */
 
 /** R6-4: the warning for an affiliate_name hold, naming the affiliate (the server's name, else the candidate with her name). */
@@ -70,12 +80,16 @@ export const explain = (message: string) => {
   return message;
 };
 /** Someone else dealt with it meanwhile: the list is out of date. */
-const stale = (message: string) => /not waiting to be matched|already closed/.test(message);
+const stale = (message: string) => /not waiting to be matched|already closed|not waiting for staff any more/.test(message);
+
+/** 449: taken off the list and signed up again, and nothing else (not waiting to be matched). */
+export const onlySignedUpAgain = (h: Pick<RegistrationHold, 'reason'>): boolean => h.reason === 'signed_up_again';
 
 type Action =
   | { kind: 'attach'; hold: RegistrationHold; customer: HoldCandidate | null }
   | { kind: 'create'; hold: RegistrationHold }
-  | { kind: 'close'; hold: RegistrationHold };
+  | { kind: 'close'; hold: RegistrationHold }
+  | { kind: 'put_back'; hold: RegistrationHold };
 
 export const RegistrationHoldsPanel: React.FC<{
   holds: RegistrationHold[];
@@ -106,7 +120,10 @@ export const RegistrationHoldsPanel: React.FC<{
           p_person_id: h.person_id, p_customer_id: action.customer?.customer_id ?? otherId, p_note: note.trim() })
       : action.kind === 'create'
         ? await supabase.rpc('event_registration_create_customer', { p_person_id: h.person_id, p_note: note.trim() || null })
-        : await supabase.rpc('event_registration_close', { p_person_id: h.person_id, p_reason: note.trim() });
+        // 449: Put back is the Guests tab's Restore of their free guest record (the server adds the days they asked for).
+        : action.kind === 'put_back'
+          ? await supabase.rpc('event_set_guest_cancelled', { p_guest_id: h.guest_id, p_cancelled: false, p_reason: note.trim() || null })
+          : await supabase.rpc('event_registration_close', { p_person_id: h.person_id, p_reason: note.trim() });
     setBusy(false);
     if (res.error) {
       setErr(explain(res.error.message));
@@ -123,9 +140,18 @@ export const RegistrationHoldsPanel: React.FC<{
       ? ((res.data as any).checkouts_closed as { order_id: string; people?: number }[]) : [];
     const checkoutText = closedCheckouts.map(c => ` Their unpaid online checkout ${c.order_id} was closed too`
       + `${(c.people ?? 1) > 1 ? ` (for all ${c.people} people on it)` : ''}.`).join('');
+    // 449: put back (the days added, any the event no longer has dropped), or a signed-up-again hold closed.
+    const restored = action.kind === 'put_back' ? normalizeGuestRestored(res.data) : null;
+    const putBackDone = restored
+      ? `${h.full_name} is back on the guest list.${restored.days_added.length ? ` ${fmtDayList(restored.days_added)} added, as they asked.` : ''}`
+        + `${restored.days_dropped.length ? ` ${fmtDayList(restored.days_dropped)} taken off (no longer an event day).` : ''}`
+        + ` ${PUT_BACK_TELL_THEM}`
+      : '';
     setDone(action.kind === 'attach'
       ? `${h.full_name} is now linked to ${action.customer?.full_name ?? 'the customer you chose'}.${vipText}`
       : action.kind === 'create' ? `A new customer was made for ${h.full_name}.${vipText}`
+      : action.kind === 'put_back' ? putBackDone
+      : (res.data as any)?.signed_up_again === 'closed' ? `${h.full_name} stays off the guest list.${checkoutText}`
       : `${h.full_name}'s registration was closed.${checkoutText}`);
     setAction(null);
     onChanged();
@@ -148,6 +174,10 @@ export const RegistrationHoldsPanel: React.FC<{
           Registered on the website, but staff must confirm who they are (their phone or email is on another customer's
           record, or they gave the affiliate's own name on a new phone and email). They are on the guest list already; link
           each to the right customer, or make a new one. A VIP payment of theirs waits until then.
+          {holds.some(h => h.signed_up_again) && (
+            <> Someone taken off the list who signed up again waits here too: put them back on the list, or close it to leave
+            them off. The website told them their place will be confirmed.</>
+          )}
         </span>
       </div>
       {done && <div className="alert alert-info" role="status"><span>✓</span><div>{done}</div></div>}
@@ -170,15 +200,21 @@ export const RegistrationHoldsPanel: React.FC<{
                 {' · '}{h.registration_id} · {h.position} of {h.group_size}{h.held_at ? ` · ${fmtDateTime(h.held_at)}` : ''}
               </div>
               {h.referral_note && <div className="events-sub" data-referral-note>{h.referral_note}</div>}
+              {h.signed_up_again && (
+                <div className="events-sub" data-signed-up-again>{signedUpAgainText(h.signed_up_again)}</div>
+              )}
             </div>
-            <div className="events-sub events-hold-reason">{HOLD_REASON_LABELS[h.reason] ?? h.reason}</div>
+            <div className="events-sub events-hold-reason">
+              {HOLD_REASON_LABELS[h.reason] ?? h.reason}
+              {h.signed_up_again && !onlySignedUpAgain(h) && <div>{HOLD_REASON_LABELS.signed_up_again}</div>}
+            </div>
           </div>
           {affiliateHoldWarning(h) && (
             <div className="alert alert-warning events-hold-warning" role="note" data-affiliate-warning>
               <AlertTriangle size={15} /><div>{affiliateHoldWarning(h)}</div>
             </div>
           )}
-          {h.candidates.length > 0 && (
+          {h.candidates.length > 0 && !onlySignedUpAgain(h) && (
             <div className="table-wrap">
               <table className="events-hold-table">
                 <thead><tr><th>May be</th><th>Contact</th><th>Same</th><th></th></tr></thead>
@@ -208,10 +244,18 @@ export const RegistrationHoldsPanel: React.FC<{
             </div>
           )}
           <div className="events-actions" style={{ marginTop: 8 }}>
-            <button className="btn btn-secondary btn-sm" data-other={h.person_id}
-              onClick={() => open({ kind: 'attach', hold: h, customer: null })}><Link2 size={12} /> Find another customer…</button>
-            <button className="btn btn-secondary btn-sm" data-create={h.person_id}
-              onClick={() => open({ kind: 'create', hold: h })}><UserPlus size={12} /> New customer</button>
+            {h.signed_up_again && h.guest_id && (
+              <button className="btn btn-primary btn-sm" data-put-back={h.person_id}
+                onClick={() => open({ kind: 'put_back', hold: h })}><RotateCcw size={12} /> Put back on the list</button>
+            )}
+            {!onlySignedUpAgain(h) && (
+              <>
+                <button className="btn btn-secondary btn-sm" data-other={h.person_id}
+                  onClick={() => open({ kind: 'attach', hold: h, customer: null })}><Link2 size={12} /> Find another customer…</button>
+                <button className="btn btn-secondary btn-sm" data-create={h.person_id}
+                  onClick={() => open({ kind: 'create', hold: h })}><UserPlus size={12} /> New customer</button>
+              </>
+            )}
             {canClose && (
               <button className="btn btn-secondary btn-sm" data-close={h.person_id}
                 onClick={() => open({ kind: 'close', hold: h })}><XCircle size={12} /> Close</button>
@@ -223,12 +267,16 @@ export const RegistrationHoldsPanel: React.FC<{
       {action && (
         <Modal
           title={action.kind === 'attach' ? `Link ${action.hold.full_name}`
-            : action.kind === 'create' ? `New customer: ${action.hold.full_name}` : `Close ${action.hold.full_name}'s registration`}
+            : action.kind === 'create' ? `New customer: ${action.hold.full_name}`
+            : action.kind === 'put_back' ? `Put ${action.hold.full_name} back on the list`
+            : onlySignedUpAgain(action.hold) ? `Leave ${action.hold.full_name} off the list`
+            : `Close ${action.hold.full_name}'s registration`}
           maxWidth={520} onClose={close} confirmClose={note.trim() !== '' || !!otherId}
           footer={<>
             <button className="btn btn-secondary" onClick={close} disabled={busy}>Cancel</button>
             <button className="btn btn-primary" data-confirm onClick={() => void confirm()} disabled={busy || !ready}>
-              {busy ? 'Saving…' : action.kind === 'attach' ? 'Link' : action.kind === 'create' ? 'Make customer' : 'Close registration'}
+              {busy ? 'Saving…' : action.kind === 'attach' ? 'Link' : action.kind === 'create' ? 'Make customer'
+                : action.kind === 'put_back' ? 'Put back' : onlySignedUpAgain(action.hold) ? 'Close' : 'Close registration'}
             </button>
           </>}>
           <div className="form-grid">
@@ -271,10 +319,19 @@ export const RegistrationHoldsPanel: React.FC<{
                 someone made a customer under her name is not referred either.
               </p>
             )}
-            {action.kind === 'close' && (
+            {action.kind === 'close' && !onlySignedUpAgain(action.hold) && (
               <p style={{ margin: 0, fontSize: 13.5 }}>
                 For a registration that is not a real one (a test, sent twice). They come off the guest list and this list.
               </p>
+            )}
+            {action.kind === 'close' && onlySignedUpAgain(action.hold) && (
+              <p style={{ margin: 0, fontSize: 13.5 }} data-close-signed-up-again>{SIGNED_UP_AGAIN_CLOSE_TEXT}</p>
+            )}
+            {(action.kind === 'put_back' || action.kind === 'close') && action.hold.signed_up_again && (
+              <p style={{ margin: 0, fontSize: 13.5 }} data-signed-up-again>{signedUpAgainText(action.hold.signed_up_again)}</p>
+            )}
+            {action.kind === 'put_back' && action.hold.signed_up_again && (
+              <p style={{ margin: 0, fontSize: 13.5 }} data-put-back-note>{putBackText(action.hold.full_name, action.hold.signed_up_again)}</p>
             )}
             {action.kind === 'close' && action.hold.vip_checkout && (
               <p style={{ margin: 0, fontSize: 13.5 }} data-close-checkout>{vipCheckoutCloseNote(action.hold.vip_checkout)}</p>
@@ -282,7 +339,9 @@ export const RegistrationHoldsPanel: React.FC<{
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label>{action.kind === 'close' ? 'Reason' : action.kind === 'attach' ? 'How did you confirm it is them?' : 'Note (optional)'}</label>
               <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} aria-label="Note"
-                placeholder={action.kind === 'close' ? 'e.g. A test registration' : action.kind === 'attach' ? 'e.g. Asked at the door, same birthday' : ''} />
+                placeholder={action.kind === 'close' ? (onlySignedUpAgain(action.hold) ? 'e.g. Asked not to come' : 'e.g. A test registration')
+                  : action.kind === 'attach' ? 'e.g. Asked at the door, same birthday'
+                  : action.kind === 'put_back' ? 'e.g. Called her: she can come' : ''} />
             </div>
           </div>
         </Modal>

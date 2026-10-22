@@ -169,9 +169,11 @@ export const EventView: React.FC<{
     const dropped = r.days_dropped?.length
       ? ` ${fmtDayList(r.days_dropped)} ${r.days_dropped.length === 1 ? 'is' : 'are'} no longer an event day, so ${r.days_dropped.length === 1 ? 'it was' : 'they were'} taken off.`
       : '';
+    // 449: they had signed up again after being taken off: the days they asked for then come with them.
+    const added = r.days_added?.length ? ` ${fmtDayList(r.days_added)} added, as they asked when they signed up again.` : '';
     setNotice(r.over_capacity.length || dropped
-      ? { tone: 'warning', text: `${done}${dropped}${r.over_capacity.length ? ` ${overCapacityText(r.over_capacity)}.` : ''}` }
-      : { tone: 'info', text: done });
+      ? { tone: 'warning', text: `${done}${added}${dropped}${r.over_capacity.length ? ` ${overCapacityText(r.over_capacity)}.` : ''}` }
+      : { tone: 'info', text: `${done}${added}` });
     await loadGuests();
     onChanged();
   };

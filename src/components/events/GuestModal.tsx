@@ -20,6 +20,8 @@ export interface GuestSaved {
   action?: 'saved' | 'restored';
   /** 415: days taken off a restored guest, because the event no longer has them. */
   days_dropped?: string[];
+  /** 449: days a restored guest asked for when they signed up again after being taken off the list. */
+  days_added?: string[];
 }
 
 export const GuestModal: React.FC<{

@@ -967,6 +967,156 @@ test('444: an Admin sees an open unpaid checkout but is not offered Close unpaid
   assert.deepEqual(globalThis.__renderErrors, []);
 });
 
+// ── 449: taken off the list, then signed up again ─────────────────────────
+// Rita was taken off ("Cannot come", 21 Oct 14:05 in Singapore) and signed up again on 22 Oct 09:10 for both days.
+const AGAIN = { held_at: '2026-10-22T01:10:00Z', removed_reason: 'Cannot come', removed_at: '2026-10-21T06:05:00Z' };
+const signedUpAgain = (b, { alsoHeld = false, server449 = true } = {}) => {
+  b.handlers.event_guest_list = () => {
+    const fx = makeFixture();
+    const rita = { ...structuredClone(fx.guests.find(g => g.guest_id === 'g-staff')), guest_id: 'g-again', name: 'Rita Returned',
+      phone: '+61491578888', customer_id: 'c-rita', customer_name: 'Rita Returned', status: 'cancelled', cancelled_reason: 'Cannot come',
+      notes: 'Website · REG-20261020-AAAA0009 · 1 of 1', days: [{ day: D1, attended_at: null, check_in_code: null, checked_in_by_name: null }] };
+    return [...fx.guests, rita];
+  };
+  b.handlers.event_web_guest_extras = () => {
+    const x = makeFixture().extras;
+    x.guests.push({ guest_id: 'g-again', person_id: 'p-9', website: true, is_test: false, registration_id: 'REG-20261020-AAAA0009', position: 1,
+      group_size: 1, parked: false, vip: 'none', vip_guest: false, vip_invoice_no: null, vip_waiting: null, vip_checkout: null, hold: null,
+      ...(server449 ? { signed_up_again: { held_at: AGAIN.held_at, days: [D1, D2] } } : {}),
+      closed: false, match: 'new_customer', referral: null, upgrade_token: 'vip_cdefghijklmnopqrstuvwxyz23', gift: null });
+    x.holds.push({ person_id: 'p-9', guest_id: 'g-again', registration_id: 'REG-20261020-AAAA0009', position: 1, group_size: 1,
+      held_at: AGAIN.held_at, reason: 'signed_up_again', full_name: 'Rita Returned', phone: '+61491578888', phone_norm: '+61491578888',
+      email: 'rita@example.com', days: [D1], vip_waiting: false, vip_payment: false, vip_checkout: null, referral_note: null, candidates: [],
+      ...(server449 ? { signed_up_again: { ...AGAIN, days: [D1, D2] } } : {}) });
+    if (alsoHeld) x.holds[0].signed_up_again = { ...AGAIN, days: [D2] };
+    // The server says what the caller's role may do (as the default handler).
+    x.can_close_holds = ['owner', 'manager'].includes(globalThis.__auth.profile.role);
+    return x;
+  };
+  b.handlers.event_set_guest_cancelled = a => ({ guest_id: a.p_guest_id, status: a.p_cancelled ? 'cancelled' : 'registered',
+    days_dropped: [], days_added: a.p_cancelled ? [] : [D2], signed_up_again: !a.p_cancelled, over_capacity: [] });
+  b.handlers.event_registration_close = () => ({ ok: true, checkouts_closed: [], signed_up_again: 'closed' });
+};
+const holdOf = id => document.querySelector(`[data-hold="${id}"]`);
+
+test('449: someone taken off who signed up again waits under To match: who took them off, the days asked; staff put them back', async () => {
+  await mount({ role: 'staff', setup: b => signedUpAgain(b) });
+  const panel = document.querySelector('[data-holds]');
+  assert.ok(panel.textContent.includes('To match (2)'));
+  assert.ok(panel.textContent.replace(/\s+/g, ' ').includes('Someone taken off the list who signed up again waits here too: put them back '
+    + 'on the list, or close it to leave them off. The website told them their place will be confirmed.'));
+  const rita = holdOf('p-9');
+  assert.ok(rita.textContent.includes('Signed up again after being taken off the list.'));
+  assert.ok(rita.querySelector('[data-signed-up-again]').textContent.startsWith(
+    'Taken off the list (Cannot come · Wed 21 Oct 2026, 14:05); signed up again Thu 22 Oct 2026, 09:10, asking for '),
+    rita.querySelector('[data-signed-up-again]').textContent);
+  assert.equal(rita.querySelector('table'), null, 'no customers to choose from: they have their customer');
+  assert.ok(!rita.querySelector('[data-other]') && !rita.querySelector('[data-create]') && !rita.querySelector('[data-attach]'),
+    'nothing to link or make');
+  assert.ok(!rita.querySelector('[data-close]'), 'staff do not close it');
+  assert.ok(holdOf('p-3').querySelector('[data-create]') && !holdOf('p-3').querySelector('[data-put-back]'),
+    'a To match person is as before (no Put back)');
+
+  await click(rita.querySelector('[data-put-back]'));
+  assert.ok(modal().textContent.includes('Put Rita Returned back on the list'));
+  assert.ok(modal().querySelector('[data-put-back-note]').textContent.startsWith(
+    'Rita Returned comes back on the guest list for the days they had and the days they asked for now ('));
+  assert.ok(modal().querySelector('[data-put-back-note]').textContent.includes('The website sends them nothing: let them know on WhatsApp that '
+    + 'their place is confirmed, and send their VIP link (Guests tab, Copy VIP link) so they can buy VIP or change their answers.'));
+  assert.equal(modal().querySelector('[data-confirm]').disabled, false, 'a note is optional');
+  assert.equal(modal().querySelector('[data-confirm]').textContent.trim(), 'Put back');
+  await click(modal().querySelector('[data-confirm]'));
+  assert.deepEqual(callsOf('event_set_guest_cancelled').at(-1).args, { p_guest_id: 'g-again', p_cancelled: false, p_reason: null });
+  assert.ok(text().includes('Rita Returned is back on the guest list.') && text().includes('added, as they asked. The website sends them nothing: '
+    + 'let them know on WhatsApp that their place is confirmed, and send their VIP link (Guests tab, Copy VIP link)'), text());
+  assert.equal(callsOf('event_guest_list').length, 2, 'the guest list (and To match) is read again');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('449: an Owner or Manager closes it: they stay off; a stale page is told and reads the list again', async () => {
+  await mount({ role: 'manager', setup: b => signedUpAgain(b) });
+  await click(holdOf('p-9').querySelector('[data-close]'));
+  assert.ok(modal().textContent.includes('Leave Rita Returned off the list'));
+  assert.equal(modal().querySelector('[data-close-signed-up-again]').textContent,
+    'They stay off the guest list (their registration stays as it is). If they sign up again, they show here again.');
+  assert.ok(!modal().textContent.includes('For a registration that is not a real one'));
+  assert.ok(modal().querySelector('[data-confirm]').disabled, 'a reason is needed');
+  await setValue(modal().querySelector('textarea'), 'Asked not to come');
+  assert.equal(modal().querySelector('[data-confirm]').textContent.trim(), 'Close');
+  await click(modal().querySelector('[data-confirm]'));
+  assert.deepEqual(callsOf('event_registration_close').at(-1).args, { p_person_id: 'p-9', p_reason: 'Asked not to come' });
+  assert.ok(text().includes('Rita Returned stays off the guest list.'));
+
+  // An unpaid HitPay checkout of hers (opened before she was taken off): the window says it closes too, and it did.
+  await mount({ role: 'owner', setup: b => {
+    signedUpAgain(b);
+    const extras = b.handlers.event_web_guest_extras;
+    b.handlers.event_web_guest_extras = () => {
+      const x = extras();
+      Object.assign(x.holds.find(h => h.person_id === 'p-9'), { vip_waiting: true, vip_checkout: { ...CHECKOUT } });
+      return x;
+    };
+    b.handlers.event_registration_close = () => ({ ok: true, signed_up_again: 'closed',
+      checkouts_closed: [{ order_id: CHECKOUT.order_id, people: 1, open: true }] });
+  } });
+  await click(holdOf('p-9').querySelector('[data-close]'));
+  assert.equal(modal().querySelector('[data-close-checkout]').textContent.replace(/\s+/g, ' ').trim(),
+    'Online payment started, not paid (until 14:35): their HitPay checkout VIP-20261021-0000000C is closed too. '
+    + 'If HitPay reports a payment for it later, it waits on Website orders to be refunded.');
+  await setValue(modal().querySelector('textarea'), 'Asked not to come');
+  await click(modal().querySelector('[data-confirm]'));
+  assert.ok(text().includes('Rita Returned stays off the guest list. Their unpaid online checkout VIP-20261021-0000000C was closed too.'), text());
+
+  // Someone put her back meanwhile: the server says so, and the page reads the list again.
+  await mount({ role: 'manager', setup: b => {
+    signedUpAgain(b);
+    b.handlers.event_registration_close = () => ({ __error: 'This registration is not waiting for staff any more.' });
+  } });
+  const reads = callsOf('event_guest_list').length;
+  await click(holdOf('p-9').querySelector('[data-close]'));
+  await setValue(modal().querySelector('textarea'), 'Asked not to come');
+  await click(modal().querySelector('[data-confirm]'));
+  assert.ok(modal().querySelector('.alert-danger').textContent.includes('This registration is not waiting for staff any more.'));
+  assert.equal(callsOf('event_guest_list').length, reads + 1, 'the list is read again');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('449: the Guests tab marks the cancelled row "Signed up again"; Restore there puts them back with the days asked', async () => {
+  await mount({ role: 'staff', setup: b => signedUpAgain(b) });
+  assert.equal(row('g-again'), null, 'cancelled: not with the registered guests');
+  const group = document.querySelector('[role="group"][aria-label="Website filter"]');
+  assert.ok(buttonStarting('To match', group).textContent.includes('(2)'));
+  await setValue(document.querySelector('select[aria-label="Status"]'), 'cancelled');
+  const badge = row('g-again').querySelector('[data-signed-up-again]');
+  assert.equal(badge.textContent.trim(), 'Signed up again');
+  assert.ok(badge.title.startsWith('Signed up again after being taken off the list, asking for '));
+  await click(buttonStarting('To match', group));
+  assert.deepEqual([...document.querySelectorAll('.events-table tbody tr')].map(r => r.dataset.guest), ['g-again'],
+    'To match shows their cancelled row');
+  await click(button('Restore', row('g-again')));
+  assert.deepEqual(callsOf('event_set_guest_cancelled').at(-1).args, { p_guest_id: 'g-again', p_cancelled: false, p_reason: null });
+  assert.ok(text().includes('Rita Returned is restored.') && text().includes('added, as they asked when they signed up again.'), text());
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('449: a To match person also taken off who signed up again shows once, with both; a server before 449 shows the code', async () => {
+  await mount({ role: 'manager', setup: b => signedUpAgain(b, { alsoHeld: true }) });
+  const hana = holdOf('p-3');
+  assert.ok(hana.textContent.includes('Their phone number belongs to a customer under another name.')
+    && hana.textContent.includes('Signed up again after being taken off the list.'));
+  assert.ok(hana.querySelector('[data-attach="c-9"]') && hana.querySelector('[data-create]') && hana.querySelector('[data-put-back]')
+    && hana.querySelector('[data-close]'), 'link, make, put back or close');
+  await click(hana.querySelector('[data-close]'));
+  assert.ok(modal().textContent.includes('For a registration that is not a real one'), 'Close there closes the registration (as 436)');
+  assert.ok(modal().textContent.includes('Close Hana Held\'s registration'));
+
+  // The guest extras of a server without the details: the page still offers Put back (Restore) and reads.
+  await mount({ role: 'staff', setup: b => signedUpAgain(b, { server449: false }) });
+  assert.ok(holdOf('p-9').querySelector('[data-put-back]'));
+  assert.ok(!holdOf('p-9').querySelector('[data-signed-up-again]')?.textContent.includes('asking for'));
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
 // ── The contract ───────────────────────────────────────────────────────────
 test('the contract the tab shows is the recorded version, as the edge function\'s is', () => {
   const md5 = f => createHash('md5').update(readFileSync(join(REPO, f))).digest('hex');
