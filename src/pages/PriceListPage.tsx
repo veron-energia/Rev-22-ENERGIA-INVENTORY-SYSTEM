@@ -91,7 +91,7 @@ const PriceListPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Store Price List</h2><p>Set each product's selling price per store. A price is required before stock can be transferred in or sold.</p></div>
+        <div><h2>Store Price List</h2><p>Set each product's selling price per store. A product cannot be sold at a store until it has a price there (it can be transferred in before).</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
             rows={filtered} filename="store-prices" sheetName="Store Prices"
@@ -184,7 +184,7 @@ const PriceListPage: React.FC = () => {
               <label>Selling Price at {stores.find(s => s.id === selectedStore)?.name} (S$) *</label>
               <input type="number" min={0} step={0.01} value={price} onChange={e => setPrice(e.target.value)} placeholder="0.00" autoFocus />
             </div>
-            <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Every product is available for sale. A product needs its price before stock can be transferred into a store.</div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Every product is available for sale. A product needs its price at a store before it can be sold there.</div>
           </div>
         </Modal>
       )}

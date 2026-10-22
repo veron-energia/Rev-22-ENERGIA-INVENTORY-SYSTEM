@@ -2,7 +2,8 @@
  * Shared print document — two A5 copies on one A4 sheet.
  *
  * The invoice print and the Special Products / Rentals receipts must look the
- * same, so both build on this single definition. Keeping the CSS and the page
+ * same, so both build on this single definition (and so does the exchange
+ * document printed from the Exchanges page, 455). Keeping the CSS and the page
  * chrome here is what stops the two drifting apart the next time either is
  * touched.
  */
@@ -70,6 +71,10 @@ export interface PrintDocOptions {
   payments?: [string, string][];
   /** Free-form blocks inserted after the payment table. */
   extraBlocks?: string[];
+  /** Free-form blocks inserted under the Items heading, before the items
+   *  table (an exchange's returned items, as the invoice print places its
+   *  Exchange Details). Already-escaped HTML. */
+  beforeItems?: string[];
   /** Printed on the staff signature line — no hand signing required. */
   signedByName?: string | null;
   /** Cancellation / exchange / refund wording, set per store. */
@@ -188,6 +193,7 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       <div>${esc(o.billToName)}</div>
       ${(o.billToLines ?? []).map(l => `<div class="mut">${esc(l)}</div>`).join('')}
       <h2>Items</h2>
+      ${(o.beforeItems ?? []).join('')}
       <table><thead><tr>
         <th>${esc(o.itemHeading ?? 'Item')}</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th>
       </tr></thead><tbody>${itemRows}</tbody></table>

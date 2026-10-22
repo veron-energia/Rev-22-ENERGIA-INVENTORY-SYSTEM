@@ -187,7 +187,7 @@ test('the pages call the 398 functions, and the Customers page sends the filters
   const customers = read('src/pages/CustomersPage.tsx');
   assert.equal((customers.match(/\.\.\.visitArgs,/g) ?? []).length, 2, 'the list and the export both carry the visit filters');
   assert.equal((customers.match(/header: 'First Visit'/g) ?? []).length, 2, 'both exports have the first visit');
-  assert.match(customers, /canComplete && <button[^>]*title="Downline: Tier 1 and Tier 2, with visits"/, 'the row\'s Downline is Owner/Manager');
+  assert.match(customers, /canProfile && <button[^>]*title="Downline: Tier 1 and Tier 2, with visits"/, 'the row\'s Downline is for the roles that see the full Profile (453)');
   const affiliates = read('src/pages/AffiliatesPage.tsx');
   assert.match(affiliates, /canManage && view === 'promotion' && <ReferralPromotionPanel isOwner=\{canUnlink\} \/>/);
   assert.match(read('src/components/referrals/DownlineModal.tsx'), /rpc\('customer_downline_visits'/);

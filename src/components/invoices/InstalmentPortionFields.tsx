@@ -57,6 +57,15 @@ export function InstalmentPortionFields({ value, onChange, methods, receivedNow,
   methodAside?: React.ReactNode;
 }) {
   const preset = [3, 6, 9, 12];
+  // What staff typed in the custom box, kept while it still matches the months
+  // (owner, 22 Oct 2026: keep the typed number and also light a matching preset).
+  // Without it, a first digit that is itself a preset (the 3 of 36, the 12 of
+  // 120) lit that button and emptied the box under their finger. The match
+  // check stops a stale draft showing once the months change some other way.
+  const [customDraft, setCustomDraft] = React.useState<string | null>(null);
+  const draftMatches = customDraft !== null
+    && (customDraft === '' ? value.months === '' : Number(customDraft) === Number(value.months));
+  const customShown = draftMatches ? customDraft : preset.includes(Number(value.months)) ? '' : value.months;
   return (
     <fieldset className="instalment-portion">
       <legend>Instalment</legend>
@@ -72,20 +81,24 @@ export function InstalmentPortionFields({ value, onChange, methods, receivedNow,
         {methodAside}
       </div>
 
-      <label>Duration
+      {/* A group, not a <label>: a label passes a click on its text or blank
+          space to its first control, the 3 button, so clicking beside a custom
+          duration replaced it with 3 months. */}
+      <div className="instalment-duration" role="group" aria-label="Duration">Duration
         <div className="instalment-months">
           {preset.map(n => (
             <button type="button" key={n}
               className={`btn btn-sm ${Number(value.months) === n ? 'btn-primary' : 'btn-secondary'}`}
               aria-pressed={Number(value.months) === n}
-              onClick={() => onChange({ ...value, months: n })}>{n}</button>
+              onClick={() => { setCustomDraft(null); onChange({ ...value, months: n }); }}>{n}</button>
           ))}
           <input type="number" min={1} step={1} inputMode="numeric" aria-label="Custom number of months"
-            placeholder="Custom" value={preset.includes(Number(value.months)) ? '' : value.months}
-            onChange={e => onChange({ ...value, months: e.target.value === '' ? '' : Number(e.target.value) })} />
+            placeholder="Custom" value={customShown}
+            onChange={e => { setCustomDraft(e.target.value);
+              onChange({ ...value, months: e.target.value === '' ? '' : Number(e.target.value) }); }} />
           <span className="muted">months</span>
         </div>
-      </label>
+      </div>
 
       <label>Amount
         <input type="number" min={0} step={0.01} inputMode="decimal" value={receivedNow || ''}

@@ -3,16 +3,18 @@ import { supabase, fetchCustomersByIds, mergeCustomers} from '../lib/supabase';
 import { singaporeToday } from '../lib/invoices/business';
 import { exchangePaymentMethods, bundleLineBlock, componentsExchanged, exchangePaymentProblem,
          exchangePaymentRowProblem, bundleQuoteFromRpc, affiliateHint, type BundleQuote,
-         creditPreviewFromRpc, previewLine, productLinesCredit, componentCredit, creditBasisText,
+         creditPreviewFromRpc, previewLine, componentCredit, creditBasisText,
          exchangeDay, displayDay, instalmentLabelFrom, type CreditPreview, type CreditFigures,
-         saleDay, exchangeDateFloor, exchangeDateProblem, exchangeDateHint } from '../lib/exchanges/rules.mjs';
+         saleDay, exchangeDateFloor, exchangeDateProblem, exchangeDateHint,
+         itemsCredit, itemPicksProblem, itemsProductType, type ItemPick, exchangeServerWords } from '../lib/exchanges/rules.mjs';
+import { printA5Document, esc as printEsc, type PrintTotal } from '../lib/printDoc';
 import { promotionOnSale } from '../lib/promotions/status.mjs';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { useAuth } from '../context/AuthContext';
 import { Invoice, InvoiceItem, Product, Store, Customer, PaymentMethod, ProductExchange, ProductExchangeItem, Promotion } from '../types';
 import { Modal } from '../components/ui';
-import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye, Printer } from 'lucide-react';
+import { RefreshCw, Plus, ArrowLeftRight, Trash2, Eye, Printer, FileText } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { SearchSelect } from '../components/SearchSelect';
 
@@ -22,6 +24,8 @@ const ExchangesPage: React.FC = () => {
   const { profile } = useAuth();
   const [exchanges, setExchanges] = useState<ProductExchange[]>([]);
   const [exchangeInvoiceNos, setExchangeInvoiceNos] = useState<Record<string, string>>({});
+  /** Each exchange's replacement invoice id, for its Open invoice button (455). */
+  const [exchangeInvoiceIds, setExchangeInvoiceIds] = useState<Record<string, string>>({});
   /** The instalment label each replacement invoice records (424). */
   const [exchangeInstalments, setExchangeInstalments] = useState<Record<string, { method_id: string; months: number }>>({});
   const [products, setProducts] = useState<Product[]>([]);
@@ -62,15 +66,18 @@ const ExchangesPage: React.FC = () => {
     ]);
     setExchanges((ex.data as ProductExchange[]) ?? []);
     const exMap: Record<string, string> = {};
+    const idMap: Record<string, string> = {};
     const instMap: Record<string, { method_id: string; months: number }> = {};
     for (const r of ((exinv.data as any[]) ?? [])) {
       if (!r.exchange_id) continue;
       exMap[r.exchange_id] = r.invoice_no;
+      idMap[r.exchange_id] = r.id;
       if (r.instalment_method_id && r.instalment_months) {
         instMap[r.exchange_id] = { method_id: r.instalment_method_id, months: Number(r.instalment_months) };
       }
     }
     setExchangeInvoiceNos(exMap);
+    setExchangeInvoiceIds(idMap);
     setExchangeInstalments(instMap);
     setProducts((pr.data as Product[]) ?? []);
     setStores((st.data as Store[]) ?? []);
@@ -99,12 +106,16 @@ const ExchangesPage: React.FC = () => {
 
   // ---- New exchange wizard ----
   const [wizard, setWizard] = useState(false);
-  const [mode, setMode] = useState<'product' | 'bundle' | 'component'>('product');
-  const [bundleLineId, setBundleLineId] = useState('');      // chosen bundle invoice_item id
+  // 455 (the Owner, 22 Oct 2026, "Both kinds, any mix"): Items returns plain
+  // product lines and items of bundles together, in one exchange; the whole
+  // bundle stays its own mode.
+  const [mode, setMode] = useState<'items' | 'bundle'>('items');
+  const [bundleLineId, setBundleLineId] = useState('');      // whole bundle: the bundle invoice_item id
   const [newPromoId, setNewPromoId] = useState('');          // replacement bundle B
-  const [componentPid, setComponentPid] = useState('');      // component product to exchange
-  const [componentQty, setComponentQty] = useState(1);
-  const [bundleComps, setBundleComps] = useState<{ product_id: string; quantity: number }[]>([]);
+  /** The items of bundles ticked to return, each with how many of it. */
+  const [picks, setPicks] = useState<ItemPick[]>([]);
+  /** What each bundle line of the invoice holds (bundle_line_components). */
+  const [lineComps, setLineComps] = useState<Record<string, { product_id: string; quantity: number }[]>>({});
   const [store, setStore] = useState('');
   const [invSearch, setInvSearch] = useState('');
   const [invoice, setInvoice] = useState<Invoice | null>(null);
@@ -195,7 +206,7 @@ const ExchangesPage: React.FC = () => {
     setStore(isStaff && myStores.length === 1
       ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : ''); setInvSearch(''); setInvoice(null); setInvItems([]);
     setEligMsg(null); setReturnIds([]); setRepl([{ product_id: '', quantity: 1 }]); setPays([]); setReason(''); setNotes(''); setErr(null);
-    setMode('product'); setBundleLineId(''); setNewPromoId(''); setComponentPid(''); setComponentQty(1); setBundleComps([]);
+    setMode('items'); setBundleLineId(''); setNewPromoId(''); setPicks([]); setLineComps({});
     setExStaff([]); setExAffiliate(''); setExRaisedBy(''); setExDate(singaporeToday());
     setOriginalContext(null); setInvoiceCustomer(null); setCustomerUnavailable(false);
     setConfirming(false); setAttestName('');
@@ -248,7 +259,7 @@ const ExchangesPage: React.FC = () => {
     // customer.
     setErr(null); setInvoice(null); setInvItems([]); setEligMsg(null); setReturnIds([]);
     setInvoiceCustomer(null); setCustomerUnavailable(false); setOriginalContext(null);
-    setBundleLineId(''); setBundleComps([]); setComponentPid(''); setComponentQty(1);
+    setBundleLineId(''); setPicks([]); setLineComps({});
     setExStaff([]); setExAffiliate(''); setExRaisedBy(''); setPays([]);
     setExDate(singaporeToday());
     const q = invSearch.trim();
@@ -259,6 +270,11 @@ const ExchangesPage: React.FC = () => {
     const rd = (reasonData as string | null) ?? '';
     if (rd !== '') { setEligMsg(rd); }
     const { data: items } = await supabase.from('invoice_items').select('*').eq('invoice_id', (inv as Invoice).id);
+    // What each bundle line holds, so its items can be ticked under Items.
+    const bundles = ((items as InvoiceItem[]) ?? []).filter(i => i.line_kind === 'promotion');
+    const held = await Promise.all(bundles.map(b => supabase.rpc('bundle_line_components', { p_invoice_item_id: b.id })
+      .then(({ data }) => [b.id, ((data as any[]) ?? []).map(r => ({ product_id: String(r.product_id), quantity: Number(r.quantity) }))] as const)));
+    setLineComps(Object.fromEntries(held));
     setInvoice(inv as Invoice);
     setInvItems((items as InvoiceItem[]) ?? []);
 
@@ -283,30 +299,26 @@ const ExchangesPage: React.FC = () => {
   const productLines = invItems.filter(i => i.line_kind === 'product');
   const bundleLines = invItems.filter(i => i.line_kind === 'promotion');
   const returnedItems = productLines.filter(i => returnIds.includes(i.id));
-
-  // load components of the chosen bundle line
-  const loadBundleComps = async (lineId: string) => {
-    setBundleLineId(lineId); setComponentPid(''); setComponentQty(1);
-    if (!lineId) { setBundleComps([]); return; }
-    const { data } = await supabase.rpc('bundle_line_components', { p_invoice_item_id: lineId });
-    setBundleComps(((data as any[]) ?? []).map(r => ({ product_id: r.product_id, quantity: Number(r.quantity) })));
-  };
+  const ticked = returnIds.length + picks.length;
+  const pickOf = (lineId: string, productId: string) =>
+    picks.find(p => p.invoice_item_id === lineId && p.product_id === productId) ?? null;
+  const togglePick = (lineId: string, productId: string, held: number) =>
+    setPicks(prev => prev.some(p => p.invoice_item_id === lineId && p.product_id === productId)
+      ? prev.filter(p => !(p.invoice_item_id === lineId && p.product_id === productId))
+      : [...prev, { invoice_item_id: lineId, product_id: productId, quantity: held }]);
 
   // bundle valuation (uses promotion regular totals — computed server-side; show best-effort here)
   const promoName = (id: string) => promotions.find(p => p.id === id)?.name ?? '—';
-  const returnedType = useMemo(() => {
-    if (returnedItems.length === 0) return null;
-    const types = new Set(returnedItems.map(i => products.find(p => p.id === (i.product_id ?? ''))?.product_type));
-    return types.size === 1 ? [...types][0] : 'MIXED';
-  }, [returnedItems, products]);
+  // 455: one product type for everything ticked, plain lines and bundle items.
+  const returnedType = useMemo(() => itemsProductType(
+    [...returnedItems.map(i => i.product_id ?? ''), ...picks.map(p => p.product_id)],
+    id => products.find(p => p.id === id)?.product_type), [returnedItems, picks, products]);
 
-  // 424 (the Owner, Q17): each returned line counts for the lower of today's
-  // price and what was paid for it (the server's preview).
-  const productFig = useMemo(() => productLinesCredit(creditPreview, returnIds), [creditPreview, returnIds]);
-  const creditTotal = productFig.credit ?? 0;
-  const componentFig: CreditFigures | null = mode === 'component' && bundleLineId && componentPid
-    ? componentCredit(creditPreview, bundleLineId, componentPid, componentQty) : null;
-  const componentHeld = bundleComps.find(x => x.product_id === componentPid)?.quantity ?? 0;
+  // 424 (the Owner, Q17): each returned item counts for the lower of today's
+  // price and what was paid for it (for a bundle item, its share of what the
+  // bundle was paid; the server's preview). 455: pooled across every item.
+  const itemsFig = useMemo(() => itemsCredit(creditPreview, returnIds, picks), [creditPreview, returnIds, picks]);
+  const creditTotal = itemsFig.credit ?? 0;
 
   const replLines = repl.filter(r => r.product_id && r.quantity > 0);
   const replTotal = useMemo(() => replLines.reduce((s, r) => {
@@ -314,17 +326,17 @@ const ExchangesPage: React.FC = () => {
   }, 0), [replLines, effectiveStore, prices]);
 
   const paySum = pays.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  // Mode-aware credit (component mode: that item's share of what the bundle was paid, at most today's price).
-  const modeFig: CreditFigures | null = mode === 'component' ? componentFig
-    : { todays: productFig.todays, paid: productFig.paid, credit: productFig.credit };
-  const modeCredit = mode === 'component' ? (componentFig?.credit ?? 0) : creditTotal;
+  const modeFig: CreditFigures = { todays: itemsFig.todays, paid: itemsFig.paid, credit: itemsFig.credit };
+  const modeCredit = creditTotal;
+  // Only items of bundles ticked: what was paid is their share of the bundle's price.
+  const shareOnly = picks.length > 0 && returnIds.length === 0;
   const compTopup = mode === 'bundle' ? 0 : Math.max(0, +(replTotal - modeCredit).toFixed(2));
   // An instalment is a label on money that has arrived, so its amount is
   // received money like any other and needs no separate coverage figure.
   const receivedNow = pays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
   const compNonref = mode === 'bundle' ? 0 : Math.max(0, +(modeCredit - replTotal).toFixed(2));
   // What this exchange charges now: the whole bundle's top-up comes from the
-  // server's preview; product and component exchanges are priced here.
+  // server's preview; an Items exchange is priced here.
   const due = mode === 'bundle'
     ? (bundleQuote && !bundleQuote.problem ? bundleQuote.topup : 0)
     : compTopup;
@@ -349,13 +361,19 @@ const ExchangesPage: React.FC = () => {
     // the original sale, not in the future (the server checks the same).
     { const dp = exchangeDateProblem(exDate, singaporeToday(), saleDay(invoice));
       if (dp) return dp; }
-    if (mode === 'product') {
-      if (returnIds.length === 0) return 'Select at least one item to return.';
-      if (returnedType === 'MIXED') return 'All returned items must be the same product type.';
+    if (mode === 'items') {
+      if (ticked === 0) return 'Select at least one item to return.';
+      // 455: each bundle item once, up to what its bundle holds, not exchanged before.
+      { const pick = itemPicksProblem(picks, bundleLines as any, lineComps, pName);
+        if (pick) return pick; }
+      if (returnedType === 'MIXED') return 'All returned items must be the same product type (own or third-party).';
       if (replLines.length === 0) return 'Add at least one replacement product.';
+      if (returnedType && replLines.some(r => products.find(p => p.id === r.product_id)?.product_type !== returnedType)) {
+        return `The replacement products must be ${returnedType === 'own' ? 'own' : 'third-party'} products, as the returned items are.`;
+      }
       const valued = creditProblem();
       if (valued) return valued;
-      if (productFig.missing) return 'A returned item has no price at this store, so it cannot be valued here.';
+      if (itemsFig.missing) return 'A returned item has no price at this store, so it cannot be valued here.';
     } else if (mode === 'bundle') {
       if (!bundleLineId) return 'Select the bundle being returned.';
       { const block = bundleLineBlock(selectedBundleLine as any, 'bundle');
@@ -367,16 +385,6 @@ const ExchangesPage: React.FC = () => {
       if (due > 0 && pays.some(p => p.payment_method_id === INSTALMENT_METHOD)) {
         return 'A whole-bundle exchange is paid in full now: choose a payment method, not an instalment.';
       }
-    } else if (mode === 'component') {
-      if (!bundleLineId) return 'Select the bundle.';
-      if (!componentPid) return 'Select the component to exchange.';
-      if (componentsExchanged(selectedBundleLine as any).includes(componentPid)) return 'That item of the bundle has already been exchanged.';
-      if (componentQty <= 0) return 'Component quantity must be greater than zero.';
-      if (componentQty > componentHeld) return `The bundle holds ${componentHeld} of that item.`;
-      if (replLines.length === 0) return 'Add at least one replacement product.';
-      const valued = creditProblem();
-      if (valued) return valued;
-      if (!componentFig || componentFig.credit === null) return 'That item has no price at this store, so it cannot be valued here.';
     }
     // Only what is due is sent (nothing when nothing is due): every amount
     // with a method (a row left on "— Method —" would count here but never be
@@ -425,8 +433,8 @@ const ExchangesPage: React.FC = () => {
     // are the replacement invoice's instalment label (424), as on any invoice.
     const instalment = mode === 'bundle' ? null : instalmentLabelFrom(active, INSTALMENT_METHOD);
     // One call: the exchange and who handled it are written together, so an
-    // exchange can never exist without its own attribution. The three
-    // creators are called underneath.
+    // exchange can never exist without its own attribution. The creators are
+    // called underneath (455: create_items_exchange for Items).
     const common = {
       original_invoice_id: invoice.id, processing_store_id: effectiveStore,
       payments: payPayload,
@@ -442,21 +450,22 @@ const ExchangesPage: React.FC = () => {
       raised_by: exRaisedBy || null,
       exchange_date: exDate || null,
     };
-    const payload = mode === 'product'
+    // 455: plain lines whole, and each bundle item with its bundle line, the
+    // product and how many, in one list.
+    const payload = mode === 'items'
       ? { ...common,
-          returned: returnedItems.map(i => ({ invoice_item_id: i.id, quantity: i.quantity })),
+          returned: [
+            ...returnedItems.map(i => ({ invoice_item_id: i.id, quantity: i.quantity })),
+            ...picks.map(p => ({ invoice_item_id: p.invoice_item_id, product_id: p.product_id, quantity: p.quantity })),
+          ],
           replacement: replLines }
-      : mode === 'bundle'
-      ? { ...common, original_invoice_item_id: bundleLineId, new_promotion_id: newPromoId }
-      : { ...common, original_invoice_item_id: bundleLineId,
-          component_product_id: componentPid, component_qty: componentQty,
-          replacement: replLines };
+      : { ...common, original_invoice_item_id: bundleLineId, new_promotion_id: newPromoId };
     const { data, error } = await supabase.rpc('create_exchange_with_details', {
-      p_kind: mode === 'product' ? 'product' : mode === 'bundle' ? 'bundle' : 'bundle_component',
+      p_kind: mode === 'items' ? 'items' : 'bundle',
       p_payload: payload,
     });
     setBusy(false);
-    if (error) { setErr(error.message); setConfirming(false); return; }
+    if (error) { setErr(exchangeServerWords(error.message)); setConfirming(false); return; }
     setConfirming(false); setWizard(false); load();
     alert(`Exchange ${(data as any)?.exchange_no ?? ''} completed.`);
   };
@@ -464,87 +473,99 @@ const ExchangesPage: React.FC = () => {
   // ---- Detail view ----
   const [detail, setDetail] = useState<ProductExchange | null>(null);
   const [detailItems, setDetailItems] = useState<ProductExchangeItem[]>([]);
+  // 455: what the printed exchange says besides its rows: the original
+  // invoice's number, the payments taken, and who raised and saved it.
+  const [detailOrigNo, setDetailOrigNo] = useState<string | null>(null);
+  const [detailPays, setDetailPays] = useState<any[]>([]);
+  const [detailNames, setDetailNames] = useState<Record<string, string>>({});
+  // Print waits for these reads: printed before them, both copies would say
+  // "None" returned, no payments and no signature, and still be logged. A
+  // failed read of the rows or the payments keeps Print off.
+  const [detailState, setDetailState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const detailSeq = useRef(0);
   const openDetail = async (e: ProductExchange) => {
+    const seq = ++detailSeq.current;
     setDetail(e); setDetailItems([]); setDetailPosition(null);
-    // What is charged, what arrived and what is still owed — read from the
-    // server rather than inferred from the charge alone.
-    supabase.rpc('exchange_payment_position', { p_exchange_id: e.id })
-      .then(({ data }) => setDetailPosition(data ?? null));
-    const { data } = await supabase.from('product_exchange_items').select('*').eq('exchange_id', e.id);
-    setDetailItems((data as ProductExchangeItem[]) ?? []);
+    setDetailOrigNo(null); setDetailPays([]); setDetailNames({}); setDetailState('loading');
+    const people = [(e as any).raised_by, e.created_by].filter(Boolean) as string[];
+    try {
+      const [items, orig, paid, names, position] = await Promise.all([
+        supabase.from('product_exchange_items').select('*').eq('exchange_id', e.id),
+        supabase.from('invoices').select('id, invoice_no').eq('id', e.original_invoice_id).maybeSingle(),
+        supabase.from('product_exchange_payments').select('*').eq('exchange_id', e.id),
+        people.length > 0 ? supabase.from('profiles').select('id, full_name').in('id', people) : Promise.resolve({ data: [] as any[] }),
+        // What is charged, what arrived and what is still owed — read from the
+        // server rather than inferred from the charge alone.
+        supabase.rpc('exchange_payment_position', { p_exchange_id: e.id }),
+      ]);
+      if (seq !== detailSeq.current) return;   // another exchange opened since
+      setDetailItems((items.data as ProductExchangeItem[]) ?? []);
+      setDetailOrigNo((orig.data as any)?.invoice_no ?? null);
+      setDetailPays((paid.data as any[]) ?? []);
+      setDetailNames(Object.fromEntries(((names.data as any[]) ?? []).map(p => [p.id, p.full_name])));
+      setDetailPosition(position.data ?? null);
+      setDetailState(items.error || paid.error ? 'failed' : 'ready');
+    } catch {
+      if (seq === detailSeq.current) setDetailState('failed');
+    }
   };
 
-  // Print an exchange document in the same style as invoice printing.
+  // 455 (the Owner, 22 Oct 2026, item 4): the exchange document prints as
+  // invoices do, a customer copy and an office copy on one A4 sheet
+  // (printA5Document), the returned items above the replacement, the note on
+  // both copies, and the person who raised it on the staff signature line.
   const printExchange = () => {
-    if (!detail) return;
-    const esc = (x: any) => String(x ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    if (!detail || detailState !== 'ready') return;
+    const d: any = detail;
     const st: any = stores.find(x => x.id === detail.processing_store_id) ?? {};
-    const cust = customers.find(c => c.id === detail.customer_id);
-    const inv = exchangeInvoiceNos[detail.id];
-    const rowsFor = (dir: 'returned' | 'replacement') => detailItems.filter(i => i.direction === dir)
-      .map(i => `<tr><td>${esc(pName(i.product_id))}</td><td class="r">${i.quantity}</td><td class="r">S$${Number(i.unit_price).toFixed(2)}</td><td class="r">S$${Number(i.line_total).toFixed(2)}</td></tr>`).join('');
-    const headBlock = (st.company_logo_url || st.store_logo_url)
-      ? `<div style="display:flex;gap:16px;align-items:center;margin-bottom:10px">
-          ${st.company_logo_url ? `<img src="${esc(st.company_logo_url)}" style="max-height:48px;max-width:180px;object-fit:contain" />` : ''}
-          ${st.store_logo_url ? `<img src="${esc(st.store_logo_url)}" style="max-height:48px;max-width:180px;object-fit:contain" />` : ''}
-        </div>` : '';
-    const focStamp = (detail as any).is_foc
-      ? `<div class="mut"><b>FREE OF CHARGE EXCHANGE</b> — FOC value S$${Number((detail as any).foc_amount ?? 0).toFixed(2)}${(detail as any).foc_reason ? ` · ${esc((detail as any).foc_reason)}` : ''}</div>` : '';
-    const html = `<!doctype html><html><head><title>${esc(detail.exchange_no)}</title><style>
-      @page { size: A4; margin: 10mm; }
-      body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;}
-      h1{font-size:18px;margin:0;} h2{font-size:12px;margin:12px 0 4px;text-transform:uppercase;letter-spacing:0.04em;color:#333;}
-      .mut{color:#666;font-size:10.5px;} .r{text-align:right;}
-      table{width:100%;border-collapse:collapse;margin-top:4px;}
-      th{font-size:10px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:4px 6px;}
-      th.r{text-align:right;} td{padding:4px 6px;border-bottom:1px solid #eee;vertical-align:top;}
-      .totals{margin-top:8px;width:280px;margin-left:auto;} .totals td{border:none;padding:2px 6px;}
-      .grand{font-size:15px;font-weight:bold;border-top:1px solid #999;}
-      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;}
-      .signrow{display:flex;gap:40px;margin-top:36px;} .sign{flex:1;text-align:center;font-size:11px;color:#444;}
-      .signline{border-bottom:1px solid #999;height:34px;margin-bottom:4px;}
-      .terms{margin-top:18px;font-size:10px;color:#666;border-top:1px solid #ddd;padding-top:6px;}
-      </style><script>window.onload=function(){window.print();}</script></head><body>
-      <div>
-        ${headBlock}
-        <div class="head">
-          <div>
-            <h1>${esc(st.company_name ?? st.name ?? 'Energia')}</h1>
-            <div class="mut">${esc(st.address ?? '')}${st.phone ? ` · ${esc(st.phone)}` : ''}</div>
-          </div>
-          <div style="text-align:right">
-            <h1>EXCHANGE</h1>
-            <div><b>${esc(detail.exchange_no)}</b></div>
-            ${inv ? `<div class="mut">Invoice ${esc(inv)}</div>` : ''}
-            <div class="mut">Exchange date ${esc(displayDay(exchangeDay(detail)))}</div>
-          </div>
-        </div>
-        <h2>Customer</h2>
-        <div>${esc(cName(detail.customer_id))}${(cust as any)?.phone ? ` · ${esc((cust as any).phone)}` : ''}</div>
-        <div class="mut">Processed at ${esc(sName(detail.processing_store_id))}${detail.reason ? ` · Reason: ${esc(detail.reason)}` : ''}</div>
-        ${focStamp}
-        <h2>Returned Items</h2>
-        <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead>
-        <tbody>${rowsFor('returned') || '<tr><td colspan="4" class="mut">None</td></tr>'}</tbody></table>
-        <h2>Replacement Items</h2>
-        <table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead>
-        <tbody>${rowsFor('replacement') || '<tr><td colspan="4" class="mut">None</td></tr>'}</tbody></table>
-        <table class="totals"><tbody>
-          <tr><td>Returned value (credit)</td><td class="r">S$${Number(detail.returned_credit_total).toFixed(2)}</td></tr>
-          <tr><td>Replacement total</td><td class="r">S$${Number(detail.replacement_total).toFixed(2)}</td></tr>
-          ${Number(detail.topup_amount) > 0 ? `<tr class="grand"><td>Additional charge</td><td class="r">S$${Number(detail.topup_amount).toFixed(2)}</td></tr>` : ''}
-          ${Number(detail.nonrefundable_amount) > 0 ? `<tr class="grand"><td>Unused value (non-refundable)</td><td class="r">S$${Number(detail.nonrefundable_amount).toFixed(2)}</td></tr>` : ''}
-        </tbody></table>
-        <div class="signrow">
-          <div class="sign"><div class="signline"></div>Customer Signature</div>
-          <div class="sign"><div class="signline"></div>Staff Signature</div>
-        </div>
-        <div class="terms">Exchanged goods have been checked and collected. No further exchange is allowed on the returned items.</div>
-      </div>
-      </body></html>`;
-    const w = window.open('', '_blank');
-    if (!w) { alert('Please allow pop-ups to print.'); return; }
-    w.document.write(html); w.document.close();
+    const cust: any = customers.find(c => c.id === detail.customer_id);
+    const replNo = exchangeInvoiceNos[detail.id];
+    const returnedRows = detailItems.filter(i => i.direction === 'returned')
+      .map(i => `<tr><td>${printEsc(pName(i.product_id))}</td><td class="r">${printEsc(i.quantity)}</td><td class="r">${printEsc(money(i.line_total))}</td></tr>`).join('');
+    const returnedTable = `<h2>Returned Items</h2><table><thead><tr><th>Returned Item</th><th class="r">Qty</th><th class="r">Credit</th></tr></thead>
+      <tbody>${returnedRows || '<tr><td colspan="3" class="mut">None</td></tr>'}</tbody></table>`;
+    const totals: PrintTotal[] = [
+      { label: 'Returned value (credit)', value: money(detail.returned_credit_total) },
+      { label: 'Replacement total', value: money(detail.replacement_total) },
+      ...(Number(d.foc_amount ?? 0) > 0 ? [{ label: 'FOC waived', value: `−${money(d.foc_amount)}` }] : []),
+      Number(detail.topup_amount) > 0 ? { label: 'Additional charge', value: money(detail.topup_amount), grand: true }
+        : Number(detail.nonrefundable_amount) > 0 ? { label: 'Unused value (non-refundable)', value: money(detail.nonrefundable_amount), grand: true }
+        : { label: 'Even exchange', value: money(0), grand: true },
+    ];
+    const payments: [string, string][] = detailPays.map(p => [
+      `${methods.find(m => m.id === p.payment_method_id)?.name ?? 'Payment'}${p.reference ? ` · ${p.reference}` : ''}`, money(p.amount)]);
+    if (Number(detail.topup_amount) > 0 && detailPosition && Number(detailPosition.outstanding) > 0) {
+      payments.push(['Received', money(detailPosition.received)], ['Outstanding', money(detailPosition.outstanding)]);
+    }
+    // FOC reasons are internal (the Owner, Q7): the copies say FOC and its value.
+    const extraBlocks = [
+      ...(detail.reason ? [`<h2>Reason</h2><div class="mut">${printEsc(detail.reason)}</div>`] : []),
+      ...(d.is_foc ? [`<div class="mut"><b>FREE OF CHARGE EXCHANGE</b> — FOC value ${printEsc(money(d.foc_amount ?? 0))}</div>`] : []),
+      ...(detail.notes ? [`<h2>Notes</h2><div class="mut">${printEsc(detail.notes).replace(/\n/g, '<br/>')}</div>`] : []),
+    ];
+    const printed = printA5Document({
+      docNo: detail.exchange_no,
+      docTitle: 'Exchange',
+      branding: st,
+      headerLines: [
+        ...(replNo ? [`Replacement invoice: ${printEsc(replNo)}`] : []),
+        ...(detailOrigNo ? [`Original invoice: ${printEsc(detailOrigNo)}`] : []),
+        `Exchange date: ${printEsc(displayDay(exchangeDay(detail)))}`,
+        `Processed at: ${printEsc(sName(detail.processing_store_id))}`,
+      ],
+      billToName: cName(detail.customer_id),
+      billToLines: [cust?.phone ?? ''].filter(Boolean),
+      beforeItems: [returnedTable],
+      itemHeading: 'Replacement Item',
+      lines: detailItems.filter(i => i.direction === 'replacement')
+        .map(i => ({ name: pName(i.product_id), qty: i.quantity, unit: Number(i.unit_price), total: Number(i.line_total) })),
+      totals, payments, extraBlocks,
+      // Who raised the exchange, else whoever saved it, as invoices print who raised them.
+      signedByName: detailNames[d.raised_by ?? ''] ?? detailNames[detail.created_by ?? ''] ?? '',
+      policyText: st.policy_text ?? null,
+      termsText: 'Exchanged goods have been checked and collected. No further exchange is allowed on the returned items.',
+    });
+    if (!printed) return;
     // Audit: record that this exchange was printed. The server writes the row
     // for an exchange the person can see (406); the print never waits on it.
     supabase.rpc('record_document_printed', { p_kind: 'exchange', p_record_id: detail.id })
@@ -638,17 +659,17 @@ const ExchangesPage: React.FC = () => {
                   {' '}· Paid {invoice.paid_at ? new Date(invoice.paid_at).toLocaleDateString() : '—'}</div>
 
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {([['product', 'Product'], ['bundle', 'Whole bundle'], ['component', 'Bundle component']] as const).map(([v, lbl]) => (
+                  {([['items', 'Items'], ['bundle', 'Whole bundle']] as const).map(([v, lbl]) => (
                     <button key={v} type="button" className={`btn btn-sm ${mode === v ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => { setMode(v); setReturnIds([]); setBundleLineId(''); setNewPromoId(''); setComponentPid(''); setBundleComps([]); setPays([]); }}>{lbl}</button>
+                      onClick={() => { setMode(v); setReturnIds([]); setPicks([]); setBundleLineId(''); setNewPromoId(''); setPays([]); }}>{lbl}</button>
                   ))}
                 </div>
 
-                {mode === 'product' && (
+                {mode === 'items' && (
                 <div className="form-group">
                   <label>Items to return (select the ones physically brought back &amp; unused)</label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {productLines.length === 0 && <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No plain product lines on this invoice.</span>}
+                    {productLines.length === 0 && bundleLines.length === 0 && <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No products or bundles on this invoice.</span>}
                     {productLines.map(i => {
                       const already = (i as any).exchanged_at;
                       const on = returnIds.includes(i.id);
@@ -667,20 +688,56 @@ const ExchangesPage: React.FC = () => {
                         </label>
                       );
                     })}
+                    {/* 455: each bundle's items, ticked beside the plain lines, each up
+                        to what the bundle holds; an item exchanged before stays off. */}
+                    {bundleLines.map(b => {
+                      const block = bundleLineBlock(b as any, 'items');
+                      const done = componentsExchanged(b as any);
+                      return (
+                        <div key={b.id} className="exchange-bundle-items" data-line={b.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', opacity: block ? 0.5 : 1 }}>
+                            {promoName(b.promotion_id ?? '')} × {b.quantity}{block ? ` (${block})` : ''}</span>
+                          {!block && (lineComps[b.id] ?? []).map(c => {
+                            const already = done.includes(c.product_id);
+                            const pick = pickOf(b.id, c.product_id);
+                            const f = already ? null : componentCredit(creditPreview, b.id, c.product_id, pick?.quantity ?? c.quantity);
+                            return (
+                              <div key={c.product_id} style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 18, opacity: already ? 0.5 : 1, fontSize: 13 }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <input type="checkbox" disabled={already} checked={!!pick} style={{ width: 'auto' }}
+                                    onChange={() => togglePick(b.id, c.product_id, c.quantity)} />
+                                  <span>{pName(c.product_id)} (×{c.quantity} in bundle){already ? ' (already exchanged)' : ''}
+                                    {f && <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>
+                                      {pick && pick.quantity !== c.quantity ? `×${pick.quantity}: ` : ''}its share paid {f.paid === null ? '—' : money(f.paid)} · today {f.todays === null ? 'no price here' : money(f.todays)}
+                                    </span>}
+                                  </span>
+                                </label>
+                                {pick && c.quantity > 1 && (
+                                  <input type="number" min={1} max={c.quantity} value={pick.quantity} style={{ width: 64 }}
+                                    aria-label={`How many ${pName(c.product_id)} come back`}
+                                    onChange={e => setPicks(prev => prev.map(p => p.invoice_item_id === b.id && p.product_id === c.product_id
+                                      ? { ...p, quantity: +e.target.value } : p))} />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
                   </div>
                   {returnedType === 'MIXED' && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>Returned items must all be the same product type (own or third-party).</div>}
                 </div>
                 )}
 
-                {(mode === 'bundle' || mode === 'component') && (
+                {mode === 'bundle' && (
                   <div className="form-group">
                     <label>Bundle on this invoice</label>
-                    <select value={bundleLineId} onChange={e => loadBundleComps(e.target.value)}>
+                    <select value={bundleLineId} onChange={e => setBundleLineId(e.target.value)}>
                       <option value="">— Select bundle —</option>
                       {bundleLines.map(i => {
                         // Whole bundle: one bundle whose items were not exchanged on
-                        // their own (408). Component: any bundle not fully exchanged.
-                        const block = bundleLineBlock(i as any, mode);
+                        // their own (408); the others are returned item by item under Items.
+                        const block = bundleLineBlock(i as any, 'bundle');
                         return <option key={i.id} value={i.id} disabled={!!block}>{promoName(i.promotion_id ?? '')} × {i.quantity}{block ? ` (${block})` : ''}</option>;
                       })}
                     </select>
@@ -708,7 +765,7 @@ const ExchangesPage: React.FC = () => {
                           searchPrices: [p.fixed_price],
                         }))} />
                     </div>
-                    <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Whole-bundle swap: every item of the old bundle goes back to stock and every item of the new bundle is taken out. Only one bundle of products is swapped whole: a bundle with choices, vouchers or therapy, a line of several bundles, or one with an item already exchanged goes through Bundle component.</div></div>
+                    <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Whole-bundle swap: every item of the old bundle goes back to stock and every item of the new bundle is taken out. Only one bundle of products is swapped whole: a bundle with choices, vouchers or therapy, a line of several bundles, or one with an item already exchanged is returned item by item under Items.</div></div>
                   </>
                 )}
 
@@ -742,32 +799,16 @@ const ExchangesPage: React.FC = () => {
                         )
                 )}
 
-                {mode === 'component' && bundleLineId && (
-                  <div className="form-group">
-                    <label>Component to exchange</label>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <select value={componentPid} style={{ flex: 1 }} onChange={e => { setComponentPid(e.target.value); const comp = bundleComps.find(x => x.product_id === e.target.value); setComponentQty(comp?.quantity ?? 1); }}>
-                        <option value="">— Select component —</option>
-                        {bundleComps.map(comp => {
-                          const done = componentsExchanged(selectedBundleLine as any).includes(comp.product_id);
-                          return <option key={comp.product_id} value={comp.product_id} disabled={done}>{pName(comp.product_id)} (×{comp.quantity} in bundle){done ? ' (already exchanged)' : ''}</option>;
-                        })}
-                      </select>
-                      <input type="number" min={1} value={componentQty} style={{ width: 70 }} onChange={e => setComponentQty(+e.target.value)} />
-                    </div>
-                  </div>
-                )}
-
-                {(mode === 'product' || mode === 'component') && (
+                {mode === 'items' && (
                 <div className="form-group">
-                  <label>Replacement products {mode === 'component' && componentPid ? '' : returnedType && returnedType !== 'MIXED' ? `(${returnedType === 'own' ? 'own' : 'third-party'} only)` : ''}</label>
+                  <label>Replacement products {returnedType && returnedType !== 'MIXED' ? `(${returnedType === 'own' ? 'own' : 'third-party'} only)` : ''}</label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {repl.map((r, i) => (
                       <div key={i} style={{ display: 'flex', gap: 6 }}>
                         <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
                           value={r.product_id}
                           onChange={v => setRepl(rs => rs.map((x, j) => j === i ? { ...x, product_id: v } : x))}
-                          options={(mode === 'component' ? products : replCandidates)
+                          options={replCandidates
                             .filter(p => priceAt(effectiveStore, p.id) != null)
                             .map((p: any) => ({
                               value: p.id,
@@ -791,13 +832,14 @@ const ExchangesPage: React.FC = () => {
                 <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 12, fontSize: 13 }}>
                   {creditPreviewState === 'loading' && <div className="muted">Working out what the returned items count for…</div>}
                   {creditPreviewState === 'failed' && <div style={{ color: 'var(--danger)' }}>What the returned items count for could not be worked out. Refresh the page and try again.</div>}
-                  {creditPreviewState === 'ready' && modeFig && modeFig.credit !== null && (mode === 'product' ? returnIds.length > 0 : !!componentPid) && (<>
+                  {creditPreviewState === 'ready' && modeFig.credit !== null && ticked > 0 && (<>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Returned, today's price</span><span>{money(modeFig.todays ?? 0)}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{mode === 'component' ? 'Returned, its share of what the bundle was paid' : 'Returned, what was paid'}</span><span>{money(modeFig.paid ?? 0)}</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{shareOnly ? 'Returned, its share of what the bundle was paid'
+                      : picks.length > 0 ? 'Returned, what was paid (a bundle item: its share)' : 'Returned, what was paid'}</span><span>{money(modeFig.paid ?? 0)}</span></div>
                   </>)}
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Exchange credit (the lower of the two)</span><strong>{money(modeCredit)}</strong></div>
-                  {creditPreviewState === 'ready' && (mode === 'product' ? returnIds.length > 0 : !!componentPid) && (
-                    <div className="muted" style={{ fontSize: 12 }}>{creditBasisText(modeFig, mode === 'component')}</div>)}
+                  {creditPreviewState === 'ready' && ticked > 0 && (
+                    <div className="muted" style={{ fontSize: 12 }}>{creditBasisText(modeFig, shareOnly)}</div>)}
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Replacement total</span><strong>{money(replTotal)}</strong></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 6 }}>
                     {compTopup > 0 ? <><span>Additional charge</span><strong style={{ color: 'var(--primary)' }}>{money(compTopup)}</strong></>
@@ -856,7 +898,11 @@ const ExchangesPage: React.FC = () => {
 
                 <div className="form-grid-2">
                   <div className="form-group"><label>Reason *</label><input value={reason} onChange={e => setReason(e.target.value)} placeholder="Required" /></div>
-                  <div className="form-group"><label>Notes</label><input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" /></div>
+                  <div className="form-group"><label>Notes</label>
+                    <textarea value={notes} rows={3} onChange={e => setNotes(e.target.value)} placeholder="Optional" />
+                    {/* 455 (the Owner, 22 Oct 2026, item 6): the note prints. */}
+                    <small>Prints on both copies of the exchange (the customer's and the office's) and on its replacement invoice, so the customer sees it. It cannot be changed once the exchange is saved.</small>
+                  </div>
 
                   {/* ---- who handled THIS exchange -----------------------------
                       Deliberately empty to begin with. The original sale's staff
@@ -953,16 +999,23 @@ const ExchangesPage: React.FC = () => {
             <div>
               <label>Returning — confirm physically received and unused:</label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
-                {mode === 'product' && returnedItems.map(i => (
+                {mode === 'items' && returnedItems.map(i => (
                   <div key={i.id} style={{ fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
                     <strong>{pName(i.product_id ?? '')}</strong> × {i.quantity}
                     <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>SKU: {pSku(i.product_id ?? '') || '—'}</span>
                   </div>
                 ))}
+                {mode === 'items' && picks.map(p => (
+                  <div key={`${p.invoice_item_id}/${p.product_id}`} style={{ fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                    <strong>{pName(p.product_id)}</strong> × {p.quantity}
+                    <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>SKU: {pSku(p.product_id) || '—'}</span>
+                    <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>(item of {promoName(bundleLines.find(b => b.id === p.invoice_item_id)?.promotion_id ?? '')})</div>
+                  </div>
+                ))}
                 {mode === 'bundle' && (
                   <div style={{ fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
                     <strong>Whole bundle: {promoName(bundleLines.find(b => b.id === bundleLineId)?.promotion_id ?? '')}</strong>
-                    <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{bundleComps.map(cp => `${pName(cp.product_id)} ×${cp.quantity}`).join(', ')}</div>
+                    <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{(lineComps[bundleLineId] ?? []).map(cp => `${pName(cp.product_id)} ×${cp.quantity}`).join(', ')}</div>
                     <div style={{ marginTop: 2 }}>→ replacing with: <strong>{promoName(newPromoId)}</strong></div>
                     {bundleQuote && !bundleQuote.problem && (
                       <div style={{ marginTop: 4 }}>
@@ -984,13 +1037,6 @@ const ExchangesPage: React.FC = () => {
                       : compNonref > 0 ? `${money(compNonref)} unused (non-refundable)` : 'even exchange'}</strong>
                   </div>
                 )}
-                {mode === 'component' && componentPid && (
-                  <div style={{ fontSize: 13, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                    <strong>{pName(componentPid)}</strong> × {componentQty}
-                    <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>SKU: {pSku(componentPid) || '—'}</span>
-                    <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>(component of {promoName(bundleLines.find(b => b.id === bundleLineId)?.promotion_id ?? '')})</div>
-                  </div>
-                )}
               </div>
             </div>
             <div className="form-group">
@@ -1006,9 +1052,19 @@ const ExchangesPage: React.FC = () => {
       {/* Detail */}
       {detail && (
         <Modal title={`Exchange ${detail.exchange_no}${exchangeInvoiceNos[detail.id] ? ` — Invoice ${exchangeInvoiceNos[detail.id]}` : ''}`} maxWidth={520} onClose={() => setDetail(null)}
-          footer={<><button className="btn btn-secondary" onClick={printExchange}><Printer size={14} /> Print</button><button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></>}>
+          footer={
+            // Three buttons wrap on a phone rather than run off the dialog's left edge.
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 10, rowGap: 8, flex: 1, minWidth: 0 }}>
+            {/* 455 (the Owner, 22 Oct 2026, item 4): the replacement invoice, to
+                print or send from the Invoices page. */}
+            {exchangeInvoiceIds[detail.id] && (
+              <a className="btn btn-secondary" href={`/invoices?review=${encodeURIComponent(exchangeInvoiceIds[detail.id])}`}><FileText size={14} /> Open invoice</a>)}
+            <button className="btn btn-secondary" onClick={printExchange} disabled={detailState !== 'ready'}>
+              <Printer size={14} /> {detailState === 'loading' ? 'Loading…' : 'Print'}</button>
+            <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button></div>}>
           <div className="form-grid">
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cName(detail.customer_id)} · {sName(detail.processing_store_id)} · {displayDay(exchangeDay(detail))}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{cName(detail.customer_id)} · {sName(detail.processing_store_id)} · {displayDay(exchangeDay(detail))}
+              {detailOrigNo ? ` · Original invoice ${detailOrigNo}` : ''}</div>
             <div>
               <label>Returned</label>
               {detailItems.filter(i => i.direction === 'returned').map(i => <div key={i.id} style={{ fontSize: 13 }}>{pName(i.product_id)} × {i.quantity} @ {money(i.unit_price)} = {money(i.line_total)}</div>)}
@@ -1044,6 +1100,13 @@ const ExchangesPage: React.FC = () => {
               </>)}
               {detail.nonrefundable_amount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--danger)' }}><span>Unused value (non-refundable)</span><strong>{money(detail.nonrefundable_amount)}</strong></div>}
             </div>
+            {detail.notes && (
+              <div>
+                <label>Notes</label>
+                <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{detail.notes}</div>
+              </div>)}
+            {detailState === 'failed' && (
+              <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>This exchange could not be read in full, so it cannot be printed. Close it and open it again.</div></div>)}
             <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>This exchange is locked. No further exchange is allowed on the returned items.</div>
           </div>
         </Modal>

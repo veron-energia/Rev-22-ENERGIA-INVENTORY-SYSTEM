@@ -2,6 +2,7 @@ import { TransferNoteHistory } from '../components/stock-history/TransferNoteHis
 import '../components/stock-history/stock-history.css';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { fetchAllFrom } from '../lib/supabasePaging';
 import { useAuth } from '../context/AuthContext';
 import {
   Warehouse, Store, Product, TransferType, TransferLine, TransferLineKind, LocationType,
@@ -35,6 +36,12 @@ const TRANSFER_TYPES: { value: TransferType; label: string; src: LocationType; d
   { value: 'store_to_warehouse', label: 'Store → Warehouse', src: 'store', dest: 'warehouse' },
 ];
 const isReturn = (t: TransferType | null | undefined) => t === 'store_to_warehouse';
+
+// 452 (the owner, 22 Oct 2026): a product with no price at the destination
+// store can still be transferred there; it is tagged, because the invoice
+// refuses it until a price is set.
+const NO_STORE_PRICE = 'No price at this store — set one in Price List before selling';
+const PRICES_UNREAD = 'Store prices could not be read, so a product with no price at this store may not be marked. Refresh to try again.';
 
 /** A transfer's type as it now stands. An Owner or Manager can change where a
  *  transfer comes from or goes to, so the label follows the locations; a
@@ -121,7 +128,9 @@ const TransfersPage: React.FC = () => {
   const isStaff = profile?.role === 'staff';
 
   const [myStores, setMyStores] = useState<StaffStore[]>([]);
-  const [storePrices, setStorePrices] = useState<{ store_id: string; product_id: string }[]>([]);
+  // null: not read yet (or the first read failed), so nothing is tagged.
+  const [storePrices, setStorePrices] = useState<{ store_id: string; product_id: string }[] | null>(null);
+  const [pricesUnread, setPricesUnread] = useState(false);
   const [requests, setRequests] = useState<TransferRequest[]>([]);
   const [linesByReq, setLinesByReq] = useState<Record<string, TransferRequestLine[]>>({});
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -196,7 +205,9 @@ const TransfersPage: React.FC = () => {
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('profiles').select('id,full_name'),
       supabase.rpc('my_assigned_stores'),
-      supabase.from('store_product_prices').select('store_id,product_id').is('deleted_at', null).eq('is_active', true),
+      // Every page of it: one read stops at a thousand rows.
+      fetchAllFrom<{ store_id: string; product_id: string }>('store_product_prices', 'store_id,product_id',
+        q => q.is('deleted_at', null).eq('is_active', true)).catch(() => null),
     ]);
     setRequests((req.data as TransferRequest[]) ?? []);
     const grouped: Record<string, TransferRequestLine[]> = {};
@@ -207,7 +218,9 @@ const TransfersPage: React.FC = () => {
     setProducts((prod.data as Product[]) ?? []);
     setProfiles((prof.data as Profile[]) ?? []);
     setMyStores((myStoreList.data as StaffStore[]) ?? []);
-    setStorePrices((prc.data as { store_id: string; product_id: string }[]) ?? []);
+    // A failed read keeps the prices last read, and the windows say so.
+    if (prc) setStorePrices(prc);
+    setPricesUnread(!prc);
     setLoading(false);
   }, []);
 
@@ -252,11 +265,16 @@ const TransfersPage: React.FC = () => {
 
   // Staff at one store request into it; staff at two or more choose (STOCK-1).
   const selectedStaffDestId = destId || (myStores.length === 1 ? myStores[0].store_id : '');
-  const productHasStorePrice = (storeId: string | null | undefined, productId: string) =>
-    !storeId || storePrices.some(sp => sp.store_id === storeId && sp.product_id === productId);
+  const productHasStorePrice = (storeId: string | null | undefined, productId: string | null | undefined) =>
+    !storeId || !productId || storePrices === null || storePrices.some(sp => sp.store_id === storeId && sp.product_id === productId);
+  // Every product is listed (452); one with no price at the store is tagged.
   const productOptionsForStore = (storeId?: string | null) => products
-    .filter(p => productHasStorePrice(storeId, p.id))
-    .map(p => ({ value: p.id, label: `${p.name} (${p.sku})`, search: `${p.name} ${p.sku}` }));
+    .map(p => ({
+      value: p.id,
+      label: productHasStorePrice(storeId, p.id) ? `${p.name} (${p.sku})` : `${p.name} (${p.sku}) — ${NO_STORE_PRICE}`,
+      search: `${p.name} ${p.sku}`,
+    }));
+  const pricesUnreadNote = pricesUnread && <div className="alert alert-warning" role="status" style={{ marginBottom: 0 }}><span>⚠</span><div>{PRICES_UNREAD}</div></div>;
   const productOptionsHeld = (held: { product_id: string; current_qty: number }[]) => products
     .flatMap(p => {
       const h = held.find(x => x.product_id === p.id);
@@ -710,6 +728,7 @@ const TransfersPage: React.FC = () => {
         footer={<><button className="btn btn-secondary" onClick={() => setCreateOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={() => void handleCreate()} disabled={saving}>{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
         <div className="form-grid">
           {createErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{createErr}</div></div>}
+          {(isStaff || cfg.dest === 'store') && pricesUnreadNote}
           {isStaff ? <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>
             Requesting into {myStores.length > 1 ? <select aria-label="Store this request is for" value={destId} onChange={e => setDestId(e.target.value)} style={{ width: 'auto', display: 'inline-block', margin: '0 4px' }}><option value="">— choose a store —</option>{myStores.map(m => <option key={m.store_id} value={m.store_id}>{m.store_name}</option>)}</select>
               : <strong>{myStores[0]?.store_name ?? 'No store assigned'}</strong>}.
@@ -751,7 +770,7 @@ const TransfersPage: React.FC = () => {
               ? 'Only products this store holds are listed. The stock leaves the store when an Owner or Manager approves and dispatches the return, and is added to the warehouse as sellable stock when receipt is confirmed there.'
               : !isStaff && cfg.dest === 'warehouse'
                 ? 'Products use inventory: stock leaves the source on dispatch and is added to the warehouse when receipt is confirmed.'
-                : 'Normal Products require a destination-store price and use inventory.'}
+                : 'Products use inventory. A product with no price at the destination store can still be transferred, but it cannot be sold there until a price is set in Price List.'}
             {' '}Manual items exist only on this transfer and never create a Product, SKU, price, inventory row or stock movement.</div></div>
         </div>
       </Modal>}
@@ -760,6 +779,7 @@ const TransfersPage: React.FC = () => {
         footer={<><button className="btn btn-danger" onClick={() => void handleReject()} disabled={approveBusy}><X size={15} /> Reject</button><button className="btn btn-primary" onClick={() => void handleApprove()} disabled={approveBusy}><Check size={15} /> Approve & Dispatch</button></>}>
         <div className="form-grid">
           {approveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{approveErr}</div></div>}
+          {approveReq.dest_type === 'store' && pricesUnreadNote}
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
             {approveReq.source_id ? locName(approveReq.source_type, approveReq.source_id) : <em>source will be allocated below</em>} → <strong>{locName(approveReq.dest_type, approveReq.dest_id)}</strong>
           </p>
@@ -790,6 +810,9 @@ const TransfersPage: React.FC = () => {
                     <div style={{ marginTop: 3, display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
                       {line.line_kind === 'manual' && <span className="badge badge-muted" style={{ fontSize: 10 }}>Manual / Non-inventory</span>}
                       {(!line.line_id || line.added_by_approver) && <span className="badge badge-accent" style={{ fontSize: 10 }}>Added during review</span>}
+                      {!!line.line_id && line.line_kind === 'product' && approveReq.dest_type === 'store'
+                        && !productHasStorePrice(approveReq.dest_id, line.product_id)
+                        && <span className="badge badge-accent" style={{ fontSize: 10 }}>{NO_STORE_PRICE}</span>}
                       {!!line.line_id && !line.added_by_approver && <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>Requested: {line.requested_quantity}{line.line_kind === 'manual' && line.manual_uom ? ` ${line.manual_uom}` : ''}</span>}
                       {adjustment !== 0 && <span style={{ fontSize: 11.5, fontWeight: 600, color: adjustment > 0 ? 'var(--success)' : 'var(--accent)' }}>Adjustment: {adjustment > 0 ? '+' : ''}{adjustment}</span>}
                     </div>
@@ -843,6 +866,7 @@ const TransfersPage: React.FC = () => {
         footer={<><button className="btn btn-secondary" onClick={() => setEditReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveEdit()} disabled={editBusy}>{editBusy ? 'Saving…' : 'Save Changes'}</button></>}>
         <div className="form-grid">
           {editErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{editErr}</div></div>}
+          {editDestType === 'store' && pricesUnreadNote}
           <TransferNoteHistory requestId={editReq.id} />
           {!canApprove && <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>You can edit Products, Manual Items and the note. An unsourced Staff request is not stock-validated until an Owner/Manager allocates a source during Review.</div></div>}
           {canApprove && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

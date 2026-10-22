@@ -5,8 +5,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   exchangePaymentMethods, componentsExchanged, bundleLineBlock, exchangePaymentProblem,
-  exchangePaymentRowProblem, bundleQuoteFromRpc, affiliateHint,
+  exchangePaymentRowProblem, bundleQuoteFromRpc, affiliateHint, exchangeServerWords,
   creditPreviewFromRpc, productLinesCredit, componentCredit, creditBasisText,
+  itemsCredit, itemPicksProblem, itemsProductType,
   exchangeDay, displayDay, instalmentLabelFrom,
   saleDay, exchangeDateFloor, exchangeDateProblem, exchangeDateHint,
 } from '../../../src/lib/exchanges/rules.mjs';
@@ -26,14 +27,14 @@ test('no Wallet method, inactive or deleted method pays an exchange', () => {
 test('a whole bundle is one bundle whose items were not exchanged on their own', () => {
   const line = { quantity: 1, exchanged_at: null, component_exchanged: null };
   assert.equal(bundleLineBlock(line, 'bundle'), null);
-  assert.equal(bundleLineBlock(line, 'component'), null);
-  assert.equal(bundleLineBlock({ ...line, exchanged_at: '2026-10-09' }, 'component'), 'already exchanged');
+  assert.equal(bundleLineBlock(line, 'items'), null);
+  assert.equal(bundleLineBlock({ ...line, exchanged_at: '2026-10-09' }, 'items'), 'already exchanged');
   assert.equal(bundleLineBlock({ ...line, exchanged_at: '2026-10-09' }, 'bundle'), 'already exchanged');
-  assert.equal(bundleLineBlock({ ...line, quantity: 2 }, 'bundle'), '2 bundles on this line: use Bundle component');
-  assert.equal(bundleLineBlock({ ...line, quantity: 2 }, 'component'), null);
+  assert.equal(bundleLineBlock({ ...line, quantity: 2 }, 'bundle'), '2 bundles on this line: return its items under Items');
+  assert.equal(bundleLineBlock({ ...line, quantity: 2 }, 'items'), null);
   const swapped = { ...line, component_exchanged: [{ product_id: 'p-a', qty: 1, exchange_id: 'ex' }] };
-  assert.match(bundleLineBlock(swapped, 'bundle'), /already exchanged on its own/);
-  assert.equal(bundleLineBlock(swapped, 'component'), null);
+  assert.equal(bundleLineBlock(swapped, 'bundle'), 'an item was already exchanged on its own: return its other items under Items');
+  assert.equal(bundleLineBlock(swapped, 'items'), null);
   assert.deepEqual(componentsExchanged(swapped), ['p-a']);
   assert.deepEqual(componentsExchanged(line), []);
 });
@@ -86,6 +87,26 @@ test('the preview is read with every number a number', () => {
   const q2 = bundleQuoteFromRpc({ problem: null, credit: '150', todays_value: '200.00', paid: 150, replacement: 360, topup: 210 });
   assert.equal(q2.todays_value, 200); assert.equal(q2.paid, 150); assert.equal(q2.credit, 150);
   assert.equal(bundleQuoteFromRpc({ problem: 'Bundle "X" has ended' }).problem, 'Bundle "X" has ended');
+});
+
+test('455: the server\'s "Bundle component" reads as Items, the mode\'s name on the page', () => {
+  // exchange_bundle_quote's four messages that name the old mode (408, as on production at 450)
+  const pairs = [
+    ['An item of this bundle was already exchanged on its own (EXC-T-0001), so the whole bundle can no longer be exchanged. Exchange its other items with Bundle component instead.',
+     'An item of this bundle was already exchanged on its own (EXC-T-0001), so the whole bundle can no longer be exchanged. Exchange its other items under Items instead.'],
+    ['This line holds 2 bundles. A whole-bundle exchange swaps exactly one bundle, so it cannot be used on this line. Exchange its items with Bundle component instead.',
+     'This line holds 2 bundles. A whole-bundle exchange swaps exactly one bundle, so it cannot be used on this line. Exchange its items under Items instead.'],
+    ['Items of this bundle were chosen at the till. A whole-bundle exchange cannot take back or hand over chosen items yet; use Bundle component.',
+     'Items of this bundle were chosen at the till. A whole-bundle exchange cannot take back or hand over chosen items yet; exchange item by item under Items instead.'],
+    ['Bundle "XM Pick" has items chosen at the till. A whole-bundle exchange cannot take back or hand over chosen items yet; use Bundle component.',
+     'Bundle "XM Pick" has items chosen at the till. A whole-bundle exchange cannot take back or hand over chosen items yet; exchange item by item under Items instead.'],
+  ];
+  for (const [server, page] of pairs) {
+    assert.equal(exchangeServerWords(server), page);
+    assert.equal(bundleQuoteFromRpc({ problem: server }).problem, page, 'the preview\'s problem too');
+  }
+  assert.equal(exchangeServerWords('Bundle "X" has ended'), 'Bundle "X" has ended', 'other messages as sent');
+  assert.equal(exchangeServerWords(null), null);
 });
 
 test('the affiliate line says what an exchange left empty is credited to', () => {
@@ -207,4 +228,54 @@ test('424: an exchange is dated from the 1st of this month, never before the ori
     'The replacement sale counts on this date in the sales reports, commission and Xero.');
   assert.equal(exchangeDateHint('', '2026-10-09'),
     'The replacement sale counts on this date in the sales reports, commission and Xero.');
+});
+
+// ── 455 (the Owner, 22 Oct 2026, "Both kinds, any mix") ───────────────────
+test('plain lines and items of bundles count together, each at the lower of its own figures', () => {
+  const p = creditPreviewFromRpc(PREVIEW);
+  // li-a 75 (paid less), li-d 100 (cheaper today), and A x1 of the bundle 75
+  assert.deepEqual(itemsCredit(p, ['li-a', 'li-d'], [{ invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 1 }]),
+    { todays: 300, paid: 270, credit: 250, missing: false });
+  // items of a bundle alone, as componentCredit gives them
+  assert.deepEqual(itemsCredit(p, [], [{ invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 2 }]),
+    { todays: 200, paid: 150, credit: 150, missing: false });
+  // the same as productLinesCredit with no items of bundles
+  assert.deepEqual(itemsCredit(p, ['li-a', 'li-d'], []), productLinesCredit(p, ['li-a', 'li-d']));
+  // an item of a bundle with no figures (more than it holds, or not in it), or a line with no price
+  assert.equal(itemsCredit(p, ['li-a'], [{ invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 3 }]).credit, null);
+  assert.equal(itemsCredit(p, [], [{ invoice_item_id: 'li-ab', product_id: 'p-z', quantity: 1 }]).missing, true);
+  assert.equal(itemsCredit(p, ['li-x'], [{ invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 1 }]).missing, true);
+  assert.equal(itemsCredit(null, [], [{ invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 1 }]).missing, true);
+  assert.deepEqual(itemsCredit(p, null, null), { todays: 0, paid: 0, credit: 0, missing: false });
+});
+
+test('each bundle item once, up to what its line holds, not exchanged before', () => {
+  const lines = [
+    { id: 'li-ab', quantity: 2, exchanged_at: null, component_exchanged: null },
+    { id: 'li-old', quantity: 1, exchanged_at: null, component_exchanged: [{ product_id: 'p-a', qty: 1, exchange_id: 'ex' }] },
+    { id: 'li-gone', quantity: 1, exchanged_at: '2026-10-20', component_exchanged: null },
+  ];
+  const held = { 'li-ab': [{ product_id: 'p-a', quantity: 2 }, { product_id: 'p-b', quantity: 2 }],
+                 'li-old': [{ product_id: 'p-a', quantity: 1 }, { product_id: 'p-b', quantity: 1 }],
+                 'li-gone': [{ product_id: 'p-a', quantity: 1 }] };
+  const name = id => ({ 'p-a': 'XM A', 'p-b': 'XM B' })[id];
+  const pick = (line, product, quantity) => ({ invoice_item_id: line, product_id: product, quantity });
+  assert.equal(itemPicksProblem([], lines, held, name), null);
+  assert.equal(itemPicksProblem([pick('li-ab', 'p-a', 2), pick('li-ab', 'p-b', 1), pick('li-old', 'p-b', 1)], lines, held, name), null);
+  assert.equal(itemPicksProblem([pick('li-ab', 'p-a', 3)], lines, held, name), 'The bundle holds 2 of XM A.');
+  assert.equal(itemPicksProblem([pick('li-ab', 'p-a', 0)], lines, held, name), 'Enter how many XM A come back: a whole number, at least 1.');
+  assert.equal(itemPicksProblem([pick('li-ab', 'p-a', 1.5)], lines, held, name), 'Enter how many XM A come back: a whole number, at least 1.');
+  assert.equal(itemPicksProblem([pick('li-ab', 'p-a', 1), pick('li-ab', 'p-a', 1)], lines, held, name), 'XM A is ticked twice.');
+  assert.equal(itemPicksProblem([pick('li-old', 'p-a', 1)], lines, held, name), 'XM A of that bundle has already been exchanged.');
+  assert.equal(itemPicksProblem([pick('li-gone', 'p-a', 1)], lines, held, name), 'XM A: its bundle was already exchanged whole.');
+  assert.equal(itemPicksProblem([pick('li-ab', 'p-z', 1)], lines, held, name), 'The bundle holds 0 of That item.');
+  assert.equal(itemPicksProblem([pick('li-none', 'p-a', 1)], lines, held, name), 'XM A is not in a bundle on this invoice.');
+});
+
+test('everything ticked is one product type, own or third-party', () => {
+  const type = id => ({ a: 'own', b: 'own', t: 'third_party' })[id];
+  assert.equal(itemsProductType([], type), null);
+  assert.equal(itemsProductType(['a', 'b'], type), 'own');
+  assert.equal(itemsProductType(['t'], type), 'third_party');
+  assert.equal(itemsProductType(['a', 't'], type), 'MIXED');
 });

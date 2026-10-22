@@ -113,6 +113,10 @@ declare
                              -- call it; the page reads exchange_credit_preview, which checks who asks),
                              -- and what a bundle holds besides products, for its split
                              'exchange_credit_value','promotion_non_product_value',
+                             -- 455: one exchange of several items, plain lines and items of
+                             -- bundles in any mix (the page reaches it through
+                             -- create_exchange_with_details('items', ...), which checks who asks)
+                             'create_items_exchange',
                              -- 402: the TikTok ads engine, which Pabbly calls with the service key
                              -- and nobody signs in to use: the sheet write and its pieces, the
                              -- calendar import, the morning email and the earlier sheet writes

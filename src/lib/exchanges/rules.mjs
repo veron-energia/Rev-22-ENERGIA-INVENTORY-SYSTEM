@@ -23,6 +23,11 @@
 //   * 424 (the Owner, 9 Oct 2026, SALES-EXTRAS-M3): an exchange typed in late
 //     counts on its exchange date, never before the 1st of this month and
 //     never before the original sale.
+//   * 455 (the Owner, 22 Oct 2026, "Both kinds, any mix"): one list of items
+//     to return, plain product lines (whole) and items of bundles (up to what
+//     the bundle holds, not exchanged before) ticked together, one exchange;
+//     their credit is pooled; one product type, own or third-party
+//     (create_items_exchange checks the same).
 
 const num = v => {
   const n = Number(v);
@@ -46,15 +51,15 @@ export function componentsExchanged(line) {
 
 /**
  * Why a bundle line cannot be picked in this mode, or null.
- * mode: 'bundle' (the whole bundle) or 'component' (one of its items).
+ * mode: 'bundle' (the whole bundle) or 'items' (its items, under Items).
  */
 export function bundleLineBlock(line, mode) {
   if (!line) return 'Choose a bundle';
   if (line.exchanged_at) return 'already exchanged';
   if (mode !== 'bundle') return null;
-  if (componentsExchanged(line).length > 0) return 'an item was already exchanged on its own: use Bundle component';
+  if (componentsExchanged(line).length > 0) return 'an item was already exchanged on its own: return its other items under Items';
   const qty = num(line.quantity);
-  if (qty !== 1) return `${qty} bundles on this line: use Bundle component`;
+  if (qty !== 1) return `${qty} bundles on this line: return its items under Items`;
   return null;
 }
 
@@ -98,6 +103,19 @@ export function exchangePaymentProblem({ due, received, exact }) {
   return null;
 }
 
+/**
+ * A server message in the page's words (455). 408's exchange_bundle_quote (and
+ * create_bundle_exchange, which raises its answer) still sends staff to
+ * "Bundle component", the mode the page now calls Items.
+ */
+export function exchangeServerWords(text) {
+  if (text == null) return text;
+  return String(text)
+    .replace(/with Bundle component instead/g, 'under Items instead')
+    .replace(/use Bundle component/g, 'exchange item by item under Items instead')
+    .replace(/Bundle component/g, 'Items');
+}
+
 /** exchange_bundle_preview's answer, with every number a number. Null for none. */
 export function bundleQuoteFromRpc(data) {
   if (!data || typeof data !== 'object') return null;
@@ -105,7 +123,7 @@ export function bundleQuoteFromRpc(data) {
     product_id: String(i?.product_id ?? ''), name: String(i?.name ?? 'Unknown product'), quantity: num(i?.quantity),
   }));
   return {
-    problem: data.problem ? String(data.problem) : null,
+    problem: data.problem ? exchangeServerWords(String(data.problem)) : null,
     credit: num(data.credit), replacement: num(data.replacement),
     topup: num(data.topup), nonrefundable: num(data.nonrefundable),
     // 424: the two figures behind the credit (null from a server before 424)
@@ -176,6 +194,65 @@ export function componentCredit(preview, lineId, productId, qty) {
   const comp = (previewLine(preview, lineId)?.components ?? []).find(c => c.product_id === String(productId ?? ''));
   const opt = (comp?.options ?? []).find(o => o.quantity === num(qty));
   return opt ? { todays: opt.todays, paid: opt.paid, credit: opt.credit } : null;
+}
+
+// ── 455: several items, plain lines and items of bundles, in one exchange ──
+
+/**
+ * What everything ticked counts for together: the plain lines (lineIds) whole
+ * and each item of a bundle (picks: [{ invoice_item_id, product_id, quantity }])
+ * for its quantity, each at the lower of its own two figures, pooled.
+ * { todays, paid, credit, missing } as productLinesCredit: `missing` when an
+ * item is not in the preview or has no price at this store (credit null).
+ */
+export function itemsCredit(preview, lineIds, picks) {
+  const lines = productLinesCredit(preview, lineIds);
+  let todays = lines.todays, paid = lines.paid, credit = lines.credit ?? 0, missing = lines.missing;
+  for (const p of Array.isArray(picks) ? picks : []) {
+    const f = componentCredit(preview, p?.invoice_item_id, p?.product_id, p?.quantity);
+    if (!f || f.credit === null || f.todays === null) { missing = true; continue; }
+    todays += f.todays; paid += f.paid ?? 0; credit += f.credit;
+  }
+  return { todays: cents(todays), paid: cents(paid), credit: missing ? null : cents(credit), missing };
+}
+
+/**
+ * What is wrong with the items of bundles ticked, or null.
+ *   picks  [{ invoice_item_id, product_id, quantity }]
+ *   lines  the invoice's bundle lines ({ id, exchanged_at, component_exchanged })
+ *   held   { [lineId]: [{ product_id, quantity }] }: what each bundle line holds
+ *   nameOf productId => its name
+ * Each item once, of a bundle on this invoice not exchanged whole, not
+ * exchanged before, a whole number from 1 to what the line holds.
+ */
+export function itemPicksProblem(picks, lines, held, nameOf = () => 'That item') {
+  const seen = new Set();
+  for (const p of Array.isArray(picks) ? picks : []) {
+    const lineId = String(p?.invoice_item_id ?? '');
+    const productId = String(p?.product_id ?? '');
+    const name = nameOf(productId) || 'That item';
+    if (seen.has(`${lineId}/${productId}`)) return `${name} is ticked twice.`;
+    seen.add(`${lineId}/${productId}`);
+    const line = (Array.isArray(lines) ? lines : []).find(l => String(l?.id ?? '') === lineId);
+    if (!line) return `${name} is not in a bundle on this invoice.`;
+    if (line.exchanged_at) return `${name}: its bundle was already exchanged whole.`;
+    if (componentsExchanged(line).includes(productId)) return `${name} of that bundle has already been exchanged.`;
+    const have = num(((held && held[lineId]) || []).find(c => String(c?.product_id ?? '') === productId)?.quantity);
+    const qty = Number(p?.quantity);
+    if (!Number.isInteger(qty) || qty < 1) return `Enter how many ${name} come back: a whole number, at least 1.`;
+    if (qty > have) return `The bundle holds ${have} of ${name}.`;
+  }
+  return null;
+}
+
+/**
+ * The one product type of everything ticked ('own' or 'third_party'),
+ * 'MIXED' when they differ, or null when nothing is ticked.
+ */
+export function itemsProductType(productIds, typeOf) {
+  const types = new Set((Array.isArray(productIds) ? productIds : []).map(id => typeOf(id) ?? null));
+  if (types.size === 0) return null;
+  return types.size === 1 ? [...types][0] : 'MIXED';
 }
 
 /**

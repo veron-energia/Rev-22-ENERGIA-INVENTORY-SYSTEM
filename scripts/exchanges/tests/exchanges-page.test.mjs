@@ -25,6 +25,18 @@
 // the 1st of this month (Singapore), never before the original sale, and the
 // screen says the sale counts on it (the Owner, 9 Oct 2026, SALES-EXTRAS-M3).
 //
+// 455 (the Owner, 22 Oct 2026): Items returns plain lines and items of
+// bundles together ("Both kinds, any mix"): the credit is pooled, the payload
+// goes as p_kind 'items', more than a bundle holds, an item exchanged before
+// and own beside third-party are refused before Confirm, and the confirmation
+// lists every item. The Notes box prints and is sent; the exchange document
+// prints a customer copy and an office copy (printA5Document) with the
+// original and replacement invoice numbers, the returned and replacement
+// rows, the note (escaped, line breaks kept) and who raised it, and the
+// detail opens the replacement invoice. Print waits for the exchange's rows
+// (and stays off when a read fails), the detail's buttons wrap, and the
+// server's "Bundle component" reads as Items, the mode's name now.
+//
 // Run: node --test scripts/exchanges/tests/exchanges-page.test.mjs
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -106,16 +118,19 @@ function makeFixture() {
       { id: 'p-a', name: 'XM A', sku: 'XMA', product_type: 'own', is_active: true, deleted_at: null },
       { id: 'p-b', name: 'XM B', sku: 'XMB', product_type: 'own', is_active: true, deleted_at: null },
       { id: 'p-c', name: 'XM C', sku: 'XMC', product_type: 'own', is_active: true, deleted_at: null },
+      { id: 'p-t', name: 'XM Third', sku: 'XMT', product_type: 'third_party', is_active: true, deleted_at: null },
     ],
     prices: [
       { store_id: 'st-1', product_id: 'p-a', selling_price: 100, is_active: true },
       { store_id: 'st-1', product_id: 'p-b', selling_price: 100, is_active: true },
       { store_id: 'st-1', product_id: 'p-c', selling_price: 120, is_active: true },
+      { store_id: 'st-1', product_id: 'p-t', selling_price: 80, is_active: true },
     ],
     inventory: [
       { store_id: 'st-1', product_id: 'p-a', current_qty: 50 },
       { store_id: 'st-1', product_id: 'p-b', current_qty: 50 },
       { store_id: 'st-1', product_id: 'p-c', current_qty: 50 },
+      { store_id: 'st-1', product_id: 'p-t', current_qty: 50 },
     ],
     methods: [
       { id: 'm-cash', name: 'Cash', is_active: true, deleted_at: null, is_wallet_credit: false },
@@ -134,7 +149,10 @@ function makeFixture() {
                  paid_at: '2026-10-08T03:00:00Z', is_exchange: false, exchange_id: null },
                // a walk-in sale: no customer
                { id: 'inv-2', invoice_no: 'INV-T-0002', customer_id: null, store_id: 'st-1', status: 'paid',
-                 paid_at: '2026-10-08T03:00:00Z', is_exchange: false, exchange_id: null }],
+                 paid_at: '2026-10-08T03:00:00Z', is_exchange: false, exchange_id: null },
+               // ex-1's replacement invoice
+               { id: 'inv-x1', invoice_no: 'SG-XM-EX-INV-2026-00001', customer_id: 'c-buyer', store_id: 'st-1', status: 'paid',
+                 paid_at: '2026-10-05T03:00:00Z', is_exchange: true, exchange_id: 'ex-1' }],
     items: [
       { id: 'li-a', invoice_id: 'inv-1', line_kind: 'product', product_id: 'p-a', quantity: 1, exchanged_at: null, component_exchanged: null },
       // bought at S$60 (a discount); S$100 today
@@ -144,6 +162,8 @@ function makeFixture() {
       { id: 'li-ab2', invoice_id: 'inv-1', line_kind: 'promotion', promotion_id: 'pr-ab', quantity: 2, exchanged_at: null, component_exchanged: null },
       { id: 'li-ab3', invoice_id: 'inv-1', line_kind: 'promotion', promotion_id: 'pr-ab', quantity: 1, exchanged_at: null,
         component_exchanged: [{ product_id: 'p-a', qty: 1, exchange_id: 'ex-old' }] },
+      // a third-party product
+      { id: 'li-t', invoice_id: 'inv-1', line_kind: 'product', product_id: 'p-t', quantity: 1, exchanged_at: null, component_exchanged: null },
     ],
     profiles: [
       { id: 'u-own', full_name: 'Owner One', role: 'owner', is_active: true },
@@ -152,10 +172,18 @@ function makeFixture() {
     exchanges: [
       // dated back by staff, and one from before exchange dates (saved 01:30 on 9 Oct in Singapore)
       { id: 'ex-1', exchange_no: 'EX-T-0001', customer_id: 'c-buyer', processing_store_id: 'st-1', exchange_date: '2026-10-05',
-        created_at: '2026-10-08T03:00:00Z', returned_credit_total: 100, replacement_total: 120, topup_amount: 20, nonrefundable_amount: 0 },
+        created_at: '2026-10-08T03:00:00Z', returned_credit_total: 100, replacement_total: 120, topup_amount: 20, nonrefundable_amount: 0,
+        original_invoice_id: 'inv-1', reason: 'Wrong size', notes: 'Box kept\n"fragile" <b>handle</b> & care',
+        raised_by: 'u-c', created_by: 'u-own', exchange_invoice_id: 'inv-x1' },
       { id: 'ex-2', exchange_no: 'EX-T-0002', customer_id: 'c-buyer', processing_store_id: 'st-1', exchange_date: null,
         created_at: '2026-10-08T17:30:00Z', returned_credit_total: 100, replacement_total: 100, topup_amount: 0, nonrefundable_amount: 0 },
     ],
+    exchangeItems: [
+      { id: 'xi-1', exchange_id: 'ex-1', direction: 'returned', original_invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 1, unit_price: 75, line_total: 75 },
+      { id: 'xi-2', exchange_id: 'ex-1', direction: 'returned', original_invoice_item_id: 'li-a', product_id: 'p-b', quantity: 1, unit_price: 25, line_total: 25 },
+      { id: 'xi-3', exchange_id: 'ex-1', direction: 'replacement', original_invoice_item_id: null, product_id: 'p-c', quantity: 1, unit_price: 120, line_total: 120 },
+    ],
+    exchangePayments: [{ id: 'xp-1', exchange_id: 'ex-1', payment_method_id: 'm-card', amount: 20, reference: 'R-77' }],
   };
 }
 const fig = (todays, paid) => ({ todays, paid, credit: Math.min(todays, paid) });
@@ -168,11 +196,14 @@ function creditPreview(invoiceId) {
   return { lines: [
     { invoice_item_id: 'li-a', line_kind: 'product', quantity: 1, ...fig(100, 100) },
     { invoice_item_id: 'li-b', line_kind: 'product', quantity: 1, ...fig(100, 60) },
+    { invoice_item_id: 'li-t', line_kind: 'product', quantity: 1, ...fig(80, 80) },
     bundle('li-ab', 1), bundle('li-ab2', 2), bundle('li-ab3', 1),
   ] };
 }
 function createBackend(fx) {
-  const b = { calls: [], fx, preview: {}, previewFails: false };
+  // quoteProblem / createFails: a refusal the server sends; gate holds the
+  // exchange rows' read back; failTables answer a read with an error (455).
+  const b = { calls: [], fx, preview: {}, previewFails: false, quoteProblem: null, createFails: null, gate: null, failTables: new Set() };
   const rpcs = {
     my_assigned_store_id: () => null,
     my_assigned_stores: () => [],
@@ -180,24 +211,27 @@ function createBackend(fx) {
     exchange_original_context: () => ({ invoice_id: 'inv-1', invoice_no: 'INV-T-0001', invoice_date: '2026-10-08',
       customer: 'Sam Buyer', served_by: [], affiliate_id: 'ca-1', affiliate: 'Pat Referrer',
       affiliate_still_eligible: true, affiliate_inherited_id: 'ca-1' }),
-    bundle_line_components: () => [{ product_id: 'p-a', quantity: 1 }, { product_id: 'p-b', quantity: 1 }],
+    bundle_line_components: a => ['p-a', 'p-b'].map(p => ({ product_id: p, quantity: a.p_invoice_item_id === 'li-ab2' ? 2 : 1 })),
     store_commission_staff: () => [{ staff_id: 'u-c', staff_name: 'Staff C' }],
     exchange_credit_preview: a => {
       if (b.previewFails) throw new Error('function public.exchange_credit_preview does not exist');
       return creditPreview(a.p_original_invoice_id);
     },
-    exchange_bundle_preview: a => a.p_new_promotion_id === 'pr-tr'
+    exchange_bundle_preview: a => b.quoteProblem ? { problem: b.quoteProblem } : a.p_new_promotion_id === 'pr-tr'
       ? { problem: BENEFIT }
       : { problem: null, credit: 200, todays_value: 250, paid: 200, replacement: 360, topup: 160, nonrefundable: 0,
           returned: [{ product_id: 'p-a', name: 'XM A', quantity: 1 }, { product_id: 'p-b', name: 'XM B', quantity: 1 }],
           replacement_items: [{ product_id: 'p-c', name: 'XM C', quantity: 3 }] },
-    create_exchange_with_details: () => ({ success: true, id: 'ex-new', exchange_no: 'EXB-20261009-abc123' }),
+    create_exchange_with_details: () => {
+      if (b.createFails) throw new Error(b.createFails);
+      return { success: true, id: 'ex-new', exchange_no: 'EXB-20261009-abc123' };
+    },
   };
   const tables = {
     product_exchanges: fx.exchanges, products: fx.products, stores: fx.stores, payment_methods: fx.methods,
     store_product_prices: fx.prices, store_inventory: fx.inventory, promotions: fx.promotions,
     invoices: fx.invoices, invoice_items: fx.items, profiles: fx.profiles, customer_affiliates: [],
-    product_exchange_items: [], customers: fx.customers,
+    product_exchange_items: fx.exchangeItems, product_exchange_payments: fx.exchangePayments, customers: fx.customers,
   };
   class Query {
     constructor(kind, name, args) { Object.assign(this, { kind, name, args, filters: [], single: false }); }
@@ -217,6 +251,8 @@ function createBackend(fx) {
         try { return { data: structuredClone(fn(this.args)), error: null }; }
         catch (e) { return { data: null, error: { message: String(e.message) } }; }
       }
+      if (b.gate && this.name === 'product_exchange_items') await b.gate;
+      if (b.failTables.has(this.name)) return { data: null, error: { message: `could not read ${this.name}` } };
       const rows = (tables[this.name] ?? []).filter(r => this.filters.every(f => f(r)));
       return { data: structuredClone(this.single ? rows[0] ?? null : rows), error: null };
     }
@@ -330,7 +366,7 @@ test('a whole bundle shows the server\'s figures, and is paid exactly, now, by a
   await click(button('Whole bundle', modal()));
   const lines = selectWithOption('XM Bundle AB × 1');
   const opt = id => [...lines.options].find(o => o.value === id);
-  assert.ok(opt('li-ab2').disabled && opt('li-ab2').textContent.includes('2 bundles on this line: use Bundle component'));
+  assert.ok(opt('li-ab2').disabled && opt('li-ab2').textContent.includes('2 bundles on this line: return its items under Items'));
   assert.ok(opt('li-ab3').disabled && opt('li-ab3').textContent.includes('an item was already exchanged on its own'));
   assert.ok(!opt('li-ab').disabled);
   await setValue(lines, 'li-ab');
@@ -401,6 +437,14 @@ const returnLine = async label => {
   assert.ok(l, `no line to return: ${label}`);
   await click(l.querySelector('input'));
 };
+// 455: an item of a bundle line, under Items
+const bundleBlock = lineId => modal().querySelector(`.exchange-bundle-items[data-line="${lineId}"]`);
+const itemRow = (lineId, name) => [...(bundleBlock(lineId)?.querySelectorAll('label') ?? [])].find(l => l.textContent.startsWith(`${name} (`));
+const tickItem = async (lineId, name) => {
+  const l = itemRow(lineId, name);
+  assert.ok(l, `no item ${name} under ${lineId}`);
+  await click(l.querySelector('input'));
+};
 
 test('a discounted item counts for what was paid, and the page shows both figures', async () => {
   await openOnInvoice();
@@ -432,9 +476,7 @@ test('a discounted item counts for what was paid, and the page shows both figure
 
 test('one item of a bundle counts for its share of what the bundle was paid', async () => {
   await openOnInvoice();
-  await click(button('Bundle component', modal()));
-  await setValue(selectWithOption('XM Bundle AB × 1'), 'li-ab');
-  await setValue(selectWithOption('— Select component —'), 'p-a');
+  await tickItem('li-ab', 'XM A');
   await pickSearch('Search product name or SKU', 'XM C — S$120.00 (stock 50)');
   for (const t of ['Exchange credit (the lower of the two)S$75.00', 'Returned, its share of what the bundle was paidS$75.00',
                    "Counts for its share of what the bundle was paid (S$75.00), which is less than today's price (S$100.00).",
@@ -578,4 +620,196 @@ test('an exchange cannot be dated before the original sale', async () => {
     assert.ok(dangerText().includes(`An exchange cannot be dated before the original sale (${displayDay(SG_TODAY)}).`), dangerText());
     assert.equal(callsOf('create_exchange_with_details').length, 0);
   }
+});
+
+// ── 455 (the Owner, 22 Oct 2026): several items, any mix; the print; the note ─
+const confirmAs = async () => {
+  await setValue(modal().querySelector('input[placeholder="Owner One"]'), 'Owner One');
+  await click(button('Confirm & Complete'));
+};
+
+test('a plain line and two items of a bundle go in one exchange, their credit pooled, with the note', async () => {
+  await openOnInvoice();
+  assert.ok(button('Items', modal()) && button('Whole bundle', modal()), 'Items and Whole bundle are the two modes');
+  assert.ok(!button('Bundle component', modal()) && !button('Product', modal()), 'the old modes are gone');
+  await returnLine('XM B × 1');            // paid S$60, S$100 today: counts S$60
+  await tickItem('li-ab', 'XM A');         // S$75 share each
+  await tickItem('li-ab', 'XM B');
+  await pickSearch('Search product name or SKU', 'XM C — S$120.00 (stock 50)');
+  for (const t of ["Returned, today's priceS$300.00", 'Returned, what was paid (a bundle item: its share)S$210.00',
+                   'Exchange credit (the lower of the two)S$210.00', 'Replacement totalS$120.00',
+                   'Unused value (non-refundable)S$90.00']) {
+    assert.ok(text().includes(t), `missing: ${t}`);
+  }
+  assert.ok(!text().includes('Additional payment ('), 'nothing is due');
+  const note = '  Box kept\nfor the customer  ';
+  await setValue(modal().querySelector('textarea'), note);
+  assert.ok(text().includes('Prints on both copies of the exchange'), 'the Notes box says that it prints');
+  await readyToConfirm();
+  await click(button('Complete Exchange'));
+  const conf = modal().textContent;
+  assert.ok(conf.includes('XM B × 1') && conf.includes('XM A × 1') && conf.includes('(item of XM Bundle AB)'), conf);
+  assert.equal([...modal().querySelectorAll('div')].filter(d => d.firstElementChild?.tagName === 'STRONG' && d.textContent.includes('SKU:')).length, 3,
+    'the confirmation lists the three items');
+  assert.ok(conf.includes('Credit S$210.00 · Replacement S$120.00 · S$90.00 unused (non-refundable)'), conf);
+  await confirmAs();
+  const sent = callsOf('create_exchange_with_details');
+  assert.equal(sent.length, 1, dangerText());
+  assert.equal(sent[0].args.p_kind, 'items');
+  assert.deepEqual(sent[0].args.p_payload.returned, [
+    { invoice_item_id: 'li-b', quantity: 1 },
+    { invoice_item_id: 'li-ab', product_id: 'p-a', quantity: 1 },
+    { invoice_item_id: 'li-ab', product_id: 'p-b', quantity: 1 },
+  ]);
+  assert.deepEqual(sent[0].args.p_payload.replacement, [{ product_id: 'p-c', quantity: 1 }]);
+  assert.deepEqual(sent[0].args.p_payload.payments, []);
+  assert.equal(sent[0].args.p_payload.notes, 'Box kept\nfor the customer');
+});
+
+test('more of an item than its bundle holds is refused before Confirm; fewer counts its share', async () => {
+  await openOnInvoice();
+  await tickItem('li-ab2', 'XM A');        // the line holds 2 (two bundles)
+  const qty = bundleBlock('li-ab2').querySelector('input[type="number"]');
+  assert.ok(qty, 'a line of two bundles asks how many');
+  assert.equal(qty.value, '2', 'it starts at what the line holds');
+  await pickSearch('Search product name or SKU', 'XM C — S$120.00 (stock 50)');
+  await setValue(qty, '3');
+  await readyToConfirm();
+  await click(button('Complete Exchange'));
+  assert.ok(dangerText().includes('The bundle holds 2 of XM A.'), dangerText());
+  assert.equal(document.querySelectorAll('.modal').length, 1, 'no confirmation opens');
+  await setValue(qty, '1');
+  assert.ok(text().includes('Exchange credit (the lower of the two)S$75.00'), 'one of two counts its share');
+  await click(button('Add payment', modal()));
+  await click(button('Complete Exchange'));
+  await confirmAs();
+  const sent = callsOf('create_exchange_with_details');
+  assert.equal(sent.length, 1, dangerText());
+  assert.deepEqual(sent[0].args.p_payload.returned, [{ invoice_item_id: 'li-ab2', product_id: 'p-a', quantity: 1 }]);
+  assert.deepEqual(sent[0].args.p_payload.payments, [{ payment_method_id: 'm-cash', amount: 45, reference: '' }]);
+});
+
+test('an item exchanged before stays off; own beside third-party is refused before Confirm', async () => {
+  await openOnInvoice();
+  const done = itemRow('li-ab3', 'XM A');
+  assert.ok(done.querySelector('input').disabled && done.textContent.includes('(already exchanged)'), done.textContent);
+  assert.ok(!itemRow('li-ab3', 'XM B').querySelector('input').disabled, 'the other item of that bundle can still be returned');
+  await returnLine('XM Third × 1');
+  await tickItem('li-ab', 'XM A');
+  assert.ok(text().includes('Returned items must all be the same product type (own or third-party).'));
+  await pickSearch('Search product name or SKU', 'XM C — S$120.00 (stock 50)');
+  await readyToConfirm();
+  await click(button('Complete Exchange'));
+  assert.ok(dangerText().includes('All returned items must be the same product type (own or third-party).'), dangerText());
+  assert.equal(callsOf('create_exchange_with_details').length, 0);
+});
+
+test('the exchange prints a customer copy and an office copy, and opens its replacement invoice', async () => {
+  await mount();
+  const written = [];
+  const opened = [];
+  dom.window.open = (...a) => { opened.push(a); return { closed: false, document: { write: h => written.push(h), close() {} } }; };
+  const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('EX-T-0001'));
+  await click(row.querySelector('button'));
+  const m = modal();
+  assert.ok(m.textContent.includes('Original invoice INV-T-0001'), m.textContent);
+  assert.ok(m.textContent.includes('Notes') && m.textContent.includes('Box kept'), 'the note shows in the detail');
+  const open = [...m.querySelectorAll('a')].find(a => a.textContent.includes('Open invoice'));
+  assert.ok(open, 'an Open invoice button');
+  assert.equal(open.getAttribute('href'), '/invoices?review=inv-x1');
+  await click(button('Print', m));
+  assert.equal(opened.length, 1);
+  assert.equal(written.length, 1);
+  const html = written[0];
+  const doc = new JSDOM(html).window.document;
+  const copies = [...doc.querySelectorAll('.copy')];
+  assert.equal(copies.length, 2, 'two copies on the sheet');
+  assert.deepEqual(copies.map(c => c.querySelector('.copytag').textContent), ['CUSTOMER COPY', 'OFFICE COPY']);
+  assert.ok(doc.querySelector('.cut').textContent.includes('CUT HERE'));
+  assert.ok(html.includes('size: A4 landscape'), 'the invoices\' A4 sheet');
+  for (const c of copies) {
+    const t = c.textContent;
+    for (const s of ['EX-T-0001', 'Exchange', 'Replacement invoice: SG-XM-EX-INV-2026-00001', 'Original invoice: INV-T-0001',
+                     'Exchange date: 5 Oct 2026', 'Processed at: XM Store', 'Sam Buyer', '+6591400201',
+                     'Returned Items', 'Replacement Item', 'Returned value (credit)S$100.00', 'Replacement totalS$120.00',
+                     'Additional chargeS$20.00', 'Card · R-77', 'Wrong size', 'NO FURTHER EXCHANGE IS ALLOWED ON THE RETURNED ITEMS']) {
+      assert.ok(t.includes(s), `a copy is missing: ${s}`);
+    }
+    const returned = [...c.querySelectorAll('table')].find(tb => tb.textContent.includes('Returned Item'));
+    assert.deepEqual([...returned.querySelectorAll('tbody tr')].map(tr => [...tr.cells].map(td => td.textContent)),
+      [['XM A', '1', 'S$75.00'], ['XM B', '1', 'S$25.00']]);
+    const repl = [...c.querySelectorAll('table')].find(tb => tb.querySelector('th')?.textContent === 'Replacement Item');
+    assert.deepEqual([...repl.querySelectorAll('tbody tr')].map(tr => [...tr.cells].map(td => td.textContent.trim())),
+      [['XM C', '1', 'S$120.00', 'S$120.00']]);
+    assert.equal(c.querySelector('.signline.signed').textContent, 'Staff C', 'signed by who raised it');
+    const notes = [...c.querySelectorAll('h2')].find(h => h.textContent === 'Notes').nextElementSibling;
+    assert.equal(notes.innerHTML, 'Box kept<br>"fragile" &lt;b&gt;handle&lt;/b&gt; &amp; care', 'the note is escaped and keeps its line break');
+  }
+  assert.ok(!html.includes('<b>handle</b>'), 'the note\'s markup is never written as markup');
+  await tick();
+  assert.deepEqual(callsOf('record_document_printed').at(-1)?.args, { p_kind: 'exchange', p_record_id: 'ex-1' });
+});
+
+test('455: the server\'s "use Bundle component" is shown as Items, on the preview and at Confirm', async () => {
+  await openOnInvoice();
+  await click(button('Whole bundle', modal()));
+  // a bundle with items chosen at the till: the page cannot grey it out first
+  backend.quoteProblem = 'Items of this bundle were chosen at the till. A whole-bundle exchange cannot take back or hand over chosen items yet; use Bundle component.';
+  const shown = 'Items of this bundle were chosen at the till. A whole-bundle exchange cannot take back or hand over chosen items yet; exchange item by item under Items instead.';
+  await setValue(selectWithOption('XM Bundle AB × 1'), 'li-ab');
+  await pickSearch('Search bundle name, code or price', 'XM Bundle CCC — S$300.00');
+  assert.equal(modal().querySelector('.alert-danger')?.textContent.replace('⚠', ''), shown);
+  await readyToConfirm();
+  await click(button('Complete Exchange'));
+  assert.ok([...document.querySelectorAll('.alert-danger')].filter(a => a.textContent.includes(shown)).length >= 2, 'refused at Confirm in the same words');
+  assert.ok(!text().includes('Bundle component'));
+  assert.equal(callsOf('create_exchange_with_details').length, 0);
+});
+
+test('455: another exchange landing before Confirm is refused in the page\'s words', async () => {
+  await openOnInvoice();
+  await click(button('Whole bundle', modal()));
+  await setValue(selectWithOption('XM Bundle AB × 1'), 'li-ab');
+  await pickSearch('Search bundle name, code or price', 'XM Bundle CCC — S$300.00');
+  await click(button('Add payment', modal()));
+  await readyToConfirm();
+  await click(button('Complete Exchange'));
+  backend.createFails = 'An item of this bundle was already exchanged on its own (EXC-T-0009), so the whole bundle can no longer be exchanged. Exchange its other items with Bundle component instead.';
+  await setValue(modal().querySelector('input[placeholder="Owner One"]'), 'Owner One');
+  await click(button('Confirm & Complete'));
+  assert.equal(callsOf('create_exchange_with_details').length, 1);
+  assert.ok(text().includes('(EXC-T-0009), so the whole bundle can no longer be exchanged. Exchange its other items under Items instead.'), text().slice(0, 600));
+  assert.ok(!text().includes('Bundle component'));
+});
+
+test('455: Print waits for the exchange to be read; a failed read keeps it off; the footer wraps', async () => {
+  await mount();
+  const opened = [];
+  dom.window.open = (...a) => { opened.push(a); return { closed: false, document: { write() {}, close() {} } }; };
+  let release;
+  backend.gate = new Promise(r => { release = r; });
+  const row = no => [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(no));
+  await click(row('EX-T-0001').querySelector('button'));
+  const waiting = [...modal().querySelectorAll('button')].find(b => b.textContent.includes('Loading…'));
+  assert.ok(waiting?.disabled, 'Print is off while the rows are read');
+  await click(waiting);
+  assert.equal(opened.length, 0, 'nothing prints before the rows arrive');
+  assert.equal(callsOf('record_document_printed').length, 0, 'and no print is logged');
+  const actions = modal().querySelector('.modal-footer > div');
+  assert.equal(actions.style.flexWrap, 'wrap', 'Open invoice, Print and Close wrap on a phone');
+  assert.deepEqual([...actions.children].map(el => el.textContent.trim()), ['Open invoice', 'Loading…', 'Close']);
+  release(); await tick();
+  const ready = button('Print', modal());
+  assert.ok(ready && !ready.disabled, 'Print once the rows, payments and names are in');
+  await click(ready);
+  assert.equal(opened.length, 1);
+  await click(button('Close', modal()));
+
+  backend.gate = null;
+  backend.failTables.add('product_exchange_payments');
+  await click(row('EX-T-0001').querySelector('button'));
+  assert.ok(button('Print', modal())?.disabled, 'a payments read that failed keeps Print off');
+  assert.ok(modal().textContent.includes('could not be read in full, so it cannot be printed'));
+  await click(button('Print', modal()));
+  assert.equal(opened.length, 1, 'still only the one print');
 });

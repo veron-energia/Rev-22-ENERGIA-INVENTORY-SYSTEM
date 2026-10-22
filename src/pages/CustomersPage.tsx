@@ -13,7 +13,7 @@ import { CoverageLine } from '../components/therapy/coverage';
 import DownlineModal from '../components/referrals/DownlineModal';
 import { visitFilterArgs, visitFilterActive, sgDate, sgDayOf } from '../lib/referral/campaign.mjs';
 import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
-import { canEditCustomers } from '../lib/customers/customerRoles.mjs';
+import { canEditCustomers, canSeeCustomerProfile } from '../lib/customers/customerRoles.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
 import { walletSourceTiles, purchasesBySource } from '../lib/invoices/walletSources.mjs';
 
@@ -79,7 +79,13 @@ export const plainLoadError = (e?: { message?: string; code?: string } | null) =
 
 const CustomersPage: React.FC = () => {
   const { profile } = useAuth();
-  const canComplete = isOwnerOrManager(profile?.role);   // complete profile view: Owner/Manager only
+  // Owner/Manager: Delete, Deleted Customers, Correct Referrer and changing a
+  // filled-in date of birth (the credit Opening balance and Adjust ask the same).
+  const canComplete = isOwnerOrManager(profile?.role);
+  // 453 (the Owner, 22 Oct 2026): the Profile's figures, purchase timeline
+  // and phone history, and the Downline, for the roles that add and edit
+  // customers (Staff and Admins too); Inventory Managers keep the Limited view.
+  const canProfile = canSeeCustomerProfile(profile?.role);
   // 418: Add, Edit, Change phone and Source are for Owners, Managers and
   // Staff (and the old Admin role). Inventory Managers still find and view
   // customers; the database refuses their changes too.
@@ -110,7 +116,7 @@ const CustomersPage: React.FC = () => {
   const [visitTo, setVisitTo] = useState('');
   const visitArgs = useMemo(() => visitFilterArgs(visitedFilter, visitFrom, visitTo), [visitedFilter, visitFrom, visitTo]);
   const visitFiltered = visitFilterActive(visitedFilter, visitFrom, visitTo);
-  // 398: the downline with visits, Owner/Manager.
+  // 398: the downline with visits (453: Owner, Admin, Manager and Staff).
   const [downlineFor, setDownlineFor] = useState<Customer | null>(null);
   const [srcFor, setSrcFor] = useState<Customer | null>(null);
   const [srcOptId, setSrcOptId] = useState('');
@@ -285,9 +291,9 @@ const CustomersPage: React.FC = () => {
     profileIdRef.current = c.id;
     setProfileFor(c); setProfileStats(null); setTimeline(null); setExpandedInv({});
     setProfilePhones(null); setProfileErr(null);
-    // The figures are for Owners and Managers (406); the others see the
-    // limited view and ask for nothing.
-    if (!canComplete) { setProfileStats({}); return; }
+    // The figures are for Owners, Admins, Managers and Staff (453); an
+    // Inventory Manager sees the limited view and asks for nothing.
+    if (!canProfile) { setProfileStats({}); return; }
     const [stats, tl, ph] = await Promise.all([
       supabase.rpc('customer_profile_stats', { p_customer_id: c.id }),
       supabase.rpc('customer_purchase_timeline', { p_customer_id: c.id }),
@@ -607,8 +613,8 @@ const CustomersPage: React.FC = () => {
                     <td><div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openOverview(c)}><Eye size={13} /> View</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => openProfile(c)}>Profile</button>
-                      {/* 398: Owner/Manager, as customer_downline_visits checks. */}
-                      {canComplete && <button className="btn btn-secondary btn-sm btn-icon" title="Downline: Tier 1 and Tier 2, with visits"
+                      {/* 453: Owner, Admin, Manager and Staff, as customer_downline_visits checks. */}
+                      {canProfile && <button className="btn btn-secondary btn-sm btn-icon" title="Downline: Tier 1 and Tier 2, with visits"
                         aria-label={`Downline of ${c.full_name}`} onClick={() => setDownlineFor(c)}><Users size={13} /></button>}
                       {canEdit && <>
                         <button className="btn btn-secondary btn-sm btn-icon" title="Change phone" aria-label="Change phone" onClick={() => { setPhoneFor(c); setNewPhone(''); setPhoneReason(''); setPhoneErr(null); }}><Phone size={13} /></button>
@@ -1119,7 +1125,7 @@ const CustomersPage: React.FC = () => {
             <div className="form-grid">
               {profileErr && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span>
                 <div>{profileErr} <button className="btn btn-secondary btn-sm" onClick={() => void openProfile(profileFor)}>Retry</button></div></div>}
-              {canComplete ? (
+              {canProfile ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Paid purchases</div>
@@ -1141,7 +1147,7 @@ const CustomersPage: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Limited view — financial, commission, and audit history are visible to Owners and Managers only.</div></div>
+                <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Limited view — purchases, spend, phone history and the downline are visible to Owners, Admins, Managers and Staff.</div></div>
               )}
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
                 <span>Phone: {profileFor.phone}</span>
@@ -1153,7 +1159,7 @@ const CustomersPage: React.FC = () => {
               </div>
               {/* 401: stock lent to this customer or affiliate (the stores the viewer works in). */}
               <CustomerLoans customerId={profileFor.id} />
-              {canComplete && (() => {
+              {canProfile && (() => {
                 const hist = profilePhones ?? [];
                 return hist.length > 0 ? (
                   <div>
@@ -1169,7 +1175,7 @@ const CustomersPage: React.FC = () => {
                   </div>
                 ) : null;
               })()}
-              {canComplete && timeline && timeline.length > 0 && (
+              {canProfile && timeline && timeline.length > 0 && (
                 <div>
                   <label>Purchase timeline</label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
@@ -1211,7 +1217,7 @@ const CustomersPage: React.FC = () => {
                   </div>
                 </div>
               )}
-              {canComplete && timeline && timeline.length === 0 && (
+              {canProfile && timeline && timeline.length === 0 && (
                 <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>No purchases yet.</div>
               )}
             </div>

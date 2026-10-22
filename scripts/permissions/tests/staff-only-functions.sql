@@ -536,8 +536,13 @@ begin
     -- Customers
     ('customer view',          'all',    true,  true,  'select public.customer_overview(@c1@)::text || (select full_name from public.customers where id = @c1@)'),
     ('customer search',        'all~',   true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.search_customers(''SOFX'', null, 25, 0, null, null, null) x'),
-    ('profile figures',        'om',     true,  false, 'select public.customer_profile_stats(@c1@)::text'),
-    ('purchase history',       'om',     true,  true,  'select public.customer_purchase_timeline(@c1@)::text'),
+    -- 453 (the Owner, 22 Oct 2026): the Profile's figures, its purchase
+    -- history and the Downline are for the roles that add and edit customers
+    -- (418), Admins and Staff too; not Inventory Managers (406 and 398 had
+    -- Owners and Managers only)
+    ('profile figures',        'notinv', true,  false, 'select public.customer_profile_stats(@c1@)::text'),
+    ('purchase history',       'notinv', true,  true,  'select public.customer_purchase_timeline(@c1@)::text'),
+    ('downline',               'notinv', true,  true,  'select public.customer_downline_visits(@ca@)::text'),
     -- Surveys
     -- 419: the survey list shows the consultant's findings: not Inventory Managers'
     ('survey list',            'notinv', true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.customer_survey_overview(null, ''all'', 50, 0) x'),

@@ -10,8 +10,10 @@
 // Customers page sends Visited and the first visit range to search_customers
 // (the list and the export) and shows the first visit; with no visit filter it
 // sends the four arguments it always did; the Downline (Tier 1 and Tier 2 with
-// joined, visited and first visit) is Owner/Manager only, on the Customers
-// page and the Affiliates page; the Affiliates page's Referral promotion tab
+// joined, visited and first visit) is on the Customers page and the
+// Affiliates page for Owners, Admins, Managers and Staff (453, the Owner,
+// 22 Oct 2026; 398 had Owner/Manager only), not for an Inventory Manager;
+// the Affiliates page's Referral promotion tab
 // (Owner/Manager) shows friends counted, tier reached, next tier and each
 // friend, says "provisional" and offers no reward until the promotion has
 // ended; 404 (the Owner, 8 Oct 2026): a friend counts by their first visit,
@@ -203,6 +205,8 @@ const USERS = {
   owner: { id: 'u-own', full_name: 'Owner One', role: 'owner', is_active: true },
   manager: { id: 'u-mgr', full_name: 'Manager One', role: 'manager', is_active: true },
   staff: { id: 'u-staff', full_name: 'Staff One', role: 'staff', is_active: true },
+  admin: { id: 'u-adm', full_name: 'Admin One', role: 'admin', is_active: true },
+  invman: { id: 'u-inv', full_name: 'Inventory One', role: 'inventory_manager', is_active: true },
 };
 let root = null;
 let backend = null;
@@ -276,7 +280,7 @@ test('Visited and the first-visit range reach search_customers; Not visited drop
   assert.deepEqual(Object.keys(callsOf('search_customers').pop().args).sort(), ['p_limit', 'p_offset', 'p_query', 'p_source']);
 });
 
-test('the Customers page\'s Downline is Owner/Manager: Tier 1 and Tier 2 with joined, visited and first visit', async () => {
+test('the Customers page\'s Downline (Owner, Admin, Manager, Staff; 453): Tier 1 and Tier 2 with joined, visited and first visit', async () => {
   await mount(CustomersPage, 'manager');
   await click(document.querySelector('button[aria-label="Downline of Fay Lum"]'));
   assert.deepEqual(callsOf('customer_downline_visits').map(c => c.args), [{ p_customer_id: 'c-fay' }]);
@@ -289,8 +293,17 @@ test('the Customers page\'s Downline is Owner/Manager: Tier 1 and Tier 2 with jo
   const oli = [...m.querySelectorAll('tr')].find(tr => tr.textContent.includes('Oli Ting'));
   assert.ok(oli.textContent.includes('Gia Lo') && oli.textContent.includes('Yes') && oli.textContent.includes('12/10/2026'));
 
-  await mount(CustomersPage, 'staff');
-  absent(document.querySelector('button[aria-label^="Downline of"]'), 'staff get no Downline');
+  // 453: Staff and the old Admin role get the same Downline; an Inventory Manager none.
+  for (const role of ['staff', 'admin']) {
+    await mount(CustomersPage, role);
+    await click(document.querySelector('button[aria-label="Downline of Fay Lum"]'));
+    assert.deepEqual(callsOf('customer_downline_visits').map(c => c.args), [{ p_customer_id: 'c-fay' }], role);
+    assert.ok(modal().textContent.includes('Tier 1 — referred by Fay Lum (2, 1 visited)'), role);
+    assert.ok(modal().textContent.includes('Tier 2 — referred by their Tier 1 (1, 1 visited)'), role);
+  }
+  await mount(CustomersPage, 'invman');
+  absent(document.querySelector('button[aria-label^="Downline of"]'), 'an Inventory Manager gets no Downline');
+  assert.equal(callsOf('customer_downline_visits').length, 0);
 });
 
 // ── the Affiliates page ────────────────────────────────────────────────────
@@ -426,14 +439,28 @@ test('the Owner alone undoes a reward, with a reason, putting the stock back or 
     [{ p_reward_id: 'rw-1', p_reason: 'Wrong products', p_return_stock: false }]);
 });
 
-test('the Affiliates page\'s Downline is on each affiliate for an Owner or Manager; staff see neither it nor the promotion', async () => {
+test('the Affiliates page\'s Downline is on each affiliate, on the staff list too (453); staff see no promotion, an Inventory Manager no Downline', async () => {
   await mount(AffiliatesPage, 'manager');
   await click(document.querySelector('button[aria-label="Downline of Fay Lum"]'));
   assert.deepEqual(callsOf('customer_downline_visits').map(c => c.args), [{ p_customer_id: 'c-fay' }]);
   assert.ok(modal().textContent.includes('Tier 1 — referred by Fay Lum'));
-  await mount(AffiliatesPage, 'staff');
-  absent(buttons().find(b => b.textContent.trim() === 'Referral promotion'), 'no promotion tab for staff');
-  absent(document.querySelector('button[aria-label^="Downline of"]'), 'no Downline for staff');
+  // 453 (the Owner, 22 Oct 2026): the same button on the staff list, for Staff and Admins.
+  for (const role of ['staff', 'admin']) {
+    await mount(AffiliatesPage, role);
+    assert.ok(callsOf('affiliate_staff_directory').length > 0 && callsOf('affiliate_admin_directory').length === 0, role + ': the staff list');
+    absent(buttons().find(b => b.textContent.trim() === 'Referral promotion'), 'no promotion tab for ' + role);
+    // Its own column with a blank header, as on the Owner/Manager list, not under "Referral Link".
+    assert.deepEqual([...document.querySelectorAll('thead th')].map(th => th.textContent), ['Affiliate', 'Status', 'Referral Code', 'Referral Link', ''], role);
+    const dl = document.querySelector('button[aria-label="Downline of Fay Lum"]');
+    assert.equal([...dl.closest('tr').children].indexOf(dl.closest('td')), 4, role + ': the Downline column');
+    await click(dl);
+    assert.deepEqual(callsOf('customer_downline_visits').map(c => c.args), [{ p_customer_id: 'c-fay' }], role);
+    assert.ok(modal().textContent.includes('Downline — Fay Lum') && modal().textContent.includes('Tier 1 — referred by Fay Lum'), role);
+    assert.equal(callsOf('referral_campaign_report').length, 0, role);
+  }
+  await mount(AffiliatesPage, 'invman');
+  absent(document.querySelector('button[aria-label^="Downline of"]'), 'no Downline for an Inventory Manager');
+  assert.deepEqual([...document.querySelectorAll('thead th')].map(th => th.textContent), ['Affiliate', 'Status', 'Referral Code', 'Referral Link'], 'no Downline column');
   assert.equal(callsOf('referral_campaign_report').length + callsOf('customer_downline_visits').length, 0);
 });
 

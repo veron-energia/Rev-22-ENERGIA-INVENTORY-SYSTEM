@@ -25,6 +25,14 @@
 //     on extra units (STOCK-M2); Resolve & Complete waits for the sources, and
 //     a choice the line no longer offers is neither sent nor swapped for
 //     another: the person is asked to choose again.
+//   * a product with no price at the destination store is listed (452, the
+//     owner, 22 Oct 2026) in New Transfer (Owner and Staff), Edit and
+//     Review's Add Product, tagged "No price at this store — set one in Price
+//     List before selling", and is sent; a requested line Review shows is
+//     tagged too; a warehouse destination tags nothing; every page of the
+//     store prices is read (one read stops at a thousand rows); a failed read
+//     is said in New Transfer, Edit and Review (every product still listed),
+//     and a failed reload keeps the tags last read.
 //
 // Run: node --test scripts/transfers/tests/transfers-page.test.mjs
 import { test, after } from 'node:test';
@@ -81,6 +89,7 @@ const built = await build({
   define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}' },
   plugins: [{ name: 'stubs', setup(b) {
     b.onResolve({ filter: /(^|\/)lib\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
+    b.onResolve({ filter: /^\.\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
     b.onResolve({ filter: /(^|\/)context\/AuthContext$/ }, () => ({ path: 'auth', namespace: 'stub' }));
     b.onLoad({ filter: /^supabase$/, namespace: 'stub' }, () => ({ loader: 'js', contents: `
       export const supabase = { from: (...a) => globalThis.__backend.client.from(...a), rpc: (...a) => globalThis.__backend.client.rpc(...a) };` }));
@@ -109,7 +118,9 @@ function makeFixture() {
     warehouses: [{ id: 'w1', name: 'TFX WH 1', is_active: true, deleted_at: null }, { id: 'w2', name: 'TFX WH 2', is_active: true, deleted_at: null }],
     stores: [{ id: 'sa', name: 'TFX Store A', is_active: true, deleted_at: null }, { id: 'sb', name: 'TFX Store B', is_active: true, deleted_at: null }],
     products: [{ id: 'p1', name: 'TFX Pillow', sku: 'TFX-P', is_active: true, deleted_at: null },
-               { id: 'p2', name: 'TFX Mat', sku: 'TFX-M', is_active: true, deleted_at: null }],
+               { id: 'p2', name: 'TFX Mat', sku: 'TFX-M', is_active: true, deleted_at: null },
+               // no price at any store (452)
+               { id: 'p3', name: 'TFX Lamp', sku: 'TFX-L', is_active: true, deleted_at: null }],
     prices: ['sa', 'sb'].flatMap(s => ['p1', 'p2'].map(p => ({ store_id: s, product_id: p, is_active: true, deleted_at: null }))),
     profiles: Object.values(PEOPLE).map(({ id, full_name }) => ({ id, full_name })),
     requests: [
@@ -139,7 +150,7 @@ function makeFixture() {
   };
 }
 function createBackend(fx, me) {
-  const b = { calls: [], fx, detailsDelay: 0 };
+  const b = { calls: [], fx, detailsDelay: 0, failTables: new Set(fx.failTables ?? []) };
   const storeName = id => fx.stores.find(s => s.id === id)?.name;
   const rpcs = {
     my_assigned_stores: () => (me.role === 'staff' ? fx.assignments[me.id] ?? [] : fx.stores.map(s => s.id))
@@ -148,6 +159,9 @@ function createBackend(fx, me) {
       destination: 'TFX Store A', notes: [],
       lines: fx.lines.filter(l => l.transfer_request_id === a.p_request_id).map(l => ({ id: l.id, product: 'x', sources: fx.sources[l.id] ?? [] })) }),
     create_staff_transfer_request: () => ({ success: true, id: 'r-new' }),
+    create_transfer_request: () => ({ success: true, id: 'r-new' }),
+    transfer_request_sourcing: () => [],
+    transfer_product_sourcing: () => [],
     edit_transfer_request: a => ({ id: a.p_transfer_id, new_version: 2, edit_count: 1 }),
     receive_transfer: () => ({ success: true }),
     resolve_transfer_discrepancy: () => ({ success: true, completed: true, remaining: 0 }),
@@ -159,7 +173,7 @@ function createBackend(fx, me) {
     products: fx.products, profiles: fx.profiles, store_product_prices: fx.prices, store_inventory: [],
   };
   class Query {
-    constructor(kind, name, args) { Object.assign(this, { kind, name, args, filters: [], single: false }); }
+    constructor(kind, name, args) { Object.assign(this, { kind, name, args, filters: [], single: false, span: null }); }
     select() { return this; }
     eq(c, v) { this.filters.push(r => r[c] === v); return this; }
     is(c, v) { this.filters.push(r => (r[c] ?? null) === v); return this; }
@@ -167,9 +181,10 @@ function createBackend(fx, me) {
     gt(c, v) { this.filters.push(r => r[c] > v); return this; }
     order() { return this; }
     limit() { return this; }
+    range(from, to) { this.span = [from, to]; return this; }
     maybeSingle() { this.single = true; return this; }
     async exec() {
-      b.calls.push({ kind: this.kind, name: this.name, args: this.args });
+      b.calls.push({ kind: this.kind, name: this.name, args: this.args, span: this.span });
       await Promise.resolve();
       if (this.kind === 'rpc') {
         if (this.name === 'stock_transfer_details' && b.detailsDelay) await new Promise(r => setTimeout(r, b.detailsDelay));
@@ -177,7 +192,9 @@ function createBackend(fx, me) {
         if (!fn) return { data: null, error: { message: `unknown rpc ${this.name}` } };
         return { data: structuredClone(fn(this.args)), error: null };
       }
-      const rows = (tables[this.name] ?? []).filter(r => this.filters.every(f => f(r)));
+      if (b.failTables.has(this.name)) return { data: null, error: { message: `TFX ${this.name} could not be read` } };
+      let rows = (tables[this.name] ?? []).filter(r => this.filters.every(f => f(r)));
+      if (this.span) rows = rows.slice(this.span[0], this.span[1] + 1);
       return { data: structuredClone(this.single ? rows[0] ?? null : rows), error: null };
     }
     then(res, rej) { return this.exec().then(res, rej); }
@@ -453,4 +470,155 @@ test('Fill approved fills the approved quantity, the one the mismatch check uses
   assert.equal(qty().value, '5');
   assert.equal(modal().querySelector('input[aria-label="TFX Pillow: reason"]'), null, 'no mismatch after filling in');
   assert.equal(modal().querySelector('textarea[placeholder="Explain the difference"]'), null);
+});
+
+// ── 452: no price at the destination store ─────────────────────────────────
+const TAG = 'No price at this store — set one in Price List before selling';
+const openSearch = async placeholder =>
+  click([...modal().querySelectorAll('button')].find(b => b.textContent.trim().startsWith(placeholder)));
+const chooseOption = async label =>
+  click([...modal().querySelectorAll('div')].find(d => d.firstElementChild?.textContent === label && d.children.length <= 2));
+
+test('452: New Transfer into a store lists a product with no price there, tagged, and sends it', async () => {
+  await mount('owner');
+  await click(button('New Transfer'));
+  const [, from, to] = modal().querySelectorAll('select');
+  await setValue(from, 'w1');
+  await setValue(to, 'sa');
+  assert.ok(modal().textContent.includes('A product with no price at the destination store can still be transferred, but it cannot be sold there until a price is set in Price List.'),
+    modal().textContent);
+  await openSearch('Search product name or SKU');
+  assert.ok(modal().textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`), 'the product with no price is listed, tagged');
+  assert.ok(modal().textContent.includes('TFX Pillow (TFX-P)') && !modal().textContent.includes(`TFX Pillow (TFX-P) — ${TAG}`),
+    'a priced product is listed without the tag');
+  await chooseOption(`TFX Lamp (TFX-L) — ${TAG}`);
+  assert.ok([...modal().querySelectorAll('button')].some(b => b.textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`)), 'the tag stays once chosen');
+  await setValue(modal().querySelector('input[placeholder="Qty"]'), '2');
+  await click(button('Submit Request', modal()));
+  const sent = callsOf('create_transfer_request');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].args.p_dest_id, 'sa');
+  assert.deepEqual(sent[0].args.p_lines.map(l => [l.product_id, l.quantity]), [['p3', 2]]);
+  assert.equal(modal(), undefined, 'the window closes');
+});
+
+test('452: a Staff request lists the product with no price at their store, tagged, and sends it', async () => {
+  await mount('staff1');
+  await click(button('New Transfer'));
+  await openSearch('Search product name or SKU');
+  assert.ok(modal().textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`));
+  await chooseOption(`TFX Lamp (TFX-L) — ${TAG}`);
+  await setValue(modal().querySelector('input[placeholder="Qty"]'), '1');
+  await click(button('Submit Request', modal()));
+  const sent = callsOf('create_staff_transfer_request');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].args.p_store_id, 'sa');
+  assert.deepEqual(sent[0].args.p_lines.map(l => l.product_id), ['p3']);
+});
+
+test('452: a warehouse destination tags nothing', async () => {
+  await mount('owner');
+  await click(button('New Transfer'));
+  await setValue(modal().querySelector('select'), 'warehouse_to_warehouse');
+  const [, from, to] = modal().querySelectorAll('select');
+  await setValue(from, 'w1');
+  await setValue(to, 'w2');
+  await openSearch('Search product name or SKU');
+  assert.ok(modal().textContent.includes('TFX Lamp (TFX-L)'));
+  assert.ok(!modal().textContent.includes(TAG), modal().textContent);
+});
+
+test('452: Edit lists the product with no price at the destination, tagged, and sends it', async () => {
+  await mount('owner');
+  await click(button('Edit', rowOf('r-mine')));
+  assert.ok(!modal().textContent.includes(TAG), 'the priced line is not tagged');
+  await click(button('Add Product', modal()));
+  await openSearch('Search product name or SKU');
+  assert.ok(modal().textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`), modal().textContent);
+  await chooseOption(`TFX Lamp (TFX-L) — ${TAG}`);
+  const qty = [...modal().querySelectorAll('input[placeholder="Qty"]')].at(-1);
+  await setValue(qty, '1');
+  await setValue(modal().querySelector('textarea[placeholder="Why is this transfer being edited?"]'), 'TFX add a lamp');
+  await click(button('Save Changes', modal()));
+  const sent = callsOf('edit_transfer_request');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].args.p_lines.map(l => l.product_id), ['p1', 'p3']);
+});
+
+test('452: Review tags a requested line with no price at the destination, and Add Product lists such a product tagged', async () => {
+  await mount('owner', fx => {
+    fx.requests.push(req('r-np', { note: 'TFX a lamp for A' }));
+    fx.lines.push(line('l-np', 'r-np', 'p3', { quantity: 1 }));
+  });
+  await click(button('Review', rowOf('r-np')));
+  assert.ok(modal().textContent.includes(TAG), 'the requested line with no price at the store is tagged');
+  await mount('owner');
+  await click(button('Review', rowOf('r-mine')));
+  assert.ok(!modal().textContent.includes(TAG), 'a priced requested line is not tagged');
+  await click(button('Add Product', modal()));
+  await openSearch('Search product to add');
+  assert.ok(modal().textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`), modal().textContent);
+  assert.ok(!modal().textContent.includes(`TFX Mat (TFX-M) — ${TAG}`));
+  await chooseOption(`TFX Lamp (TFX-L) — ${TAG}`);
+  assert.deepEqual(callsOf('transfer_product_sourcing').map(c => c.args.p_product_id), ['p3'], 'its sources are looked up');
+});
+
+test('452: every page of the store prices is read', async () => {
+  await mount('owner', fx => {
+    const filler = Array.from({ length: 1200 }, (_, i) => ({ store_id: 'sx', product_id: `px${i}`, is_active: true, deleted_at: null }));
+    fx.prices = [...filler, ...fx.prices];
+  });
+  assert.deepEqual(callsOf('store_product_prices').map(c => c.span), [[0, 999], [1000, 1999]]);
+  await click(button('New Transfer'));
+  const [, from, to] = modal().querySelectorAll('select');
+  await setValue(from, 'w1');
+  await setValue(to, 'sa');
+  await openSearch('Search product name or SKU');
+  assert.ok(!modal().textContent.includes(`TFX Pillow (TFX-P) — ${TAG}`), 'a price past the first thousand rows still counts');
+  assert.ok(modal().textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`));
+});
+
+const UNREAD = 'Store prices could not be read, so a product with no price at this store may not be marked. Refresh to try again.';
+test('452: a failed price read is said in New Transfer, Edit and Review, and every product is still listed', async () => {
+  await mount('owner', fx => { fx.failTables = ['store_product_prices']; });
+  await click(button('New Transfer'));
+  const [, from, to] = modal().querySelectorAll('select');
+  await setValue(from, 'w1');
+  await setValue(to, 'sa');
+  assert.ok(modal().textContent.includes(UNREAD), modal().textContent);
+  await openSearch('Search product name or SKU');
+  assert.ok(modal().textContent.includes('TFX Lamp (TFX-L)') && modal().textContent.includes('TFX Pillow (TFX-P)'));
+  assert.ok(!modal().textContent.includes(TAG));
+  await click(button('Cancel', modal()));
+  await click(button('New Transfer'));
+  await setValue(modal().querySelector('select'), 'warehouse_to_warehouse');
+  assert.ok(!modal().textContent.includes(UNREAD), 'a warehouse destination needs no store price');
+  await click(button('Cancel', modal()));
+  await click(button('Edit', rowOf('r-mine')));
+  assert.ok(modal().textContent.includes(UNREAD), modal().textContent);
+  await click(button('Cancel', modal()));
+  await click(button('Review', rowOf('r-mine')));
+  assert.ok(modal().textContent.includes(UNREAD), modal().textContent);
+});
+
+test('452: a failed reload keeps the tags last read, and says so until a read works', async () => {
+  await mount('owner');
+  backend.failTables.add('store_product_prices');
+  await click(button('Refresh'));
+  await click(button('New Transfer'));
+  const [, from, to] = modal().querySelectorAll('select');
+  await setValue(from, 'w1');
+  await setValue(to, 'sa');
+  assert.ok(modal().textContent.includes(UNREAD), modal().textContent);
+  await openSearch('Search product name or SKU');
+  assert.ok(modal().textContent.includes(`TFX Lamp (TFX-L) — ${TAG}`), 'the tag read before stays');
+  assert.ok(!modal().textContent.includes(`TFX Pillow (TFX-P) — ${TAG}`));
+  await click(button('Cancel', modal()));
+  backend.failTables.delete('store_product_prices');
+  await click(button('Refresh'));
+  await click(button('New Transfer'));
+  const [, from2, to2] = modal().querySelectorAll('select');
+  await setValue(from2, 'w1');
+  await setValue(to2, 'sa');
+  assert.ok(!modal().textContent.includes(UNREAD), 'a read that works clears the notice');
 });

@@ -45,8 +45,10 @@ const Table: React.FC<{ rows: DownlineRow[]; tier2?: boolean }> = ({ rows, tier2
 /**
  * A referrer's downline with visits (398, the Owner's rule of 6 Oct 2026):
  * Tier 1 (whom they referred) and Tier 2 (whom those referred), with phone,
- * joined, visited and the first visit. Owner/Manager only; the database
- * refuses anyone else. Used on the Customers and Affiliates pages.
+ * joined, visited and the first visit, and its Excel export. For Owners,
+ * Admins, Managers and Staff (453, the Owner, 22 Oct 2026: the roles that see
+ * a customer's full Profile); the database refuses anyone else, an Inventory
+ * Manager included. Used on the Customers and Affiliates pages.
  */
 const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () => void }> = ({ customerId, name, onClose }) => {
   const [data, setData] = useState<Downline | null>(null);

@@ -9,6 +9,11 @@
 //   AFFILIATES-12  A friend who shares a customer's phone waits for a check:
 //                  the promotion report says so beside the friend and under
 //                  the referrer.
+//   454            My Referral QR shows the free therapy link (/r/<code>) and,
+//                  for each seminar website taking registrations, the short
+//                  seminar link (<site>/<code>) with Copy Link like it, one
+//                  card per address; none while the affiliate is suspended or
+//                  when there is none.
 //
 // The pages are bundled with esbuild and mounted in jsdom; only the Supabase
 // client, the auth context and the QR library are stubbed. Every name and
@@ -89,7 +94,8 @@ const PORTAL = {
   affiliate_portal_earnings: { summary: { lifetime: 12, unpaid: 12, deduction: 0, paid: 0, settled: 0, reversed: 0, blocked: 0 }, by_tier: { tier1: 12, tier2: 0 }, by_month: [], by_purchase: [] },
   affiliate_portal_payouts: [],
   affiliate_portal_network: { tier1: [], tier2: [] },
-  affiliate_portal_referral_info: { referral_code: 'T425RIA', accepting: true, direct_referrals: 1 },
+  affiliate_portal_referral_info: { referral_code: 'T425RIA', accepting: true, direct_referrals: 1,
+    seminar_links: [{ event_name: 'Test Health Seminar', first_day: '2026-11-23', last_day: '2026-11-24', url: 'https://seminar.example.com/T425RIA' }] },
   affiliate_portal_me: { name: 'Ria Test', email: 'ria@example.com', status: 'active', referral_code: 'T425RIA', joined_at: '2026-08-01' },
   affiliate_portal_campaign_progress: { campaign: null },
   public_affiliate_referral_info: { valid: true, accepting: true, affiliate_name: 'Ria Test' },
@@ -191,4 +197,41 @@ test('AFFILIATES-12: a friend who shares a customer\'s phone waits for a check i
   assert.ok(mae && mae.textContent.includes('Waiting for a check (shares a phone)'));
   assert.equal(friendStatus({ counted: false, first_visit_on: '2026-10-08', needs_check: true }, 'final'), 'Waiting for a check (shares a phone)');
   assert.equal(friendStatus({ counted: true, first_visit_on: '2026-10-08', needs_check: false }, 'final'), 'Yes');
+});
+
+// 454: the seminar link beside the free therapy link.
+const cards = () => [...document.querySelectorAll('.portal-qr-card')].map(c => ({
+  title: c.querySelector('h3')?.textContent, url: c.querySelector('.portal-break')?.textContent, card: c }));
+
+test('454: My Referral QR shows the free therapy link and the seminar link, and Copy Link copies the seminar one', async () => {
+  const copied = [];
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText: async t => { copied.push(t); } }, configurable: true });
+  await mount(React.createElement(M.AffiliateReferralPage), '/affiliate/referral');
+  const [therapy, seminar, ...rest] = cards();
+  assert.equal(rest.length, 0, 'two cards');
+  assert.equal(therapy.title, 'Your free therapy link');
+  assert.ok(therapy.url.endsWith('/r/T425RIA'), therapy.url);
+  assert.equal(seminar.title, 'Your link for Test Health Seminar');
+  assert.equal(seminar.url, 'https://seminar.example.com/T425RIA');
+  assert.ok(seminar.card.textContent.includes('Existing Energia customers keep their own referrer'));
+  await click([...seminar.card.querySelectorAll('button')].find(b => b.textContent.includes('Copy Link')));
+  assert.deepEqual(copied, ['https://seminar.example.com/T425RIA']);
+  delete navigator.clipboard;
+});
+
+test('454: one card per seminar link (one per address), none when there is none (or from a server before 454), none while suspended', async () => {
+  const two = [{ event_name: 'Test Seminar A', url: 'https://a.example.com/T425RIA' }, { event_name: 'Test Seminar B', url: 'https://b.example.com/T425RIA' }];
+  await mount(React.createElement(M.AffiliateReferralPage), '/affiliate/referral', b => { b.answers.affiliate_portal_referral_info = { ...PORTAL.affiliate_portal_referral_info, seminar_links: two }; });
+  assert.deepEqual(cards().map(c => c.url).slice(1), two.map(l => l.url));
+  // One site serves one event: the same address twice is one card, under the first name given.
+  const same = [two[0], { event_name: 'Test Seminar C', url: two[0].url }];
+  await mount(React.createElement(M.AffiliateReferralPage), '/affiliate/referral', b => { b.answers.affiliate_portal_referral_info = { ...PORTAL.affiliate_portal_referral_info, seminar_links: same }; });
+  assert.deepEqual(cards().map(c => c.title).slice(1), ['Your link for Test Seminar A']);
+  for (const seminar_links of [[], undefined]) {
+    await mount(React.createElement(M.AffiliateReferralPage), '/affiliate/referral', b => { b.answers.affiliate_portal_referral_info = { ...PORTAL.affiliate_portal_referral_info, seminar_links }; });
+    assert.deepEqual(cards().map(c => c.title), ['Your free therapy link'], JSON.stringify(seminar_links));
+  }
+  await mount(React.createElement(M.AffiliateReferralPage), '/affiliate/referral', b => { b.answers.affiliate_portal_referral_info = { ...PORTAL.affiliate_portal_referral_info, accepting: false }; });
+  assert.equal(cards().length, 0, 'no link while suspended');
+  assert.ok(text().includes('Your affiliate account is currently suspended'));
 });

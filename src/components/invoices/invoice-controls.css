@@ -329,6 +329,9 @@
 .instalment-method > .invoice-qr-show, .instalment-method > .invoice-qr-missing { margin-top: 8px; }
 .instalment-portion legend { font-size: 11.5px; font-weight: 600; color: var(--primary); padding: 0 4px; }
 .instalment-portion label { display: block; font-size: 12px; margin-bottom: 8px; }
+/* The Duration row is a group, not a label (a label forwards stray clicks to
+   the 3 button), so it takes the label's look here. */
+.instalment-portion .instalment-duration { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 .instalment-portion label > select,
 .instalment-portion label > input { display: block; width: 100%; margin-top: 3px; min-height: 38px; font-size: 16px; }
 .instalment-portion small { display: block; margin-top: 3px; font-size: 11px; color: var(--text-muted); }

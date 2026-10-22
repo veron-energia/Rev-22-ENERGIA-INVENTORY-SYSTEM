@@ -4,3 +4,5 @@ export const CUSTOMER_EDIT_ROLES: readonly string[];
 export function canEditCustomers(role: string | null | undefined): boolean;
 /** What a role that may not add customers is told. */
 export const CUSTOMER_EDIT_REFUSED: string;
+/** True when this role sees a customer's full Profile (figures, purchase timeline, phone history) and their Downline (453). */
+export function canSeeCustomerProfile(role: string | null | undefined): boolean;

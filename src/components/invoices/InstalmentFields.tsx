@@ -7,7 +7,9 @@ export function InstalmentFields({ value, onChange, methods }: {
 }) {
   return <fieldset style={{ minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
     <legend>Instalment</legend>
-    <label><input type="checkbox" style={{ width: 'auto' }} checked={!!value.instalment_category}
+    {/* Only the box and its word toggle: a full-width label let a click at the
+        far end of the row untick it, which wipes the method and the months. */}
+    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" style={{ width: 'auto' }} checked={!!value.instalment_category}
       onChange={e => onChange(e.target.checked ? { instalment_category: 'in_house', instalment_method_id: '', instalment_months: 3 }
         : { instalment_category: '', instalment_method_id: '', instalment_months: '' })} /> Instalments</label>
     {!!value.instalment_category && <div className="form-grid" style={{ marginTop: 8 }}>

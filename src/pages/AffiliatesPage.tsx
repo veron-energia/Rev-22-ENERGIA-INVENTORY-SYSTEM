@@ -9,6 +9,7 @@ import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, 
 import DownlineModal from '../components/referrals/DownlineModal';
 import ReferralPromotionPanel from '../components/referrals/ReferralPromotionPanel';
 import { owedSplit } from '../lib/affiliatePayoutPresentation';
+import { canSeeCustomerProfile } from '../lib/customers/customerRoles.mjs';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 const d = (s?: string | null) => s ? new Date(s).toLocaleDateString('en-GB') : '—';
@@ -225,12 +226,16 @@ const AffiliatesPage: React.FC = () => {
   const canHandleClaims = canManage || staffClaims;
   // Unlinking a portal login is the Owner's alone, not a Manager's.
   const canUnlink = isOwner(profile?.role);
+  // 453 (the Owner, 22 Oct 2026): the Downline (Tier 1 and Tier 2, with
+  // visits and its export) is also on the staff list, for Staff and Admins
+  // (the roles that see a customer's full Profile); not Inventory Managers.
+  const canDownline = canSeeCustomerProfile(profile?.role);
 
   const [rows, setRows] = useState<DirRow[]>([]);
   // 398, Owner/Manager: the affiliates, or the referral promotion's report;
-  // and one affiliate's downline with visits.
+  // and one affiliate's downline with visits (453: from the staff list too).
   const [view, setView] = useState<'affiliates' | 'promotion'>('affiliates');
-  const [downlineFor, setDownlineFor] = useState<DirRow | null>(null);
+  const [downlineFor, setDownlineFor] = useState<{ customer_id: string; name: string } | null>(null);
   const [claims, setClaims] = useState<ClaimRow[]>([]);
   const [rejected, setRejected] = useState<ClaimRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1037,10 +1042,10 @@ const AffiliatesPage: React.FC = () => {
       {!canManage && (
         <div className="card" style={{ padding: 0, overflow: 'auto' }}>
           <table className="table" style={{ width: '100%' }}>
-            <thead><tr><th>Affiliate</th><th>Status</th><th>Referral Code</th><th>Referral Link</th></tr></thead>
+            <thead><tr><th>Affiliate</th><th>Status</th><th>Referral Code</th><th>Referral Link</th>{canDownline && <th></th>}</tr></thead>
             <tbody>
-              {loading && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>Loading…</td></tr>}
-              {!loading && staffRows.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>No affiliates found</td></tr>}
+              {loading && <tr><td colSpan={canDownline ? 5 : 4} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>Loading…</td></tr>}
+              {!loading && staffRows.length === 0 && <tr><td colSpan={canDownline ? 5 : 4} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>No affiliates found</td></tr>}
               {staffRows.map(r => (
                 <tr key={r.customer_id}>
                   <td style={{ fontWeight: 500 }}>{r.full_name}</td>
@@ -1052,6 +1057,11 @@ const AffiliatesPage: React.FC = () => {
                       <QrCode size={14} /> QR &amp; link
                     </button>
                   </td>
+                  {canDownline && <td>
+                    <button type="button" className="btn btn-secondary btn-sm"
+                      title="Downline: Tier 1 and Tier 2, with visits" aria-label={`Downline of ${r.full_name}`}
+                      onClick={() => setDownlineFor({ customer_id: r.customer_id, name: r.full_name })}><Users size={14} /></button>
+                  </td>}
                 </tr>
               ))}
             </tbody>

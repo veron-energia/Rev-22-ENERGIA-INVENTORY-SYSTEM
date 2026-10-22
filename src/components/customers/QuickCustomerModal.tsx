@@ -154,7 +154,7 @@ export const QuickCustomerModal: React.FC<{
 
           <div className="qc-field" ref={phoneRef}>
             <label htmlFor="qc-phone">Phone <span aria-hidden="true">*</span></label>
-            <PhoneInput value={f.phone} onChange={v => setF(s => ({ ...s, phone: v }))} />
+            <PhoneInput id="qc-phone" value={f.phone} onChange={v => setF(s => ({ ...s, phone: v }))} />
             {checking && <span className="qc-hint">Checking who is already on this number…</span>}
             {!checking && capacity && (
               <span className="qc-hint">

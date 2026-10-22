@@ -9,6 +9,12 @@ const AffiliateReferralPage: React.FC = () => {
   const { data: info, err, retry } = usePortalRpc<any>('affiliate_portal_referral_info');
 
   const url = info?.referral_code ? `${publicAppUrl()}/r/${info.referral_code}` : '';
+  // 454 (the owner, 22 Oct 2026): the short seminar link (<site>/<code>) of each
+  // event whose website takes registrations now; none from a server before 454.
+  // One card per address (the server lists each once; a site serves one event).
+  const seminarLinks: { event_name: string; url: string }[] = Array.isArray(info?.seminar_links)
+    ? info.seminar_links.filter((l: any, i: number, all: any[]) => typeof l?.url === 'string' && l.url
+        && all.findIndex((o: any) => o?.url === l.url) === i) : [];
 
   return (
     <AffiliateLayout>
@@ -27,9 +33,16 @@ const AffiliateReferralPage: React.FC = () => {
             </div>
           )}
           {info.accepting !== false && url && (
-            <QRCodeCard url={url} title="Your Referral Link" filename={`energia-referral-${info.referral_code}`}
+            <QRCodeCard url={url} title="Your free therapy link" filename={`energia-referral-${info.referral_code}`}
               caption="Anyone who registers through this link becomes a customer under you. They do not automatically become an affiliate." />
           )}
+          {info.accepting !== false && seminarLinks.map((l, i) => (
+            <div key={l.url} style={{ marginTop: 18 }}>
+              <QRCodeCard url={l.url} title={`Your link for ${l.event_name}`}
+                filename={`energia-seminar-${info.referral_code}${i ? `-${i + 1}` : ''}`}
+                caption="New people who register for the seminar through this link are placed under you. Existing Energia customers keep their own referrer. You earn commission when they upgrade to VIP." />
+            </div>
+          ))}
           <div style={{ marginTop: 18, color: 'var(--text-muted)', fontSize: 13 }}>
             Direct referrals so far: <b style={{ color: 'var(--text)' }}>{info.direct_referrals ?? 0}</b>
           </div>

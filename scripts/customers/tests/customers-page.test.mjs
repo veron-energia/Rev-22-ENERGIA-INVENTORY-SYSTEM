@@ -33,6 +33,12 @@
 //     customers; the old Admin role adds and edits, and its filled-in date
 //     of birth stays locked, as for Staff. The Invoices page's Add a customer
 //     (QuickCustomerModal) says the same and sends nothing.
+//   * Who sees the full Profile (453, the Owner, 22 Oct 2026): Staff and the
+//     old Admin role, as Owners and Managers, get the figures, the phone
+//     history, the purchase timeline and the Downline (the Profile's button
+//     and the row's); Delete, Deleted Customers and the credit Opening
+//     balance and Adjust stay Owner/Manager. An Inventory Manager keeps the
+//     Limited view and asks for none of it.
 //
 // Run: node --test scripts/customers/tests/customers-page.test.mjs
 import { test, after } from 'node:test';
@@ -130,6 +136,7 @@ function createBackend(fx) {
     customer_credit_statement: () => [],
     customer_profile_stats: () => ({ purchases: 0, total_spend: 0, referred_count: 0, referrer_name: null }),
     customer_purchase_timeline: () => [],
+    customer_downline_visits: a => ({ customer_id: a.p_customer_id, name: 'Ada Tan', phone: '+6591418501', tier1: [], tier2: [] }),
     customer_match_candidates: () => ({ candidates: [{ id: 'c-1', full_name: 'Ada Tan', phone_tail: '8501', name_matches: false }],
                                         used: 1, remaining: 2 }),
     create_customer_quick: a => ({ customer_id: 'c-new', full_name: `${a.p_first_name} ${a.p_last_name ?? ''}`.trim(), replayed: false }),
@@ -597,6 +604,58 @@ test('Profile reads that customer\'s phone history only, with Singapore dates', 
   await click(button('Close', modal()));
   await click(button('Profile', row('Ben Lee')));
   assert.ok(modal().textContent.includes('DOB: 06/05/1980'), 'the date of birth, dd/mm/yyyy');
+});
+
+test('453: Staff and the old Admin role see the full Profile and the Downline; Delete, Deleted Customers and credit Adjust stay Owner/Manager', async () => {
+  for (const role of ['staff', 'admin']) {
+    await mount(role, b => {
+      b.handlers.customer_profile_stats = () => ({ purchases: 1, total_spend: 30, referred_count: 2, referrer_name: 'Ben Lee' });
+      b.handlers.customer_purchase_timeline = () => [{ invoice_id: 'i-1', invoice_no: 'INV-T453', date: '2026-10-01T02:00:00Z', status: 'paid',
+        store: 'Fixture Store', total: 30, paid: 30, is_topup: false, save_earth: 0,
+        items: [{ kind: 'voucher', name: 'Fixture Voucher', qty: 1, unit_price: 30, line_total: 30, price_mode: null }] }];
+    });
+    assert.deepEqual(globalThis.__renderErrors, [], role);
+    await click(button('Profile', row('Ada Tan')));
+    assert.deepEqual(callsOf('customer_profile_stats').map(c => c.args), [{ p_customer_id: 'c-1' }], role + ': the figures are read');
+    assert.deepEqual(callsOf('customer_purchase_timeline').map(c => c.args), [{ p_customer_id: 'c-1' }], role + ': the timeline is read');
+    assert.equal(callsOf('customer_phone_history').length, 1, role + ': the phone history is read');
+    const m = modal();
+    for (const s of ['Paid purchases', 'Total spend', 'S$30.00', 'Customers referred', 'Referred by', 'Ben Lee',
+                     'Phone history', 'New number · 09/10/2026', 'Purchase timeline', 'INV-T453']) {
+      assert.ok(m.textContent.includes(s), `${role}: the Profile shows ${s}`);
+    }
+    assert.ok(!m.textContent.includes('Limited view'), role + ': no Limited view note');
+    await click(button('Downline', m));
+    assert.deepEqual(callsOf('customer_downline_visits').map(c => c.args), [{ p_customer_id: 'c-1' }], role + ': the Profile\'s Downline');
+    assert.ok(modal().textContent.includes('Downline — Ada Tan'), role);
+    await click(button('Close', modal()));
+    await click(button('Close', modal()));
+    await click(row('Ben Lee').querySelector('button[aria-label="Downline of Ben Lee"]'));
+    assert.deepEqual(callsOf('customer_downline_visits').map(c => c.args).pop(), { p_customer_id: 'c-2' }, role + ': the row\'s Downline');
+    await click(button('Close', modal()));
+    // Still the Owner's and Manager's.
+    assert.ok(!button('Deleted Customers'), role + ': no Deleted Customers');
+    assert.ok(!row('Ada Tan').querySelector('button[aria-label="Delete customer"]'), role + ': no Delete');
+    await click(button('View', row('Ada Tan')));
+    assert.ok(modal().textContent.includes('Credit wallet'), role + ': View opens');
+    assert.ok(!button('Opening balance', modal()) && !button('Adjust', modal()), role + ': no Opening balance or Adjust');
+  }
+});
+
+test('453: an Inventory Manager keeps the Limited view: no figures, phone history, timeline or Downline, and none is asked for', async () => {
+  await mount('invman');
+  assert.ok(!document.querySelector('button[aria-label^="Downline of"]'), 'no row Downline');
+  await click(button('Profile', row('Ada Tan')));
+  assert.equal(callsOf('customer_profile_stats').length + callsOf('customer_purchase_timeline').length
+               + callsOf('customer_phone_history').length + callsOf('customer_downline_visits').length, 0, 'nothing is asked for');
+  const m = modal();
+  assert.ok(m.textContent.includes('Limited view — purchases, spend, phone history and the downline are visible to Owners, Admins, Managers and Staff.'),
+            m.textContent);
+  for (const s of ['Paid purchases', 'Total spend', 'Phone history', 'Purchase timeline', 'No purchases yet']) {
+    assert.ok(!m.textContent.includes(s), 'no ' + s);
+  }
+  assert.ok(!button('Downline', m), 'no Downline in the Profile');
+  assert.ok(m.textContent.includes('Phone: +6591418501'), 'the contact details still show');
 });
 
 // ── the referrer picker ────────────────────────────────────────────────────

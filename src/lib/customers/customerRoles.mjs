@@ -12,3 +12,13 @@ export function canEditCustomers(role) {
 
 /** What a role that may not add customers is told. */
 export const CUSTOMER_EDIT_REFUSED = 'Only Owners, Managers and Staff can add or change customers. Pick a customer already on the list, or ask one of them.';
+
+// 453: who sees a customer's full Profile (the Owner, 22 Oct 2026): the same
+// roles. The figures, the purchase timeline from every store, the phone
+// history and the Downline (with its export); an Inventory Manager keeps the
+// Limited view. customer_profile_stats, customer_purchase_timeline and
+// customer_downline_visits check the same in the database.
+/** True when this role sees a customer's full Profile and their Downline. */
+export function canSeeCustomerProfile(role) {
+  return CUSTOMER_EDIT_ROLES.includes(String(role ?? ''));
+}

@@ -32,6 +32,14 @@
 .qc-field { display: block; font-size: 12px; font-weight: 600; margin-bottom: 10px; }
 .qc-field input, .qc-field select { width: 100%; margin-top: 3px; font-size: 16px; }
 .qc-field [aria-invalid="true"] { border-color: var(--danger); }
+/* The phone control is the shared PhoneInput: a country select beside a number
+   box that takes the rest. ".qc-field select" above is as specific as the
+   component's own ".phone-input select" and comes later, so its width:100% made
+   the country list fill the row and pushed the number box out of the dialog.
+   Restored here, at a width that fits "Singapore (+65)" at this 16px type. */
+.qc-field .phone-input select { width: 170px; }
+.qc-field .phone-input input { width: auto; }
+@media (max-width: 380px) { .qc-field .phone-input select { width: 100%; } }
 .qc-hint { display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; margin-top: 3px; line-height: 1.5; }
 .qc-candidates {
   border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
