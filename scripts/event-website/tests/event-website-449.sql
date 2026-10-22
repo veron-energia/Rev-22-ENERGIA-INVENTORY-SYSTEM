@@ -274,13 +274,15 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
                                      ('public.event_registration_close(uuid,text)', true),
                                      ('public.event_vip_person_problems(uuid)', false)) x(f, page)),
   'G1 the five changed functions keep their grants (the three page functions signed-in staff''s, register and the problems the service role''s)');
-select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = x.m)
+-- (450, where it is applied, refused VIP for anyone taken off the list and a hold's Close while their payment waits:
+-- event_vip_person_problems and event_registration_close are 449's or 450's.)
+select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_web_register(uuid,jsonb)', '3aad1ad2a8a91732d330b2ef149bf969'),
                                      ('public.event_web_guest_extras(uuid)', '03358fda2da1b4fda082e3f29b512a38'),
                                      ('public.event_set_guest_cancelled(uuid,boolean,text)', 'af22a3fad6232dad1a748b9cc1ddb2ae'),
-                                     ('public.event_registration_close(uuid,text)', '60f3dde4dc9f7d8cc33f5517e54eeed8'),
-                                     ('public.event_vip_person_problems(uuid)', 'ec2fbe26fa116505cdd56910d17ce9ea')) x(f, m)),
-  'G2 the five functions have 449''s AFTER md5s');
+                                     ('public.event_registration_close(uuid,text)', '60f3dde4dc9f7d8cc33f5517e54eeed8 39436dab86aa00d5884fceab88cb2d09'),
+                                     ('public.event_vip_person_problems(uuid)', 'ec2fbe26fa116505cdd56910d17ce9ea add06a8aba39e4259bcf68bab4092027')) x(f, m)),
+  'G2 the five functions have 449''s AFTER md5s (450''s for the problems and the close, where applied)');
 select pg_temp.check((select bool_and(pg_get_functiondef(x.f::regprocedure) ~ E'\nbegin\n  perform public\\.require_active_staff\\(')
                         from (values ('public.event_web_guest_extras(uuid)'), ('public.event_set_guest_cancelled(uuid,boolean,text)'),
                                      ('public.event_registration_close(uuid,text)')) x(f)),
