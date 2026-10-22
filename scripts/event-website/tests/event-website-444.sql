@@ -242,12 +242,14 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
                                      ('public.event_web_vip_paid(uuid,jsonb)', false),
                                      ('public.event_web_guest_extras(uuid)', true)) x(f, page)),
   'G1 the four changed functions keep their grants (the three page functions signed-in staff''s, vip_paid the service role''s)');
-select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = x.m)
-                        from (values ('public.event_registration_close(uuid,text)', 'ae3df7387a2057281778258ead3aa4df'),
+-- (449, where it is applied, added the signed-up-again holds to event_registration_close and event_web_guest_extras:
+-- 444's or 449's.)
+select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
+                        from (values ('public.event_registration_close(uuid,text)', 'ae3df7387a2057281778258ead3aa4df 60f3dde4dc9f7d8cc33f5517e54eeed8'),
                                      ('public.event_vip_order_dismiss(uuid,text,boolean)', 'd1b16a09f2376591688feb42585c8146'),
                                      ('public.event_web_vip_paid(uuid,jsonb)', '1e1e48047b36af39495ef767a37237c2'),
-                                     ('public.event_web_guest_extras(uuid)', '369914bd689e9aa1d34e8e2d887b1d43')) x(f, m)),
-  'G2 the four functions have 444''s AFTER md5s');
+                                     ('public.event_web_guest_extras(uuid)', '369914bd689e9aa1d34e8e2d887b1d43 03358fda2da1b4fda082e3f29b512a38')) x(f, m)),
+  'G2 the four functions have 444''s AFTER md5s (449''s for the close and the guest extras, where applied)');
 select pg_temp.check((select bool_and(pg_get_functiondef(x.f::regprocedure) ~ E'\nbegin\n  perform public\\.require_active_staff\\(')
                         from (values ('public.event_registration_close(uuid,text)'), ('public.event_vip_order_dismiss(uuid,text,boolean)'),
                                      ('public.event_web_guest_extras(uuid)')) x(f)),
