@@ -67,11 +67,16 @@
 --      full asks none and pays back the S$30 taking line B's voucher back;
 --      Cancel asks voucher_redeemed (446's NOT COVERED 1, 438's NOT COVERED 2:
 --      KNOWN); the guided Cancel stating S$30 owed lets the S$30 be recorded.
+--      Where 448 is in (the Owner, 22 Oct 2026: a unit or credit a line
+--      refund paid back is not used), Cancel asks nothing and no amount owed
+--      is kept, and the S$30 is recorded the same.
 --   7. The controls after 446: the same.
 --   8. KNOWN (446's NOT COVERED 1-4, checked as they are): a line of two with
 --      one unit refunded while waiting and settled: Refund in full asks
 --      voucher_redeemed; a credit line refunded, while waiting or not, reads
---      credit_used to Cancel; a unit, or credit, queued because an earlier
+--      credit_used to Cancel (NOT COVERED 1: where 448 is in, checked as
+--      fixed: nothing asked, nothing used, "Record refund paid" records the
+--      money, printed as FIXED); a unit, or credit, queued because an earlier
 --      line refund took it cannot be refunded while waiting; an FOC taken
 --      off and not yet paid cannot be refunded by line; a part-paid package
 --      never settled has nothing waiting and no line refund.
@@ -131,6 +136,11 @@ create function pg_temp.t446_fingerprint() returns text language sql as $f$
    where n.nspname = 'public' and p.prokind in ('f', 'p') $f$;
 create function pg_temp.t446_in() returns boolean language sql as $f$
   select position('-- 446 (the Owner' in pg_get_functiondef('public.refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)'::regprocedure)) > 0 $f$;
+-- 448 (446's NOT COVERED 1 fixed): a unit or credit a line refund paid back
+-- is not used.
+create function pg_temp.t448_in() returns boolean language sql as $f$
+  select to_regprocedure('public.invoice_benefit_unused_elsewhere(uuid)') is not null
+     and position('-- 448:' in pg_get_functiondef('public.cancelled_invoice_used_value(uuid)'::regprocedure)) > 0 $f$;
 
 do $$
 declare own uuid := gen_random_uuid(); st uuid; c uuid; c2 uuid; pm uuid; v uuid; vl uuid; cp uuid; cpb uuid; pbb uuid;
@@ -847,8 +857,10 @@ begin
   perform pg_temp.t446_refund_some(inv, pg_temp.t446_line(inv, 1), 1);
   perform pg_temp.t446_pay(inv);
   codes := pg_temp.t446_guided(inv, 'cancel', 30);
+  -- (448 in: nothing is asked, so no amount owed is kept.)
   perform pg_temp.t446_check((select status::text from invoices where id = inv) = 'cancelled'
-    and (select cancel_refund_owed from invoices where id = inv) = 30, '6 the guided Cancel (asked ' || codes || ')');
+    and (select cancel_refund_owed from invoices where id = inv) is not distinct from case when pg_temp.t448_in() then null else 30 end
+    and codes = case when pg_temp.t448_in() then '-' else 'voucher_redeemed' end, '6 the guided Cancel (asked ' || codes || ')');
   -- (Recorded first, in a statement of its own: the reads below are STABLE
   -- and would otherwise see the invoice as it was when the statement began.)
   msg := pg_temp.t446_record_refund(inv, 30);
@@ -873,7 +885,8 @@ begin
     end loop;
   end if;
   -- The absolute figures, either way.
-  perform pg_temp.t446_check(o->'C1'->>'status' = 'paid' and (o->'C1'->>'net')::numeric = 30 and o->'C1'->'plans'->>'cancel' = 'voucher_redeemed',
+  perform pg_temp.t446_check(o->'C1'->>'status' = 'paid' and (o->'C1'->>'net')::numeric = 30
+    and o->'C1'->'plans'->>'cancel' = case when pg_temp.t448_in() then '-' else 'voucher_redeemed' end,
     '7 C1 reads ' || (o->'C1')::text);
   perform pg_temp.t446_check((o->'C2'->>'stock_out')::int = 1 and (o->'C2'->>'net')::numeric = 30, '7 C2 reads ' || (o->'C2')::text);
   perform pg_temp.t446_check((o->'C3'->>'stock_out')::int = 1 and (o->'C3'->>'net')::numeric = 30, '7 C3 reads ' || (o->'C3')::text);
@@ -902,21 +915,29 @@ do $$
 declare inv uuid; msg text; x jsonb; b uuid; a uuid; codes text;
 begin
   -- NOT COVERED 1 (438's NOT COVERED 2): a refunded unit reads as used.
+  -- 448 (the Owner, 22 Oct 2026) fixes it: where 448 is in, checked as fixed.
   perform pg_temp.t446_check((select v from t446_known where k = 'U refund_full') = '-'
-    and (select v from t446_known where k = 'U cancel') = 'voucher_redeemed'
-    and (select v from t446_known where k = 'U guided cancel') = 'voucher_redeemed',
+    and (select v from t446_known where k = 'U cancel') = case when pg_temp.t448_in() then '-' else 'voucher_redeemed' end
+    and (select v from t446_known where k = 'U guided cancel') = case when pg_temp.t448_in() then '-' else 'voucher_redeemed' end,
     '8 a unit refunded while waiting, settled, now reads ' || (select string_agg(k || ': ' || v, ', ' order by k) from t446_known)
+    || case when pg_temp.t448_in() then ' (448 in)' else ' (448 not in)' end
     || ': look at 446''s NOT COVERED 1 and this case again');
   inv := pg_temp.t446_waiting('v', array[2]);
   perform pg_temp.t446_refund_some(inv, pg_temp.t446_line(inv, 1), 1);
   perform pg_temp.t446_pay(inv);
-  perform pg_temp.t446_check(pg_temp.t446_codes(inv, 'refund_full') = 'voucher_redeemed',
+  perform pg_temp.t446_check(pg_temp.t446_codes(inv, 'refund_full') = case when pg_temp.t448_in() then '-' else 'voucher_redeemed' end,
     '8 a line of two, one unit refunded while waiting, settled: Refund in full now asks ' || pg_temp.t446_codes(inv, 'refund_full')
     || ': look at 446''s NOT COVERED 1 and this case again');
   perform cancel_invoice_recorded(inv, 'T446 8 cancel', gen_random_uuid());
   msg := pg_temp.t446_record_refund(inv, 30);
-  perform pg_temp.t446_check(pg_temp.t446_used(inv) = 'voucher_redeemed' and msg like 'Part of what % (vouchers redeemed)%',
-    '8 cancelled directly it reads ' || pg_temp.t446_used(inv) || ' and Record refund paid: ' || msg || ': look at 446''s NOT COVERED 1 and this case again');
+  if pg_temp.t448_in() then
+    perform pg_temp.t446_check(pg_temp.t446_used(inv) = '-' and msg = 'recorded'
+      and (invoice_financial_position(inv)->>'refund_due')::numeric = 0,
+      '8 (448 in) cancelled directly it reads ' || pg_temp.t446_used(inv) || ' and Record refund paid: ' || msg || ': look at 448 and this case again');
+  else
+    perform pg_temp.t446_check(pg_temp.t446_used(inv) = 'voucher_redeemed' and msg like 'Part of what % (vouchers redeemed)%',
+      '8 cancelled directly it reads ' || pg_temp.t446_used(inv) || ' and Record refund paid: ' || msg || ': look at 446''s NOT COVERED 1 and this case again');
+  end if;
   -- NOT COVERED 1, credit: a credit line refunded by line reads credit_used
   -- to Cancel, with nothing waiting (as before 446) and once refunded while
   -- waiting and settled; Refund in full asks nothing.
@@ -931,9 +952,11 @@ begin
   insert into t446_known values ('CW guided cancel', codes);
   perform pg_temp.t446_check(pg_temp.t446_cmoney(inv) = 'cancelled net 0.00 credit 0.00 waiting 0.00',
     '8 the guided Cancel stating S$100 owed (asked ' || codes || '): ' || pg_temp.t446_cmoney(inv));
-  perform pg_temp.t446_check((select v from t446_known where k = 'CN cancel') = 'credit_used' and (select v from t446_known where k = 'CN refund_full') = '-'
-    and (select v from t446_known where k = 'CW cancel') = 'credit_used' and (select v from t446_known where k = 'CW refund_full') = '-'
-    and codes = 'credit_used',
+  perform pg_temp.t446_check((select v from t446_known where k = 'CN cancel') = case when pg_temp.t448_in() then '-' else 'credit_used' end
+    and (select v from t446_known where k = 'CN refund_full') = '-'
+    and (select v from t446_known where k = 'CW cancel') = case when pg_temp.t448_in() then '-' else 'credit_used' end
+    and (select v from t446_known where k = 'CW refund_full') = '-'
+    and codes = case when pg_temp.t448_in() then '-' else 'credit_used' end,
     '8 a credit line refunded now reads ' || (select string_agg(k || ': ' || v, ', ' order by k) from t446_known where k like 'C%')
     || ': look at 446''s NOT COVERED 1 and this case again');
   -- NOT COVERED 2, credit: a line paid back on the cancelled invoice before
@@ -975,8 +998,14 @@ begin
     and not exists (select 1 from invoice_benefit_values where invoice_id = inv)
     and msg = 'ERR There is nothing left to refund on this invoice',
     '8 a part-paid package never settled, cancelled and reopened: a line refund now gives ' || msg || ': look at 446''s NOT COVERED 4 and this case again');
-  raise notice 'KNOWN 8: (not covered by 446) (1) a unit refunded while waiting reads as used, as any refunded unit (438''s NOT COVERED 2): settled, Refund in full asks %, Cancel asks %, the guided Cancel %; a line of two with one unit refunded: Refund in full asks voucher_redeemed and, cancelled directly, Record refund paid is refused. The same for credit: a credit line refunded, with nothing waiting or while waiting, reads credit_used to Cancel (the guided Cancel stating the amount owed goes through), Refund in full asks nothing. (2) a unit, or credit, queued because an earlier line refund took it cannot be refunded while waiting. (3) an FOC taken off and not yet paid cannot be refunded by line. (4) a part-paid package never settled: nothing waits once cancelled and reopened, and no line refund',
-    (select v from t446_known where k = 'U refund_full'), (select v from t446_known where k = 'U cancel'), (select v from t446_known where k = 'U guided cancel');
+  if pg_temp.t448_in() then
+    raise notice 'FIXED 8 by 448: (1) a unit refunded while waiting, settled: Refund in full asks %, Cancel asks %, the guided Cancel %; a line of two with one unit refunded: Refund in full asks nothing and, cancelled directly, Record refund paid records the S$30. The same for credit: a credit line refunded, with nothing waiting or while waiting, reads nothing used to Cancel',
+      (select v from t446_known where k = 'U refund_full'), (select v from t446_known where k = 'U cancel'), (select v from t446_known where k = 'U guided cancel');
+    raise notice 'KNOWN 8: (not covered by 446) (2) a unit, or credit, queued because an earlier line refund took it cannot be refunded while waiting. (3) an FOC taken off and not yet paid cannot be refunded by line. (4) a part-paid package never settled: nothing waits once cancelled and reopened, and no line refund';
+  else
+    raise notice 'KNOWN 8: (not covered by 446) (1) a unit refunded while waiting reads as used, as any refunded unit (438''s NOT COVERED 2): settled, Refund in full asks %, Cancel asks %, the guided Cancel %; a line of two with one unit refunded: Refund in full asks voucher_redeemed and, cancelled directly, Record refund paid is refused. The same for credit: a credit line refunded, with nothing waiting or while waiting, reads credit_used to Cancel (the guided Cancel stating the amount owed goes through), Refund in full asks nothing. (2) a unit, or credit, queued because an earlier line refund took it cannot be refunded while waiting. (3) an FOC taken off and not yet paid cannot be refunded by line. (4) a part-paid package never settled: nothing waits once cancelled and reopened, and no line refund',
+      (select v from t446_known where k = 'U refund_full'), (select v from t446_known where k = 'U cancel'), (select v from t446_known where k = 'U guided cancel');
+  end if;
 end $$;
 
 -- ===== 8b. KNOWN: a customer change after a line refund (446's NOT COVERED 5) =====
