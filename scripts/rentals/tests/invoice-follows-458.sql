@@ -201,7 +201,9 @@ create function pg_temp.dash_out(p_inv uuid) returns int language sql as
 $$ select count(*)::int from rentals where invoice_id = p_inv and status::text in ('paid', 'active') $$;
 
 -- ═════ G The md5s and the grants ═════
-select pg_temp.check((select string_agg(fn || '=' || md5, ', ' order by fn) from pg_temp.fn_md5s()
+-- correct_invoice: 458's AFTER, or 464's (which builds on it), read as 458's here.
+select pg_temp.check((select replace(string_agg(fn || '=' || md5, ', ' order by fn),
+                                     '=04d647e13e9424a9375942e5812e91a2', '=af9451fa15c2cf790edd70f799bae336') from pg_temp.fn_md5s()
                        where fn in ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'preview_invoice_correction(uuid,jsonb)',
                                     'settle_waiting_special_docs_on_refund(uuid,jsonb,text)', 'create_special_docs_for_invoice(uuid)',
                                     'reopen_invoice(uuid,text,uuid)', 'fulfil_special_doc(text,uuid,uuid,text)',
@@ -218,7 +220,7 @@ select pg_temp.check((select string_agg(fn || '=' || md5, ', ' order by fn) from
  || 'rentals_follow_refund(uuid,jsonb,text)=0426b050207ccb4fe0a991b3cafc9769, '
  || 'reopen_invoice(uuid,text,uuid)=0ff61e4ead121c198ea7f90a7fc78274, '
  || 'settle_waiting_special_docs_on_refund(uuid,jsonb,text)=edfd1f1beb7ab3b6739096a618cd6a96',
-  'G1 the six patched and four new functions have 458''s AFTER md5s');
+  'G1 the six patched and four new functions have 458''s AFTER md5s (correct_invoice: or 464''s)');
 select pg_temp.check(not exists (
     select 1 from unnest(array['invoice_rental_correction_check(uuid,jsonb,uuid,uuid)', 'invoice_rentals_follow_lines(uuid,jsonb,text)',
                                'rental_end_on_refund(uuid,integer,text)', 'rentals_follow_refund(uuid,jsonb,text)',

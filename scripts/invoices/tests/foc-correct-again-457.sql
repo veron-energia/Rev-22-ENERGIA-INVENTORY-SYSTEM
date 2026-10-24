@@ -227,11 +227,11 @@ begin
 end $$;
 
 -- ═════ G The md5s, the grants, what 457 relies on ═════
--- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it).
+-- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it), or 464's (built on 458).
 select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)')
-        in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336')
+        in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2')
     and (select md5 from pg_temp.fn_md5s() where fn = 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)') = '1f034561a461bdb46a1e6274e0d04606',
-  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s)');
+  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s)');
 select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('authenticated', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('service_role', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
@@ -257,7 +257,7 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('deduct_invoice_stock(uuid,text)', '32183fe9e7c15ed0b11307c48289831a'),
                ('invoice_stock_to_deduct(uuid)', '6356494ccb8545d46c56b788f8f85f54'),
                ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b'),
-               ('trg_issue_sold_vouchers_on_paid()', 'c840d0d2754e7a8e889848ea8269a293'),
+               ('trg_issue_sold_vouchers_on_paid()', 'c840d0d2754e7a8e889848ea8269a293|cf0b5610b77edfea2683751d5c25ca1d'),
                ('cancel_invoice_recorded(uuid,text,uuid)', 'de52d9dbaef8ab15163bef35cb9d733d'),
                ('delete_invoice(uuid,text)', '530b8217e94c9bbb0765c47da2d8d40e'),
                ('set_product_prices(uuid,uuid,numeric,numeric,text)', 'aef4792013bc3a56f8ee62bc1a7d686a')) x(fn, ok);

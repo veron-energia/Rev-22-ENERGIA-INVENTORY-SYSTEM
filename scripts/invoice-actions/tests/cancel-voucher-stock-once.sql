@@ -137,10 +137,11 @@
 --      cancelled and reopened three times: 10 and 8 every time (not 10, 11,
 --      12 and 8, 9, 10).
 --  20. A paid sale of 2, its line raised to 3 and the rest paid (7, 2
---      held: the third unit has no voucher), cancelled and reopened three
---      times: 10 and 7 every time (not 10, then 9 and 9).
---  21. A paid sale of 2 cancelled and reopened, then raised to 3 and paid,
---      then cancelled: 10 (not 9).
+--      held: the third unit has no voucher; 3 held once 464 is in, which
+--      gives it), cancelled and reopened three times: 10 and 7 every time
+--      (not 10, then 9 and 9), the same vouchers held each time.
+--  21. A paid sale of 2 cancelled and reopened, then raised to 3 and paid
+--      (2 held, or 3 with 464), then cancelled: 10 (not 9).
 --
 -- Needs 417 (run it in the same transaction first, on a copy of production's
 -- schema); fails without it at case 1 (at case 6's reopening when only the
@@ -1373,22 +1374,24 @@ begin
 end $$;
 
 -- ===== 20. A paid sale's voucher line raised, the rest paid, cancelled and reopened three times =====
+-- 464 gives the raised line's third voucher at the payment: 3 held with it in, 2 without.
 do $$
 declare inv uuid;
+  h int := case when to_regprocedure('public.give_raised_voucher_units(uuid,uuid[],boolean,text)') is null then 2 else 3 end;
 begin
   inv := pg_temp.tvs_paid_sale('v24', 1, 2);
   perform pg_temp.tvs_set_qty(inv, 3, false, 'TVS 20 one more');
   perform pg_temp.tvs_pay_rest(inv);
   perform pg_temp.tvs_check((select status from invoices where id = inv) = 'paid', '20 paid');
-  perform pg_temp.tvs_check(pg_temp.tvs_stock('v24') = 7 and pg_temp.tvs_held('v24') = 2,
-    '20 fixture: raised and paid, ' || pg_temp.tvs_show('v24') || ', not 7 held 2');
+  perform pg_temp.tvs_check(pg_temp.tvs_stock('v24') = 7 and pg_temp.tvs_held('v24') = h,
+    '20 fixture: raised and paid, ' || pg_temp.tvs_show('v24') || ', not 7 held ' || h);
   for k in 1 .. 3 loop
     perform cancel_invoice_recorded(inv, 'TVS 20 cancel ' || k, gen_random_uuid());
     perform pg_temp.tvs_check(pg_temp.tvs_stock('v24') = 10 and pg_temp.tvs_held('v24') = 0,
       '20 cancelled (' || k || '): ' || pg_temp.tvs_show('v24') || ', not 10 held 0');
     perform reopen_invoice(inv, 'TVS 20 reopen ' || k, gen_random_uuid());
-    perform pg_temp.tvs_check(pg_temp.tvs_stock('v24') = 7 and pg_temp.tvs_held('v24') = 2,
-      '20 reopened (' || k || '): ' || pg_temp.tvs_show('v24') || ', not 7 held 2');
+    perform pg_temp.tvs_check(pg_temp.tvs_stock('v24') = 7 and pg_temp.tvs_held('v24') = h,
+      '20 reopened (' || k || '): ' || pg_temp.tvs_show('v24') || ', not 7 held ' || h);
   end loop;
   raise notice 'PASS 20: a paid line raised from 2 to 3 and paid: cancelled 10, reopened 7, three times (not 10, then 9 and 9)';
 end $$;
@@ -1396,14 +1399,15 @@ end $$;
 -- ===== 21. Cancelled and reopened, then raised and paid, then cancelled =====
 do $$
 declare inv uuid;
+  h int := case when to_regprocedure('public.give_raised_voucher_units(uuid,uuid[],boolean,text)') is null then 2 else 3 end;  -- 464
 begin
   inv := pg_temp.tvs_paid_sale('v25', 1, 2);
   perform cancel_invoice_recorded(inv, 'TVS 21 cancel', gen_random_uuid());
   perform reopen_invoice(inv, 'TVS 21 reopen', gen_random_uuid());
   perform pg_temp.tvs_set_qty(inv, 3, false, 'TVS 21 one more');
   perform pg_temp.tvs_pay_rest(inv);
-  perform pg_temp.tvs_check(pg_temp.tvs_stock('v25') = 7 and pg_temp.tvs_held('v25') = 2,
-    '21 fixture: raised and paid, ' || pg_temp.tvs_show('v25') || ', not 7 held 2');
+  perform pg_temp.tvs_check(pg_temp.tvs_stock('v25') = 7 and pg_temp.tvs_held('v25') = h,
+    '21 fixture: raised and paid, ' || pg_temp.tvs_show('v25') || ', not 7 held ' || h);
   perform cancel_invoice_recorded(inv, 'TVS 21 cancel again', gen_random_uuid());
   perform pg_temp.tvs_check(pg_temp.tvs_stock('v25') = 10 and pg_temp.tvs_held('v25') = 0,
     '21 cancelled again: ' || pg_temp.tvs_show('v25') || ', not 10 held 0');
