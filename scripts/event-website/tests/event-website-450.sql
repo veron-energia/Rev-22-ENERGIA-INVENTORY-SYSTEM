@@ -275,10 +275,11 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
     and (select p.proacl::text from pg_proc p where p.oid = 'public.event_registration_close(uuid,text)'::regprocedure)
         = '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}',
   'G1 the two changed functions keep their grants (the close signed-in staff''s, the problems the service role''s alone)');
-select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = x.m)
+-- (469, where it is applied, links by the phone and the email in event_web_register: 449's or 469's.)
+select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_vip_person_problems(uuid)', 'add06a8aba39e4259bcf68bab4092027'),
                                      ('public.event_registration_close(uuid,text)', '39436dab86aa00d5884fceab88cb2d09'),
-                                     ('public.event_web_register(uuid,jsonb)', '3aad1ad2a8a91732d330b2ef149bf969'),
+                                     ('public.event_web_register(uuid,jsonb)', '3aad1ad2a8a91732d330b2ef149bf969 c188a2dc82b9eb08fc9d01f1e5c15e13'),
                                      ('public.event_web_guest_extras(uuid)', '03358fda2da1b4fda082e3f29b512a38'),
                                      ('public.event_set_guest_cancelled(uuid,boolean,text)', 'af22a3fad6232dad1a748b9cc1ddb2ae')) x(f, m)),
   'G2 the two functions have 450''s AFTER md5s; 449''s other three are as 449 left them');

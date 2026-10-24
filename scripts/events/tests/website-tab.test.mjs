@@ -727,6 +727,21 @@ test('website tab: a test row of the affiliate through her own link says so, wit
   assert.equal(t.querySelector('[data-referral-note]').textContent, NAME_NOTE);
 });
 
+test('website tab: a test row linked by the phone and the email says so (469)', async () => {
+  await mount({ role: 'manager', setup: b => {
+    b.handlers.event_web_settings_get = () => {
+      const v = { ...makeFixture().settings, can_manage: false, can_clear_tests: true, can_set_venue: true };
+      v.test.registrations[0].referral_code = 'AFF123'; v.test.registrations[0].referral_state = 'valid';
+      v.test.registrations[0].people[0].test_outcome = { match: 'phone_and_email', hold_reason: null, referral: 'already_customer' };
+      return v;
+    };
+  } });
+  await click(tab('Website'));
+  const t = document.querySelector('[data-section="test"]').textContent;
+  assert.ok(t.includes('A live key would have linked to the customer with this phone and email address, not referred (already a customer).'), t);
+  assert.ok(!t.includes('phone_and_email'), 'the raw value is never shown');
+});
+
 test('website tab: test rows say what a live key would have done, and are cleared', async () => {
   await mount({ role: 'manager' });
   await click(tab('Website'));

@@ -1042,6 +1042,8 @@ export function testOutcomeText(o: WebTestPerson['test_outcome']): string {
   if (!o) return '';
   const match = o.match === 'exact' ? 'linked to the customer with this phone and name'
     : o.match === 'same_words' ? 'linked to the customer with this phone and the same name in other words'
+    // 469 (the Owner, 24 Oct 2026): the same phone and the same email are that customer, whatever the name.
+    : o.match === 'phone_and_email' ? 'linked to the customer with this phone and email address'
     : o.match === 'held' ? `held for staff to match (${HOLD_REASON_LABELS[o.hold_reason as HoldReason] ?? o.hold_reason})`
     : o.match === 'new_customer' ? 'made a new customer' : (o.match ?? '');
   const referral = o.referral === 'created' ? ', referred by the link'

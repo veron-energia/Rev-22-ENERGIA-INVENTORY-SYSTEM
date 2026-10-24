@@ -176,7 +176,8 @@ insert into m442 select pg_get_functiondef('public.affiliate_referral_signup(tex
                         pg_temp.fp(), (select count(*) from public.referral_signup_events), (select count(*) from public.audit_logs),
                         (select count(*) from auth.users), (select count(*) from public.customers);
 \if :{?nomig}
-select pg_temp.check(pg_temp.md5_now() = 'c76573912de0a4ded29e81e5c56c96d3', 'M0 442 is installed (nomig)');
+select pg_temp.check(pg_temp.md5_now() in ('c76573912de0a4ded29e81e5c56c96d3', '2942e3d4d0e8c76600c3e0ad5e15cc2b'),
+  'M0 442 is installed (nomig; or 469''s, built on it: the same phone and email are on file)');
 \else
 select pg_temp.check(pg_temp.md5_now() = 'a3deac154f5144cffb34fab871f076c6',
   'M0 affiliate_referral_signup is 440''s AFTER (this suite installs 442; use -v nomig=1 where it is in)');

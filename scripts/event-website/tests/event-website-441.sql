@@ -256,22 +256,24 @@ $$ select format('Waiting for a check: their %s was on %s''s record, since merge
           what, gone, kept, code) $$;
 
 -- ═════ G The md5 and the grant ═════
-select pg_temp.check(md5(pg_get_functiondef('public.event_web_match_customer(text,text,text)'::regprocedure)) = '9da726006d8055983491b5ec1da1679b'
+select pg_temp.check(md5(pg_get_functiondef('public.event_web_match_customer(text,text,text)'::regprocedure))
+          in ('9da726006d8055983491b5ec1da1679b', '63bfaf4520406af9f67d3d81c3342baf')
     and (select p.proacl::text from pg_proc p where p.oid = 'public.event_web_match_customer(text,text,text)'::regprocedure)
         = '{postgres=X/postgres,service_role=X/postgres}'
     and not has_function_privilege('anon', 'public.event_web_match_customer(text,text,text)', 'execute')
     and not has_function_privilege('authenticated', 'public.event_web_match_customer(text,text,text)', 'execute')
     and has_function_privilege('service_role', 'public.event_web_match_customer(text,text,text)', 'execute'),
-  'G1 event_web_match_customer has 441''s AFTER md5 and is still the service role''s alone (436''s grant)');
+  'G1 event_web_match_customer has 441''s AFTER md5 (or 469''s, built on it) and is still the service role''s alone (436''s grant)');
 -- (444, where it is applied, added the unpaid checkout to event_web_guest_extras: 439's or 444's. 449, where it is
--- applied, the signed-up-again holds to event_web_guest_extras and event_web_register: 449's.)
+-- applied, the signed-up-again holds to event_web_guest_extras and event_web_register: 449's. 469, where it is
+-- applied, the phone-and-email link to event_web_register.)
 select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_web_kept_customer(uuid)', 'cb0720c1088df9209da45e46b91601f4'),
                                      ('public.event_web_new_customer(uuid)', 'a253f76a9db721212a9c110bc41ff483'),
                                      ('public.event_web_referral_note(uuid)', 'd68893db63938cc774b157708bd341f1'),
                                      ('public.event_web_guest_extras(uuid)', '18b56a28bb4965b2188cd73dde056209 369914bd689e9aa1d34e8e2d887b1d43 03358fda2da1b4fda082e3f29b512a38'),
                                      ('public.event_registration_attach(uuid,uuid,text)', 'b31be4d82d20000df026e7cfa9b24095'),
-                                     ('public.event_web_register(uuid,jsonb)', 'e3efd309e81d17c97f7984f7ecbaafff 3aad1ad2a8a91732d330b2ef149bf969'),
+                                     ('public.event_web_register(uuid,jsonb)', 'e3efd309e81d17c97f7984f7ecbaafff 3aad1ad2a8a91732d330b2ef149bf969 c188a2dc82b9eb08fc9d01f1e5c15e13'),
                                      ('public.event_web_phone_holders(text)', '614602e9cbc483d79bdef7d60aaf6a33')) x(f, m)),
   'G2 439''s functions and 436''s register and phone holders are as they were (441 changes none of them)');
 
