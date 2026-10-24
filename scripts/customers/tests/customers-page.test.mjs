@@ -39,6 +39,11 @@
 //     and the row's); Delete, Deleted Customers and the credit Opening
 //     balance and Adjust stay Owner/Manager. An Inventory Manager keeps the
 //     Limited view and asks for none of it.
+//   * 468 (the Owner, 24 Oct 2026): Edit shows who referred the customer
+//     (name and phone ending), read only for staff; Correct Referrer stays
+//     Owner/Manager; with no referrer yet staff still pick the first. Delete
+//     (the window Health Surveys → To match shares) needs the name typed and
+//     goes through delete_customer.
 //
 // Run: node --test scripts/customers/tests/customers-page.test.mjs
 import { test, after } from 'node:test';
@@ -673,4 +678,78 @@ test('the referrer picker matches a phone typed with spaces or +65 on its digits
   await wait(260);
   const q2 = backend.calls.filter(c => c.kind === 'table' && c.name === 'customers' && c.ors.length).pop();
   assert.equal(q2.ors[0].split('phone.ilike.').length - 1, 1, 'a name search adds no digit match: ' + q2.ors[0]);
+});
+
+// ── 468: the referrer in Edit, read only; Delete shared with To match ─────
+// The Owner, 24 Oct 2026: "the staff should be able to see the referrer but
+// should not be able to change the referrer." Edit shows who referred the
+// customer (the name, and the phone's last four digits to tell namesakes
+// apart), read from the customers table as the referrer picker reads it; only
+// an Owner or Manager gets Correct Referrer. With no referrer yet, staff may
+// still pick the first one, as on Add.
+const referrerGroup = () => [...modal().querySelectorAll('.form-group')]
+  .find(g => g.querySelector('label')?.textContent.startsWith('Referred by'));
+const withReferrer = (id = 'c-1') => b => { b.fx.customers[1].referred_by = id; };
+
+test('468: staff see who referred the customer, by name and phone ending, and cannot change it', async () => {
+  await mount('staff', withReferrer());
+  await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  const g = referrerGroup();
+  const locked = g.querySelector('[data-referrer-locked]');
+  assert.ok(locked, 'the referrer is shown read only');
+  assert.equal(locked.textContent.trim(), 'Ada Tan · phone ending 8501');
+  assert.equal(g.querySelectorAll('button, input, select').length, 0, 'no picker and no Correct Referrer for staff');
+  assert.ok(g.textContent.includes('The referrer cannot be changed here. If it is wrong, ask an Owner or Manager to correct it.'));
+  const read = backend.calls.filter(c => c.kind === 'table' && c.name === 'customers' && c.filters.some(([k, v]) => k === 'id' && v === 'c-1'));
+  assert.equal(read.length, 1, 'the referrer is read once, by id, from the customers table');
+  await setValue(field('Notes'), 'Prefers mornings');
+  await click(button('Save', modal()));
+  assert.deepEqual(callsOf('update_customer').pop().args.p_changes, { notes: 'Prefers mornings' }, 'the referrer is never sent');
+});
+
+test('468: an Owner or Manager sees the referrer\'s name too, with Correct Referrer', async () => {
+  for (const role of ['owner', 'manager']) {
+    await mount(role, withReferrer());
+    await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+    await tick();
+    const g = referrerGroup();
+    assert.ok(g.querySelector('[data-referrer-locked]').textContent.startsWith('Ada Tan · phone ending 8501'), role);
+    assert.ok(button('Correct Referrer', g), role + ': Correct Referrer');
+    assert.ok(g.textContent.includes('Correct Referrer changes it, with a reason (audited).'), role);
+  }
+});
+
+test('468: a customer with no referrer yet: staff may still pick the first one, as on Add', async () => {
+  await mount('staff');
+  await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  const g = referrerGroup();
+  assert.equal(g.querySelector('[data-referrer-locked]'), null);
+  assert.ok(g.querySelector('button'), 'the picker is offered');
+  assert.ok(g.textContent.includes('The customer who introduced this customer.'));
+});
+
+test('468: a referrer no longer on the customer list says so', async () => {
+  await mount('staff', withReferrer('c-gone'));
+  await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  assert.equal(referrerGroup().querySelector('[data-referrer-locked]').textContent.trim(), 'A customer no longer on the customer list');
+});
+
+test('468: Delete (the window To match shares) needs the name typed, sends delete_customer, then reloads the list', async () => {
+  await mount('owner', b => { b.handlers.delete_customer = a => ({ success: true, full_name: 'Ada Tan', _for: a.p_customer_id }); });
+  const listLoads = callsOf('search_customers').length;
+  await click(row('Ada Tan').querySelector('button[aria-label="Delete customer"]'));
+  assert.ok(modal().textContent.includes('This removes Ada Tan from the customer list.'));
+  assert.ok(button('Delete customer', modal()).disabled, 'nothing typed yet');
+  await setValue(modal().querySelector('[data-delete-name]'), 'Ada  tan');
+  await setValue(modal().querySelector('[data-delete-reason]'), ' Duplicate record ');
+  assert.ok(!button('Delete customer', modal()).disabled);
+  await click(button('Delete customer', modal()));
+  assert.deepEqual(callsOf('delete_customer').map(c => c.args),
+    [{ p_customer_id: 'c-1', p_confirm_name: 'Ada  tan', p_reason: 'Duplicate record' }]);
+  assert.ok(!modal(), 'the window closes');
+  assert.ok(callsOf('search_customers').length > listLoads, 'the list reloads');
+  assert.deepEqual(writes(), [], 'the customers table is never written');
 });

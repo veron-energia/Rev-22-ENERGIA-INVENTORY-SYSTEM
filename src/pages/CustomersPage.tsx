@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import DeletedCustomersModal from '../components/DeletedCustomersModal';
+import DeleteCustomerModal from '../components/customers/DeleteCustomerModal';
 import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
 import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import { Plus, Pencil, Trash2, Search, Users, RefreshCw, Eye, Phone, ChevronDown, ChevronRight } from 'lucide-react';
@@ -22,6 +23,13 @@ import { walletSourceTiles, purchasesBySource } from '../lib/invoices/walletSour
 // shows is the name that gets stored.
 export const joinPersonName = (first?: string | null, last?: string | null) =>
   [String(first ?? '').trim(), String(last ?? '').trim()].filter(Boolean).join(' ');
+
+/** The last four digits of a phone, to tell two customers of one name apart
+ *  without showing the whole number (468); null when it has fewer. */
+export const phoneEnding = (phone?: string | null) => {
+  const d = String(phone ?? '').replace(/\D/g, '');
+  return d.length >= 4 ? d.slice(-4) : null;
+};
 
 /** A date or a moment from the database, as a Singapore day (dd/mm/yyyy). */
 const showDate = (v?: string | null) => (v ? sgDayOf(v) : '—');
@@ -93,10 +101,6 @@ const CustomersPage: React.FC = () => {
   const [showDeleted, setShowDeleted] = useState(false);
   const [rows, setRows] = useState<Customer[]>([]);
   const [delFor, setDelFor] = useState<Customer | null>(null);
-  const [delName, setDelName] = useState('');
-  const [delReason, setDelReason] = useState('');
-  const [delBusy, setDelBusy] = useState(false);
-  const [delErr, setDelErr] = useState<string | null>(null);
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
@@ -344,6 +348,27 @@ const CustomersPage: React.FC = () => {
 
   // Correct-referrer (Owner/Manager, audited) — first valid referral otherwise wins.
   const [origReferrer, setOrigReferrer] = useState('');
+  // 468 (the Owner, 24 Oct 2026): everyone who opens Edit sees who referred
+  // the customer, read only; only an Owner or Manager changes it (Correct
+  // Referrer). Read as the referrer picker reads a chosen customer: from the
+  // customers table, which every role that opens Edit may read (a deleted
+  // record is not on it).
+  const [referrer, setReferrer] = useState<
+    { state: 'loading' } | { state: 'found'; full_name: string | null; phone: string | null }
+    | { state: 'missing' } | { state: 'error' } | null>(null);
+  useEffect(() => {
+    if (!modalOpen || !editId || !origReferrer) { setReferrer(null); return; }
+    let live = true;
+    setReferrer({ state: 'loading' });
+    void Promise.resolve(supabase.from('customers').select('id, full_name, phone').eq('id', origReferrer).maybeSingle())
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) { console.error(error.message); setReferrer({ state: 'error' }); return; }
+        setReferrer(data ? { state: 'found', full_name: (data as any).full_name ?? null, phone: (data as any).phone ?? null }
+                         : { state: 'missing' });
+      });
+    return () => { live = false; };
+  }, [modalOpen, editId, origReferrer]);
   const [fixOpen, setFixOpen] = useState(false);
   const [fixVal, setFixVal] = useState('');
   const [fixReason, setFixReason] = useState('');
@@ -449,30 +474,10 @@ const CustomersPage: React.FC = () => {
     closeForm(); load();
   };
 
-  // Deleting now goes through delete_customer(), which checks the role, matches
-  // the typed name, refuses to strand credit or entitlements, and records who
-  // did it. Writing to the table directly was blocked by RLS and, worse, threw
-  // away the error — the click simply did nothing.
-  const handleDelete = (c: Customer) => {
-    setDelFor(c);
-    setDelName('');
-    setDelReason('');
-    setDelErr(null);
-  };
-
-  const confirmDelete = async () => {
-    if (!delFor) return;
-    setDelBusy(true); setDelErr(null);
-    const { error } = await supabase.rpc('delete_customer', {
-      p_customer_id: delFor.id,
-      p_confirm_name: delName,
-      p_reason: delReason.trim() || null,
-    });
-    setDelBusy(false);
-    if (error) { setDelErr(error.message); return; }
-    setDelFor(null);
-    load();
-  };
+  // Deleting goes through delete_customer() (DeleteCustomerModal, shared with
+  // Health Surveys → To match since 468), which checks the role, matches the
+  // typed name, refuses to strand credit or entitlements, and records who did it.
+  const handleDelete = (c: Customer) => setDelFor(c);
 
   // The database has already applied the search and the source filter.
   const filtered = rows;
@@ -655,54 +660,10 @@ const CustomersPage: React.FC = () => {
         )}
       </div>
 
-      {delFor && (() => {
-        // Compared the same way the database does: case-insensitive, with runs
-        // of whitespace collapsed. The point is to make someone read the name,
-        // not to test their typing.
-        const norm = (v: string) => v.trim().toLowerCase().replace(/\s+/g, ' ');
-        const matches = norm(delName) === norm(delFor.full_name ?? '');
-        return (
-          <Modal title="Delete customer" maxWidth={460} onClose={() => setDelFor(null)}
-            footer={<>
-              <button className="btn btn-secondary" onClick={() => setDelFor(null)}>Cancel</button>
-              <button className="btn btn-danger" onClick={confirmDelete}
-                disabled={delBusy || !matches}>
-                {delBusy ? 'Deleting…' : 'Delete customer'}
-              </button>
-            </>}>
-            <div className="form-grid">
-              <div style={{ fontSize: 13 }}>
-                This removes <strong>{delFor.full_name}</strong> from the customer list.
-                Their invoices and history are kept, and an Owner or Manager can restore them.
-              </div>
-
-              {delErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}>
-                <span>⚠</span><div>{delErr}</div></div>}
-
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Type <strong>{delFor.full_name}</strong> to confirm *</label>
-                <input value={delName} autoFocus
-                  placeholder={delFor.full_name ?? ''}
-                  onChange={e => setDelName(e.target.value)} />
-                {delName.length > 0 && !matches && (
-                  <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 3 }}>
-                    That does not match the customer's name.
-                  </div>
-                )}
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Reason</label>
-                <input value={delReason} onChange={e => setDelReason(e.target.value)}
-                  placeholder="Duplicate record, created in error…" />
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
-                  Recorded against the deletion, alongside who performed it.
-                </div>
-              </div>
-            </div>
-          </Modal>
-        );
-      })()}
+      {delFor && (
+        <DeleteCustomerModal customer={delFor} onClose={() => setDelFor(null)}
+          onDeleted={() => { setDelFor(null); load(); }} />
+      )}
 
       {modalOpen && (
         <Modal title={editId ? 'Edit Customer' : 'Add Customer'} maxWidth={460} confirmClose onClose={closeForm}
@@ -794,11 +755,22 @@ const CustomersPage: React.FC = () => {
               <label>Referred by (optional)</label>
               {editId && origReferrer ? (
                 <>
-                  <div className="input" style={{ background: 'var(--surface-2, #f6f6f6)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>Referrer assigned — locked (first valid referral wins)</span>
+                  <div className="input" data-referrer-locked style={{ background: 'var(--surface-2, #f6f6f6)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                      {referrer?.state === 'found'
+                        ? <><strong style={{ color: 'var(--text)' }}>{referrer.full_name || 'A customer with no name'}</strong>
+                            {phoneEnding(referrer.phone) ? ` · phone ending ${phoneEnding(referrer.phone)}` : ''}</>
+                        : referrer?.state === 'missing' ? 'A customer no longer on the customer list'
+                        : referrer?.state === 'error' ? 'The referrer could not be loaded. Close this window and open it again.'
+                        : 'Loading the referrer…'}
+                    </span>
                     {canComplete && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setFixVal(origReferrer); setFixReason(''); setFixErr(null); setFixOpen(true); }}>Correct Referrer</button>}
                   </div>
-                  <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>Referrer ownership is locked. Owner/Manager can correct it with a reason (audited).</span>
+                  <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
+                    {canComplete
+                      ? 'The first valid referral wins, so the referrer is locked. Correct Referrer changes it, with a reason (audited).'
+                      : 'The referrer cannot be changed here. If it is wrong, ask an Owner or Manager to correct it.'}
+                  </span>
                 </>
               ) : (
                 <>

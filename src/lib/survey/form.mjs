@@ -157,9 +157,11 @@ export function mapServerError(raw) {
   const m = String(raw ?? '');
 
   if (m.includes('HEALTH_SURVEY_ALREADY_EXISTS')) {
+    // 468 (the Owner, 24 Oct 2026): neutral words; the reply does not say
+    // which of the details typed were found.
     return {
       scope: 'identity',
-      message: 'A health survey has already been completed for this phone number and name. '
+      message: 'A health survey has already been completed for these details. '
         + 'Please ask our consultant to help update your details.',
     };
   }

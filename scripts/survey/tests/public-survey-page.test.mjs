@@ -231,6 +231,22 @@ test('existing-survey error is shown near identity with staff guidance', async (
   } finally { ui.close(); }
 });
 
+test('468: the existing-survey message is neutral: "for these details", not which details matched', async () => {
+  const ui = await mount({ submit: () => ({ error: { message: 'HEALTH_SURVEY_ALREADY_EXISTS' } }) });
+  try {
+    await ui.fillValid();
+    await ui.submitForm();
+    const alert = ui.$('.survey-identity-alert');
+    assert.ok(alert);
+    assert.equal(alert.textContent.trim(),
+      'A health survey has already been completed for these details. Please ask our consultant to help update your details.');
+    assert.ok(!/phone number|and name/i.test(alert.textContent), 'no "phone number and name"');
+    // The rest of the page is as before: the answers are kept, no thank-you.
+    assert.equal(ui.$('#sv-first-name').value, 'Jamie');
+    assert.ok(!/Thank you/.test(ui.text()));
+  } finally { ui.close(); }
+});
+
 test('phone capacity error is shown beside the phone field', async () => {
   const ui = await mount({ submit: () => ({ error: { message: 'CUSTOMER_PHONE_LIMIT: belongs to 3 customers' } }) });
   try {

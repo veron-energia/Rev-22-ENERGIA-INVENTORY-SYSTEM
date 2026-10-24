@@ -396,7 +396,7 @@ const SurveysPage: React.FC = () => {
                 press Refresh to try again.</div>
             </div>
           )}
-          <SurveyHoldsPanel forms={holds} canClose={canManage}
+          <SurveyHoldsPanel forms={holds} canClose={canManage} canDelete={canManage}
             onChanged={() => { void loadHolds(); void loadCustomers(); }} />
         </>
       )}

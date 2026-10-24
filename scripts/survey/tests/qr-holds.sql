@@ -16,8 +16,12 @@
 --      made. The reply is the same as any other.
 --   Q4 Another phone, but the same Gmail inbox as a customer: held
 --      (email_in_use).
---   Q5 The same phone and email, a name written differently: held
---      (phone_and_email_in_use), for that one customer.
+--   Q5 The phone a customer's and the email another's, a name written
+--      differently: held (phone_and_email_in_use), for both. (Since 468 a
+--      form whose phone and email are ONE customer's is attached at once;
+--      scripts/survey/tests/to-match-468.sql checks that. Before 468 this
+--      case held the form for the one customer with both; the fixture was
+--      changed so that it holds under both versions.)
 --   Q6 A name that matches several customers on the phone: held
 --      (several_name_matches) for all of them; it used to be refused.
 --   Q7 A new person (phone and email no customer has): a new customer, as
@@ -196,8 +200,10 @@ begin
     returning id into c; insert into fx values ('c3', c);
   insert into customers(full_name, phone, email) values ('Siti Testgmail', '+6584330104', 's433sitigmail' || sfx || '@gmail.com')
     returning id into c; insert into fx values ('c4', c);
-  insert into customers(full_name, phone, email) values ('Siew Lan (Office) Testchua', '+6584330105', 's433-siew-' || sfx || '@tests.invalid')
+  insert into customers(full_name, phone) values ('Siew Lan (Office) Testchua', '+6584330105')
     returning id into c; insert into fx values ('c5', c);
+  insert into customers(full_name, phone, email) values ('Siew Mail Testchua', '+6584330115', 's433-siew-' || sfx || '@tests.invalid')
+    returning id into c; insert into fx values ('c5e', c);
   insert into customers(full_name, phone) values ('Pei Qi Testng', '+6584330106') returning id into c; insert into fx values ('c6a', c);
   insert into customers(full_name, phone) values ('Testng Pei Qi', '+6584330106') returning id into c; insert into fx values ('c6b', c);
   insert into customers(full_name, phone) values ('Fa One Testfull', '+6584330109') returning id into c; insert into fx values ('c9a', c);
@@ -259,8 +265,10 @@ select pg_temp.check(pg_temp.survey_customer('q4') is null and pg_temp.on_phone(
   'Q4 another phone but the same Gmail inbox (with dots): held (email_in_use), no customer made');
 select pg_temp.submit('q5', 'Siew Laan Testchua', '+65 8433 0105', 's433-siew-' || pg_temp.tx('sfx') || '@tests.invalid');
 select pg_temp.check(pg_temp.survey_customer('q5') is null and pg_temp.on_phone('+6584330105') = 1
-    and (pg_temp.hold('q5')).reason = 'phone_and_email_in_use' and (pg_temp.hold('q5')).candidate_customer_ids = array[pg_temp.fx('c5')],
-  'Q5 the same phone and email, the name spelt differently: held (phone_and_email_in_use) for that customer');
+    and (pg_temp.hold('q5')).reason = 'phone_and_email_in_use'
+    and (select array_agg(x order by x) from unnest((pg_temp.hold('q5')).candidate_customer_ids) x)
+        = (select array_agg(x order by x) from unnest(array[pg_temp.fx('c5'), pg_temp.fx('c5e')]) x),
+  'Q5 the phone one customer''s, the email another''s, the name spelt differently: held (phone_and_email_in_use) for both');
 select pg_temp.submit('q6', 'Qi Pei Testng', '+65 8433 0106', 's433-qp-' || pg_temp.tx('sfx') || '@tests.invalid');
 select pg_temp.check(pg_temp.survey_customer('q6') is null and (pg_temp.hold('q6')).reason = 'several_name_matches'
     and (select array_agg(x order by x) from unnest((pg_temp.hold('q6')).candidate_customer_ids) x)
@@ -324,7 +332,8 @@ select pg_temp.check(pg_temp.listed('q3') is not null and pg_temp.listed('q4') i
 select pg_temp.check(pg_temp.listed('q5')->>'full_name' = 'Siew Laan Testchua' and pg_temp.listed('q5')->>'reason' = 'phone_and_email_in_use'
     and pg_temp.listed('q5')->>'phone' = '+6584330105' and pg_temp.listed('q5')->>'date_of_birth' = '1980-02-03'
     and pg_temp.listed('q5')->>'store_name' = 'S433 Test Store'
-    and (pg_temp.candidate('q5', 'c5')->>'phone_matches')::boolean and (pg_temp.candidate('q5', 'c5')->>'email_matches')::boolean
+    and (pg_temp.candidate('q5', 'c5')->>'phone_matches')::boolean and not (pg_temp.candidate('q5', 'c5')->>'email_matches')::boolean
+    and not (pg_temp.candidate('q5', 'c5e')->>'phone_matches')::boolean and (pg_temp.candidate('q5', 'c5e')->>'email_matches')::boolean
     and not (pg_temp.candidate('q5', 'c5')->>'name_matches')::boolean and pg_temp.candidate('q5', 'c5')->>'survey_no' is null,
   'L each form shows what was typed and, per customer, whether the phone, the email and the name match, and any survey');
 select pg_temp.check(not (pg_temp.candidate('q4', 'c4')->>'phone_matches')::boolean and (pg_temp.candidate('q4', 'c4')->>'email_matches')::boolean
@@ -533,17 +542,20 @@ select pg_temp.check(not exists (select 1 from m433 m
                                   where p.oid is null or md5(pg_get_functiondef(p.oid)) <> m.md5)
     and (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f') = (select count(*) from m433),
   'M running 433 a second time changed no function');
--- With 419 applied, four of them are 419's AFTER versions (its header).
-select pg_temp.check(bool_and(md5(pg_get_functiondef(to_regprocedure(fn)))
-                              = case when to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null
-                                     then coalesce(ok419, ok) else ok end),
-  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied)')
-  from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185'),
-               ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978', null),
-               ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b', '0487502f033b56452140c81e108a8ebc'),
-               ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249'),
-               ('public.create_customer_from_held_survey(uuid,text)',   'd503d8b599f90768c8d909b91cd453e1', '733db65d708db7c64b5c4de03493d409'),
-               ('public.close_held_health_survey(uuid,text)',           'ee4789b1d716e4fbf498a5f38e722735', null)) t(fn, ok, ok419);
+-- With 419 applied, four of them are 419's AFTER versions (its header); with
+-- 468, submit_health_survey is 468's. A row that is not true (a function
+-- drifted, or missing) fails: bool_and would skip a null.
+select pg_temp.check(bool_and(coalesce(md5(pg_get_functiondef(to_regprocedure(fn)))
+                                         = case when to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null
+                                                then coalesce(ok419, ok) else ok end
+                                       or md5(pg_get_functiondef(to_regprocedure(fn))) = ok468, false)),
+  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s, once 468 is)')
+  from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185', '014a970de2e5dee64e4027459cac5280'),
+               ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978', null, null),
+               ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b', '0487502f033b56452140c81e108a8ebc', null),
+               ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249', null),
+               ('public.create_customer_from_held_survey(uuid,text)',   'd503d8b599f90768c8d909b91cd453e1', '733db65d708db7c64b5c4de03493d409', null),
+               ('public.close_held_health_survey(uuid,text)',           'ee4789b1d716e4fbf498a5f38e722735', null, null)) t(fn, ok, ok419, ok468);
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;

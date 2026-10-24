@@ -97,6 +97,9 @@ test('validateSurvey: event-linked survey skips the source question', () => {
 
 test('mapServerError: recognised errors route to a field or section', () => {
   assert.equal(mapServerError('...HEALTH_SURVEY_ALREADY_EXISTS...').scope, 'identity');
+  // 468: neutral words (the Owner, 24 Oct 2026).
+  assert.equal(mapServerError('HEALTH_SURVEY_ALREADY_EXISTS').message,
+    'A health survey has already been completed for these details. Please ask our consultant to help update your details.');
   assert.equal(mapServerError('AMBIGUOUS_CUSTOMER_MATCH').scope, 'identity');
   assert.equal(mapServerError('CUSTOMER_PHONE_LIMIT: ...').field, 'phone');
   assert.equal(mapServerError('CUSTOMER_PHONE_REVIEW: ...').field, 'phone');
