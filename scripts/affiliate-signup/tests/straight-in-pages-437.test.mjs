@@ -8,8 +8,10 @@
 //      the details the account holds, and the person lands on the dashboard.
 //      No email is waited for.
 //   U  An address that already has a login: the page says so, with Sign in and
-//      Reset password, and does not sign in. An older sign-up function's
-//      "submitted": the old "check your email" screen.
+//      Reset password, and does not sign in (since 466: on the Sign in page,
+//      with the email filled in; existing-affiliate-pages-466.test.mjs has the
+//      rest). An older sign-up function's "submitted": the old "check your
+//      email" screen.
 //   G  The portal guard: a signed-in login with no affiliate account (someone
 //      stuck after signing up) is taken through /affiliate/verify, which
 //      finishes the sign-up without asking again for details, to the
@@ -174,19 +176,20 @@ test('J: Create Account signs in with the password typed and lands on the dashbo
   assert.equal(rpcs(client, 'confirm_affiliate_email').length, 0, 'a password session does not verify the email');
 });
 
-test('U: an address that already has a login is told so, with Sign in and Reset password, and nothing signs in', async () => {
+test('U: an address that already has a login is told so, with Sign in and Reset password, and nothing signs in (466: on the Sign in page)', async () => {
   const client = backend({ signup: () => ({ data: null, error: { context: new Response(JSON.stringify({
     error: 'email_in_use', message: 'This email already has an Energia login. Sign in, or reset your password if you have forgotten it.' }), { status: 409 }) } }) });
   await d.mount(app('/affiliate/join'));
   await fillJoin();
   await d.click(d.button('Create Account'));
-  const box = document.querySelector('[data-state="email-in-use"]');
+  assert.equal(where(), '/affiliate/login', '466: straight to Sign in');
+  const box = document.querySelector('[data-state="signup-existing"]');
   assert.ok(box, 'the email-in-use message shows');
   assert.match(box.textContent, /already has an Energia login/);
-  const links = [...box.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')]);
-  assert.deepEqual(links, [['Sign in', '/affiliate/login'], ['Reset password', '/affiliate/forgot-password']]);
+  assert.equal(document.querySelector('input[type="email"]').value, EMAIL, 'the email is filled in');
+  assert.ok(d.button('Sign In'));
+  assert.ok([...box.querySelectorAll('a')].some(a => a.textContent === 'Reset password' && a.getAttribute('href') === '/affiliate/forgot-password'));
   assert.equal(client.calls.filter(c => c.auth === 'signIn').length, 0);
-  assert.equal(where(), '/affiliate/join');
 });
 
 test('U: an older sign-up function ("submitted") still gets the old check-your-email screen', async () => {

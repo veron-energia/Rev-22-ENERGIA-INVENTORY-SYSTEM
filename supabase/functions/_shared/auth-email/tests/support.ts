@@ -9,6 +9,7 @@ import type { AuthEmailConfig } from '../config.ts';
 import type { DeliveryRequest, DeliveryResult } from '../pabbly.ts';
 import type { FlowDeps } from '../flows.ts';
 import type { AccountState, CreateOutcome, GenerateOutcome } from '../admin.ts';
+import { NO_EXISTING_AFFILIATE } from '../existing.ts';
 
 export const SUPABASE_URL = 'https://project.supabase.co';
 export const APP_URL = 'https://rev-22-energia-inventory-system.vercel.app';
@@ -82,6 +83,7 @@ export function magicLink(email = 'someone@example.com', displayName = 'Ada Love
 export function flowDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
   return {
     accountState: () => Promise.resolve('none' as AccountState),
+    affiliateSignupExisting: () => Promise.resolve(NO_EXISTING_AFFILIATE),
     createConfirmedSignup: () => Promise.resolve({ status: 'created', userId: '00000000-0000-4000-8000-000000000437' } as CreateOutcome),
     regenerateSignupLink: () => Promise.resolve(okLink()),
     generateMagicLink: () => Promise.resolve(magicLink()),

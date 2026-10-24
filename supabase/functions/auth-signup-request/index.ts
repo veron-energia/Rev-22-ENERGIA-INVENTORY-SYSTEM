@@ -19,6 +19,15 @@
 // { error: 'email_in_use' } when the address already has a login (the Owner
 // accepted that this shows an address is registered; decision 4), with nothing
 // about that login changed; 400 for a refused field; 429 when rate limited.
+// Since 466 (the Owner, 24 Oct 2026), asked before any login is made: 409
+// { error: 'email_in_use', matched: 'email' } for an affiliate's own login
+// email too, and 409 { error: 'affiliate_exists', matched: 'email' | 'phone',
+// email_hint? } for another email or the phone of an existing affiliate (her
+// sign-up's or her record's; the hint is her login email masked, when she is
+// the only one). The page sends the person to Sign in; nothing is made. A
+// customer of her own on an affiliate's phone (no login) who types her
+// record's name signs up as before. Needs migration 466
+// (affiliate_signup_existing) first: without it every sign-up answers 503.
 
 import { handlePublicRequest } from '../_shared/auth-email/pipeline.ts';
 import { signupEndpoint } from '../_shared/auth-email/flows.ts';

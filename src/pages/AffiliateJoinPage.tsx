@@ -1,11 +1,11 @@
 import PhoneInput, { isPhoneValid } from '../components/PhoneInput';
 import { PasswordInput } from '../components/PasswordInput';
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
-import { requestAffiliateSignup, resendVerification, AUTH_EMAIL_COPY } from '../lib/authEmail';
+import { requestAffiliateSignup, resendVerification, signupRefusalState, AUTH_EMAIL_COPY } from '../lib/authEmail';
 
 // Global Affiliate Activation signup.
 //
@@ -18,7 +18,14 @@ import { requestAffiliateSignup, resendVerification, AUTH_EMAIL_COPY } from '../
 //
 // An address that already has a login is told so, with Sign in and Reset
 // password (decision 4; the Owner accepted that this shows the address is
-// registered). Before the 437 sign-up function is deployed the server still
+// registered). Since 466 (the Owner, 24 Oct 2026) that person, and anyone
+// whose email or phone is an existing affiliate's, goes straight to the Sign
+// in page, which says why (with the masked login email when the server gives
+// it) and has the email filled in when it was that email; nothing is made.
+// Back from there brings this form back as it was typed, without the
+// passwords or the terms tick (kept in this page's own history entry, never
+// in the address bar).
+// Before the 437 sign-up function is deployed the server still
 // answers "submitted" and sends a verification email; this page then shows the
 // old "check your email" screen.
 //
@@ -28,18 +35,28 @@ import { requestAffiliateSignup, resendVerification, AUTH_EMAIL_COPY } from '../
 // affiliate.
 const ONBOARDING_KEY = 'energia_aff_onboarding';
 
+/** 466: what the form had when it was sent to Sign in (no passwords), read back on Back. */
+type JoinDraft = { first: string; last: string; phone: string; email: string };
+function readJoinDraft(state: unknown): JoinDraft {
+  const d = state && typeof state === 'object' ? (state as { joinDraft?: unknown }).joinDraft : null;
+  const s = (k: keyof JoinDraft) => {
+    const v = d && typeof d === 'object' ? (d as Record<string, unknown>)[k] : undefined;
+    return typeof v === 'string' ? v.slice(0, 254) : '';
+  };
+  return { first: s('first'), last: s('last'), phone: s('phone'), email: s('email') };
+}
+
 const AffiliateJoinPage: React.FC = () => {
   const nav = useNavigate();
+  const location = useLocation();
   const { session } = useAuth();
   const signedInAs = session?.user?.email ?? null;
-  const [f, setF] = useState({ first: '', last: '', phone: '', email: '', password: '', confirm: '' });
+  const [f, setF] = useState(() => ({ ...readJoinDraft(location.state), password: '', confirm: '' }));
   const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  // 437: the address already has a login (decision 4).
-  const [inUse, setInUse] = useState<string | null>(null);
   // 437: the login was made but signing in with it failed (a connection blip).
   const [signInFailed, setSignInFailed] = useState(false);
   const [resendBusy, setResendBusy] = useState(false);
@@ -48,7 +65,7 @@ const AffiliateJoinPage: React.FC = () => {
 
   const submit = async () => {
     if (busy) return;                                    // no double submission
-    setErr(null); setNotice(null); setInUse(null); setSignInFailed(false);
+    setErr(null); setNotice(null); setSignInFailed(false);
     if (!f.first.trim() || !f.phone.trim() || !f.email.trim()) { setErr('Please fill in your name, phone and email.'); return; }
     if (!isPhoneValid(f.phone)) { setErr('Enter a valid international phone number.'); return; }
     if (f.password.length < 8) { setErr('Password must be at least 8 characters.'); return; }
@@ -61,9 +78,19 @@ const AffiliateJoinPage: React.FC = () => {
       email: f.email.trim(), password: f.password, termsAccepted: agree,
     });
 
-    if (result.kind === 'email_in_use') {
+    // 466: an address that already has a login, or an existing affiliate's
+    // email or phone: straight to Sign in, which says why. The state is the
+    // app's own (never the address bar); the password is not in it.
+    const refusal = signupRefusalState(result, f.email.trim());
+    if (refusal) {
       setBusy(false);
-      setInUse(result.message ?? AUTH_EMAIL_COPY.signupEmailInUse);
+      // Back from Sign in brings the form back as typed: kept in this page's
+      // own history entry first, without the passwords or the terms tick.
+      const kept = location.state && typeof location.state === 'object' ? location.state as Record<string, unknown> : {};
+      nav({ pathname: location.pathname, search: location.search, hash: location.hash }, {
+        replace: true, state: { ...kept, joinDraft: { first: f.first, last: f.last, phone: f.phone, email: f.email } },
+      });
+      nav('/affiliate/login', { state: refusal });
       return;
     }
     if (!result.ok) { setBusy(false); setErr(result.message ?? AUTH_EMAIL_COPY.unavailable); return; }
@@ -161,7 +188,7 @@ const AffiliateJoinPage: React.FC = () => {
         <Field label="Last Name"><input className="input" value={f.last} onChange={on('last')} /></Field>
       </div>
       <Field label="Phone Number"><PhoneInput value={f.phone} onChange={phone => setF(s => ({ ...s, phone }))} /></Field>
-      <Field label="Email"><input className="input" type="email" value={f.email} onChange={e => { on('email')(e); setInUse(null); }} /></Field>
+      <Field label="Email"><input className="input" type="email" value={f.email} onChange={on('email')} /></Field>
       <Field label="Password"><PasswordInput className="input" value={f.password} onChange={on('password')} placeholder="At least 8 characters" /></Field>
       <Field label="Confirm Password"><PasswordInput className="input" value={f.confirm} onChange={on('confirm')} /></Field>
       <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, color: 'var(--text-secondary)', margin: '4px 0 14px' }}>
@@ -169,15 +196,6 @@ const AffiliateJoinPage: React.FC = () => {
         <span>I agree to the Energia Affiliate terms and privacy statement.</span>
       </label>
       {err && <p role="alert" style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{err}</p>}
-      {inUse && (
-        <div role="alert" data-state="email-in-use" style={{ marginBottom: 12 }}>
-          <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 10 }}>{inUse}</p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Link className="btn btn-primary btn-sm" to="/affiliate/login">Sign in</Link>
-            <Link className="btn btn-secondary btn-sm" to="/affiliate/forgot-password">Reset password</Link>
-          </div>
-        </div>
-      )}
       {signedInAs && (
         <p data-note="signed-in-elsewhere" style={{ fontSize: 12.5, color: 'var(--warning, #b45309)', lineHeight: 1.5, marginBottom: 12 }}>
           This browser is signed in as <b>{signedInAs}</b>. Creating an affiliate account here signs that login out.

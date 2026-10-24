@@ -14,7 +14,10 @@
 // Sign-up is the one exception, by the Owner's decision of 20 Oct 2026 (437):
 // it makes the login at once ('created'), and an address that already has a
 // login is told so ('email_in_use', 409) so the page can offer Sign in and
-// Reset password. The rate limit is unchanged.
+// Reset password. The rate limit is unchanged. Since 466 (the Owner, 24 Oct
+// 2026) the email or phone of an existing affiliate is told so too
+// ('affiliate_exists', 409, with a masked hint of her login email when she is
+// the only one), and the page sends the person to Sign in.
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError, type AuthEmailConfig } from './config.ts';
 import { adminClient } from './admin.ts';
@@ -22,6 +25,7 @@ import { guardRequest, json, trustedClientIp } from './http.ts';
 import { hashKey, rateLimitMessage, reserve, RateLimiterUnavailableError, type LimitedAction } from './ratelimit.ts';
 import { logEvent, newRequestId, recordOutcome, safeDetail } from './diagnostics.ts';
 import { definitelyNotSent } from './pabbly.ts';
+import { affiliateExistsMessage } from './existing.ts';
 import type { DeliveryResult } from './pabbly.ts';
 import type { FieldError, Validated } from './validate.ts';
 
@@ -50,6 +54,11 @@ export type EndpointResult =
   | { kind: 'created' }
   /** 437, sign-up: the address already has a login. Nothing was changed. */
   | { kind: 'email_in_use' }
+  /**
+   * 466, sign-up: the email (not her login's) or the phone is an existing
+   * affiliate's. Nothing was made; the database logged the try on her record.
+   */
+  | { kind: 'affiliate_exists'; matched: 'email' | 'phone'; emailHint: string | null }
   /** 437, sign-up: Supabase Auth refused a value (its password policy, say). */
   | { kind: 'refused'; field: string; message: string }
   /** Something on our side went wrong before a send was attempted. */
@@ -173,7 +182,23 @@ async function finish(
   if (result.kind === 'email_in_use') {
     await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: 'email_in_use' });
     logEvent('auth_email.email_in_use', { action, request_id: requestId, ip_seen: meta.ipSeen });
-    return json({ error: 'email_in_use', message: EMAIL_IN_USE_MESSAGE, request_id: requestId }, 409, origin, allowed);
+    // 466: `matched` added; the rest is the body 437's pages read.
+    return json({ error: 'email_in_use', matched: 'email', message: EMAIL_IN_USE_MESSAGE, request_id: requestId },
+      409, origin, allowed);
+  }
+  if (result.kind === 'affiliate_exists') {
+    await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: `affiliate_exists:${result.matched}` });
+    logEvent('auth_email.affiliate_exists', {
+      action, request_id: requestId, matched: result.matched, hint: result.emailHint !== null, ip_seen: meta.ipSeen,
+    });
+    // The message is for a page from before 466, which shows a 409 it does
+    // not know with the server's words; 466's page words it itself.
+    const body: Record<string, unknown> = {
+      error: 'affiliate_exists', matched: result.matched,
+      message: affiliateExistsMessage(result.matched, result.emailHint), request_id: requestId,
+    };
+    if (result.emailHint) body.email_hint = result.emailHint;
+    return json(body, 409, origin, allowed);
   }
   if (result.kind === 'refused') {
     await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: `refused:${result.field}` });

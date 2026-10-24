@@ -2,7 +2,7 @@
 // importable — and testable — without the Supabase SDK or a network.
 
 import {
-  accountState, affiliateEmailNeedsVerification, createConfirmedSignup, generateMagicLink,
+  accountState, affiliateEmailNeedsVerification, affiliateSignupExisting, createConfirmedSignup, generateMagicLink,
   generateRecoveryLink, regenerateSignupLink,
 } from './admin.ts';
 import { deliver } from './pabbly.ts';
@@ -11,6 +11,7 @@ import type { FlowDeps } from './flows.ts';
 
 export const liveDeps: FlowDeps = {
   accountState,
+  affiliateSignupExisting,
   createConfirmedSignup,
   regenerateSignupLink,
   generateMagicLink,

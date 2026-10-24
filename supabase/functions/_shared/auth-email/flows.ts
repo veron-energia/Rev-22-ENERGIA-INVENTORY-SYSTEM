@@ -10,6 +10,7 @@
 import type { AuthEmailConfig } from './config.ts';
 import type { AccountState, CreateOutcome, GenerateOutcome } from './admin.ts';
 import type { DeliveryRequest, DeliveryResult } from './pabbly.ts';
+import type { ExistingAffiliate } from './existing.ts';
 import type { EndpointResult, PublicEndpoint, PublicContext } from './pipeline.ts';
 import { validateEmailOnly, validateRecovery, validateSignup, type RecoveryFlow, type SignupInput } from './validate.ts';
 import { callbackUrl, isTrustedActionLink } from './redirects.ts';
@@ -20,6 +21,8 @@ type Admin = any;
 
 export interface FlowDeps {
   accountState: (admin: Admin, email: string) => Promise<AccountState>;
+  /** 466: whether the sign-up's email or phone is an existing affiliate's (and the Audit Log row). */
+  affiliateSignupExisting: (admin: Admin, args: { email: string; phone: string; name: string; requestId: string }) => Promise<ExistingAffiliate>;
   /** 437: the affiliate sign-up's login, made already confirmed. */
   createConfirmedSignup: (admin: Admin, args: { email: string; password: string; metadata: Record<string, unknown> }) => Promise<CreateOutcome>;
   regenerateSignupLink: (admin: Admin, args: { email: string; redirectTo: string }) => Promise<GenerateOutcome>;
@@ -85,6 +88,27 @@ async function sendVerification(
  *    shows an address is registered; the rate limit (per address and per
  *    network) is what keeps anyone from testing addresses in bulk. Nothing
  *    about an existing login is changed: no password, no details, no email.
+ *
+ * 466 (the Owner, 24 Oct 2026): the email or phone of an EXISTING AFFILIATE
+ * (her login email, the email or phone she signed up with, or her record's)
+ * is sent to Sign in, and nothing is made. Asked first, before any login:
+ *   * her login email: "email_in_use", as above (the page fills it in);
+ *   * another email of hers (her record's, her sign-up's):
+ *     "affiliate_exists", matched 'email';
+ *   * then any login's email (staff, a sign-up never finished):
+ *     "email_in_use", as above;
+ *   * then her phone (the email typed is no login's): "affiliate_exists",
+ *     matched 'phone' (not for a customer of her own on that phone, with no
+ *     login, who types her record's name: she signs up as before).
+ * A Gmail address spelt another way than a login's (dots, a +tag) is a new
+ * email, whoever's login it is, so the answer never tells an affiliate's
+ * login from staff's. With "affiliate_exists", the masked login email when
+ * exactly one affiliate matched. The database writes the Audit Log row on her
+ * record, with this request's id (auth_email_deliveries.request_id). Both
+ * lookups (the affiliate one and the login one) are asked every time, at
+ * once, so an affiliate's login email and staff's take the same work to
+ * answer. Each try costs a rate-limit slot like any other (reserved before
+ * this runs). A customer who is not an affiliate signs up as before.
  */
 export function signupEndpoint(deps: FlowDeps): PublicEndpoint<SignupInput> {
   const now = deps.now ?? (() => new Date());
@@ -93,10 +117,34 @@ export function signupEndpoint(deps: FlowDeps): PublicEndpoint<SignupInput> {
     parse: (body) => validateSignup(body, deps.normalizePhone),
     emailOf: (value) => value.email,
     run: async (ctx) => {
-      const state = await deps.accountState(ctx.admin, ctx.value.email);
+      // 466: an existing affiliate's email or phone, and the login check,
+      // asked together on every path: an affiliate's login email is not
+      // answered one round trip sooner than staff's. A lookup that fails
+      // throws: the sign-up answers 503 and makes nothing. The name is put
+      // together as complete_affiliate_onboarding does (first, a space,
+      // last), so a family member on an affiliate's phone who types her own
+      // record's name signs up as before.
+      const [existing, state] = await Promise.all([
+        deps.affiliateSignupExisting(ctx.admin, {
+          email: ctx.value.email,
+          phone: ctx.value.phone,
+          name: `${ctx.value.firstName} ${ctx.value.lastName}`.trim(),
+          requestId: ctx.requestId,
+        }),
+        deps.accountState(ctx.admin, ctx.value.email),
+      ]);
+      if (existing.matched === 'email') {
+        return existing.loginEmail
+          ? { kind: 'email_in_use' }
+          : { kind: 'affiliate_exists', matched: 'email', emailHint: existing.emailHint };
+      }
+
       // Any login with this address (an affiliate, a member of staff, or a
       // sign-up from before 437 that was never confirmed) keeps it.
       if (state !== 'none') return { kind: 'email_in_use' };
+      if (existing.matched === 'phone') {
+        return { kind: 'affiliate_exists', matched: 'phone', emailHint: existing.emailHint };
+      }
 
       const outcome = await deps.createConfirmedSignup(ctx.admin, {
         email: ctx.value.email,

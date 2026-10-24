@@ -1,13 +1,20 @@
 import React, { useState } from 'react';
 import { PasswordInput } from '../components/PasswordInput';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import AffiliateAuthShell, { Field } from '../components/AffiliateAuthShell';
-import { resendVerification, AUTH_EMAIL_COPY } from '../lib/authEmail';
+import { readSignupRefusal, resendVerification, AUTH_EMAIL_COPY } from '../lib/authEmail';
 
 const AffiliateLoginPage: React.FC = () => {
   const nav = useNavigate();
-  const [email, setEmail] = useState('');
+  // 466 (the Owner, 24 Oct 2026): a sign-up sent here from the Join page (an
+  // address that already has a login, or an existing affiliate's email or
+  // phone). Read from the router state the Join page set, never from the
+  // address bar, and worded from fixed codes; the email is filled in only when
+  // it was that email.
+  const location = useLocation();
+  const [refused] = useState(() => readSignupRefusal(location.state));
+  const [email, setEmail] = useState(refused?.email ?? '');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -57,6 +64,21 @@ const AffiliateLoginPage: React.FC = () => {
   return (
     <AffiliateAuthShell title="Affiliate Login" subtitle="Sign in to your Energia Affiliate portal"
       footer={<>New affiliate? <Link to="/affiliate/join" style={{ color: 'var(--primary)', fontWeight: 600 }}>Create an account</Link></>}>
+      {/* An alert, so a screen reader says why the person landed here (Create
+          Account brought them, and focus does not follow a page change). One
+          child for the flex row of .alert, so "Reset password" sits under the
+          message at every width. */}
+      {refused && (
+        <div className="alert alert-info" role="alert" data-state="signup-existing" data-reason={refused.reason}
+          style={{ marginBottom: 14, fontSize: 13, lineHeight: 1.5 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ margin: 0 }}>{refused.message}</p>
+            <Link to="/affiliate/forgot-password" style={{ display: 'inline-block', marginTop: 6, fontWeight: 600, color: 'var(--primary)' }}>
+              Reset password
+            </Link>
+          </div>
+        </div>
+      )}
       <Field label="Email"><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" /></Field>
       <Field label="Password"><PasswordInput className="input" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} /></Field>
       {err && <p role="alert" style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{err}</p>}

@@ -211,6 +211,9 @@ declare
                              -- copy, which the no-self-referral checks read) and the trigger
                              -- that keeps the copy from being changed
                              'affiliate_login_signup_details','trg_affiliate_signup_identity_kept',
+                             -- 466: whether a sign-up's email or phone is an existing
+                             -- affiliate's (auth-signup-request asks it with the service key)
+                             'affiliate_signup_existing',
                              -- 443: where a credit lot came from, what a wallet method pays
                              -- from, and the allocator that draws a wallet payment's lots
                              -- (record_invoice_payment and correct_invoice_payment call it)

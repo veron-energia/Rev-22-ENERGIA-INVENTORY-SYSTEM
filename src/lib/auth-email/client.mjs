@@ -8,7 +8,8 @@
 // identically whether or not an account exists, so the wording here must be
 // generic too. A screen that said "no account found" would undo the server's
 // care on the client side. Sign-up is the exception since 437 (the Owner, 20
-// Oct 2026): it says when an address already has a login.
+// Oct 2026): it says when an address already has a login; and since 466 (the
+// Owner, 24 Oct 2026) when the email or phone is an existing affiliate's.
 
 export const AUTH_EMAIL_COPY = {
   // Two branches, both stated, neither confirmed. The server deliberately
@@ -44,6 +45,75 @@ export const AUTH_EMAIL_COPY = {
   unauthorized:
     'Your session has expired. Please use the link again, or sign in and retry.',
 };
+
+/**
+ * 466: the only shape an email hint may have, the server's own
+ * (supabase/functions/_shared/auth-email/existing.ts): at most one character
+ * before "•••", then "@" and a domain. Anything else is not shown.
+ */
+export const EMAIL_HINT_RE = /^[^\s@<>"'`\\•]?•••@[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+export function isEmailHint(value) {
+  return typeof value === 'string' && value.length <= 256 && EMAIL_HINT_RE.test(value);
+}
+
+/** 466: why a sign-up was sent to Sign in, as the Sign in page reads it. */
+export const SIGNUP_REFUSAL_REASONS = ['email_in_use', 'affiliate_email', 'affiliate_phone'];
+
+/**
+ * 466 (the Owner, 24 Oct 2026): the words on the Sign in page for a sign-up
+ * sent there, built here from fixed codes and a hint of the fixed shape, never
+ * from text in a request or an address:
+ *   'email_in_use'    the email typed already has a login (437; filled in);
+ *   'affiliate_email' another email of an existing affiliate (her record's,
+ *                     her sign-up's);
+ *   'affiliate_phone' the phone of an existing affiliate.
+ * The server words a refusal the same way, for pages from before 466; a test
+ * keeps the two the same.
+ */
+export function signupExistingMessage(reason, hint) {
+  if (reason === 'email_in_use') return AUTH_EMAIL_COPY.signupEmailInUse;
+  const what = reason === 'affiliate_phone'
+    ? 'This phone number already has an Energia affiliate account'
+    : 'This email is already on an Energia affiliate account';
+  return isEmailHint(hint)
+    ? `${what}, which signs in with ${hint}. Sign in with that email, or reset your password if you have forgotten it.`
+    : `${what}. Sign in with the email you used for it, or reset your password if you have forgotten it.`;
+}
+
+/**
+ * 466: what the Join page hands the Sign in page (router state, which only
+ * the app itself can set; never the address bar) for a sign-up sent there:
+ * the reason, the hint, and the email typed only when it was that email that
+ * already has a login. null for any other answer.
+ */
+export function signupRefusalState(result, typedEmail) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.kind === 'email_in_use') {
+    return { signupRefused: { reason: 'email_in_use', emailHint: null, email: typeof typedEmail === 'string' ? typedEmail.trim() : '' } };
+  }
+  if (result.kind === 'affiliate_exists') {
+    return { signupRefused: {
+      reason: result.matched === 'phone' ? 'affiliate_phone' : 'affiliate_email',
+      emailHint: isEmailHint(result.emailHint) ? result.emailHint : null,
+      email: '',
+    } };
+  }
+  return null;
+}
+
+/**
+ * 466: the Sign in page's reading of that state. Anything not of its shape is
+ * nothing (no message). The message is built here, from the reason and a hint
+ * of the fixed shape; the email is filled in only for 'email_in_use'.
+ */
+export function readSignupRefusal(state) {
+  const s = state && typeof state === 'object' ? state.signupRefused : null;
+  if (!s || typeof s !== 'object' || !SIGNUP_REFUSAL_REASONS.includes(s.reason)) return null;
+  const emailHint = s.reason !== 'email_in_use' && isEmailHint(s.emailHint) ? s.emailHint : null;
+  const email = s.reason === 'email_in_use' && typeof s.email === 'string' && s.email.trim().length <= 254 ? s.email.trim() : '';
+  return { reason: s.reason, emailHint, email, message: signupExistingMessage(s.reason, emailHint) };
+}
 
 /**
  * Turn an HTTP status plus a parsed JSON body into something a page can render.
@@ -82,7 +152,18 @@ export function interpretAuthEmailResponse(httpStatus, body) {
     return {
       ok: false, kind: 'email_in_use',
       message: typeof data.message === 'string' ? data.message : AUTH_EMAIL_COPY.signupEmailInUse,
-      fields: {}, requestId, retryAfterSeconds: 0,
+      fields: {}, requestId, retryAfterSeconds: 0, matched: 'email', emailHint: null,
+    };
+  }
+
+  // 466: the email or phone of an existing affiliate. Worded here, from the
+  // codes; the hint only when it has the fixed shape.
+  if (httpStatus === 409 && data.error === 'affiliate_exists' && (data.matched === 'email' || data.matched === 'phone')) {
+    const emailHint = isEmailHint(data.email_hint) ? data.email_hint : null;
+    return {
+      ok: false, kind: 'affiliate_exists',
+      message: signupExistingMessage(data.matched === 'phone' ? 'affiliate_phone' : 'affiliate_email', emailHint),
+      fields: {}, requestId, retryAfterSeconds: 0, matched: data.matched, emailHint,
     };
   }
 

@@ -494,8 +494,11 @@ select pg_temp.check((select string_agg(p.proname, ',' order by p.proname) from 
                         where p.pronamespace = 'public'::regnamespace and p.prokind in ('f', 'p')
                           and pg_get_functiondef(p.oid) ~ 'affiliate_login_signup_details\('
                           and p.proname <> 'affiliate_login_signup_details')
-                     in ('affiliate_referral_signup', 'affiliate_referral_signup,event_web_affiliate_contact,event_web_check_self_referral'),
-  'U5 the helper is read by the /r/ sign-up and, with 439, its two checks; by nothing else');
+                     in ('affiliate_referral_signup', 'affiliate_referral_signup,event_web_affiliate_contact,event_web_check_self_referral',
+                         -- 466: the sign-up function's existing-affiliate check reads the copy through it too
+                         'affiliate_referral_signup,affiliate_signup_existing',
+                         'affiliate_referral_signup,affiliate_signup_existing,event_web_affiliate_contact,event_web_check_self_referral'),
+  'U5 the helper is read by the /r/ sign-up and, with 439, its two checks, and with 466 the sign-up''s existing-affiliate check; by nothing else');
 do $$ declare u uuid; r jsonb; begin
   u := pg_temp.login('lGone', '{}'::jsonb);
   r := pg_temp.onboard('lGone', 'Gus', 'Testgone', '+61491570539');

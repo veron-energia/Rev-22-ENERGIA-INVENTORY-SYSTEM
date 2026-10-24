@@ -2,12 +2,14 @@ import { supabase } from './supabase';
 import {
   interpretAuthEmailResponse,
   interpretPasswordChange,
+  readSignupRefusal,
+  signupRefusalState,
   AUTH_EMAIL_COPY,
 } from './auth-email/client.mjs';
-import type { AuthEmailResult, PasswordChangeResult } from './auth-email/client.d.mts';
+import type { AuthEmailResult, PasswordChangeResult, SignupRefusal, SignupRefusalState } from './auth-email/client.d.mts';
 
-export { AUTH_EMAIL_COPY };
-export type { AuthEmailResult, PasswordChangeResult };
+export { AUTH_EMAIL_COPY, readSignupRefusal, signupRefusalState };
+export type { AuthEmailResult, PasswordChangeResult, SignupRefusal, SignupRefusalState };
 
 // The Auth-email Edge Functions. Naming matches the function directories under
 // supabase/functions.
@@ -63,6 +65,9 @@ function withDevHint<T extends { kind: string; message: string | null }>(result:
  * confirmed (the page then signs in with the password typed);
  * 'email_in_use' when the address already has a login. An older sign-up
  * function answers 'submitted' or 'not_sent' (it emailed a link instead).
+ * 466: 'affiliate_exists' when the email (not her login's) or the phone is an
+ * existing affiliate's, with the masked login email when she is the only
+ * one; the page then sends the person to Sign in (signupRefusalState).
  */
 export async function requestAffiliateSignup(input: {
   firstName: string; lastName: string; phone: string; email: string; password: string; termsAccepted: boolean;

@@ -6,6 +6,7 @@
 
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.108.2';
 import type { AuthEmailConfig } from './config.ts';
+import { readExistingAffiliate, type ExistingAffiliate } from './existing.ts';
 
 export function adminClient(config: AuthEmailConfig): SupabaseClient {
   return createClient(config.supabaseUrl, config.serviceRoleKey, {
@@ -134,6 +135,27 @@ export async function affiliateEmailNeedsVerification(admin: SupabaseClient, ema
   const { data, error } = await admin.rpc('affiliate_email_verification_needed', { p_email: email });
   if (error) throw new Error(`verification lookup failed: ${error.message}`);
   return data === true;
+}
+
+/**
+ * 466 (the Owner, 24 Oct 2026): whether the email or phone of a sign-up is
+ * an existing affiliate's, asked before any login is made. Answered by a
+ * service-role-only database function, which also writes the Audit Log row
+ * on that affiliate's record (with this request's id, the request_id of its
+ * auth_email_deliveries row); a reply of the wrong shape throws, so the
+ * sign-up fails closed (503) rather than making a second login. The name
+ * typed lets a customer of her own on an affiliate's phone (a family member
+ * on the household phone, no login) sign up as before.
+ */
+export async function affiliateSignupExisting(
+  admin: SupabaseClient,
+  args: { email: string; phone: string; name: string; requestId: string },
+): Promise<ExistingAffiliate> {
+  const { data, error } = await admin.rpc('affiliate_signup_existing', {
+    p_phone: args.phone, p_email: args.email, p_name: args.name, p_request_id: args.requestId,
+  });
+  if (error) throw new Error(`existing affiliate lookup failed: ${error.message}`);
+  return readExistingAffiliate(data);
 }
 
 /**

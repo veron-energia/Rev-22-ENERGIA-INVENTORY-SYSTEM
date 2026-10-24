@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AUTH_EMAIL_COPY, interpretAuthEmailResponse, interpretPasswordChange,
+  isEmailHint, readSignupRefusal, signupExistingMessage, signupRefusalState,
 } from '../../../src/lib/auth-email/client.mjs';
 
 test('a submitted request is a success with nothing to report', () => {
@@ -131,4 +132,79 @@ test('437: an address that already has a login reads as "email_in_use", with Sig
 
 test('437: an old server\'s "submitted" is still a plain success', () => {
   assert.equal(interpretAuthEmailResponse(200, { ok: true, status: 'submitted' }).kind, 'submitted');
+});
+
+// 466 (the Owner, 24 Oct 2026): an existing affiliate's email or phone is sent
+// to Sign in, worded from fixed codes.
+test('466: affiliate_exists reads as its own kind, worded here, with the hint only when it is the mask', () => {
+  const phone = interpretAuthEmailResponse(409, { error: 'affiliate_exists', matched: 'phone', email_hint: 's•••@rev22.com.sg',
+    message: 'anything the server says', request_id: 'r1' });
+  assert.equal(phone.ok, false);
+  assert.equal(phone.kind, 'affiliate_exists');
+  assert.equal(phone.matched, 'phone');
+  assert.equal(phone.emailHint, 's•••@rev22.com.sg');
+  assert.equal(phone.requestId, 'r1');
+  assert.equal(phone.message, 'This phone number already has an Energia affiliate account, which signs in with s•••@rev22.com.sg. Sign in with that email, or reset your password if you have forgotten it.');
+  const email = interpretAuthEmailResponse(409, { error: 'affiliate_exists', matched: 'email' });
+  assert.equal(email.kind, 'affiliate_exists');
+  assert.equal(email.matched, 'email');
+  assert.equal(email.emailHint, null);
+  assert.equal(email.message, 'This email is already on an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.');
+  const bad = interpretAuthEmailResponse(409, { error: 'affiliate_exists', matched: 'phone', email_hint: 'sam@example.com' });
+  assert.equal(bad.emailHint, null, 'a whole address is not a hint');
+  assert.doesNotMatch(bad.message, /sam@example\.com/);
+  // A match it does not know is not this kind (the page then shows the error on the form).
+  assert.notEqual(interpretAuthEmailResponse(409, { error: 'affiliate_exists', matched: 'name' }).kind, 'affiliate_exists');
+  // email_in_use keeps its words, and says what matched.
+  const inUse = interpretAuthEmailResponse(409, { error: 'email_in_use', matched: 'email', message: AUTH_EMAIL_COPY.signupEmailInUse });
+  assert.equal(inUse.kind, 'email_in_use');
+  assert.equal(inUse.matched, 'email');
+  assert.equal(inUse.message, AUTH_EMAIL_COPY.signupEmailInUse);
+});
+
+test('466: the hint has one shape: at most one character, •••, @, a lower-case domain', () => {
+  for (const good of ['s•••@rev22.com.sg', '•••@example.com', 'a•••@sub.example.co.uk']) assert.equal(isEmailHint(good), true, good);
+  for (const bad of ['sam@example.com', 'sa•••@example.com', 's•••@Example.com', '<b>•••@example.com', 's•••@example.com x', '', null, undefined, 5]) {
+    assert.equal(isEmailHint(bad), false, String(bad));
+  }
+});
+
+test('466: the Join page hands the Sign in page codes, a mask-shaped hint, and the email only for email_in_use', () => {
+  assert.deepEqual(signupRefusalState({ kind: 'email_in_use' }, ' ada@example.com '),
+    { signupRefused: { reason: 'email_in_use', emailHint: null, email: 'ada@example.com' } });
+  assert.deepEqual(signupRefusalState({ kind: 'affiliate_exists', matched: 'phone', emailHint: 's•••@example.com' }, 'new@example.com'),
+    { signupRefused: { reason: 'affiliate_phone', emailHint: 's•••@example.com', email: '' } });
+  assert.deepEqual(signupRefusalState({ kind: 'affiliate_exists', matched: 'email', emailHint: 'not a hint' }, 'new@example.com'),
+    { signupRefused: { reason: 'affiliate_email', emailHint: null, email: '' } });
+  for (const kind of ['created', 'submitted', 'not_sent', 'rate_limited', 'invalid', 'unavailable', 'network', 'unknown']) {
+    assert.equal(signupRefusalState({ kind }, 'ada@example.com'), null, kind);
+  }
+});
+
+test('466: the Sign in page reads only that shape, and words it itself', () => {
+  assert.deepEqual(readSignupRefusal({ signupRefused: { reason: 'affiliate_phone', emailHint: 's•••@example.com', email: 'x@example.com' } }), {
+    reason: 'affiliate_phone', emailHint: 's•••@example.com', email: '',
+    message: signupExistingMessage('affiliate_phone', 's•••@example.com'),
+  });
+  assert.deepEqual(readSignupRefusal({ signupRefused: { reason: 'email_in_use', emailHint: 's•••@example.com', email: 'ada@example.com' } }), {
+    reason: 'email_in_use', emailHint: null, email: 'ada@example.com', message: AUTH_EMAIL_COPY.signupEmailInUse,
+  });
+  for (const state of [null, undefined, 'x', {}, { signupRefused: null }, { signupRefused: { reason: 'free text' } },
+    { signupRefused: { reason: ['affiliate_phone'] } }]) {
+    assert.equal(readSignupRefusal(state), null, JSON.stringify(state));
+  }
+  assert.equal(readSignupRefusal({ signupRefused: { reason: 'affiliate_email', emailHint: '<i>x</i>' } }).emailHint, null);
+  assert.equal(readSignupRefusal({ signupRefused: { reason: 'email_in_use', email: `${'x'.repeat(300)}@example.com` } }).email, '');
+});
+
+test('466: the words name both ways in, and only the hint says anything of the account', () => {
+  for (const reason of ['affiliate_email', 'affiliate_phone']) {
+    for (const hint of ['s•••@example.com', null]) {
+      const c = signupExistingMessage(reason, hint);
+      assert.match(c, /sign in/i);
+      assert.match(c, /reset your password/);
+      assert.equal(c.includes('@'), hint !== null);
+    }
+  }
+  assert.equal(signupExistingMessage('affiliate_phone', 'sam@example.com'), signupExistingMessage('affiliate_phone', null));
 });
