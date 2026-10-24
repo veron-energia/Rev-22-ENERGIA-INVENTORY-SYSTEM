@@ -104,8 +104,10 @@ const isDescriptionRow = (orderId: string) => {
 
 const STATUS_BADGE: Record<string, string> = {
   'New — Will Deduct': 'badge-success',
+  'New — Will Deduct, Awaiting Return': 'badge-warning',
   'Updated — Additional Deduction': 'badge-primary',
   'Updated — Stock Return': 'badge-primary',
+  'Awaiting Physical Return': 'badge-warning',
   'No Stock Change': 'badge-muted',
   'Already Imported': 'badge-muted',
   'Unmatched SKU': 'badge-warning',
@@ -114,7 +116,10 @@ const STATUS_BADGE: Record<string, string> = {
   'Duplicate Row': 'badge-muted',
   'Invalid Row': 'badge-danger',
 };
-const CONFIRMABLE = new Set(['New — Will Deduct', 'Updated — Additional Deduction', 'Updated — Stock Return', 'Negative Stock Warning', 'No Stock Change', 'Already Imported']);
+// A cancelled order that had shipped is confirmed too: confirming opens its
+// physical return (and, first seen already cancelled, takes its stock off,
+// 465). Left unticked, the row was excluded and no return was ever expected.
+const CONFIRMABLE = new Set(['New — Will Deduct', 'New — Will Deduct, Awaiting Return', 'Updated — Additional Deduction', 'Updated — Stock Return', 'Awaiting Physical Return', 'Negative Stock Warning', 'No Stock Change', 'Already Imported']);
 
 // A database from before 368 has no left-out function. PostgREST then answers
 // PGRST202 ("Could not find the function public.tiktok_left_out_settlement…").
@@ -895,7 +900,7 @@ const TikTokImportPage: React.FC = () => {
             <div className="card" style={{ padding: 16, marginBottom: 14 }}>
               <h3 style={{ fontSize: 14.5, marginBottom: 4 }}>Awaiting Physical Return</h3>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
-                Cancelled after shipment — stock is NOT returned automatically. Confirm each parcel when it arrives (or record why it never will).
+                Cancelled after shipment — stock is NOT returned automatically. Confirm each parcel when it arrives (or record why it never will). An order first imported after it was already cancelled, but which had shipped, had its stock taken off at import and waits here too.
               </p>
               <div className="table-wrap">
                 <table>

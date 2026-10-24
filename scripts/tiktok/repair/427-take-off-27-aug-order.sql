@@ -82,19 +82,28 @@ declare
   v_have int; v_adj text; v_batch uuid; v_res jsonb; v_units int := 0;
 begin
   perform set_config('search_path', 'public', true);
-  -- The Import page's functions, as read on 10 Oct 2026, and 427.
+  -- The Import page's functions, as read on 10 Oct 2026, and 427; or, for
+  -- the first three, as 465 leaves them (24 Oct 2026: a row that is
+  -- cancelled and shipped waits for its physical return; this order is
+  -- Completed, which 465 does not change, and the 6-argument calls below
+  -- reach 465's tiktok_evaluate through its default).
   for r in select * from (values
-    ('stage_tiktok_orders(uuid,text,text,jsonb)', '165118c2a659e3590f84457e9056a307'),
-    ('confirm_tiktok_batch(uuid,jsonb,boolean,text)', 'f7236b71c8df5d981cbf64e6298fa052'),
-    ('tiktok_evaluate(uuid,text,text,integer,text,boolean)', '358bf625b34bd1e97586b722df40184a'),
-    ('tiktok_projected_short(uuid,text,uuid,integer)', '81a5387a9e046dc431d4711a77aa2ee7'),
-    ('apply_tiktok_stock_delta(uuid,text,uuid,integer,uuid,text,text,text)', 'e3c9f3c5f2b49fd580b926653ed7e1ac'),
-    ('rematch_tiktok_settlements(uuid,text)', 'b50a3627d49347019b81b88b75b4528e'),
-    ('trg_tiktok_state_rematch()', '9ce866c8a8bc93d3983f0d6e07a6b7a6'),
-    ('dashboard_alerts_summary()', '2b632d0dcc23b82c6ef4e1438271debf')) x(fn, md5)
+    ('stage_tiktok_orders(uuid,text,text,jsonb)', '165118c2a659e3590f84457e9056a307',
+     'stage_tiktok_orders(uuid,text,text,jsonb)', '9cad8a716950fdaab791f6f42cdddf7c'),
+    ('confirm_tiktok_batch(uuid,jsonb,boolean,text)', 'f7236b71c8df5d981cbf64e6298fa052',
+     'confirm_tiktok_batch(uuid,jsonb,boolean,text)', '4b7b3844d884efa3f5f81d7770048daf'),
+    ('tiktok_evaluate(uuid,text,text,integer,text,boolean)', '358bf625b34bd1e97586b722df40184a',
+     'tiktok_evaluate(uuid,text,text,integer,text,boolean,boolean)', 'e099050c8c43c973721229c21adddfd3'),
+    ('tiktok_projected_short(uuid,text,uuid,integer)', '81a5387a9e046dc431d4711a77aa2ee7', null, null),
+    ('apply_tiktok_stock_delta(uuid,text,uuid,integer,uuid,text,text,text)', 'e3c9f3c5f2b49fd580b926653ed7e1ac', null, null),
+    ('rematch_tiktok_settlements(uuid,text)', 'b50a3627d49347019b81b88b75b4528e', null, null),
+    ('trg_tiktok_state_rematch()', '9ce866c8a8bc93d3983f0d6e07a6b7a6', null, null),
+    ('dashboard_alerts_summary()', '2b632d0dcc23b82c6ef4e1438271debf', null, null)) x(fn, md5, fn465, md5465)
   loop
-    if to_regprocedure('public.' || r.fn) is null or md5(pg_get_functiondef(to_regprocedure('public.' || r.fn))) <> r.md5 then
-      raise exception '427 repair: public.% is missing or not the version read on 10 Oct 2026 (is 427 in?); nothing was changed', r.fn; end if;
+    if (to_regprocedure('public.' || r.fn) is null or md5(pg_get_functiondef(to_regprocedure('public.' || r.fn))) <> r.md5)
+       and (r.fn465 is null or to_regprocedure('public.' || r.fn465) is null
+            or md5(pg_get_functiondef(to_regprocedure('public.' || r.fn465))) <> r.md5465) then
+      raise exception '427 repair: public.% is missing or not the version read on 10 Oct 2026 (is 427 in?) or left by 465; nothing was changed', r.fn; end if;
   end loop;
 
   -- The ids.
