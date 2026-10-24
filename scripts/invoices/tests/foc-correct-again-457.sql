@@ -239,7 +239,8 @@ select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(
     and not has_function_privilege('authenticated', 'public.update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', 'execute')
     and has_function_privilege('service_role', 'public.update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', 'execute'),
   'G2 correct_invoice: signed-in staff and the service role, never anon; update_invoice_internal: the service role''s alone');
--- preview_invoice_correction: as read, or 458's AFTER (458 changes it and runs after 457).
+-- preview_invoice_correction: as read, or 458's AFTER (458 changes it and runs after 457),
+-- or 463's (after 462); create_invoice_with_details: 456's, or 463's.
 select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = any (string_to_array(x.ok, '|')),
   'G3 relied on and unchanged: ' || x.fn)
   from (values ('can_edit_invoice(uuid)', '22f496c486ee4f0dfd45c68da6240ac2'),
@@ -247,10 +248,10 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('lock_settled_invoice(uuid)', 'ccc7016ac73d9a13142980386a5929dc'),
                ('trg_lock_on_settle()', '39c6478cdaec553c2ab8ceaf55058960'),
                ('invoice_before_full_payment(uuid)', '532d7690367fc674737b20420e7fb16c'),
-               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb'),
+               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33'),
                ('invoice_revision_retry(uuid,uuid,jsonb)', '5c33c50a8f6870d8a66f74b63b782f24'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855'),
-               ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0'),
+               ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448'),
                ('apply_line_foc(uuid,integer,uuid,text)', '5fbd0b6feb36e11dea6be231ffa0e952'),
                ('confirm_foc_invoice(uuid,text)', 'ba8b1ce2a5671989b927891f0cb7b1a2'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),

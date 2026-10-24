@@ -244,12 +244,15 @@ select pg_temp.check(
                   and c.conname = 'customer_reward_vouchers_issue_no_check' and pg_get_constraintdef(c.oid) = 'CHECK ((issue_no >= 1))')
     and not exists (select 1 from public.customer_reward_vouchers where issue_no < 1),
   'G3 customer_reward_vouchers.issue_no (integer, not null, default 1, at least 1); the issued-once index now per line, voucher and issue');
-select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = x.md5, 'G4 relied on and unchanged: ' || x.fn)
+-- (463, where it is in after 462, changes invoice_own_voucher_ids,
+-- apply_reopened_invoice_vouchers and create_invoice_with_details: its
+-- AFTERs too.)
+select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = any (string_to_array(x.md5, '|')), 'G4 relied on and unchanged: ' || x.fn)
   from (values ('issue_sold_vouchers_for_invoice(uuid)', '0dbb4bc74411b6d4f0535f661a8c09ee'),
                ('issue_promotion_vouchers_for_invoice(uuid)', 'e47e5f623b1fa3f6eafe83086f0c9776'),
                ('cancel_invoice_recorded(uuid,text,uuid)', 'de52d9dbaef8ab15163bef35cb9d733d'),
-               ('apply_reopened_invoice_vouchers()', '28d3b7a69b91ddebcdb200559d96a0ef'),
-               ('invoice_own_voucher_ids(uuid)', '9340840f1ce4e031ec3613198688ba2e'),
+               ('apply_reopened_invoice_vouchers()', '28d3b7a69b91ddebcdb200559d96a0ef|6684840544d1ad8a28e2415934300054'),
+               ('invoice_own_voucher_ids(uuid)', '9340840f1ce4e031ec3613198688ba2e|ee0202627b9500dcbad103d3ade2401f'),
                ('invoice_voucher_stock_unrecorded(uuid,boolean)', '91c8f0fa69ef6337f323b7ac467a8c2b'),
                ('invoice_stock_to_deduct(uuid)', '6356494ccb8545d46c56b788f8f85f54'),
                ('invoice_required_stock(uuid)', 'c91dc1eb4f2b7b465de5fe4a8fb2ca0c'),
@@ -259,7 +262,7 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '1f034561a461bdb46a1e6274e0d04606'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b'),
-               ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0'),
+               ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855')) x(fn, md5);
 
 -- ═════ A A paid voucher-only invoice, kept paid ═════

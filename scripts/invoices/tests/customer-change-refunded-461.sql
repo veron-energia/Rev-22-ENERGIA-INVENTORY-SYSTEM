@@ -101,6 +101,9 @@
 --      cancellation took back, still reads "Fully spent" (461's NOT COVERED
 --      2; no page shows it).
 --
+-- Where 462 is in (move-merge-leftovers-462.sql: an Owner's Move is no
+-- claim any more, its records follow the change), 10 takes 462's AFTERs and
+-- 0 expects K12 and K13 to move.
 -- Run on a copy of production as it is (455 in: b43a0781, 1372 functions):
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/invoices/tests/customer-change-refunded-461.sql
 -- It installs 461 itself, twice, inside its transaction. The same on a copy
@@ -142,13 +145,36 @@ create function pg_temp.t461_in() returns boolean language sql as $f$
 create function pg_temp.t461_460_in() returns boolean language sql as $f$
   select to_regprocedure('public.invoice_benefits_holder(uuid,uuid,timestamp with time zone)') is not null
      and position('-- 460 (the Owner' in pg_get_functiondef('public.apply_reopened_invoice_benefits()'::regprocedure)) > 0 $f$;
+-- 462 (move-merge-leftovers-462.sql), where it is in: an Owner's Move is no
+-- claim on a lot any more (the moved credit is traced through the Move's
+-- own ledger rows, so the records follow a change), a reissued lot a
+-- benefit row names is judged by that row, and credit a refunded sale gives
+-- back follows to whoever holds the benefits (at commit: t461_commit runs
+-- that here). Its claims K12 and K13 then move (checked the fixed way).
+create function pg_temp.t461_462_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and exists (select 1 from pg_trigger where tgname = 'credit_given_back_follows'
+                  and tgrelid = 'public.customer_credit_ledger'::regclass) $f$;
+create function pg_temp.t461_commit() returns void language plpgsql as $f$
+begin
+  if pg_temp.t461_462_in() then
+    execute 'set constraints public.credit_given_back_follows immediate';
+    execute 'set constraints public.credit_given_back_follows deferred';
+  end if;
+end $f$;
 -- 461's two functions as installed: 461's AFTERs alone, or with 460 in (in
--- either order).
+-- either order), or with 462 over both (462's AFTERs), or with 463 over 462
+-- (463's AFTERs: a Move to the same customer at another store and a Premium
+-- Bundle's vouchers go along too, the Owner's decisions 2 and 3).
+create function pg_temp.t461_463_in() returns boolean language sql as $f$
+  select to_regprocedure('public.invoice_benefit_moved_to_other(uuid)') is not null $f$;
 create function pg_temp.t461_as_tested() returns boolean language sql as $f$
   select (md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)),
           md5(pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)))
          in (('ab86a3fa6305d1efd49d0ee7d7e688f6', 'dd592a5cf2383c84bcf0986dd0f01523'),
-             ('362d6d076c4751ab5dbe760f6d7a0d37', 'c1827889748d29f7a6626294333bd94f')) $f$;
+             ('362d6d076c4751ab5dbe760f6d7a0d37', 'c1827889748d29f7a6626294333bd94f'),
+             ('d0d19b7c765337c3cd68096fdc6de7dd', '130c25c6ce3d91b7b421e6f4c3d02353'),
+             ('68736a39ed765ee787242bc62bbaeebb', 'c01606c84ee13ddcd88c15521d6d9aed')) $f$;
 create function pg_temp.t461_grants(p_sig text) returns text language sql as $f$
   select coalesce(string_agg(x::text, ',' order by x::text), '') from pg_proc p, unnest(p.proacl) x
    where p.oid = to_regprocedure('public.' || p_sig) $f$;
@@ -921,8 +947,12 @@ begin
     || md5(pg_get_functiondef(('public.' || tb)::regprocedure)) || ', the move ' || md5(pg_get_functiondef(('public.' || mv)::regprocedure)) || ')');
   -- With 460 in (installed before the suite, or before 461 on this copy),
   -- the texts both give; without it, 461's alone.
-  perform pg_temp.t461_check((md5(pg_get_functiondef(('public.' || tb)::regprocedure)) = '362d6d076c4751ab5dbe760f6d7a0d37') = pg_temp.t461_460_in(),
-    '10 461''s texts do not match whether 460 is in (' || pg_temp.t461_460_in()::text || ')');
+  -- (With 462 in too, 462's AFTER of the list; with 463 over it, 463's.)
+  perform pg_temp.t461_check((md5(pg_get_functiondef(('public.' || tb)::regprocedure))
+                              in ('362d6d076c4751ab5dbe760f6d7a0d37', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb')) = pg_temp.t461_460_in()
+      and (md5(pg_get_functiondef(('public.' || tb)::regprocedure)) in ('d0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb')) = pg_temp.t461_462_in()
+      and (md5(pg_get_functiondef(('public.' || tb)::regprocedure)) = '68736a39ed765ee787242bc62bbaeebb') = pg_temp.t461_463_in(),
+    '10 461''s texts do not match whether 460 is in (' || pg_temp.t461_460_in()::text || ') and 462 (' || pg_temp.t461_462_in()::text || ')');
   if exists (select 1 from t461_fp where k = 'first') then
     perform pg_temp.t461_check((select fp from t461_fp where k = 'second') = (select fp from t461_fp where k = 'first'),
       '10 the second run of 461 changed functions');
@@ -1028,12 +1058,25 @@ begin
     and pg_temp.t461_try_change(pg_temp.t461_id('K11'), 'K11 New') like 'These benefits have already been used and cannot move with the invoice: Paid credit 30.00 (Partly spent).%'
     and pg_temp.t461_summary(pg_temp.t461_id('K11'), 'K11 New') = '{"moving": [], "review": ["Paid credit 30.00 — Partly spent"]}'::jsonb,
     '0 K11 a cancellation holding credit back: ' || pg_temp.t461_list_txt(pg_temp.t461_id('K11')) || ' / ' || pg_temp.t461_summary(pg_temp.t461_id('K11'), 'K11 New')::text);
+  if pg_temp.t461_462_in() then
+    -- 462: an Owner's Move is no claim any more (its records follow the
+    -- change): nothing on the lot was spent, so it moves, with its records.
+    perform pg_temp.t461_check(pg_temp.t461_list_txt(pg_temp.t461_id('K12')) = 'Bonus credit 10.00 moves; Paid credit 30.00 moves'
+      and pg_temp.t461_try_change(pg_temp.t461_id('K12'), 'K12 New') = 'changed: bonus 10.00/10.00, paid 30.00/30.00 | no voucher',
+      '0 (462) K12 moved by an Owner, the session refunded: ' || pg_temp.t461_list_txt(pg_temp.t461_id('K12'))
+      || ' / ' || pg_temp.t461_try_change(pg_temp.t461_id('K12'), 'K12 New'));
+    perform pg_temp.t461_check(pg_temp.t461_list_txt(pg_temp.t461_id('K13')) = 'Bonus credit 10.00 moves; Paid credit 44.00 moves'
+      and pg_temp.t461_try_change(pg_temp.t461_id('K13'), 'K13 New') = 'changed: bonus 10.00/10.00, paid 44.00/44.00 | no voucher',
+      '0 (462) K13 moved by an Owner, reopened and paid: ' || pg_temp.t461_list_txt(pg_temp.t461_id('K13'))
+      || ' / ' || pg_temp.t461_try_change(pg_temp.t461_id('K13'), 'K13 New'));
+  else
   perform pg_temp.t461_check(pg_temp.t461_list_txt(pg_temp.t461_id('K12')) = 'Bonus credit 10.00 moves; Paid credit 30.00 BLOCKS (Partly spent)'
     and pg_temp.t461_try_change(pg_temp.t461_id('K12'), 'K12 New') like 'These benefits have already been used and cannot move with the invoice: Paid credit 30.00 (Partly spent).%',
     '0 K12 moved by an Owner, the session refunded: ' || pg_temp.t461_list_txt(pg_temp.t461_id('K12')));
   perform pg_temp.t461_check(pg_temp.t461_list_txt(pg_temp.t461_id('K13')) = 'Bonus credit 10.00 moves; Paid credit 44.00 BLOCKS (Partly spent)'
     and pg_temp.t461_try_change(pg_temp.t461_id('K13'), 'K13 New') like 'These benefits have already been used and cannot move with the invoice: Paid credit 44.00 (Partly spent).%',
     '0 K13 moved by an Owner, reopened and paid: ' || pg_temp.t461_list_txt(pg_temp.t461_id('K13')));
+  end if;
   perform pg_temp.t461_check(pg_temp.t461_list_txt(pg_temp.t461_id('K14')) = 'Bonus credit 0.00 stays (Fully spent; it stays with the original customer); Paid credit 56.00 BLOCKS (Partly spent)'
     and pg_temp.t461_try_change(pg_temp.t461_id('K14'), 'K14 New') like 'These benefits have already been used and cannot move with the invoice: Paid credit 56.00 (Partly spent).%',
     '0 K14 a cancelled invoice: ' || pg_temp.t461_list_txt(pg_temp.t461_id('K14')));
@@ -1042,8 +1085,9 @@ begin
     and pg_temp.t461_list_txt(pg_temp.t461_id('V2')) = 'T461 Plain 30 × 2 stays (Already revoked; it stays with the original customer)'
     and pg_temp.t461_list_txt(pg_temp.t461_id('V3')) = 'T461 Plain 30 × 2 stays (Already redeemed; it stays with the original customer)',
     '0 vouchers: ' || pg_temp.t461_list_txt(pg_temp.t461_id('V1')) || ' / ' || pg_temp.t461_list_txt(pg_temp.t461_id('V2')) || ' / ' || pg_temp.t461_list_txt(pg_temp.t461_id('V3')));
-  raise notice 'PASS 0: the controls read and change exactly as before 461 (%): real spending still blocks as "Partly spent" (also beside a refund, and on released credit with no benefit row), credit spent to nothing still reads "Fully spent", a lot a merge reissued moves as before; credit back on a lot a cancellation still holds credit back for, whose benefit an Owner moved, or of a cancelled invoice still blocks; vouchers are unchanged (a unit refunded by line leaves the held units moving, a voucher wholly refunded reads "Already revoked", not used)',
-    case when exists (select 1 from t461_fp where k = 'first') then 'compared whole, list and change' else 'their answers checked; -v nomig=1, not compared' end;
+  raise notice 'PASS 0: the controls read and change exactly as before 461 (%): real spending still blocks as "Partly spent" (also beside a refund, and on released credit with no benefit row), credit spent to nothing still reads "Fully spent", a lot a merge reissued moves as before; credit back on a lot a cancellation still holds credit back for, or of a cancelled invoice, still blocks, and one whose benefit an Owner moved %; vouchers are unchanged (a unit refunded by line leaves the held units moving, a voucher wholly refunded reads "Already revoked", not used)',
+    case when exists (select 1 from t461_fp where k = 'first') then 'compared whole, list and change' else 'their answers checked; -v nomig=1, not compared' end,
+    case when pg_temp.t461_462_in() then 'moves (462 in)' else 'still blocks' end;
 end $$;
 
 -- ===== 1. Each case after 461 =====

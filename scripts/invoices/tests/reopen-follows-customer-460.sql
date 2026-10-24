@@ -144,6 +144,13 @@
 --   8. KNOWN (460's NOT COVERED 2, 3, 4 (K5, K6, K9, M7; X10 to X13 where
 --      461 is in) and 7, checked as they are; 1 printed).
 --
+-- Where 462 is in (move-merge-leftovers-462.sql: a Move's credit traced
+-- through the Move's own ledger rows, so the row moved on follows a merge,
+-- a customer change and a reopening; credit a refunded sale gives back
+-- follows the benefits at commit), 10 takes 462's AFTERs, 1 and 2 expect X10,
+-- K5 and K6 the fixed way, 5 and 6 check the reopenings allowed and 8 (4)
+-- prints FIXED; each app call that gives credit back is followed by what its
+-- commit does (t460_commit).
 -- Run on a copy of production as it is (455 in: b43a0781, 1372 functions):
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/invoices/tests/reopen-follows-customer-460.sql
 -- It installs 460 itself, twice, inside its transaction. Where 460 is in
@@ -183,6 +190,31 @@ create function pg_temp.t460_in() returns boolean language sql as $f$
 create function pg_temp.t460_461_in() returns boolean language sql as $f$
   select position('-- 461 (the Owner' in pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) > 0
      and position('-- 461 (the Owner' in pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)) > 0 $f$;
+-- 462 (move-merge-leftovers-462.sql), where it is in: a Move's credit is
+-- traced through the Move's own ledger rows, so the records of a row moved
+-- on follow a merge, a customer change and a reopening, and credit a
+-- refunded sale gives back follows to whoever holds the benefits (at
+-- commit: t460_commit runs that here). 460's NOT COVERED 4 is then fixed:
+-- sections 1, 2, 5, 6 and 8 check it the fixed way.
+create function pg_temp.t460_462_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and exists (select 1 from pg_trigger where tgname = 'credit_given_back_follows'
+                  and tgrelid = 'public.customer_credit_ledger'::regclass) $f$;
+-- 463 (change-store-moves-bundle-vouchers-463.sql), where it is in (after
+-- 462): a Premium Bundle's vouchers, and what an Owner moved to the same
+-- customer at another store, are the invoice's own (the Owner, 24 Oct 2026,
+-- decisions 2 and 3), and the summary of a change lists what a waiting
+-- reopening will give back (460's NOT COVERED 2 and 7 then fixed: X8 and 8
+-- (2) and (7) checked the fixed way).
+create function pg_temp.t460_463_in() returns boolean language sql as $f$
+  select to_regprocedure('public.invoice_benefit_moved_to_other(uuid)') is not null $f$;
+create function pg_temp.t460_commit() returns void language plpgsql as $f$
+begin
+  if pg_temp.t460_462_in() then
+    execute 'set constraints public.credit_given_back_follows immediate';
+    execute 'set constraints public.credit_given_back_follows deferred';
+  end if;
+end $f$;
 -- The two functions 461 also changes, with 461's part left out, as 460
 -- compares them (the lots' selection; the list's second of four parts).
 create function pg_temp.t460_no461(p_sig text) returns text language plpgsql as $f$
@@ -395,6 +427,7 @@ begin
   if due is null or due <= 0 then due := (invoice_action_plan(p_inv, 'cancel', '[]')->>'refund_due')::numeric; end if;
   perform refund_invoice_recorded(p_inv, jsonb_build_array(jsonb_build_object('amount', due)), pg_temp.t460_sources(p_inv, due), '[]'::jsonb,
     'T460 refund paid', gen_random_uuid());
+  perform pg_temp.t460_commit();  -- 462: what its commit does
 end $f$;
 
 -- ── What the records say ────────────────────────────────────────────────────
@@ -688,6 +721,23 @@ insert into t460_case values
   ('K6', 26, 'control', 'A 40.00/0, F 60.00/0', 'A 40.00/0, F 60.00/0'),
   ('K8', 28, 'control', 'A 40.00/0, F 60.00/0', 'A 40.00/0, F 60.00/0'),
   ('K9', 29, 'control', 'F 60.00/0, K 40.00/0', 'F 60.00/0, K 40.00/0');
+-- Where 462 is in, the cases it changes (460's NOT COVERED 4): the
+-- credit goes to whoever holds the benefits now, with its records (X10:
+-- the kept record holds the S$44 and the S$10 Bonus; K5: the new customer
+-- the S$40; K6: the kept record the S$40).
+create temp table t460_case462(k text primary key, after text);
+insert into t460_case462 values
+  ('X10', 'F 56.00/0, K 54.00/0'),
+  ('K5', 'B 40.00/0, F 60.00/0'),
+  ('K6', 'F 60.00/0, K 40.00/0');
+-- Where 463 is in too: the bundle's vouchers follow the change (X8).
+create temp table t460_case463(k text primary key, after text);
+insert into t460_case463 values
+  ('X8', 'B 140.00/2');
+create function pg_temp.t460_after(p_k text) returns text language sql as $f$
+  select coalesce(case when pg_temp.t460_463_in() then (select after from t460_case463 where k = p_k) end,
+                  case when pg_temp.t460_462_in() then (select after from t460_case462 where k = p_k) end,
+                  (select after from t460_case where k = p_k)) $f$;
 create function pg_temp.t460_who(p_out jsonb) returns text language sql as $f$
   select coalesce(string_agg(h.key || ' ' || h.value, ', ' order by h.key), '-')
     from jsonb_each_text(p_out->'holds') h where h.value <> '0.00/0' $f$;
@@ -909,18 +959,30 @@ do $$ begin insert into t460_fp values ('second', pg_temp.t460_fingerprint()); e
 \endif
 do $$
 begin
+  -- (462, where it is in, changes the settlement and the preview: its AFTERs;
+  -- 463, where it is in, the settlement, the invoice's own vouchers and who
+  -- a voucher given again goes to: its.)
   perform pg_temp.t460_check(pg_temp.t460_in()
-    and md5(pg_get_functiondef('public.apply_reopened_invoice_benefits()'::regprocedure)) = '3e659dafdbacb00ad953f99d00c3c6c9'
-    and md5(pg_get_functiondef('public.invoice_reopen_preview(uuid)'::regprocedure)) = '4b49c0c64eeb1b5962b605bbf56ea159'
-    and md5(pg_get_functiondef('public.apply_reopened_invoice_vouchers()'::regprocedure)) = '28d3b7a69b91ddebcdb200559d96a0ef'
-    and md5(pg_get_functiondef('public.invoice_own_voucher_ids(uuid)'::regprocedure)) = '9340840f1ce4e031ec3613198688ba2e'
+    and md5(pg_get_functiondef('public.apply_reopened_invoice_benefits()'::regprocedure))
+        = case when pg_temp.t460_463_in() then '36eaa7224e514d3e7e42e3eeb51acfb5'
+               when pg_temp.t460_462_in() then '4efef2f1e97bed6a3f0eed0df4e2df51' else '3e659dafdbacb00ad953f99d00c3c6c9' end
+    and md5(pg_get_functiondef('public.invoice_reopen_preview(uuid)'::regprocedure))
+        = case when pg_temp.t460_462_in() then 'e09ebf9c0841ef5463f96b26f4933541' else '4b49c0c64eeb1b5962b605bbf56ea159' end
+    and md5(pg_get_functiondef('public.apply_reopened_invoice_vouchers()'::regprocedure))
+        = case when pg_temp.t460_463_in() then '6684840544d1ad8a28e2415934300054' else '28d3b7a69b91ddebcdb200559d96a0ef' end
+    and md5(pg_get_functiondef('public.invoice_own_voucher_ids(uuid)'::regprocedure))
+        = case when pg_temp.t460_463_in() then 'ee0202627b9500dcbad103d3ade2401f' else '9340840f1ce4e031ec3613198688ba2e' end
     and md5(pg_get_functiondef('public.invoice_benefits_holder(uuid,uuid,timestamp with time zone)'::regprocedure)) = '55995ff6e1ffd4a1172cb930512a34b0',
     '10 460 is not installed as tested');
   -- The two functions 461 also changes: 460's AFTER with 461's part left
   -- out, always; their whole text where 461 is not in.
-  perform pg_temp.t460_check(pg_temp.t460_no461('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)') = 'b434f77373e6ba07cc4b1fb30a2f4d50'
+  -- (462, where it is in, changes the move's records step: its AFTER; 463,
+  -- where it is in, the store a store-moved voucher keeps: its.)
+  perform pg_temp.t460_check(pg_temp.t460_no461('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)')
+        = case when pg_temp.t460_463_in() then 'e1b9260c11f304c206a9ff684026e4a0'
+               when pg_temp.t460_462_in() then '225376878d90f952966d524255f5ade6' else 'b434f77373e6ba07cc4b1fb30a2f4d50' end
     and pg_temp.t460_no461('invoice_transferable_benefits(uuid)') = 'e5df1d68f73847f5d9faa7b04bfd81fe',
-    '10 the two functions 461 also changes are not 460''s AFTER outside 461''s part');
+    '10 the two functions 461 also changes are not 460''s AFTER outside 461''s part (462''s where it is in)');
   if not pg_temp.t460_461_in() then
     perform pg_temp.t460_check(md5(pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)) = '5a165f7035151f8f711fc2ac293e9b62'
       and md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = 'c568df874f2667f6a313d7aac0b4c086',
@@ -967,8 +1029,8 @@ begin
   for c in select * from t460_case where kind = 'case' or kind = 'case461' and pg_temp.t460_461_in() order by ord loop
     o := pg_temp.t460_run(c.k, 'after');
     pre := c.k || '/after'; inv := pg_temp.t460_id(pre);
-    perform pg_temp.t460_check(pg_temp.t460_who(o) = c.after,
-      '1 ' || c.k || ' holds ' || pg_temp.t460_who(o) || ', not ' || c.after || ': ' || o::text);
+    perform pg_temp.t460_check(pg_temp.t460_who(o) = pg_temp.t460_after(c.k),
+      '1 ' || c.k || ' holds ' || pg_temp.t460_who(o) || ', not ' || pg_temp.t460_after(c.k) || ': ' || o::text);
     perform pg_temp.t460_check(o->>'status' = 'paid' and o->>'waiting' = '0/0' and o->>'records' = ''
       and o->>'cancel' !~ 'credit_used|voucher_redeemed', '1 ' || c.k || ' after 460: ' || o::text);
     -- The invoice's records name the lots that hold its credit: every lot
@@ -999,7 +1061,7 @@ begin
     o := pg_temp.t460_outcome(pre, inv);
     perform pg_temp.t460_check(o->'holds' = holds0 and o->'lots' = lots0 and o->>'status' = 'paid' and o->>'records' = '',
       '1 ' || c.k || ' reopened again: ' || o::text || ', before the cancel ' || holds0::text);
-    res := res || format(E'\n  %s: %s', c.k, c.after);
+    res := res || format(E'\n  %s: %s', c.k, pg_temp.t460_after(c.k));
   end loop;
   -- M1: the kept record's new lot takes a refund by line (capped by it) and
   -- a Move, as any lot.
@@ -1028,7 +1090,7 @@ declare c record; o jsonb; b jsonb;
 begin
   for c in select * from t460_case where kind = 'control' order by ord loop
     o := pg_temp.t460_run(c.k, 'after');
-    perform pg_temp.t460_check(pg_temp.t460_who(o) = c.after and o->>'records' = '',
+    perform pg_temp.t460_check(pg_temp.t460_who(o) = pg_temp.t460_after(c.k) and o->>'records' = '',
       '2 ' || c.k || ' after 460 holds ' || pg_temp.t460_who(o) || ': ' || o::text);
     select v into b from t460_before where k = c.k;
     if b is not null then
@@ -1113,6 +1175,33 @@ end $f$;
 do $$
 declare o jsonb; c text; m text := 'Reopening would give back S$%s of credit refunded before this invoice''s customer was changed or merged, the rest of which was then moved to someone else (Move); the credit lot the invoice names for it cannot take that much back. Keep the invoice cancelled (its refund due stands), or ask the Owner.';
 begin
+  if pg_temp.t460_462_in() then
+    -- 462: the reopening is allowed; once paid, what went back is the kept
+    -- record's (the new customer's), on a new lot the records name, and a
+    -- later customer change moves it (nothing on it was spent).
+    o := pg_temp.t460_r5('m60', 'merge', 60);
+    perform pg_temp.t460_check(o->>'can_reopen' = 'true' and o->>'refused' is null and o->>'status' = 'paid'
+        and o->>'K' = '60.00/0' and o->>'F' = '40.00/0' and o->>'A' = '0.00/0' and o->>'cancel' = '-' and o->>'due' = '100.00',
+      '5 (462) S$60 refunded, merged, moved, cancelled, reopened, paid: ' || o::text);
+    o := pg_temp.t460_r5('m50', 'merge', 50);
+    perform pg_temp.t460_check(o->>'refused' is null and o->>'status' = 'paid' and o->>'K' = '50.00/0' and o->>'F' = '50.00/0'
+        and o->>'cancel' = '-' and o->>'due' = '100.00',
+      '5 (462) S$50 refunded, merged, moved, cancelled, reopened, paid: ' || o::text);
+    o := pg_temp.t460_r5('m4999', 'merge', 49.99);
+    perform pg_temp.t460_check(o->>'refused' is null and o->>'status' = 'paid' and o->>'K' = '49.99/0' and o->>'F' = '50.01/0' and o->>'A' = '0.00/0'
+        and o->>'cancel' = '-' and o->>'due' = '100.00',
+      '5 (462) S$49.99 refunded, merged, moved, cancelled, reopened, paid: ' || o::text);
+    perform pg_temp.t460_change(pg_temp.t460_id('R5/m4999'), pg_temp.t460_cust('R5/m4999/C'));
+    perform pg_temp.t460_check(pg_temp.t460_holds(pg_temp.t460_id('R5/m4999/C')) = '49.99/0'
+        and pg_temp.t460_holds(pg_temp.t460_id('R5/m4999/K')) = '0.00/0',
+      '5 (462) S$49.99: a later customer change did not move it: C holds ' || pg_temp.t460_holds(pg_temp.t460_id('R5/m4999/C')));
+    o := pg_temp.t460_r5('c50', 'change', 50);
+    perform pg_temp.t460_check(o->>'refused' is null and o->>'status' = 'paid' and o->>'K' = '65.00/0' and o->>'F' = '45.00/0'
+        and o->>'cancel' = '-' and o->>'due' = '100.00',
+      '5 (462) S$50 refunded, changed, moved, cancelled, reopened, paid: ' || o::text);
+    raise notice 'PASS 5 (462 in: its fix of 460''s NOT COVERED 4 (c)): S$60, S$50 and S$49.99 refunded of S$100, merged, the rest moved on, cancelled: the reopening is allowed and, paid, the kept record holds what went back on a lot the records name (S$60, S$50, S$49.99), nothing reads as spent, the refund due is S$100; a later customer change moves it; by a customer change too (S$55 + S$10 Bonus)';
+    return;
+  end if;
   -- S$60 refunded of S$100 (the S$40 left moved on): refused.
   o := pg_temp.t460_r5('m60', 'merge', 60);
   perform pg_temp.t460_check(o->>'can_reopen' = 'false' and o->'blockers' ? format(m, '60.00')
@@ -1214,6 +1303,41 @@ declare o jsonb; c text; ses_ok text; m6 text := 'Reopening would give back S$%s
   routes text[] := case when pg_temp.t460_461_in() then array['merge', 'change'] else array['merge'] end; r text;
 begin
   foreach r in array routes loop
+    if pg_temp.t460_462_in() then
+      -- 462: the reopening is allowed; paid, what went back is on a new lot
+      -- the records name (the lot the session was paid from is replaced);
+      -- while the session holds its S$20 Cancel rightly asks credit_used;
+      -- the session's refund then follows to that new lot's holder at
+      -- commit, so nothing reads as spent and the refund due is S$100.
+      o := pg_temp.t460_s6('a-' || r, r, 'cpb', 40);
+      perform pg_temp.t460_check(o->>'refused' is null and o->>'status' = 'paid' and o->>'lot' = '0.00/56.00'
+          and o->>'K' = '54.00/0' and o->>'F' = '36.00/0' and o->>'A' = '0.00/0' and o->>'records' = ''
+          and o->>'cancel' = 'credit_used' and o->>'due' = '81.82'
+          and o->>'session_refund' = 'refunded' and o->>'lot_after' = '0.00/56.00' and o->>'K_after' = '74.00/0'
+          and o->>'cancel_after' = '-' and o->>'due_after' = '100.00',
+        '6 (462) (a) ' || r || ': S$44 to go back, S$20 spent: ' || o::text);
+      o := pg_temp.t460_s6('b-' || r, r, 'cpb', 20);
+      perform pg_temp.t460_check(o->>'refused' is null and o->>'status' = 'paid' and o->>'lot' = '0.00/78.00'
+          and o->>'K' = '32.00/0' and o->>'F' = '58.00/0' and o->>'A' = '0.00/0' and o->>'records' = ''
+          and o->>'cancel' = 'credit_used' and o->>'due' = '81.82' and (o->>'net')::numeric = 100
+          and o->>'session_refund' = 'refunded' and o->>'lot_after' = '0.00/78.00' and o->>'K_after' = '52.00/0'
+          and o->>'cancel_after' = '-' and o->>'due_after' = '100.00',
+        '6 (462) (b) ' || r || ': S$22 to go back, S$20 spent: ' || o::text);
+      perform pg_temp.t460_change(pg_temp.t460_id('S6/b-' || r), pg_temp.t460_cust('S6/b-' || r || '/C'));
+      perform pg_temp.t460_check(pg_temp.t460_holds(pg_temp.t460_id('S6/b-' || r || '/C')) = '52.00/0',
+        '6 (462) (b) ' || r || ': a customer change after the session''s refund did not move it: '
+        || pg_temp.t460_holds(pg_temp.t460_id('S6/b-' || r || '/C')));
+      perform cancel_invoice_recorded(pg_temp.t460_id('S6/b-' || r), 'T460 cancel 6b', gen_random_uuid());
+      perform pg_temp.t460_check(pg_temp.t460_holds(pg_temp.t460_id('S6/b-' || r || '/C')) = '0.00/0'
+          and pg_temp.t460_holds(pg_temp.t460_id('S6/b-' || r || '/F')) = '0.00/0',
+        '6 (462) (b) ' || r || ': Cancel did not take it all back');
+      o := pg_temp.t460_s6('c-' || r, r, 'cp', 40);
+      perform pg_temp.t460_check(o->>'refused' is null and o->>'status' = 'paid' and o->>'lot' = '0.00/60.00'
+          and o->>'K' = '40.00/0' and o->>'F' = '40.00/0' and o->>'cancel' = 'credit_used' and o->>'due' = '80.00'
+          and o->>'session_refund' = 'refunded' and o->>'K_after' = '60.00/0' and o->>'cancel_after' = '-' and o->>'due_after' = '100.00',
+        '6 (462) (c) ' || r || ': S$40 to go back, S$20 spent of S$60: ' || o::text);
+      continue;
+    end if;
     -- (a) The reviewer's case (AA4 by the merge, AA1 by the change): S$40 of
     -- a S$100 + S$10 package refunded (S$44 of credit), the S$20 session
     -- paid from the S$56 lot, the S$36 left moved on: S$44 to go back and
@@ -1268,8 +1392,13 @@ begin
   -- checks. With the session never refunded the reopening is refused all the
   -- same, as in (a), although the S$44 would then fit (whether it will be
   -- refunded cannot be known): NOT COVERED 4 (c).
+  if pg_temp.t460_462_in() then
+    raise notice 'PASS 6 (462 in: its fix of 460''s NOT COVERED 4 (c)): with S$20 of the lot the records name paid for a session before the Move, the reopening is allowed (S$44 of a S$56 lot, S$22 of S$78, S$40 of S$60); paid, what went back is on a new lot the records name, Cancel asks credit_used for the real session only; once the session is refunded its S$20 follows to that holder (at commit), nothing reads as spent, the refund due is S$100, a customer change moves it and Cancel takes it all back (%)',
+      array_to_string(routes, ' and ') || ' route' || case when cardinality(routes) > 1 then 's' else '' end;
+  else
   raise notice 'PASS 6: credit of the lot the records name that paid for another sale counts as taken: S$44 to go back with S$20 of a S$56 lot paid for a session, or S$40 with S$20 of a S$60 lot: the reopening is refused with the reason naming the S$20, changing nothing, and the session''s refund then goes through (as at 455); S$22 with S$20 of S$78: reopened, the S$22 on the lot the records name, nothing reads as spent once the session is refunded, the lot stays below what it was granted (S$42 of S$78) and a customer change still refuses it as partly spent, and Cancel takes it all back (%)',
     array_to_string(routes, ' and ') || ' route' || case when cardinality(routes) > 1 then 's' else '' end;
+  end if;
 end $$;
 -- (e) Credit coming back on that lot while the reopening waits, by a way
 -- the counting does not see (a stand-in: the lot's balance raised in
@@ -1296,14 +1425,24 @@ begin
     w := (select status::text from invoices where id = inv) || ' ' || (select count(*) from invoice_payments where invoice_id = inv) - n
          || ' ' || (select coalesce(sum(amount), 0) from invoice_reopen_benefits where invoice_id = inv and applied_at is null)
          || ' ' || pg_temp.t460_holds(a) || ' ' || (select remaining_amount from customer_credit_lots where id = lot);
+    if pg_temp.t460_462_in() then
+      -- 462: the payment settles; what went back and what came back on the
+      -- lot go to its holder on one new lot the records name.
+      perform pg_temp.t460_check(msg is null and w = 'paid 1 0 0.00/0 0.00' and pg_temp.t460_holds(k) = '60.00/0'
+          and pg_temp.t460_records(inv) = '',
+        '6 (e) (462) credit back on the lot while it waits, paid: ' || coalesce(msg, 'settled') || ' / ' || w || ' / K ' || pg_temp.t460_holds(k));
+    else
     perform pg_temp.t460_check(msg = format('Invoice %s cannot be settled: it would give back S$40.00 of credit refunded before its customer was changed or merged, the rest of which was then moved to someone else (Move), and the credit lot the invoice names for it cannot take that much back (it holds S$20.00 of S$60.00 granted, and S$0.00 of its credit paid for other sales, which a refund puts back there). Nothing was recorded. Cancel the invoice again (its refund due stands), or ask the Owner.',
                                        (select invoice_no from invoices where id = inv))
         and w = 'partially_paid 0 100.00 0.00/0 20.00',
       '6 (e) credit back on the lot while it waits, paid: ' || coalesce(msg, 'not refused') || ' / ' || w);
+    end if;
     raise exception using errcode = 'P0991', message = 'undo';
   exception when sqlstate 'P0991' then null;
   end;
-  raise notice 'PASS 6 (e): with S$20 come back on the lot the records name while the reopening waits (a stand-in), the payment that would settle it is refused with the reason (nothing recorded: still part paid, no payment added, all S$100 still waiting: the S$40 refunded and the S$60 the cancel took back from the friend); undone';
+  raise notice 'PASS 6 (e): with S$20 come back on the lot the records name while the reopening waits (a stand-in), %; undone',
+    case when pg_temp.t460_462_in() then 'the payment settles it (462): the kept record holds the S$40 and the S$20 on one new lot the records name'
+         else 'the payment that would settle it is refused with the reason (nothing recorded: still part paid, no payment added, all S$100 still waiting: the S$40 refunded and the S$60 the cancel took back from the friend)' end;
 end $$;
 
 -- ===== 8. KNOWN: 460's NOT COVERED, as they are =====
@@ -1312,8 +1451,10 @@ declare a uuid := pg_temp.t460_cust('S/after/A'); b uuid := pg_temp.t460_cust('S
 begin
   -- 2. A Premium Bundle's vouchers (X8) stay with whoever holds the
   -- voucher they replace: a customer change has never taken them along.
-  perform pg_temp.t460_check(pg_temp.t460_holds(pg_temp.t460_id('X8/after/A')) = '0.00/2',
-    '8 (2) X8''s bundle vouchers are not with A: look at 460''s NOT COVERED 2 again');
+  -- (463, where it is in: they follow the change, the Owner's decision 3.)
+  perform pg_temp.t460_check(pg_temp.t460_holds(pg_temp.t460_id('X8/after/A'))
+                             = case when pg_temp.t460_463_in() then '0.00/0' else '0.00/2' end,
+    '8 (2) X8''s bundle vouchers are not where they should be: look at 460''s NOT COVERED 2 again');
   -- 3. Two vouchers waiting, the customer and the store changed
   -- ('transfer'), paid: the new customer holds them at the first store
   -- (where the ones they replace were), as before 460.
@@ -1326,6 +1467,40 @@ begin
   perform pg_temp.t460_check(pg_temp.t460_holds(b) = '0.00/2' and st = 'T460S1',
     '8 (3) waiting, changed with the store, paid: B holds ' || pg_temp.t460_holds(b) || ' at ' || coalesce(st, '-')
     || ': look at 460''s NOT COVERED 3 again');
+  if pg_temp.t460_462_in() then
+    -- 462 fixes 4 (the Move's credit is traced through the Move's own
+    -- ledger rows, so the row moved on is repointed like any other): what
+    -- a reopening gives back goes to whoever holds the benefits now, with
+    -- its records; nothing reads as spent; Cancel takes it from them.
+    o5 := pg_temp.t460_run('K5', 'known');
+    o6 := pg_temp.t460_run('K6', 'known');
+    o9 := pg_temp.t460_run('K9', 'known');
+    perform pg_temp.t460_check(pg_temp.t460_who(o5) = 'B 40.00/0, F 60.00/0' and pg_temp.t460_who(o6) = 'F 60.00/0, K 40.00/0'
+        and pg_temp.t460_who(o9) = 'F 60.00/0, K 40.00/0'
+        and o5->>'cancel' = '-' and o6->>'cancel' = '-' and o9->>'cancel' = '-' and o9->>'due' = '100.00'
+        and o5->>'records' = '' and o6->>'records' = '' and o9->>'records' = ''
+        and (select l.customer_id from invoice_benefit_values bv join invoice_benefit_transfers bt on bt.source_benefit_id = bv.id
+               join customer_credit_lots l on l.id = bv.lot_id where bv.invoice_id = pg_temp.t460_id('K5/known')) = pg_temp.t460_id('K5/known/B')
+        and not exists (select 1 from customer_credit_lots l where l.customer_id = pg_temp.t460_id('K9/known/K') and l.remaining_amount > 0
+                           and not exists (select 1 from invoice_benefit_values bv where bv.lot_id = l.id)),
+      '8 (4) (462) K5, K6, K9: ' || o5::text || '; ' || o6::text || '; ' || o9::text);
+    o10 := pg_temp.t460_run('X10', 'known');
+    perform pg_temp.t460_check(pg_temp.t460_who(o10) = 'F 56.00/0, K 54.00/0' and o10->>'cancel' = '-' and o10->>'due' = '100.00' and o10->>'records' = '',
+      '8 (4) (462) X10: ' || o10::text);
+    o10 := pg_temp.t460_run('M7', 'known');
+    perform pg_temp.t460_check(pg_temp.t460_who(o10) = 'F 60.00/0, K2 40.00/0' and o10->>'cancel' = '-' and o10->>'due' = '100.00' and o10->>'records' = '',
+      '8 (4b) (462) M7: ' || o10::text);
+    o10 := pg_temp.t460_run('X11', 'known');
+    perform pg_temp.t460_check(pg_temp.t460_who(o10) = 'C 54.00/0, F 56.00/0' and o10->>'cancel' = '-' and o10->>'due' = '100.00' and o10->>'records' = '',
+      '8 (4b) (462) X11: ' || o10::text);
+    o10 := pg_temp.t460_run('X12', 'known');
+    perform pg_temp.t460_check(pg_temp.t460_who(o10) = 'C 54.00/0, F 56.00/0' and o10->>'cancel' = '-' and o10->>'due' = '100.00' and o10->>'records' = '',
+      '8 (4b) (462) X12: ' || o10::text);
+    o10 := pg_temp.t460_run('X13', 'known');
+    perform pg_temp.t460_check(pg_temp.t460_who(o10) = 'F 56.00/0, K 54.00/0' and o10->>'cancel' = '-' and o10->>'due' = '100.00' and o10->>'records' = '',
+      '8 (4b) (462) X13: ' || o10::text);
+    raise notice 'FIXED 8 (4) by 462: a Move after a refund, then a change (K5: B holds the S$40) or a merge (K6: K holds it), a merge after such a reopening was settled (K9: K holds it on a lot the records name, nothing reads as spent, refund due S$100), the new customer merged after the Move (X10: K holds S$54), and the benefits leaving the named lot''s holder after the Move (M7: K2 holds the S$40; X11, X12: C holds S$54; X13: K holds S$54): each on a lot the records name, Cancel and Refund in full ask nothing';
+  else
   -- 4. A lot whose benefit row was moved on (Move) keeps its records: what
   -- a reopening gives back on it stays with whoever holds that lot, the old
   -- customer after a change (K5), the retired record after a merge (K6),
@@ -1391,10 +1566,15 @@ begin
     perform pg_temp.t460_check(pg_temp.t460_who(o10) = 'F 56.00/0, K 54.00/0' and o10->>'cancel' = '-' and o10->>'due' = '100.00',
       '8 (4b) X13 then moved to the kept record: ' || o10::text);
   end if;
+  end if;
+  if not pg_temp.t460_462_in() then
   raise notice 'KNOWN 8: (not covered by 460) (2) a Premium Bundle''s vouchers, which a customer change has never taken along (not transferable), are given back to whoever holds the voucher they replace (X8: A holds them, B the bundle''s credit). (3) a voucher a reopening gives again is given at the store of the one it replaces, as before: waiting, changed with the store to B, paid, B holds them at the first store (a change that also moves the store moves the vouchers held then with their stock, X5). (4) a lot whose benefit row was moved on (Move): S$40 refunded, the S$60 left moved to F, cancelled, reopened, changed to B (K5) or A merged into K (K6), paid: the S$40 goes back on A''s lot, which the benefit row and the sale name (in K6 A is the retired record), as before 460; nothing reads as spent and Cancel takes it back. With the refund before a change and the Move after it, and the new customer merged into K before the cancel (X10, with 461 in), the S$44 goes on B''s lot, which the records name: B is the retired record. A merge after such a reopening was settled (K9) moves the lot''s S$40 to the kept record without its records (445): Cancel asks credit_used and its refund due is S$60, as at 455. (1) a customer change with ''transfer'' made before 460 that moved nothing left no record: what a later reopening gives back goes where it did before 460 (460 refuses to install where such an invoice still waits)';
   raise notice 'KNOWN 8: (not covered by 460) (4 b) the benefits leave the holder of the lot the records name after the Move: the S$40 (S$44) stays on that lot, its holder''s, not with the benefits'' current holder: K merged into K2 while it waits (M7: K, the retired record, holds the S$40)%; nothing reads as spent, the refund due is what was received (S$100)%',
     case when pg_temp.t460_461_in() then '; B changed to C before the cancel (X11) or while it waits (X12): B holds the S$44, C the S$10 Bonus; B merged into K while it waits (X13): B, the retired record, holds the S$44, K the S$10' else ' (with 461 in, the change routes X11 to X13 too)' end,
     case when pg_temp.t460_461_in() then '; an Owner''s Move of that benefit row to the kept record puts it right (X13: K then holds S$54, the refund due S$100)' else '' end;
+  else
+    raise notice 'KNOWN 8: (not covered by 460) (2) a Premium Bundle''s vouchers stay with whoever holds the voucher they replace (X8: A holds them, B the bundle''s credit). (3) a voucher a reopening gives again is given at the store of the one it replaces. (1) a customer change with ''transfer'' made before 460 that moved nothing left no record. (4) is fixed by 462 (above)';
+  end if;
 end $$;
 
 -- 7. The review summary of a change made while a reopened invoice waits
@@ -1407,8 +1587,13 @@ begin
   inv := pg_temp.t460_sale(a, array['cpb', 'v'], array[1, 2]);
   perform pg_temp.t460_wait(inv);
   r := preview_invoice_correction(inv, pg_temp.t460_header(inv, b, 'transfer'));
+  -- (463, where it is in, lists what the payment will give the new customer.)
   perform pg_temp.t460_check(exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'area' = 'customer')
-      and not exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'area' = 'benefits'),
+      and case when pg_temp.t460_463_in()
+               then exists (select 1 from jsonb_array_elements(r->'effects') e
+                             where e->>'area' = 'benefits' and e->>'change' = 'transferring'
+                               and e->'items' = '[{"kind": "credit", "what": "Bonus credit 10.00"}, {"kind": "credit", "what": "Paid credit 100.00"}, {"kind": "voucher", "what": "T460 Plain 30 × 2"}]'::jsonb)
+               else not exists (select 1 from jsonb_array_elements(r->'effects') e where e->>'area' = 'benefits') end,
     '8 (7) the summary of a change while it waits: ' || coalesce((r->'effects')::text, '<none>') || ': look at 460''s NOT COVERED 7 again');
   perform pg_temp.t460_change(inv, b);
   perform pg_temp.t460_pay(inv);

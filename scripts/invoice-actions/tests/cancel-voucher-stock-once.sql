@@ -1030,10 +1030,14 @@ end $$;
 
 -- ===== 13c. (416 only) The FOC taken off in a save that also changes the customer, or after one that did =====
 do $$
-declare inv uuid; x jsonb; r jsonb; v_434 boolean;
+declare inv uuid; x jsonb; r jsonb; v_434 boolean; v_463 boolean;
 begin
   if not pg_temp.tvs_416() then
     raise notice 'SKIP 13c: needs 416 (taking the FOC off a completed FOC invoice)'; return; end if;
+  -- 463 (the Owner, 24 Oct 2026, decision 2), where it is in: a voucher an
+  -- Owner moved to the same customer at another store is one of the
+  -- invoice's own, so a change with 'transfer' moves it too (13c-e).
+  v_463 := to_regprocedure('public.invoice_benefit_moved_to_other(uuid)') is not null;
   v_434 := pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)
              like '%-- 434: moved to another customer when%'
            or pg_get_functiondef('public.preview_invoice_correction(uuid,jsonb)'::regprocedure)
@@ -1147,7 +1151,10 @@ begin
   -- The save moves the other line's voucher (a sale's) to the third, so it
   -- is taken back; the one the Owner moved stays with the buyer, as before
   -- 434; the summary, which sees the buyer still holding both, says the
-  -- same before the save.
+  -- same before the save. With 463 in, the one the Owner moved to the
+  -- buyer's other store is the invoice's own (decision 2): the save moves it
+  -- to the third too, so both are taken back, in the summary and the save,
+  -- and the payment gives both to the third.
   inv := create_invoice(pg_temp.tvs_id('store'), pg_temp.tvs_id('customer'), null,
     jsonb_build_array(
       jsonb_build_object('kind', 'voucher', 'voucher_id', pg_temp.tvs_id('v33'), 'quantity', 1, 'foc_quantity', 1, 'foc_reason', 'TVS goodwill'),
@@ -1165,12 +1172,28 @@ begin
       and pg_temp.tvs_at('v33', 'store') = 9 and pg_temp.tvs_at('v33', 'store2') = 9,
     '13c-e fixture: ' || pg_temp.tvs_show('v33') || ', not still FOC with the buyer''s 1 at each store (9/9)');
   r := pg_temp.tvs_preview(inv, jsonb_build_object('customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'));
-  perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v33 × 1).%'
-      and r->'items' = '[{"kind":"voucher","what":"TVS v33 × 1","why":"moved to another customer; it stays with them"}]'::jsonb,
-    '13c-e the summary: ' || coalesce(r::text, '<none>') || ', not one taken back and the moved one staying');
+  if v_463 then
+    perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v33 × 1, TVS v33 × 1).%'
+        and r->'items' = '[]'::jsonb,
+      '13c-e the summary (463): ' || coalesce(r::text, '<none>') || ', not both taken back');
+  else
+    perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v33 × 1).%'
+        and r->'items' = '[{"kind":"voucher","what":"TVS v33 × 1","why":"moved to another customer; it stays with them"}]'::jsonb,
+      '13c-e the summary: ' || coalesce(r::text, '<none>') || ', not one taken back and the moved one staying');
+  end if;
   r := correct_invoice(inv, pg_temp.tvs_lines(inv, false),
          jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
            'customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'), 'TVS 13c-e', gen_random_uuid());
+  if v_463 then
+    perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v33 × 1","TVS v33 × 1"],"kept_used":[]}'::jsonb
+        and pg_temp.tvs_at('v33', 'store') = 10 and pg_temp.tvs_at('v33', 'store2') = 10 and pg_temp.tvs_held('v33') = 0,
+      '13c-e the FOC off (463): ' || coalesce((r->'foc_vouchers')::text, '<none>') || ' ' || pg_temp.tvs_show('v33')
+      || ', not both taken back (10/10 held 0)');
+    perform pg_temp.tvs_pay_rest(inv);
+    perform pg_temp.tvs_check(pg_temp.tvs_at('v33', 'store') = 8 and pg_temp.tvs_at('v33', 'store2') = 10
+        and pg_temp.tvs_holds('v33', 'third', 'store') = 2 and pg_temp.tvs_held('v33') = 2,
+      '13c-e paid (463): ' || pg_temp.tvs_show('v33') || ', not 8/10 with the third''s 2');
+  else
   perform pg_temp.tvs_check(r->'foc_vouchers' = '{"taken_back":["TVS v33 × 1"],"kept_used":["TVS v33 × 1 — moved to another customer; it stays with them"]}'::jsonb
       and pg_temp.tvs_at('v33', 'store') = 10 and pg_temp.tvs_at('v33', 'store2') = 9
       and pg_temp.tvs_holds('v33', 'customer', 'store2') = 1 and pg_temp.tvs_held('v33') = 1,
@@ -1180,6 +1203,7 @@ begin
   perform pg_temp.tvs_check(pg_temp.tvs_at('v33', 'store') = 9 and pg_temp.tvs_at('v33', 'store2') = 9
       and pg_temp.tvs_holds('v33', 'third', 'store') = 1 and pg_temp.tvs_holds('v33', 'customer', 'store2') = 1,
     '13c-e paid: ' || pg_temp.tvs_show('v33') || ', not 9/9 with the third''s 1 and the buyer''s moved 1');
+  end if;
 
   -- (f) As (e) up to the earlier 'keep', then the FOC off with no change of
   -- customer: the buyer, whom an Owner moved one of the invoice's vouchers
@@ -1215,8 +1239,10 @@ begin
   perform pg_temp.tvs_check(pg_temp.tvs_at('v35', 'store') = 9 and pg_temp.tvs_at('v35', 'store2') = 9
       and pg_temp.tvs_holds('v35', 'friend', 'store') = 1 and pg_temp.tvs_holds('v35', 'customer', 'store2') = 1,
     '13c-f paid: ' || pg_temp.tvs_show('v35') || ', not 9/9 with the friend''s 1 and the buyer''s moved 1');
-  raise notice 'PASS 13c: (a) moved by this save: taken back, paid for 1, 1 given; (b) an Owner''s move to the new customer: %; (c) left by an earlier keep and moved by this save: taken back; (d) left by an earlier keep: taken back, given to the invoice''s customer; (e) the line this save moves taken back, the Owner''s move kept (summary and save); (f) no customer change: the sale''s taken back, the Owner''s move kept',
-    case when v_434 then 'taken back and given again at the invoice''s store (434)' else 'kept at the other store (before 434)' end;
+  raise notice 'PASS 13c: (a) moved by this save: taken back, paid for 1, 1 given; (b) an Owner''s move to the new customer: %; (c) left by an earlier keep and moved by this save: taken back; (d) left by an earlier keep: taken back, given to the invoice''s customer; (e) the line this save moves taken back, %; (f) no customer change: the sale''s taken back, the Owner''s move kept',
+    case when v_434 then 'taken back and given again at the invoice''s store (434)' else 'kept at the other store (before 434)' end,
+    case when v_463 then 'and the Owner''s move to the buyer''s other store too, which this save moves as the invoice''s own (463), both given to the third (summary and save)'
+         else 'the Owner''s move kept (summary and save)' end;
 end $$;
 
 -- ===== 14. Cancelled, reopened, then moved, the FOC taken off, paid, cancelled =====

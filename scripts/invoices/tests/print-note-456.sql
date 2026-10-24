@@ -150,7 +150,8 @@ select pg_temp.check(
     and has_column_privilege('authenticated', 'public.invoices', 'print_note', 'select'),
   'G1 invoices.print_note: text, nullable, no default, at most 500 characters, read like every other column');
 -- correct_invoice: 456's AFTER, or 457's or 458's (the next steps of this round, which build on it), or 464's.
-select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'create_invoice_with_details(uuid,uuid,jsonb,jsonb)') = '770ee0129b0e9fe909259ad7ea95b8d0'
+-- create_invoice_with_details: 456's AFTER, or 463's (after 462: it refuses a removed customer record).
+select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'create_invoice_with_details(uuid,uuid,jsonb,jsonb)') in ('770ee0129b0e9fe909259ad7ea95b8d0', '0ac29c7aa909dd756ec572645ca86448')
     and (select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)')
         in ('e174a2fde4ad5bb158e6f306b0b944e5', '45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2'),
   'G2 create_invoice_with_details and correct_invoice have 456''s AFTER md5s (correct_invoice: or 457''s or 458''s or 464''s)');
@@ -160,12 +161,12 @@ select pg_temp.check(not has_function_privilege('anon', 'public.' || f, 'execute
   'G3 ' || f || ': signed-in staff and the service role may call it, anon may not')
   from unnest(array['create_invoice_with_details(uuid,uuid,jsonb,jsonb)', 'correct_invoice(uuid,jsonb,jsonb,text,uuid)']) f;
 -- update_invoice_internal: as at 416, or 457's AFTER (457 changes it and runs after 456);
--- preview_invoice_correction: as read, or 458's AFTER (458 changes it and runs after 457).
+-- preview_invoice_correction: as read, or 458's AFTER (458 changes it and runs after 457), or 463's.
 select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = any (string_to_array(x.ok, '|')),
   'G4 relied on and unchanged: ' || x.fn)
   from (values ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '80c80d386a5241e63b353e35e13ef250'),
                ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '8e674fe0d5e35ed5c2e93d417f14c05a|1f034561a461bdb46a1e6274e0d04606'),
-               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb'),
+               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('staff_may_correct_invoice(uuid)', '60cbe4859f1f1f43da02115c019fc4bf'),
                ('can_edit_invoice(uuid)', '22f496c486ee4f0dfd45c68da6240ac2'),

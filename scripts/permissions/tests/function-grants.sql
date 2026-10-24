@@ -185,6 +185,18 @@ declare
                              -- gives back belongs to now (the reopening's triggers, the
                              -- customer change and its list call them)
                              'invoice_own_voucher_ids','invoice_benefits_holder',
+                             -- 462: a lot and the lots it replaced (the Move's trace reads
+                             -- it), whom credit given back goes to (never a deleted record),
+                             -- and what makes credit a refunded sale gives back follow the
+                             -- invoice's benefits (the ledger's trigger runs it at commit)
+                             'credit_lot_ancestry','invoice_credit_live_holder',
+                             'credit_given_back_follows','trg_credit_given_back_follows',
+                             -- 463: whether a benefit row is what an Owner moved to someone
+                             -- else (the customer change, its list and summary, and the
+                             -- reopening's settlement read it), and whether credit an Owner
+                             -- moved came from a row partly spent before the Move (the
+                             -- customer change and its list read it)
+                             'invoice_benefit_moved_to_other','invoice_benefit_moved_from_spent',
                              -- 412: a staff login follows its profile (signed out and banned when
                              -- the profile is closed, unbanned when it opens again), and the
                              -- profiles trigger that calls it

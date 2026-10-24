@@ -377,10 +377,140 @@ begin
          || E'       and l.remaining_amount = l.original_amount\n       and l.remaining_amount > 0\n'
          || substr(t, a + b - 1);
 end$$;
+-- Where 462 is in (move-merge-leftovers-462.sql: it changes the lots' selection,
+-- in 461's part, which without_461 takes out whatever it says, and takes off
+-- the guard that kept a moved-on row's records), its text with the guard put
+-- back: 460's and 461's.
+create function pg_temp.without_462(p_t text) returns text language plpgsql as
+$$declare t text := p_t; r text; a text;
+begin
+  if position('    -- 462 (the Owner, 24 Oct 2026): a lot whose benefit value an Owner moved' in t) = 0 then return t; end if;
+  r :=
+$r$    -- 462 (the Owner, 24 Oct 2026): a lot whose benefit value an Owner moved
+    -- on (Move) too, now: the moved credit is traced through the Move's own
+    -- ledger rows (invoice_credit_transfer_origin), not through this lot, so
+    -- its records follow like any other's (as in a merge, 462).
+    update public.invoice_benefit_values set lot_id = v_new_lot where lot_id = r_lot.id;
+    update public.credit_package_sales set credit_lot_id = v_new_lot where credit_lot_id = r_lot.id;
+    update public.credit_package_sales set bonus_credit_lot_id = v_new_lot where bonus_credit_lot_id = r_lot.id;
+    update public.premium_bundle_sales set paid_credit_lot_id = v_new_lot where paid_credit_lot_id = r_lot.id;
+    update public.premium_bundle_sales set bonus_credit_lot_id = v_new_lot where bonus_credit_lot_id = r_lot.id;
+    update public.invoice_credit_splits set issued_lot_id = v_new_lot where issued_lot_id = r_lot.id;
+$r$;
+  a :=
+$a$    if not exists (select 1 from public.invoice_benefit_values b
+                     join public.invoice_benefit_transfers t on t.source_benefit_id = b.id
+                    where b.lot_id = r_lot.id) then
+      update public.invoice_benefit_values set lot_id = v_new_lot where lot_id = r_lot.id;
+      update public.credit_package_sales set credit_lot_id = v_new_lot where credit_lot_id = r_lot.id;
+      update public.credit_package_sales set bonus_credit_lot_id = v_new_lot where bonus_credit_lot_id = r_lot.id;
+      update public.premium_bundle_sales set paid_credit_lot_id = v_new_lot where paid_credit_lot_id = r_lot.id;
+      update public.premium_bundle_sales set bonus_credit_lot_id = v_new_lot where bonus_credit_lot_id = r_lot.id;
+      update public.invoice_credit_splits set issued_lot_id = v_new_lot where issued_lot_id = r_lot.id;
+    end if;
+$a$;
+  if position(r in t) = 0 then raise exception 'FIXTURE: 462''s change not found in move_invoice_benefits_to_customer'; end if;
+  return replace(t, r, a);
+end$$;
+-- Where 463 is in (change-store-moves-bundle-vouchers-463.sql: it adds the
+-- credit an Owner moved to the same customer at another store to the lots'
+-- selection, and keeps the store of such a voucher and of a Premium Bundle's),
+-- its text with its six changes taken out: 462's (the sixth: credit so
+-- moved from a row partly spent before the Move does not move).
+create function pg_temp.without_463(p_t text) returns text language plpgsql as
+$$declare t text := p_t; r text[]; a text[]; i int;
+begin
+  if position('v463_kept' in t) = 0 then return t; end if;
+  r := array[
+$w1$        r_lot public.customer_credit_lots%rowtype; v_new_lot uuid;
+        v463_kept uuid[];  -- 463: vouchers that keep their store
+$w1$,
+$w2$   order by id for update;
+  -- 463 (the Owner, 24 Oct 2026, decisions 2 and 3): a voucher an Owner
+  -- moved to the same customer at another store (a store correction, which
+  -- a customer change that takes the benefits along takes along), and a
+  -- Premium Bundle's (they follow such a change as the bundle's credit
+  -- does), and one given again in place of either, is one of the invoice's
+  -- own now (invoice_own_voucher_ids): it moves to the new customer and
+  -- keeps its store, as credit keeps its store: no stock moves for it. The
+  -- voucher and promotion lines' go to the invoice's store, as before (417).
+  v463_kept := array(
+    with recursive k(id, n) as (
+      select o.voucher_id, 0
+        from public.invoice_own_voucher_ids(p_invoice_id) o
+        join public.customer_reward_vouchers c on c.id = o.voucher_id
+       where c.source_type in ('invoice_benefit_transfer', 'premium_bundle')
+      union all
+      select q.replacement_voucher_id, k.n + 1
+        from k
+        join public.invoice_benefit_values b on b.reward_voucher_id = k.id and b.invoice_id = p_invoice_id
+        join public.invoice_reopen_vouchers q on q.benefit_id = b.id and q.invoice_id = p_invoice_id
+       where q.replacement_voucher_id is not null and k.n < 64)
+    select distinct k.id from k);
+  for v417 in
+$w2$,
+$w3$       and p_store_id is not null and rv.store_id is not null and rv.store_id <> p_store_id
+       and rv.id <> all (v463_kept)   -- 463
+$w3$,
+$w4$  update public.customer_reward_vouchers
+     set customer_id = p_customer_id,
+         store_id = case when id = any (v463_kept) then store_id else p_store_id end   -- 463
+$w4$,
+$w5$     where (l.id in (select lot_id from public.invoice_credit_lot_ids(p_invoice_id))
+            -- 463 (the Owner, 24 Oct 2026, decision 2): and credit an Owner
+            -- moved to the same customer at another store (a store
+            -- correction): the lot its benefit row names now, which stays
+            -- the invoice's own (invoice_benefit_moved_to_other), so it
+            -- moves with its records, keeping its store, as the invoice's
+            -- own credit does. Not a Move to someone else (its recipient
+            -- keeps it, 434).
+            or l.id in (select b.lot_id from public.invoice_benefit_values b
+                         where b.invoice_id = p_invoice_id and b.lot_id is not null
+                           and exists (select 1 from public.invoice_benefit_transfers t
+                                        where t.replacement_benefit_id = b.id)
+                           and not public.invoice_benefit_moved_to_other(b.id)))
+$w5$,
+$w6$       and l.remaining_amount > 0
+       and l.status = 'active'
+       -- 463: nor credit an Owner moved to the same customer at another
+       -- store from a benefit row partly spent before the Move
+       -- (invoice_benefit_moved_from_spent: the list blocks the change for
+       -- it, "Partly spent", as for the invoice's own credit), read again
+       -- once the lot is locked.
+       and not exists (select 1 from public.invoice_benefit_values b
+                        where b.lot_id = l.id and b.invoice_id = p_invoice_id
+                          and public.invoice_benefit_moved_from_spent(b.id))
+$w6$];
+  a := array[
+$v1$        r_lot public.customer_credit_lots%rowtype; v_new_lot uuid;
+$v1$,
+$v2$   order by id for update;
+  for v417 in
+$v2$,
+$v3$       and p_store_id is not null and rv.store_id is not null and rv.store_id <> p_store_id
+$v3$,
+$v4$  update public.customer_reward_vouchers
+     set customer_id = p_customer_id, store_id = p_store_id
+$v4$,
+$v5$     where l.id in (select lot_id from public.invoice_credit_lot_ids(p_invoice_id))
+$v5$,
+$v6$       and l.remaining_amount > 0
+       and l.status = 'active'
+$v6$];
+  for i in 1 .. 6 loop
+    if position(r[i] in t) = 0 then raise exception 'FIXTURE: 463''s change % not found in move_invoice_benefits_to_customer', i; end if;
+    t := replace(t, r[i], a[i]);
+  end loop;
+  return t;
+end$$;
+-- Whether 462 is in (its merge text).
+create function pg_temp.with_462() returns boolean language sql as
+$$ select to_regprocedure('public.credit_given_back_follows(uuid)') is not null $$;
 -- 447's text, read from what is installed: 455's, or 460's or 461's (or
--- both) with their changes taken out.
+-- both, or 462 over both, or 463 over 462) with their changes taken out.
 create function pg_temp.as_447() returns text language sql as
-$$ select pg_temp.without_461(pg_temp.without_460(pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure))) $$;
+$$ select pg_temp.without_461(pg_temp.without_460(pg_temp.without_462(pg_temp.without_463(
+          pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure))))) $$;
 
 -- 417's text of move_invoice_benefits_to_customer, rebuilt from 447's (the
 -- block 447 adds taken out; where 460 or 461 is in, from their text with
@@ -529,9 +659,10 @@ select pg_temp.check(:'m12_failed' = 'false' and :'m12_acl' = '{service_role=X/p
 \endif
 select pg_temp.check(md5(pg_temp.as_447()) = 'e313e87b4ab4c0063d924430996ffbd3'
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'move_invoice_benefits_to_customer') = 1
-    and pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = '2e0c9852099ab88d8f27827b5f9a3846'
+    and pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)')
+        = case when pg_temp.with_462() then 'ba05c2b1fb4c0e14d369c01d06a635b0' else '2e0c9852099ab88d8f27827b5f9a3846' end
     and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889',
-  'M3 move_invoice_benefits_to_customer is 447''s (e313e87b4ab4c0063d924430996ffbd3; where 460 or 461 is in, with their changes taken out), with no overload; 445''s merge and Move are unchanged');
+  'M3 move_invoice_benefits_to_customer is 447''s (e313e87b4ab4c0063d924430996ffbd3; where 460, 461 or 462 is in, with their changes taken out), with no overload; 445''s merge (462''s where it is in) and Move are unchanged');
 select pg_temp.check((select array_agg(x::text order by x::text) from pg_proc p, unnest(p.proacl) x
                        where p.oid = 'public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)
       = (select array_agg(x::text order by x::text) from unnest('{postgres=X/postgres,service_role=X/postgres}'::aclitem[]) x)
@@ -1080,14 +1211,20 @@ select pg_temp.check(pg_temp.nt('V.move') = 'ok'
   || 'credit goes through; cancelled, back from Yankee and Zulu, the S$1,000 recorded: ' || pg_temp.n('V')::text);
 
 -- ═════ E A lot whose benefit value was moved on ═════
+-- (Where 462 is in, its records follow too: the Move's credit is traced
+-- through the Move's own ledger rows, not through that lot.)
 select pg_temp.check(pg_temp.nt('E.move') = 'ok'
     and pg_temp.nt('E.holds') = 'Alpha 0.00 Bravo 1100.00 Delta 1000.00'
-    and pg_temp.n('E.paid_kept') = 'true'
-    and pg_temp.nt('E.benefits') = 'Alpha paid 0.00/1000.00, Bravo bonus 100.00/100.00, Delta paid 1000.00/1000.00'
-    and pg_temp.nt('E.sale') = 'Alpha paid, Bravo bonus'
+    and case when pg_temp.with_462()
+             then pg_temp.n('E.paid_kept') = 'false'
+                  and pg_temp.nt('E.benefits') = 'Bravo bonus 100.00/100.00, Bravo paid 1000.00/1000.00, Delta paid 1000.00/1000.00'
+                  and pg_temp.nt('E.sale') = 'Bravo bonus, Bravo paid'
+             else pg_temp.n('E.paid_kept') = 'true'
+                  and pg_temp.nt('E.benefits') = 'Alpha paid 0.00/1000.00, Bravo bonus 100.00/100.00, Delta paid 1000.00/1000.00'
+                  and pg_temp.nt('E.sale') = 'Alpha paid, Bravo bonus' end
     and pg_temp.o('E') - 'benefits' - 'sale' - 'paid_kept' = pg_temp.n('E') - 'benefits' - 'sale' - 'paid_kept',
-  'E a lot whose benefit value was moved on (all its credit put back) moves with the invoice but keeps its records where they were (447''s 2.); '
-  || 'the Bonus''s follow: ' || pg_temp.n('E')::text
+  'E a lot whose benefit value was moved on (all its credit put back) moves with the invoice but keeps its records where they were (447''s 2.; '
+  || 'with 462 in, its records follow too); the Bonus''s follow: ' || pg_temp.n('E')::text
   || case when pg_temp.o('E') - 'benefits' - 'sale' - 'paid_kept' = pg_temp.n('E') - 'benefits' - 'sale' - 'paid_kept' then ''
           else ' (with 417''s text: ' || pg_temp.o('E')::text || ')' end);
 

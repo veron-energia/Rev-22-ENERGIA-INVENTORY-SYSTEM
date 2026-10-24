@@ -113,6 +113,14 @@ $$ select md5(string_agg(md5(pg_get_functiondef(p.oid)), '' order by p.oid::regp
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind in ('f', 'p') $$;
 create function pg_temp.md5_of(sig text) returns text language sql as
 $$ select md5(pg_get_functiondef(to_regprocedure('public.' || sig))) $$;
+-- Where 462 is in (move-merge-leftovers-462.sql): the merge also repoints
+-- the records of a lot whose benefit value an Owner moved on (the Move's
+-- credit is traced through the Move's own ledger rows): its AFTER of the
+-- merge, and E1 the fixed way.
+create function pg_temp.with_462() returns boolean language sql as
+$$ select to_regprocedure('public.credit_given_back_follows(uuid)') is not null $$;
+create function pg_temp.merge_md5() returns text language sql as
+$$ select case when pg_temp.with_462() then 'ba05c2b1fb4c0e14d369c01d06a635b0' else '2e0c9852099ab88d8f27827b5f9a3846' end $$;
 create function pg_temp.method(nm text) returns uuid language sql as
 $$ select id from public.payment_methods where name = nm and deleted_at is null $$;
 create function pg_temp.invoice(cust uuid, lines jsonb) returns uuid language sql as
@@ -549,9 +557,9 @@ insert into m445 select pg_temp.fp(), (select count(*) from public.customer_cred
                         (select md5(string_agg(to_jsonb(l)::text, '|' order by l.id)) from public.customer_credit_lots l),
                         (select md5(string_agg(to_jsonb(s)::text, '|' order by s.id)) from public.credit_package_sales s);
 \if :{?nomig}
-select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = '2e0c9852099ab88d8f27827b5f9a3846'
+select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = pg_temp.merge_md5()
     and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889',
-  'M0 445 is installed (nomig)');
+  'M0 445 is installed (nomig; 462''s merge where 462 is in)');
 \else
 select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = '099ecf3aae30b5faaf8fb36bc15ce888'
     and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = 'ea7e8ce0612752c75ba75748c9275c42',
@@ -670,7 +678,7 @@ select pg_temp.check(:'m12_failed' = 'false'
     and :'m12_acl' = '{postgres=X/postgres,service_role=X/postgres,authenticated=X/postgres}',
   'M12 the same grants listed in production''s order do not stop it: ' || :'m12_acl' || ' ' || :'m12_msg');
 \endif
-select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = '2e0c9852099ab88d8f27827b5f9a3846'
+select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = pg_temp.merge_md5()
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'merge_customer_records') = 1
     and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889'
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'transfer_invoice_unused_benefit') = 1,
@@ -910,15 +918,20 @@ end $$;
 do $$
 begin
   perform set_config('request.jwt.claim.sub', pg_temp.fx('owner')::text, true);
+  -- (Where 462 is in, the sale and the benefit value follow to Kilo's lot
+  -- too, and Delta's credit is still traced to the bundle, through the
+  -- Move's own ledger rows.)
   perform pg_temp.check(
-    (select s.bonus_credit_lot_id from public.premium_bundle_sales s where s.invoice_id = pg_temp.fx('x5')) = pg_temp.fx('b2_bonus')
-    and exists (select 1 from public.invoice_benefit_values b where b.lot_id = pg_temp.fx('b2_bonus'))
+    (select s.bonus_credit_lot_id from public.premium_bundle_sales s where s.invoice_id = pg_temp.fx('x5'))
+      = case when pg_temp.with_462() then pg_temp.kept(pg_temp.fx('b2_bonus')) else pg_temp.fx('b2_bonus') end
+    and exists (select 1 from public.invoice_benefit_values b
+                 where b.lot_id = case when pg_temp.with_462() then pg_temp.kept(pg_temp.fx('b2_bonus')) else pg_temp.fx('b2_bonus') end)
     and (select remaining_amount from public.customer_credit_lots where id = pg_temp.kept(pg_temp.fx('b2_bonus'))) = 20
     and public.credit_lot_source_group(pg_temp.kept(pg_temp.fx('b2_bonus'))) = 'premium_bundle'
     and public.invoice_credit_transfer_origin(pg_temp.fx('delta_lot')) = pg_temp.fx('b2_bonus')
     and public.credit_lot_policy_for(pg_temp.fx('delta_lot')) = 'bundle_any'
     and public.credit_lot_source_group(pg_temp.fx('delta_lot')) = 'premium_bundle',
-    'E1 the second bundle''s Bonus, moved on to Delta: its sale and benefit value stay on Mike''s lot, so Delta''s credit is still traced to the bundle; '
+    'E1 the second bundle''s Bonus, moved on to Delta: its sale and benefit value stay on Mike''s lot (462: follow to Kilo''s), so Delta''s credit is still traced to the bundle; '
     || 'Kilo still gets the 20 left, as bundle credit');
 end $$;
 
