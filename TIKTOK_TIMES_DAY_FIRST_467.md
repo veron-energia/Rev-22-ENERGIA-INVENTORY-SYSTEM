@@ -1,13 +1,13 @@
 # TikTok order times read day first (467): report
 
 24 Oct 2026. **467 is LIVE in production** (applied 24 Oct 2026 by the MCP's apply_migration, version 20261024045047;
-the stored statement md5 equals the file's, `9c6b9ff9bb39f67b1afd4328139dc629`). The repair is not run: it needs its own
-go-ahead. Every production figure below came from read-only queries and is a count; no order, customer or SKU is named.
+the stored statement md5 equals the file's, `9c6b9ff9bb39f67b1afd4328139dc629`). **The repair has been run** (24 Oct 2026, under
+the Owner account recorded in the audit rows): all 421 swapped times on 111 rows were put right. Every production figure below came from read-only queries and is a count; no order, customer or SKU is named.
 
 | Piece | File | State |
 |---|---|---|
 | Parser fix (migration) | `supabase/467_tiktok_times_read_day_first.sql` | **LIVE** 24 Oct 2026 (20261024045047) |
-| Repair of the stored times | `scripts/tiktok/repair/467-restore-tiktok-order-times.sql` | draft; needs its own go-ahead, after 467 |
+| Repair of the stored times | `scripts/tiktok/repair/467-restore-tiktok-order-times.sql` | **DONE** 24 Oct 2026: 421 times, 111 rows |
 | Repair preview (read only) | `scripts/tiktok/repair/467-restore-tiktok-order-times-preview.sql` | safe to run any time |
 | Local test | `scripts/tiktok/tests/times-day-first-467.sql` | **156/156 PASS** on Docker `energia_events`, rolled back |
 
@@ -159,6 +159,12 @@ null for days above 12. This shop's 17 files are all day first.
 
   Because DDL is transactional, any failure undoes all of it, the switch-off included. The test proves this by forcing
   the update to fail after the switch-off. A second run finds nothing to do.
+- **Run on production, 24 Oct 2026**, after 467, with `repair467.expect` = 421. Checked afterwards:
+  - no stored time differs from 467's reading of its raw text (421 before), and none is in the future (131 before);
+  - every row minus the six times hashes the same as before (`eb739808…`), so nothing else changed, confirmed rows included;
+  - 111 audit rows `tiktok_order_times_restored`, one per row, holding the 421 times, by an Owner, module
+    `tiktok_import`; the audit log grew by exactly 111;
+  - the order state, the stock total and every sequence are unchanged, and `tiktok_row_immutable` is on (`O`).
 - **Undo**: each audit row's `old_data` holds the times as they were, by row id.
 
 The decision for the Owner: since nothing reads these columns, leaving them is possible. Repairing them is recommended,
