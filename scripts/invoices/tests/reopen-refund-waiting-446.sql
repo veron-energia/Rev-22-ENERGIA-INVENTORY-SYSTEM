@@ -85,7 +85,10 @@
 --      the benefits taken along, cancelled, reopened and paid: the invoice is
 --      the friend's and paid in full, and line A's credit (S$110) or voucher
 --      is back with the buyer; the same for a line refunded while the credit
---      or the vouchers waited, once settled, then changed.
+--      or the vouchers waited, once settled, then changed. Where 460 is in
+--      (the Owner, 22 Oct 2026: what a reopened invoice gives back goes to
+--      whoever its benefits belong to now), checked the fixed way: line A's
+--      credit or voucher is the friend's once paid (printed as FIXED).
 --  11. Credit, a line refunded whole while waiting (a S$100 Credit Package,
 --      one with a S$10 Bonus, a Premium Bundle of S$100 Paid and S$20 Bonus):
 --      line A's queued rows (Paid and Bonus) closed, each with its reverse
@@ -141,6 +144,11 @@ create function pg_temp.t446_in() returns boolean language sql as $f$
 create function pg_temp.t448_in() returns boolean language sql as $f$
   select to_regprocedure('public.invoice_benefit_unused_elsewhere(uuid)') is not null
      and position('-- 448:' in pg_get_functiondef('public.cancelled_invoice_used_value(uuid)'::regprocedure)) > 0 $f$;
+-- 460 (446's NOT COVERED 5 fixed): what a reopened invoice gives back goes
+-- to whoever its benefits belong to now.
+create function pg_temp.t460_in() returns boolean language sql as $f$
+  select to_regprocedure('public.invoice_benefits_holder(uuid,uuid,timestamp with time zone)') is not null
+     and position('-- 460 (the Owner' in pg_get_functiondef('public.apply_reopened_invoice_benefits()'::regprocedure)) > 0 $f$;
 
 do $$
 declare own uuid := gen_random_uuid(); st uuid; c uuid; c2 uuid; pm uuid; v uuid; vl uuid; cp uuid; cpb uuid; pbb uuid;
@@ -1042,7 +1050,13 @@ create function pg_temp.t446_whose(p_inv uuid) returns text language sql as $f$
     from invoices where id = p_inv $f$;
 do $$
 declare inv uuid; a uuid; b uuid; w text;
+        -- 460 (where it is in) gives line A back to the friend, whom the
+        -- benefits were moved to: checked the fixed way then.
+        fx boolean := pg_temp.t460_in(); cb numeric; cf numeric; vb int; vf int; how text;
 begin
+  cb := case when fx then 0 else 110 end; cf := case when fx then 110 else 0 end;
+  vb := case when fx then 0 else 1 end; vf := case when fx then 1 else 0 end;
+  how := case when fx then ': 460 is in, so line A should be the friend''s' else ': look at 446''s NOT COVERED 5 and this case again' end;
   -- Credit: line A refunded on the paid invoice (its credit taken off the
   -- buyer's lot, which is then empty), the customer changed to the friend
   -- (line B's credit taken along), cancelled, reopened, paid.
@@ -1059,10 +1073,10 @@ begin
     '8b credit: reopened, line A''s refund waits ' || pg_temp.t446_cwait(inv, a) || ' on ' || w
     || ': look at 446''s NOT COVERED 5 and this case again');
   perform pg_temp.t446_cpay(inv);
-  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 200.00' and pg_temp.t446_credit_of(a, 'buyer') = 110
-    and pg_temp.t446_credit_of(a, 'friend') = 0,
+  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 200.00' and pg_temp.t446_credit_of(a, 'buyer') = cb
+    and pg_temp.t446_credit_of(a, 'friend') = cf,
     '8b credit: paid, ' || pg_temp.t446_whose(inv) || ', line A''s credit with the buyer ' || pg_temp.t446_credit_of(a, 'buyer')
-    || ', the friend ' || pg_temp.t446_credit_of(a, 'friend') || ': look at 446''s NOT COVERED 5 and this case again');
+    || ', the friend ' || pg_temp.t446_credit_of(a, 'friend') || how);
   -- Credit refunded while it waited (446's own refund row), settled (line
   -- B's S$110 alone, right), then the same.
   inv := pg_temp.t446_cwaiting(array['cpb', 'cpb']);
@@ -1079,10 +1093,10 @@ begin
     '8b credit refunded while waiting: reopened, line A''s refund waits ' || pg_temp.t446_cwait(inv, a) || ' on ' || w
     || ': look at 446''s NOT COVERED 5 and this case again');
   perform pg_temp.t446_cpay(inv);
-  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 200.00' and pg_temp.t446_credit_of(a, 'buyer') = 110
-    and pg_temp.t446_credit_of(a, 'friend') = 0,
+  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 200.00' and pg_temp.t446_credit_of(a, 'buyer') = cb
+    and pg_temp.t446_credit_of(a, 'friend') = cf,
     '8b credit refunded while waiting: paid, ' || pg_temp.t446_whose(inv) || ', line A''s credit with the buyer '
-    || pg_temp.t446_credit_of(a, 'buyer') || ': look at 446''s NOT COVERED 5 and this case again');
+    || pg_temp.t446_credit_of(a, 'buyer') || ', the friend ' || pg_temp.t446_credit_of(a, 'friend') || how);
   -- Vouchers: line A refunded on the paid invoice (guided), changed to the
   -- friend (line B's voucher taken along), cancelled, reopened, paid.
   inv := pg_temp.t446_sale('vl', 2, 1);
@@ -1093,16 +1107,16 @@ begin
   perform cancel_invoice_recorded(inv, 'T446 8b cancel', gen_random_uuid());
   perform reopen_invoice(inv, 'T446 8b reopen', gen_random_uuid());
   perform pg_temp.t446_pay(inv);
-  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 60.00' and pg_temp.t446_held_by(a, 'buyer') = 1
-    and pg_temp.t446_held_by(a, 'friend') = 0 and pg_temp.t446_held_by(b, 'friend') = 1,
+  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 60.00' and pg_temp.t446_held_by(a, 'buyer') = vb
+    and pg_temp.t446_held_by(a, 'friend') = vf and pg_temp.t446_held_by(b, 'friend') = 1,
     '8b vouchers: paid, ' || pg_temp.t446_whose(inv) || ', line A''s voucher with the buyer ' || pg_temp.t446_held_by(a, 'buyer')
-    || ', the friend ' || pg_temp.t446_held_by(a, 'friend') || ': look at 446''s NOT COVERED 5 and this case again');
+    || ', the friend ' || pg_temp.t446_held_by(a, 'friend') || how);
   -- Vouchers: line A refunded while they waited (446 takes its unit off the
-  -- queue), settled, changed, cancelled, reopened, paid. (Only line A is
-  -- read: line B's voucher is then a reopening's replacement, which a
-  -- customer change does not take along, a separate matter.)
+  -- queue), settled, changed, cancelled, reopened, paid. (Line B's voucher
+  -- is then a reopening's replacement, which a customer change did not take
+  -- along before 460, a separate matter: read only where 460 is in.)
   inv := pg_temp.t446_waiting('vl', array[1, 1]);
-  a := pg_temp.t446_line(inv, 1);
+  a := pg_temp.t446_line(inv, 1); b := pg_temp.t446_line(inv, 2);
   perform pg_temp.t446_check(pg_temp.t446_refund_some(inv, a, 1) = '-', '8b vouchers: line A refunded while waiting');
   perform pg_temp.t446_pay(inv);
   perform pg_temp.t446_check(pg_temp.t446_money(inv) = 'paid net 30.00 held 1 waiting 0' and pg_temp.t446_held(inv, a) = 0,
@@ -1111,10 +1125,15 @@ begin
   perform cancel_invoice_recorded(inv, 'T446 8b cancel', gen_random_uuid());
   perform reopen_invoice(inv, 'T446 8b reopen', gen_random_uuid());
   perform pg_temp.t446_pay(inv);
-  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 60.00' and pg_temp.t446_held_by(a, 'buyer') = 1
-    and pg_temp.t446_held_by(a, 'friend') = 0,
+  perform pg_temp.t446_check(pg_temp.t446_whose(inv) = 'friend paid net 60.00' and pg_temp.t446_held_by(a, 'buyer') = vb
+    and pg_temp.t446_held_by(a, 'friend') = vf and (not fx or pg_temp.t446_held_by(b, 'friend') = 1),
     '8b vouchers refunded while waiting: paid, ' || pg_temp.t446_whose(inv) || ', line A''s voucher with the buyer '
-    || pg_temp.t446_held_by(a, 'buyer') || ': look at 446''s NOT COVERED 5 and this case again');
+    || pg_temp.t446_held_by(a, 'buyer') || ', the friend ' || pg_temp.t446_held_by(a, 'friend')
+    || ', line B''s with the friend ' || pg_temp.t446_held_by(b, 'friend') || how);
+  if fx then
+    raise notice 'FIXED 8b (460 in): a line refunded by line, then the customer changed to the friend with the benefits taken along, cancelled, reopened and paid: line A''s refund still waits on the buyer''s emptied lot, or against the buyer''s voucher, but is given to the friend once paid (S$110 of credit on a lot of the friend''s, or the voucher); the same for a line refunded while the credit or the vouchers waited (446), once settled, then changed, and line B''s voucher a reopening gave moves with the change';
+    return;
+  end if;
   raise notice 'KNOWN 8b: (not covered by 446: NOT COVERED 5, there before 446 and 447) a line refunded by line, then the customer changed to the friend with the benefits taken along, cancelled, reopened and paid: the invoice is the friend''s and paid in full (S$200 / S$60 net), but line A''s refund was queued on the buyer''s emptied lot, or against the buyer''s voucher, and given back to the buyer: line A''s S$110 of credit, or its voucher. The same for a line refunded while the credit or the vouchers waited (446), once settled, then changed';
 end $$;
 

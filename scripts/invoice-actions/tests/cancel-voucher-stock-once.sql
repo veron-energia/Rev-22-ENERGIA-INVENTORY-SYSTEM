@@ -74,7 +74,8 @@
 --  12e. (416 only) Cancelled and reopened (the buyer holds the 2 again),
 --      then, still FOC, the invoice's customer changed to a third customer
 --      with 'transfer' (417's move carries only sale and promotion
---      vouchers, so the buyer keeps the reopening's 2), then the FOC taken
+--      vouchers, so the buyer keeps the reopening's 2; where 460 is in its
+--      move carries them too, so the third holds them), then the FOC taken
 --      off and paid: no Owner moved a voucher of it to the buyer, so the
 --      summary and the save take the 2 back (10/10) and the payment gives
 --      them to the third customer (8/10), as before 434; cancelled 10/10.
@@ -197,6 +198,11 @@ create function pg_temp.tvs_rows(p_inv uuid) returns text language sql as $f$
            group by store_id having sum(quantity) <> 0) x $f$;
 create function pg_temp.tvs_416() returns boolean language sql as $f$
   select pg_get_functiondef('public.trg_issue_sold_vouchers_on_paid()'::regprocedure) like '%completed_foc%' $f$;
+-- 460 (the Owner, 22 Oct 2026): a change of the invoice's customer that
+-- takes the benefits along also takes the vouchers a reopening gave again.
+create function pg_temp.tvs_460() returns boolean language sql as $f$
+  select to_regprocedure('public.invoice_own_voucher_ids(uuid)') is not null
+     and position('invoice_own_voucher_ids' in pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)) > 0 $f$;
 -- A completed FOC of p_qty of one voucher at the first store.
 create function pg_temp.tvs_foc(p_voucher text, p_qty int, p_reason text) returns uuid language plpgsql as $f$
 declare inv uuid;
@@ -908,17 +914,22 @@ begin
     '12e reopened: ' || pg_temp.tvs_show('v32') || ', not 8/10 with the buyer''s 2');
   -- Still FOC, the invoice's customer changed to the third with 'transfer':
   -- 417's move carries only sale and promotion vouchers, so the buyer keeps
-  -- the reopening's 2.
+  -- the reopening's 2. Where 460 is in, its move carries them too (they are
+  -- the invoice's own: given again in place of its sale's), so the third
+  -- holds them, at the same store.
   perform correct_invoice(inv, pg_temp.tvs_lines(inv, true),
     jsonb_build_object('expected_edit_count', (select edit_count from invoices where id = inv),
       'customer_id', pg_temp.tvs_id('third'), 'benefit_action', 'transfer'),
     'TVS 12e the wrong customer', gen_random_uuid());
   perform pg_temp.tvs_check((select status from invoices where id = inv) = 'completed_foc'
       and (select customer_id from invoices where id = inv) = pg_temp.tvs_id('third')
-      and pg_temp.tvs_holds('v32', 'customer', 'store') = 2 and pg_temp.tvs_at('v32', 'store') = 8,
-    '12e fixture: ' || pg_temp.tvs_show('v32') || ', not still FOC for the third with the buyer''s 2 (8/10)');
-  -- The FOC taken off: no Owner moved a voucher of it to the buyer, so the
-  -- summary and the save take the buyer's 2 back, as before 434.
+      and pg_temp.tvs_holds('v32', case when pg_temp.tvs_460() then 'third' else 'customer' end, 'store') = 2
+      and pg_temp.tvs_at('v32', 'store') = 8,
+    '12e fixture: ' || pg_temp.tvs_show('v32') || ', not still FOC for the third with the '
+    || case when pg_temp.tvs_460() then 'third''s (460 in)' else 'buyer''s' end || ' 2 (8/10)');
+  -- The FOC taken off: no Owner moved a voucher of it to the buyer (nor,
+  -- with 460, is the third another customer), so the summary and the save
+  -- take the 2 back, as before 434.
   r := pg_temp.tvs_preview(inv, '{}');
   perform pg_temp.tvs_check(r->>'detail' like 'Removing the FOC takes back the unused vouchers it gave (TVS v32 × 2).%'
       and jsonb_array_length(r->'items') = 0,
@@ -935,7 +946,8 @@ begin
   perform cancel_invoice_recorded(inv, 'TVS 12e cancel again', gen_random_uuid());
   perform pg_temp.tvs_check(pg_temp.tvs_at('v32', 'store') = 10 and pg_temp.tvs_at('v32', 'store2') = 10 and pg_temp.tvs_held('v32') = 0,
     '12e cancelled again: ' || pg_temp.tvs_show('v32') || ', not 10/10 held 0');
-  raise notice 'PASS 12e: reopened, moved to the third (the buyer keeps the reopening''s 2), the summary and the FOC off take them back (10/10), paid: the third holds 2 (8/10), cancelled 10/10';
+  raise notice 'PASS 12e: reopened, moved to the third (%), the summary and the FOC off take them back (10/10), paid: the third holds 2 (8/10), cancelled 10/10',
+    case when pg_temp.tvs_460() then 'with 460 the reopening''s 2 move with the change' else 'the buyer keeps the reopening''s 2' end;
 end $$;
 
 -- ===== 13. A paid sale corrected to another customer and store =====

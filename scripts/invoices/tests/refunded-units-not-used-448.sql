@@ -88,8 +88,12 @@
 --      once settled, nothing asked; printed as FIXED);
 --      (2) a refunded credit line, the buyer merged away, cancelled, reopened
 --      and settled: the refund is reinstated on the merged-away record's lot
---      (there before 448), and it reads as spent; (3) a partly refunded
---      credit lot still blocks a customer change as "Partly spent".
+--      (there before 448), and it reads as spent (where 460 is in, checked
+--      the fixed way: the kept record holds the S$100 on one lot the invoice
+--      names, nothing asked; printed as FIXED); (3) a partly refunded
+--      credit lot still blocks a customer change as "Partly spent" (where
+--      461 is in, checked the fixed way: the change goes, the friend holds
+--      the S$60 left, nothing asked; printed as FIXED).
 --
 -- Run on a copy of production as it is (450 in: 46683a93, 1370 functions; it
 -- passes the same on 447's head without 450, 9d2e2fdd):
@@ -121,6 +125,15 @@ create function pg_temp.t448_fingerprint() returns text language sql as $f$
 -- each side of an earlier reopening.
 create function pg_temp.t448_451_in() returns boolean language sql as $f$
   select position('-- 451 (the Owner' in pg_get_functiondef('public.reopen_invoice(uuid,text,uuid)'::regprocedure)) > 0 $f$;
+-- 460 (448's NOT COVERED 2 fixed): what a reopened invoice gives back goes
+-- to whoever its benefits belong to now (the kept record after a merge).
+create function pg_temp.t448_460_in() returns boolean language sql as $f$
+  select to_regprocedure('public.invoice_benefits_holder(uuid,uuid,timestamp with time zone)') is not null
+     and position('-- 460 (the Owner' in pg_get_functiondef('public.apply_reopened_invoice_benefits()'::regprocedure)) > 0 $f$;
+-- 461 (its NOT COVERED 3: a partly refunded lot moves with a customer change).
+create function pg_temp.t448_461_in() returns boolean language sql as $f$
+  select position('-- 461 (the Owner' in pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) > 0
+     and position('-- 461 (the Owner' in pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)) > 0 $f$;
 create function pg_temp.t448_in() returns boolean language sql as $f$
   select to_regprocedure('public.invoice_benefit_unused_elsewhere(uuid)') is not null
      and position('-- 448:' in pg_get_functiondef('public.cancelled_invoice_used_value(uuid)'::regprocedure)) > 0
@@ -1051,7 +1064,7 @@ end $$;
 
 -- ===== 8. KNOWN: not covered by 448 =====
 do $$
-declare inv uuid; msg text; held int; a uuid;
+declare inv uuid; msg text; held int; a uuid; f0 numeric; msg3 text;
 begin
   -- (1) A line of two, one unit refunded, cancelled, reopened (both units
   -- wait), cancelled again before settling, the other unit refunded by line
@@ -1112,6 +1125,17 @@ begin
   perform pg_temp.t448_check(pg_temp.t448_codes(inv, 'cancel') = '-', '8 (2) reopened, waiting, asks ' || pg_temp.t448_codes(inv, 'cancel'));
   perform pg_temp.t448_pay(inv);
   select b.id into a from invoice_benefit_values b where b.invoice_id = inv;
+  if pg_temp.t448_460_in() then
+    -- 460 (448's NOT COVERED 2 fixed): the S$40 goes to the kept record,
+    -- on one lot with the S$60, which the invoice names; nothing is spent.
+    perform pg_temp.t448_check(pg_temp.t448_codes(inv, 'cancel') = '-'
+      and (select l.customer_id from invoice_benefit_values b join customer_credit_lots l on l.id = b.lot_id where b.id = a) = pg_temp.t448_id('kept')
+      and coalesce((select sum(l.remaining_amount) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('dup2')), 0) = 0
+      and pg_temp.t448_credit(inv) = 100,
+      '8 (2) with 460, settled: ' || pg_temp.t448_money_of(inv) || ', asks ' || pg_temp.t448_codes(inv, 'cancel')
+      || ', the merged record holds ' || coalesce((select sum(l.remaining_amount) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('dup2')), 0));
+    insert into t448_known values ('8.2', 'FIXED by 460: ' || pg_temp.t448_money_of(inv));
+  else
   perform pg_temp.t448_check(pg_temp.t448_codes(inv, 'cancel') = 'credit_used'
     and (select l.customer_id from invoice_benefit_values b join customer_credit_lots l on l.id = b.lot_id where b.id = a) = pg_temp.t448_id('kept')
     and (select sum(l.remaining_amount) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('dup2')) = 40
@@ -1119,24 +1143,45 @@ begin
     '8 (2) settled: ' || pg_temp.t448_money_of(inv) || ', asks ' || pg_temp.t448_codes(inv, 'cancel')
     || ', the merged record holds ' || coalesce((select sum(l.remaining_amount) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('dup2')), 0)
     || ': look at 448''s NOT COVERED 2 and this case again');
-  -- (3) A partly refunded credit lot blocks a customer change as "Partly spent".
+  end if;
+  -- (3) A partly refunded credit lot blocks a customer change as "Partly
+  -- spent" (461 fixes it: the lot moves).
   inv := pg_temp.t448_sale(array['cp']);
   perform pg_temp.t448_check(pg_temp.t448_cline_back(inv, 1, 40) = 'recorded', '8 (3) S$40');
+  f0 := (select coalesce(sum(l.remaining_amount), 0) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('friend'));
   begin
     perform pg_temp.t448_change(inv, 'friend');
     msg := 'changed';
   exception when others then msg := sqlerrm;
   end;
-  perform pg_temp.t448_check(msg like '%Partly spent%', '8 (3) a customer change after S$40 was refunded: ' || msg
-    || ': look at 448''s NOT COVERED 3 and this case again');
+  if pg_temp.t448_461_in() then
+    perform pg_temp.t448_check(msg = 'changed'
+      and (select coalesce(sum(l.remaining_amount), 0) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('friend')) - f0 = 60
+      and (select sum(l.remaining_amount) from invoice_benefit_values b join customer_credit_lots l on l.id = b.lot_id
+            where b.invoice_id = inv and l.customer_id = pg_temp.t448_id('friend')) = 60
+      and pg_temp.t448_codes(inv, 'cancel') = '-',
+      '8 (3) with 461 in, a customer change after S$40 was refunded: ' || msg || ', the friend gains '
+      || ((select coalesce(sum(l.remaining_amount), 0) from customer_credit_lots l where l.customer_id = pg_temp.t448_id('friend')) - f0)
+      || ', Cancel asks ' || pg_temp.t448_codes(inv, 'cancel') || ': look at 461 and this case again');
+    msg3 := 'FIXED 8 (3) (461 in): a credit lot partly refunded (S$40 of a S$100 package) moves with a customer change: the friend holds the S$60 left, the invoice''s benefit row names the friend''s lot, Cancel asks nothing';
+  else
+    perform pg_temp.t448_check(msg like '%Partly spent%', '8 (3) a customer change after S$40 was refunded: ' || msg
+      || ': look at 448''s NOT COVERED 3 and this case again');
+    msg3 := 'KNOWN 8 (3): (not covered by 448; there before it; 461 fixes it) a credit lot partly refunded blocks a customer change as "Partly spent": ' || msg;
+  end if;
+  raise notice '%', msg3;
   if pg_temp.t448_451_in() then
     raise notice 'FIXED 8 (1) (451 in): one unit of a line of two refunded, cancelled, reopened, cancelled again, the other unit refunded by line while waiting, reopened again: 2 units wait for the S$60 the line charges again, nothing asked; once settled the customer holds 2 vouchers for S$60 (%)',
       (select v from t448_known where k = '8.1');
-    raise notice 'KNOWN 8: (not covered by 448; there before it) (2) S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the S$40 is reinstated on the merged-away record''s lot, the kept record''s lot holds S$60, and it reads credit_used. (3) a credit lot partly refunded blocks a customer change as "Partly spent": %',
-      msg;
-  else
-    raise notice 'KNOWN 8: (not covered by 448; there before it) (1) one unit of a line of two refunded, cancelled, reopened, cancelled again, the other unit refunded by line while waiting, reopened again: the reopening queues 1 unit for the S$60 the line charges again (446 took the second unit off the queue; 417''s "only what is more" then queues nothing for it), and once settled the customer holds 1 voucher for S$60 (%); before 446 it was 2; 448 reads the unit never given as redeemed (451 fixes it). (2) S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the S$40 is reinstated on the merged-away record''s lot, the kept record''s lot holds S$60, and it reads credit_used. (3) a credit lot partly refunded blocks a customer change as "Partly spent": %',
-      (select v from t448_known where k = '8.1'), msg;
+  end if;
+  if pg_temp.t448_460_in() then
+    raise notice 'FIXED 8 (2) (460 in): S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the kept record holds the S$100 on one lot the invoice names, the merged-away record nothing, and nothing reads as spent (%)',
+      (select v from t448_known where k = '8.2');
+  end if;
+  if not (pg_temp.t448_451_in() and pg_temp.t448_460_in()) then
+    raise notice '%', 'KNOWN 8: (not covered by 448; there before it)'
+      || case when pg_temp.t448_451_in() then '' else format(' (1) one unit of a line of two refunded, cancelled, reopened, cancelled again, the other unit refunded by line while waiting, reopened again: the reopening queues 1 unit for the S$60 the line charges again (446 took the second unit off the queue; 417''s "only what is more" then queues nothing for it), and once settled the customer holds 1 voucher for S$60 (%s); before 446 it was 2; 448 reads the unit never given as redeemed (451 fixes it).', (select v from t448_known where k = '8.1')) end
+      || case when pg_temp.t448_460_in() then '' else ' (2) S$40 of a package refunded, the buyer merged away, cancelled, reopened and settled: the S$40 is reinstated on the merged-away record''s lot, the kept record''s lot holds S$60, and it reads credit_used (460 fixes it).' end;
   end if;
 end $$;
 

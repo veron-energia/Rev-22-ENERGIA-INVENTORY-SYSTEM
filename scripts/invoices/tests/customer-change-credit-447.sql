@@ -304,14 +304,96 @@ begin
   perform pg_temp.putx('svc', svc);
 end $$;
 
+-- Where 460 is in (it changes move_invoice_benefits_to_customer at four
+-- places: the vouchers it moves, three times, and its Audit Log row), its
+-- text with those four changes taken out: 447's.
+create function pg_temp.without_460(p_t text) returns text language plpgsql as
+$$declare t text := p_t; r text[]; a text[]; i int;
+begin
+  if position('-- 460 (the Owner' in t) = 0 then return t; end if;
+  r := array[
+$r1$  -- 460 (the Owner, 22 Oct 2026: "fix the other two rare gaps too"): the
+  -- invoice's own vouchers (invoice_own_voucher_ids): its voucher and
+  -- promotion lines', and those given again in place of one of them by a
+  -- reopening or by the payment after an FOC came off ('invoice_reopen').
+  -- Before, only the first two sources, so a voucher given again stayed
+  -- with the old customer. Not one an Owner moved to someone (434), nor a
+  -- Premium Bundle's, as before.
+  perform 1 from public.customer_reward_vouchers
+   where id in (select o.voucher_id from public.invoice_own_voucher_ids(p_invoice_id) o)
+$r1$,
+$r2$     where rv.id in (select o.voucher_id from public.invoice_own_voucher_ids(p_invoice_id) o)   -- 460
+$r2$,
+$r3$     set customer_id = p_customer_id, store_id = p_store_id
+   where id in (select o.voucher_id from public.invoice_own_voucher_ids(p_invoice_id) o)   -- 460
+$r3$,
+$r4$  -- 460 (the Owner, 22 Oct 2026): recorded for every change that takes the
+  -- benefits along, also when nothing was left to move (a reopened invoice
+  -- whose vouchers and credit wait, a line refunded before the change): what
+  -- a reopening gives back later goes to this customer
+  -- (invoice_benefits_holder reads it). Before, only when something moved.
+  perform public.write_audit_ex('invoices', p_invoice_id, 'invoice_benefits_followed_reassignment',
+    null, jsonb_build_object('vouchers', v_v, 'credit_lots', v_c, 'allowances', v_a,
+                             'to_customer', p_customer_id, 'reason', p_reason),
+    'invoices', p_reason, p_store_id);
+$r4$];
+  a := array[
+$a1$  perform 1 from public.customer_reward_vouchers
+   where source_type in ('invoice_voucher_sale','invoice_promotion_voucher')
+     and source_id in (select id from public.invoice_items where invoice_id = p_invoice_id)
+$a1$,
+$a2$     where rv.source_type in ('invoice_voucher_sale','invoice_promotion_voucher')
+       and rv.source_id in (select id from public.invoice_items where invoice_id = p_invoice_id)
+$a2$,
+$a3$     set customer_id = p_customer_id, store_id = p_store_id
+   where source_type in ('invoice_voucher_sale','invoice_promotion_voucher')
+     and source_id in (select id from public.invoice_items where invoice_id = p_invoice_id)
+$a3$,
+$a4$  if v_v + v_c + v_a > 0 then
+    perform public.write_audit_ex('invoices', p_invoice_id, 'invoice_benefits_followed_reassignment',
+      null, jsonb_build_object('vouchers', v_v, 'credit_lots', v_c, 'allowances', v_a,
+                               'to_customer', p_customer_id, 'reason', p_reason),
+      'invoices', p_reason, p_store_id);
+  end if;
+$a4$];
+  for i in 1 .. 4 loop
+    if position(r[i] in t) = 0 then raise exception 'FIXTURE: 460''s change % not found in move_invoice_benefits_to_customer', i; end if;
+    t := replace(t, r[i], a[i]);
+  end loop;
+  return t;
+end$$;
+
+-- Where 461 is in (it changes move_invoice_benefits_to_customer at one place:
+-- the lots it moves), its text with that change taken out: 447's three lines
+-- back, whatever 461's lines say (from its marker to the lot's status test).
+create function pg_temp.without_461(p_t text) returns text language plpgsql as
+$$declare t text := p_t; a int; b int;
+begin
+  a := position('       -- 461 (the Owner, 22 Oct 2026)' in t);
+  if a = 0 then return t; end if;
+  b := position(E'       and l.status = ''active''\n' in substr(t, a));
+  if b = 0 then raise exception 'FIXTURE: 461''s lines not found in move_invoice_benefits_to_customer'; end if;
+  return substr(t, 1, a - 1)
+         || E'       and l.remaining_amount = l.original_amount\n       and l.remaining_amount > 0\n'
+         || substr(t, a + b - 1);
+end$$;
+-- 447's text, read from what is installed: 455's, or 460's or 461's (or
+-- both) with their changes taken out.
+create function pg_temp.as_447() returns text language sql as
+$$ select pg_temp.without_461(pg_temp.without_460(pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure))) $$;
+
 -- 417's text of move_invoice_benefits_to_customer, rebuilt from 447's (the
--- block 447 adds taken out) and checked by its md5. Its own transaction
--- step: run inside a savepoint that is rolled back.
+-- block 447 adds taken out; where 460 or 461 is in, from their text with
+-- their changes taken out first) and checked by its md5. Its own
+-- transaction step: run inside a savepoint that is rolled back.
 create function pg_temp.use_417() returns void language plpgsql as
 $$declare t text := pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure);
   a int; b int;
 begin
   if md5(t) = '2c01c460d3af8edd3ad86332aa286ed8' then return; end if;
+  t := pg_temp.as_447();
+  if md5(t) <> 'e313e87b4ab4c0063d924430996ffbd3' then
+    raise exception 'FIXTURE: 447''s text could not be rebuilt from what is installed (md5 %)', md5(t); end if;
   a := position('    -- 447 (the Owner, 22 Oct 2026)' in t);
   b := position(E'    end if;\n\n    v_c := v_c + 1;' in t);
   if a = 0 or b = 0 or b < a then raise exception 'FIXTURE: 447''s block not found in move_invoice_benefits_to_customer'; end if;
@@ -331,8 +413,11 @@ insert into m447 select pg_temp.fp(), (select count(*) from public.customer_cred
                         (select md5(string_agg(to_jsonb(s)::text, '|' order by s.id)) from public.credit_package_sales s),
                         (select md5(string_agg(to_jsonb(b)::text, '|' order by b.id)) from public.invoice_benefit_values b);
 \if :{?nomig}
-select pg_temp.check(pg_temp.md5_of('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)') = 'e313e87b4ab4c0063d924430996ffbd3',
-  'M0 447 is installed (nomig)');
+-- 460 and 461 (where they are in) change the function again (460 the
+-- vouchers it moves and its Audit Log row, 461 the lots it moves) and keep
+-- 447's records step as it is: with their changes taken out it is 447's.
+select pg_temp.check(md5(pg_temp.as_447()) = 'e313e87b4ab4c0063d924430996ffbd3',
+  'M0 447 is installed (nomig; 460''s and 461''s changes taken out where they are in)');
 \else
 select pg_temp.check(pg_temp.md5_of('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)') = '2c01c460d3af8edd3ad86332aa286ed8',
   'M0 447 is not in yet: move_invoice_benefits_to_customer is 417''s (this suite installs it; use -v nomig=1 where it is in)');
@@ -442,11 +527,11 @@ select pg_temp.check(:'m12_failed' = 'false' and :'m12_acl' = '{service_role=X/p
   'M12 the same grants listed in another order do not stop it: ' || :'m12_acl'
   || case when :'m12_failed' = 'true' then ' ' || :'m12_msg' else '' end);
 \endif
-select pg_temp.check(pg_temp.md5_of('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)') = 'e313e87b4ab4c0063d924430996ffbd3'
+select pg_temp.check(md5(pg_temp.as_447()) = 'e313e87b4ab4c0063d924430996ffbd3'
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'move_invoice_benefits_to_customer') = 1
     and pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = '2e0c9852099ab88d8f27827b5f9a3846'
     and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889',
-  'M3 move_invoice_benefits_to_customer is 447''s (e313e87b4ab4c0063d924430996ffbd3), with no overload; 445''s merge and Move are unchanged');
+  'M3 move_invoice_benefits_to_customer is 447''s (e313e87b4ab4c0063d924430996ffbd3; where 460 or 461 is in, with their changes taken out), with no overload; 445''s merge and Move are unchanged');
 select pg_temp.check((select array_agg(x::text order by x::text) from pg_proc p, unnest(p.proacl) x
                        where p.oid = 'public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)
       = (select array_agg(x::text order by x::text) from unnest('{postgres=X/postgres,service_role=X/postgres}'::aclitem[]) x)

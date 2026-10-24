@@ -177,6 +177,10 @@ declare
                              -- no longer on the row (cancelled_invoice_used_value and
                              -- invoice_action_plan call it)
                              'invoice_benefit_unused_elsewhere',
+                             -- 460: an invoice's own vouchers, and whom what a reopening
+                             -- gives back belongs to now (the reopening's triggers, the
+                             -- customer change and its list call them)
+                             'invoice_own_voucher_ids','invoice_benefits_holder',
                              -- 412: a staff login follows its profile (signed out and banned when
                              -- the profile is closed, unbanned when it opens again), and the
                              -- profiles trigger that calls it
