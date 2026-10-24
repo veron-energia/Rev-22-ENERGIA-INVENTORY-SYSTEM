@@ -638,9 +638,20 @@ begin
     raise exception 'W [%] cancelling did not put the stock back once (stock %)', mode, (select current_qty from voucher_store_stock where voucher_id=vlim and store_id=st); end if;
   else
    n := case when mode like '%2->3' then 3 else 2 end;
-   if (select current_qty from voucher_store_stock where voucher_id=vlim and store_id=st) is distinct from 12-n then
+   -- 457 (the Owner, 22 Oct 2026): a save that leaves the invoice unpaid
+   -- keeps no voucher stock for its lines (no voucher is given until it is
+   -- paid; the payment takes them), so once the FOC is off the stock is back
+   -- at 10 whatever the line now asks. Before 457 the save took a raised
+   -- line's extra unit at once (12-n), out with no voucher until payment. The
+   -- payment below ends the same either way. 457's correct_invoice is known
+   -- by the wording of the row it writes.
+   if (select current_qty from voucher_store_stock where voucher_id=vlim and store_id=st) is distinct from
+      (case when position('Not paid in full, nothing given yet' in pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0
+            then 10 else 12-n end) then
     raise exception 'W [%] after the save the voucher stock is % (expected %)', mode,
-      (select current_qty from voucher_store_stock where voucher_id=vlim and store_id=st), 12-n; end if;
+      (select current_qty from voucher_store_stock where voucher_id=vlim and store_id=st),
+      (case when position('Not paid in full, nothing given yet' in pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0
+            then 10 else 12-n end); end if;
    perform pay_invoice(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',(select total_amount from invoices where id=inv))));
    if (select current_qty from voucher_store_stock where voucher_id=vlim and store_id=st) is distinct from 10-n
       or (select coalesce(sum(quantity),0) from invoice_voucher_movements where invoice_id=inv) <> n
@@ -867,7 +878,9 @@ end $$;
 -- a friend at the second store, then the FOC taken off with the voucher
 -- line raised to 3 while the first store has none left. The rows already
 -- record the 2, so only the 3rd unit is taken, at the invoice's store, and
--- the summary and the save both refuse it. With 1 in stock both go through.
+-- the summary and the save both refuse it. With 1 in stock both go through
+-- (with 457 the save gives that unit back, as the invoice is left unpaid,
+-- and the payment takes it).
 -- S7 Moved to the second store and its voucher line raised to 3 in one save
 -- that keeps it FOC: the raise is taken and given back at the second store,
 -- where it was taken, so the first keeps 8 out and the second 10.
@@ -1073,10 +1086,17 @@ begin
  if (r->'outcome'->>'checked')::boolean is not true then
   raise exception 'S6 with 1 left at the first store the summary refused it: %', r->'outcome'; end if;
  perform correct_invoice(inv,x,jsonb_build_object('expected_edit_count',(select edit_count from invoices where id=inv)),'Not a giveaway, and 3',gen_random_uuid());
- if pg_temp.svs_taken(inv,'Not a giveaway, and 3') <> '' or pg_temp.svs_at(vlim,st) <> 0
-    or (select sum(quantity) from invoice_voucher_movements where invoice_id=inv) <> n + 1 then
-  raise exception 'S6 saved: taken at Confirm FOC "%", stock at the first store %, rows % (expected none, 0, %)',
-    pg_temp.svs_taken(inv,'Not a giveaway, and 3'), pg_temp.svs_at(vlim,st), (select sum(quantity) from invoice_voucher_movements where invoice_id=inv), n + 1; end if;
+ -- 457 (the Owner, 22 Oct 2026): the save leaves the invoice unpaid, so it
+ -- keeps no voucher stock for the 3rd unit (taken and given back; the
+ -- payment takes it): 1 left and the rows as they were. Before 457 the save
+ -- kept it: 0 left, one row more. 457's correct_invoice is known by the
+ -- wording of the row it writes.
+ k := case when position('Not paid in full, nothing given yet' in pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0
+           then 0 else 1 end;
+ if pg_temp.svs_taken(inv,'Not a giveaway, and 3') <> '' or pg_temp.svs_at(vlim,st) <> 1 - k
+    or (select sum(quantity) from invoice_voucher_movements where invoice_id=inv) <> n + k then
+  raise exception 'S6 saved: taken at Confirm FOC "%", stock at the first store %, rows % (expected none, %, %)',
+    pg_temp.svs_taken(inv,'Not a giveaway, and 3'), pg_temp.svs_at(vlim,st), (select sum(quantity) from invoice_voucher_movements where invoice_id=inv), 1 - k, n + k; end if;
  -- S7 Moved and raised in one save that keeps it FOC.
  update voucher_store_stock set current_qty=10 where voucher_id=vlim;
  inv:=create_invoice_with_details(st,c,jsonb_build_array(jsonb_build_object('kind','product','product_id',p,'quantity',1),

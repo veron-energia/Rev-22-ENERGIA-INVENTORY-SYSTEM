@@ -36,8 +36,10 @@ import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProble
 import { singaporeToday, invoiceDate, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes,
   hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
-import { copyMoneyRows, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml } from '../lib/invoices/customerCopy';
+import { copyMoneyRows, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml,
+  PRINT_NOTE_MAX, printedNote, exchangeNote, noteHtml } from '../lib/invoices/customerCopy';
 import { correctionFingerprint, REVIEW_AGAIN_MESSAGE } from '../lib/invoices/correctionReview';
+import { withRentalDueBack, blankDueBackHint, correctionRentalNote, RENTAL_FOLLOWS_HINT } from '../lib/special/rentalFollows';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import { PaymentQrPopup, PaymentQrLineAction } from '../components/invoices/PaymentQrPopup';
 import { paymentQrFor } from '../lib/invoices/paymentQr.mjs';
@@ -48,6 +50,7 @@ import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefres
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates';
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
+import { PRINT_PAGES_SCRIPT } from '../lib/invoices/printPages.mjs';
 import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMethodLabel, type WalletAvailability } from '../lib/invoices/walletSources.mjs';
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
@@ -221,6 +224,8 @@ const InvoicesPage: React.FC = () => {
   const [cStore, setCStore] = useState('');
   const [cBusinessDate, setCBusinessDate] = useState(singaporeToday);
   const [cNotes, setCNotes] = useState('');
+  // 456 (the Owner, 22 Oct 2026): the note printed on the invoice; cNotes stays internal.
+  const [cPrintNote, setCPrintNote] = useState('');
   const [cInstalment, setCInstalment] = useState<InstalmentDetails>({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
   const [expectedEditCount, setExpectedEditCount] = useState(0);
   const [editRequestId, setEditRequestId] = useState(() => crypto.randomUUID());
@@ -981,7 +986,7 @@ const InvoicesPage: React.FC = () => {
     // Blank when there is a real choice to make.
     setCStore(isStaff && myStores.length === 1
       ? (myStores[0]?.store_id ?? assignedStoreId ?? '') : '');
-    setCCustomer(''); setCBusinessDate(singaporeToday()); setCNotes('');
+    setCCustomer(''); setCBusinessDate(singaporeToday()); setCNotes(''); setCPrintNote('');
     setIssuedRecipientsConfirmed(false); setIssuedHeaderBefore(null);
     setCInstalment({ instalment_category: '', instalment_method_id: '', instalment_months: '' });
     setEditRequestId(crypto.randomUUID());
@@ -1033,7 +1038,8 @@ const InvoicesPage: React.FC = () => {
     const dateProblem = businessDateProblem(cBusinessDate, { editing: !!editingInvoiceId,
       savedDate: editingInvoiceId ? String(editBaseRef.current?.business_date ?? '') : null, today: singaporeToday() });
     if (dateProblem) { setCErr(dateProblem); return; }
-    const instalmentError = validateInstalment(cInstalment);
+    // 457: a completed FOC invoice's instalment fields are not shown or sent.
+    const instalmentError = correctingFoc ? null : validateInstalment(cInstalment);
     if (instalmentError) { setCErr(instalmentError); return; }
     if (isStaff && myStores.length === 0) { setCErr('You are not assigned to a store, so you cannot create invoices. Ask an Owner or Manager to assign you.'); return; }
     const effectiveStore = isStaff
@@ -1224,13 +1230,18 @@ const InvoicesPage: React.FC = () => {
 
     const header = {
       customer_id: cCustomer, store_id: effectiveStore, notes: cNotes || null,
+      // 456: always sent, so clearing the box clears the note (blank is none).
+      print_note: cPrintNote.trim() || null,
       preserve_issued_recipients: issuedRecipientsConfirmed,
       ...(benefitAction ? { benefit_action: benefitAction } : {}),
       manual_discount: cDiscount || 0, discount_voucher_id: cDiscountVoucher || null,
       service_staff: cServiceStaff, business_date: cBusinessDate || null,
-      instalment_category: cInstalment.instalment_category || null,
-      instalment_method_id: cInstalment.instalment_method_id || null,
-      instalment_months: cInstalment.instalment_months || null,
+      // 457: not sent when correcting a completed FOC invoice (not shown there).
+      ...(correctingFoc ? {} : {
+        instalment_category: cInstalment.instalment_category || null,
+        instalment_method_id: cInstalment.instalment_method_id || null,
+        instalment_months: cInstalment.instalment_months || null,
+      }),
       // Internal. Sent only with a positive discount; the server refuses a
       // positive discount without one and clears it when the discount goes.
       manual_discount_reason: (cDiscount || 0) > 0 ? cDiscountReason.trim() : null,
@@ -1295,6 +1306,9 @@ const InvoicesPage: React.FC = () => {
       const notes = [correctionTherapyNote((data as any)?.therapy), correctionVoucherNote((data as any)?.foc_vouchers)]
         .filter(Boolean);
       setTherapyNote(notes.length ? notes.join(' ') : null);
+      // 458: and what the correction did to the invoice's rentals.
+      const rentalNote = correctionRentalNote((data as any)?.rentals);
+      if (rentalNote) setTherapyNote(n => [n, rentalNote].filter(Boolean).join(' '));
     }
     noteLocalChangeRef.current([newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[]);
     setCorrectionPreview(null);
@@ -1333,9 +1347,15 @@ const InvoicesPage: React.FC = () => {
   // invoice holds them. They stay in the type and its labels so old audit rows
   // still read (CREATE-18).
   const auditedStatuses = ['paid', 'partially_paid', 'cancelled', 'refunded', 'completed_foc'];
+  // 457 (the Owner, 22 Oct 2026): an invoice once settled (locked_at: paid or
+  // completed FOC at some point, never cleared) is corrected as a settled one
+  // even when it is unpaid again, as after a correction took its FOC off.
+  // The server refuses it an ordinary edit (can_edit_invoice), so the page
+  // offers Correct Invoice (Owners and Managers, a reason) there, not Edit.
   const needsAuditedCorrection = Boolean(detail) && (
     auditedStatuses.includes(String(detail?.status)) || settledHistory
-    || Boolean((detail as any)?.is_topup) || Boolean((detail as any)?.is_exchange));
+    || Boolean((detail as any)?.is_topup) || Boolean((detail as any)?.is_exchange)
+    || Boolean(detail?.locked_at));
   const canManageInvoice = isOwnerOrManager(profile?.role);
   // 377: staff correct a paid or part-paid invoice of a store they work at.
   // Prices, payment amounts and dates, removing or splitting a payment, the
@@ -1364,6 +1384,10 @@ const InvoicesPage: React.FC = () => {
   const canCorrectInvoice = (canManageInvoice || staffMayCorrect) && !isLateFeeInvoice;
   // In the correction form: a staff member's correction, with the money parts read-only.
   const staffCorrection = editingPaid && isStaff;
+  // 457 (the Owner, 22 Oct 2026): correcting a completed FOC invoice. Its
+  // instalment terms mean nothing on a free invoice: the fields are not shown
+  // and not sent, so the server keeps whatever is saved.
+  const correctingFoc = editingPaid && !!editingInvoiceId && editBaseRef.current?.status === 'completed_foc';
   // 409: everyone uses the guided Refund / Cancel. An Owner or Manager
   // confirms it there; anyone else raises it as a request (the dialog's
   // canApprove=false), which changes nothing on the invoice until an Owner or
@@ -1494,6 +1518,7 @@ const InvoicesPage: React.FC = () => {
       days: ((x.event_days ?? []) as string[]).map(d => ({ day: String(d).slice(0, 10), capacity: null, registered: 0 })) })));
     setCStore(detail.store_id);
     setCBusinessDate((detail as any).business_date ?? ''); setCNotes((detail as any).notes ?? '');
+    setCPrintNote(detail.print_note ?? '');
     setCInstalment({ instalment_category: (detail as any).instalment_category ?? '',
       instalment_method_id: (detail as any).instalment_method_id ?? '', instalment_months: (detail as any).instalment_months ?? '' });
     setExpectedEditCount((detail as any).edit_count ?? 0); setEditRequestId(crypto.randomUUID());
@@ -1528,7 +1553,11 @@ const InvoicesPage: React.FC = () => {
     setDiscountBeforeEdit(Number((detail as any).manual_discount ?? 0));
     setCServiceStaff(detailServiceStaff);
     setEditingInvoiceId(detail.id);
-    setEditingPaid(!['draft', 'unpaid'].includes(String(detail.status)) || detailPayments.length > 0);
+    // 457: as the server decides it (correct_invoice): a once-settled
+    // (locked) invoice, a refund top-up and an exchange's replacement invoice
+    // are corrections too, with a reason, even while unpaid with no payment.
+    setEditingPaid(!['draft', 'unpaid'].includes(String(detail.status)) || detailPayments.length > 0
+      || Boolean(detail.locked_at) || Boolean((detail as any).is_topup) || Boolean((detail as any).is_exchange));
     setEditReason('');
     setCAffiliate((detail as any).affiliate_id ?? '');
     setAffTouched(false);
@@ -2364,7 +2393,8 @@ const InvoicesPage: React.FC = () => {
       row('Manual discount', money(Number(b.manual_discount ?? 0)), money(Number(a.manual_discount ?? 0))),
       // Every discount together, the lines' own included.
       row('All discounts', money(Number(b.discount_total ?? 0)), money(Number(a.discount_total ?? 0))),
-      row('Notes', String(b.notes ?? '—'), String(a.notes ?? '—')),
+      row('Internal notes', String(b.notes ?? '—'), String(a.notes ?? '—')),
+      row('Printed note', String(b.print_note ?? '—'), String(a.print_note ?? '—')),
       row('Edits', String(b.edit_count ?? 0), String(a.edit_count ?? 0)),
     ];
   };
@@ -2652,6 +2682,10 @@ const InvoicesPage: React.FC = () => {
       customerName: `${printedCustomer(detail)} (${billToSource || '-'})`,
       customerContact: [cust?.phone, cust?.email].filter(Boolean).join(' · ') || null,
       headerNote: exLabels.headerNote,
+      // 456: the exchange's own note under EXCHANGE DETAILS, and the note
+      // printed on the invoice above the signatures (never the internal Notes).
+      exchangeNote: exchangeNote(detailExchange),
+      note: printedNote(detail),
       lines: detailItems.map(it => {
         const notes: string[] = [];
         // Q7 (the Owner, 9 Oct 2026): 'FOC' and its value, never its reason.
@@ -2868,6 +2902,13 @@ const InvoicesPage: React.FC = () => {
     const esc = escapeHtml;
     const collectionBlock = collectionLines
       ? `<h2>Goods</h2><div data-testid="print-goods">${collectionLines.map(l => `<div>${esc(l)}</div>`).join('')}</div>` : '';
+    // 456 (the Owner, 22 Oct 2026): the note printed on the invoice, on both
+    // halves, above the signatures; never the internal Notes. Escaped, its
+    // line breaks kept, never squeezed (only the credit block gives way).
+    const printNote = printedNote(detail);
+    // Item 5: a note taller than a page goes on between its lines (data-p-lines, printPages.mjs).
+    const noteBlock = printNote
+      ? `<h2>Note</h2><div data-testid="print-note" data-p-lines style="flex:0 0 auto;overflow-wrap:anywhere">${noteHtml(printNote)}</div>` : '';
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
       const chosen = detailSelections.filter(s => s.invoice_item_id === it.id);
@@ -2906,8 +2947,11 @@ const InvoicesPage: React.FC = () => {
         : `<b>S$${Number(it.line_total).toFixed(2)}</b>`;
       const tk = ticketDetail(it);
       const td = tk ? `${tk.days ? `<div class="mut">Day${(it as any).event_days?.length === 1 ? '' : 's'}: ${esc(tk.days)}</div>` : ''}${tk.people ? `<div class="mut">For: ${esc(tk.people)}</div>` : ''}` : '';
-      return `<tr><td>${esc(lineName(it))}${td}${md}${ov}${mem}${lv}${tu}${fc}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r">${amountCell}</td></tr>` +
-        (it.line_kind === 'promotion' ? subFor(it) : '');
+      // Item 5 (the Owner, 22 Oct 2026): each line with its promotion
+      // sub-rows in a body of its own, so a copy that goes on to another sheet
+      // never splits them (src/lib/invoices/printPages.mjs).
+      return `<tbody class="p-row"><tr><td>${esc(lineName(it))}${td}${md}${ov}${mem}${lv}${tu}${fc}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r">${amountCell}</td></tr>` +
+        (it.line_kind === 'promotion' ? subFor(it) : '') + '</tbody>';
     }).join('');
     const payRows = detailPayments.map(p =>
       `<tr><td>${esc(paymentLabel(p))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(displayDay((p as any).effective_at || p.created_at))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
@@ -2932,13 +2976,21 @@ const InvoicesPage: React.FC = () => {
       `<tr><td><strong>${esc(label)}</strong></td><td class="r"><strong>${esc(value)}</strong></td></tr>`).join('');
     const ex = detailExchange?.found ? detailExchange : null;
     const exLabels = exchangeCopyLabels(detailExchange);
+    // 456 (item 6, the exchange half): the exchange's own note, under Exchange Details.
+    const exNote = exchangeNote(detailExchange);
+    // Item 5 (the Owner, 22 Oct 2026): on a copy longer than its half, the
+    // exchange's note goes on between its lines (data-p-lines) and the
+    // returned items between their rows, each in a body of its own (the
+    // returned value with the last), under the table's head again
+    // (printPages.mjs).
+    const returnedRows = (ex?.returned_items ?? []).map((r: any) => `<tr><td>${esc(r.product ?? '')}</td><td class="r">${r.quantity}</td><td class="r">S$${Number(r.line_total).toFixed(2)}</td></tr>`);
+    const returnedValue = ex ? `<tr><td colspan="2"><b>Returned value (exchange credit)</b></td><td class="r"><b>S$${Number(ex.returned_total ?? 0).toFixed(2)}</b></td></tr>` : '';
     const exchangeBlock = ex ? `
       <h2>Exchange Details</h2>
       <div class="mut">Exchange ${esc(ex.exchange_no ?? '')} · Original invoice <b>${esc(ex.original_invoice_no ?? '')}</b>${ex.reason ? ` · Reason: ${esc(ex.reason)}` : ''}</div>
-      <table><thead><tr><th>Returned Item</th><th class="r">Qty</th><th class="r">Value</th></tr></thead><tbody>
-        ${(ex.returned_items ?? []).map((r: any) => `<tr><td>${esc(r.product ?? '')}</td><td class="r">${r.quantity}</td><td class="r">S$${Number(r.line_total).toFixed(2)}</td></tr>`).join('')}
-        <tr><td colspan="2"><b>Returned value (exchange credit)</b></td><td class="r"><b>S$${Number(ex.returned_total ?? 0).toFixed(2)}</b></td></tr>
-      </tbody></table>` : '';
+      ${exNote ? `<div class="mut" data-testid="print-exchange-note" data-p-lines style="overflow-wrap:anywhere">Note: ${noteHtml(exNote)}</div>` : ''}
+      <table><thead><tr><th>Returned Item</th><th class="r">Qty</th><th class="r">Value</th></tr></thead>${(returnedRows.length ? returnedRows : ['']).map((r: string, k: number, all: string[]) =>
+        `<tbody class="p-row">${r}${k === all.length - 1 ? returnedValue : ''}</tbody>`).join('')}</table>` : '';
     const focTotal = Number((detail as any).foc_total ?? 0);
     const focStamp = focTotal > 0
       ? `<div class="mut"><b>${(detail as any).is_full_foc ? 'FREE OF CHARGE' : 'INCLUDES FOC ITEMS'}</b> — FOC value S$${focTotal.toFixed(2)}</div>`
@@ -3018,8 +3070,13 @@ const InvoicesPage: React.FC = () => {
       </div>` : '';
 
     // One invoice copy — rendered twice (customer + store) on a single A4 page.
+    // Item 5 (the Owner, 22 Oct 2026): its head (.p-head) and its tail
+    // (.p-tail) are wrapped, drawing no box of their own, so a copy longer
+    // than its half goes on to more sheets: page k of each copy on sheet k,
+    // the head on page 1 only, the tail whole on the last (printPages.mjs).
     const copyHtml = (copyLabel: string) => `
-      <div class="copy">
+      <div class="copy" data-doc-no="${esc(detail.invoice_no)}">
+        <div class="p-head">
         ${logosTop}
         <div class="head">
           <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div>
@@ -3038,7 +3095,9 @@ const InvoicesPage: React.FC = () => {
         <div>${esc(billTo)}</div><div class="mut">${esc(cust?.phone ?? '')}</div>
         <h2>Items</h2>
         ${exchangeBlock}
-        <table><thead><tr><th>${ex ? 'Replacement Item' : 'Item'}</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>${itemRows}</tbody></table>
+        </div>
+        <table class="p-items"><thead><tr><th>${ex ? 'Replacement Item' : 'Item'}</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead>${itemRows}</table>
+        <div class="p-tail">
         <table class="totals">
           ${focTotal > 0 ? `<tr><td>Normal value</td><td class="r">S$${(Number(detail.subtotal) + focTotal).toFixed(2)}</td></tr>
           <tr><td>FOC (free of charge)</td><td class="r">−S$${focTotal.toFixed(2)}</td></tr>` : ''}
@@ -3053,6 +3112,7 @@ const InvoicesPage: React.FC = () => {
         ${therapyBlock}
         ${authorisedBlock}
         ${collectionBlock}
+        ${noteBlock}
         <div class="signrow">
           <div class="sign">
             <div class="signline signed">${esc(signedByName)}</div>Staff Signature
@@ -3066,6 +3126,7 @@ const InvoicesPage: React.FC = () => {
         ${st.policy_text ? `<div class="policy"><b>CANCELLATION / EXCHANGE / REFUND POLICY</b><br/>${esc(st.policy_text).replace(/\n/g, '<br/>')}</div>` : ''}
         ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
         ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
+        </div>
       </div>`;
 
     const html = `<!doctype html><html><head><title>${esc(detail.invoice_no)}</title><style>
@@ -3079,7 +3140,8 @@ const InvoicesPage: React.FC = () => {
         ${copyHtml('OFFICE COPY')}
       </div>
       <script>${CREDIT_BALANCE_FIT_SCRIPT}
-      window.onload=function(){try{fitCreditBalance();}catch(e){}window.print();}</script>
+      ${PRINT_PAGES_SCRIPT}
+      window.onload=function(){try{paginatePrintCopies(planCopyPages);}catch(e){}try{fitCreditBalance();}catch(e){}window.print();}</script>
     </body></html>`;
     // Closed while the balance was being read: there is nothing to print into.
     if (w.closed) return;
@@ -3521,8 +3583,20 @@ const InvoicesPage: React.FC = () => {
             {/* The instalment arrangement moved to Record Payment for a new
                 invoice. On a correction it stays here, in the payment part of
                 the form, so saved values can be seen and edited. */}
-            {editingPaid && <InstalmentFields value={cInstalment} onChange={setCInstalment} methods={methods} />}
-            <label>Notes<textarea value={cNotes} onChange={e => setCNotes(e.target.value)} /></label>
+            {editingPaid && !correctingFoc && <InstalmentFields value={cInstalment} onChange={setCInstalment} methods={methods} />}
+            {/* 456 (the Owner, 22 Oct 2026): two notes. The printed one is on
+                every copy, above the signatures; the internal one never prints
+                (it also holds what the system writes: website order and
+                Stripe ids, exchange and top-up reasons, late-fee and
+                voucher-claim references). */}
+            <label>Note printed on the invoice
+              <textarea data-testid="invoice-print-note" value={cPrintNote} maxLength={PRINT_NOTE_MAX}
+                onChange={e => setCPrintNote(e.target.value.slice(0, PRINT_NOTE_MAX))} />
+            </label>
+            <p data-testid="invoice-print-note-hint" style={{ fontSize: 12, margin: '-4px 0 0', color: 'var(--text-muted)' }}>
+              The customer sees it: it prints on the customer and office copies, the PDF and the image, above the signatures. {cPrintNote.length}/{PRINT_NOTE_MAX}
+            </p>
+            <label>Internal notes (not printed)<textarea data-testid="invoice-internal-notes" value={cNotes} onChange={e => setCNotes(e.target.value)} /></label>
 
             {editingPaid && (
               <div className="form-grid-2">
@@ -3930,7 +4004,7 @@ const InvoicesPage: React.FC = () => {
                                 <div style={{ flex: '0 0 100px' }}>
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Rate</div>
                                   <select value={line.rental_rate_type ?? 'day'}
-                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { rental_rate_type: e.target.value as any }) : l))}>
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? withRentalDueBack(l, withCatalogueItem(l, { rental_rate_type: e.target.value as any })) : l))}>
                                     {(() => {
                                       const sp = specialProducts.find((x: any) => x.id === line.special_product_id);
                                       const avail = (['day','week','month','year'] as const)
@@ -3945,18 +4019,26 @@ const InvoicesPage: React.FC = () => {
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Periods</div>
                                   <input type="number" min={1} value={line.rental_periods ?? 1}
                                     onChange={e => setCLines(ls => ls.map((l, j) => j === i
-                                      ? withCatalogueItem(l, { rental_periods: Math.min(Math.max(1, Math.floor(+e.target.value || 1)), 3650) }) : l))} />
+                                      ? withRentalDueBack(l, withCatalogueItem(l, { rental_periods: Math.min(Math.max(1, Math.floor(+e.target.value || 1)), 3650) })) : l))} />
                                 </div>
                                 <div style={{ flex: '0 0 140px' }}>
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>From</div>
                                   <input type="date" value={line.rental_start_date ?? ''}
-                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, rental_start_date: e.target.value } : l))} />
+                                    onChange={e => setCLines(ls => ls.map((l, j) => j === i ? withRentalDueBack(l, { ...l, rental_start_date: e.target.value }) : l))} />
                                 </div>
                                 <div style={{ flex: '0 0 140px' }}>
                                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>Due back</div>
                                   <input type="date" value={line.rental_return_date ?? ''} min={line.rental_start_date}
                                     onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, rental_return_date: e.target.value } : l))} />
                                 </div>
+                                {/* 458: blank, the database gives the start plus the periods by rate type. */}
+                                {blankDueBackHint(line) && (
+                                  <div className="correction-hint" data-testid="rental-due-back-hint" style={{ flexBasis: '100%', fontSize: 11 }}>
+                                    {blankDueBackHint(line)}</div>)}
+                                {/* 458: on a settled invoice the rental follows its corrected line. */}
+                                {editingInvoiceId && editingPaid && line.invoice_item_id && (
+                                  <div className="correction-hint" data-testid="rental-follows-hint" style={{ flexBasis: '100%', fontSize: 11 }}>
+                                    {RENTAL_FOLLOWS_HINT}</div>)}
                               </div>
                             )}
                           </div>
@@ -4591,6 +4673,8 @@ const InvoicesPage: React.FC = () => {
               ? <>{copyButtons}{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{recordRefundDueButton}{refundCancelButton}</>
               : (detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0
                   && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0
+                  // 457: never settled; a once-settled one (its FOC taken off) gets Correct Invoice below.
+                  && !detail.locked_at
               ? <>{copyButtons}
                   {!isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}><FileText size={14} /> Edit Invoice</button>}
                   {handOverButton}
@@ -4600,7 +4684,17 @@ const InvoicesPage: React.FC = () => {
               // CREATE-14: a completed FOC is undone with the guided Cancel
               // (Owners and Managers confirm it; staff request it). It returns
               // the stock and closes what the FOC gave.
-              ? <>{copyButtons}{refundCancelButton}</>
+              // 457 (the Owner, 22 Oct 2026): Owners and Managers correct it
+              // as a paid invoice, with a reason and the revision history
+              // (staff never: staffMayCorrect is only asked for paid and
+              // part-paid invoices, and the server refuses them).
+              ? <>{copyButtons}
+                  {canCorrectInvoice && (
+                    <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
+                      title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
+                      <FileText size={14} /> Correct Invoice</button>
+                  )}
+                  {refundCancelButton}</>
               : <>{copyButtons}
                   {canCorrectInvoice && needsAuditedCorrection &&
                     <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady}
@@ -4645,6 +4739,13 @@ const InvoicesPage: React.FC = () => {
               </p>
             )}
             {instalmentText(detail as any, methods) && <p>{instalmentText(detail as any, methods)}</p>}
+            {/* 456: the note the copies print, as they print it. */}
+            {printedNote(detail) && (
+              <div data-testid="invoice-detail-print-note" style={{ fontSize: 12.5 }}>
+                <strong>Note printed on the invoice</strong>
+                <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{printedNote(detail)}</div>
+              </div>
+            )}
             <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
               paymentLabel={(paymentId, fallback) => paymentLabel(detailPayments.find(x => x.id === paymentId) ?? { id: paymentId }, fallback)}
               usedValue={detailUsedValue}
@@ -4667,6 +4768,11 @@ const InvoicesPage: React.FC = () => {
               <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', background: 'var(--surface-2)', fontSize: 12.5 }}>
                 <div style={{ fontWeight: 700, marginBottom: 4 }}>Exchange Invoice — {detailExchange.exchange_no}</div>
                 <div style={{ color: 'var(--text-muted)' }}>Original invoice: <b>{detailExchange.original_invoice_no}</b>{detailExchange.reason ? <> · Reason: {detailExchange.reason}</> : null}</div>
+                {/* 456 (item 6, the exchange half): the exchange's own note, as its copies print it. */}
+                {exchangeNote(detailExchange) && (
+                  <div data-testid="invoice-detail-exchange-note" style={{ color: 'var(--text-muted)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                    Note: {exchangeNote(detailExchange)}</div>
+                )}
                 <div style={{ marginTop: 6 }}>
                   <div style={{ fontWeight: 600 }}>Returned</div>
                   {(detailExchange.returned_items ?? []).map((r: any, i: number) => (
@@ -4885,8 +4991,10 @@ const InvoicesPage: React.FC = () => {
                             {isPromo && Number((it as any).topup_amount ?? 0) > 0 ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>+ top-up {money(Number((it as any).topup_amount))}</div> : null}
                             {/* One discount per line: a line with a discount is not offered FOC. */}
                             {/* CREATE-19 (a): not for Inventory Managers, whom the database refuses. */}
+                            {/* 457: nor on a once-settled (locked) invoice, which the database refuses
+                                ("Invoice is locked"): its FOC changes through Correct Invoice. */}
                             {Number(it.foc_quantity ?? 0) === 0 && !lineHasDiscount(it) && it.line_kind !== 'late_fee' && detail.status !== 'paid' && detail.status !== 'completed_foc'
-                              && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && canGiveFoc(profile?.role) && (
+                              && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && !detail.locked_at && canGiveFoc(profile?.role) && (
                               <div style={{ fontSize: 11 }}>
                                 <button className="btn btn-secondary btn-sm" style={{ padding: '1px 7px', fontSize: 10.5 }}
                                   onClick={() => { setFocLine(it); setFocQty(it.quantity); setFocReasonId(''); setFocNote(''); setFocErr(null); }}>
@@ -4899,7 +5007,7 @@ const InvoicesPage: React.FC = () => {
                                 {it.is_foc ? 'FOC' : `FOC ${it.foc_quantity} of ${it.quantity}`} — free {money(Number(it.foc_amount ?? 0))}
                                 {it.foc_reason ? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}> · {it.foc_reason}</span> : null}
                                 {detail.status !== 'paid' && detail.status !== 'completed_foc' && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0
-                                  && canGiveFoc(profile?.role) && (
+                                  && !detail.locked_at && canGiveFoc(profile?.role) && (
                                   <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6, padding: '1px 7px', fontSize: 10.5 }}
                                     disabled={focBusy} onClick={() => { setFocErr(null); setRemoveFocReason(''); setRemoveFocLine(it); }}>Remove FOC</button>
                                 )}

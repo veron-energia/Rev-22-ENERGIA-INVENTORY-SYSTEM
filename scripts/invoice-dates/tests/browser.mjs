@@ -80,7 +80,7 @@ try {
  ok('real rendered image uses the recovered date',await page.evaluate(()=>window.__imageText.includes('Date: 01/02/2020')));
  await page.getByRole('button',{name:'Correct Invoice',exact:true}).click();
  ok('Correct Invoice loads the saved date',await page.getByLabel('Invoice business date',{exact:true}).inputValue()==='2020-02-01');
- await page.getByLabel('Notes',{exact:true}).fill('Delivery note only');await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verified delivery note');
+ await page.getByLabel('Internal notes (not printed)',{exact:true}).fill('Delivery note only');await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verified delivery note');
  await page.getByRole('button',{name:'Save Changes',exact:true}).click();
  await page.getByRole('button',{name:'New Invoice',exact:true}).waitFor();
  ok('unrelated correction submits the saved date',await page.evaluate(()=>window.__calls.findLast(c=>c.name==='correct_invoice')?.args.p_header.business_date==='2020-02-01'));

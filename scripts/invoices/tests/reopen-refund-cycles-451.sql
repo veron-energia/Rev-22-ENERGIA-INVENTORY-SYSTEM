@@ -806,7 +806,8 @@ do $$
 declare ro text := 'reopen_invoice(uuid,text,uuid)'; pv text := 'invoice_reopen_preview_before_sessions(uuid)';
 begin
   perform pg_temp.t451_check(pg_temp.t451_in()
-    and md5(pg_get_functiondef(('public.' || ro)::regprocedure)) = 'cb647331300b0a476c1da7b2cb599889'
+    -- reopen_invoice: 451's AFTER, or 458's (rentals follow the reopening: one line, where it raises the items)
+    and md5(pg_get_functiondef(('public.' || ro)::regprocedure)) in ('cb647331300b0a476c1da7b2cb599889', '0ff61e4ead121c198ea7f90a7fc78274')
     and md5(pg_get_functiondef(('public.' || pv)::regprocedure)) = '12206ed066495024421b3b44a6a9d8e2', '10 451 is not installed as tested');
   if exists (select 1 from t451_fp where k = 'first') then
     perform pg_temp.t451_check((select fp from t451_fp where k = 'second') = (select fp from t451_fp where k = 'first'),

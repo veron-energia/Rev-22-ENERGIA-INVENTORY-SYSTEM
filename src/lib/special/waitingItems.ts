@@ -95,11 +95,22 @@ export function waitingItemLabel(item: WaitingItem, lineName?: (invoiceItemId: s
  */
 export function cancelledBecause(notes: string | null | undefined): string | null {
   const text = notes ?? '';
+  // 458: a rental out ended by a refund ("Refunded while still out; ..."),
+  // when that is the last thing that ended it.
+  if (refundedLast(text)) return 'refunded';
   const m = /(?:^|\n)Cancelled \(([^)\n]+)\)/.exec(text);
   if (m) return m[1];
   if (/(?:^|\n)Cancelled with its invoice/.test(text)) return 'invoice cancelled';
   return null;
 }
+
+/** 458: the note says a refund ended it while it was out, after any
+ *  cancellation it also records (a rental reopened and running again keeps
+ *  its old notes). */
+const refundedLast = (text: string) => {
+  const r = text.lastIndexOf('Refunded while still out');
+  return r >= 0 && r > text.lastIndexOf('Cancelled with its invoice') && r > text.lastIndexOf('Running again');
+};
 
 export type BadgeTone = 'success' | 'primary' | 'accent' | 'danger' | 'muted';
 const humanise = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ') : '—';
@@ -135,7 +146,10 @@ export function rentalStatusLabel(status: RentalStatus | string, notes?: string 
   rental?: { stock_returned?: boolean | null; fulfilled_at?: string | null; activated_at?: string | null } | null): string {
   const base = RENTAL_STATUS_LABELS[status as RentalStatus] ?? humanise(String(status));
   if (status !== 'cancelled') return base;
-  if (rental && rentalStillWithCustomer({ status: String(status), ...rental })) return 'Cancelled, still with customer';
+  if (rental && rentalStillWithCustomer({ status: String(status), ...rental })) {
+    // 458: a refund ends a rental out as Cancel does; its badge says which.
+    return refundedLast(notes ?? '') ? 'Refunded, still with customer' : 'Cancelled, still with customer';
+  }
   const why = cancelledBecause(notes);
   return why ? `${base} (${why})` : base;
 }

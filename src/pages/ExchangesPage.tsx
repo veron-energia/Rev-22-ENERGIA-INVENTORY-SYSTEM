@@ -520,10 +520,13 @@ const ExchangesPage: React.FC = () => {
     const st: any = stores.find(x => x.id === detail.processing_store_id) ?? {};
     const cust: any = customers.find(c => c.id === detail.customer_id);
     const replNo = exchangeInvoiceNos[detail.id];
+    // Item 5 (the Owner, 22 Oct 2026): each returned item in a body of its own,
+    // so a long list goes on to the next sheet between its rows, under the
+    // table's head again (src/lib/invoices/printPages.mjs).
     const returnedRows = detailItems.filter(i => i.direction === 'returned')
-      .map(i => `<tr><td>${printEsc(pName(i.product_id))}</td><td class="r">${printEsc(i.quantity)}</td><td class="r">${printEsc(money(i.line_total))}</td></tr>`).join('');
+      .map(i => `<tbody class="p-row"><tr><td>${printEsc(pName(i.product_id))}</td><td class="r">${printEsc(i.quantity)}</td><td class="r">${printEsc(money(i.line_total))}</td></tr></tbody>`).join('');
     const returnedTable = `<h2>Returned Items</h2><table><thead><tr><th>Returned Item</th><th class="r">Qty</th><th class="r">Credit</th></tr></thead>
-      <tbody>${returnedRows || '<tr><td colspan="3" class="mut">None</td></tr>'}</tbody></table>`;
+      ${returnedRows || '<tbody><tr><td colspan="3" class="mut">None</td></tr></tbody>'}</table>`;
     const totals: PrintTotal[] = [
       { label: 'Returned value (credit)', value: money(detail.returned_credit_total) },
       { label: 'Replacement total', value: money(detail.replacement_total) },
@@ -541,7 +544,7 @@ const ExchangesPage: React.FC = () => {
     const extraBlocks = [
       ...(detail.reason ? [`<h2>Reason</h2><div class="mut">${printEsc(detail.reason)}</div>`] : []),
       ...(d.is_foc ? [`<div class="mut"><b>FREE OF CHARGE EXCHANGE</b> — FOC value ${printEsc(money(d.foc_amount ?? 0))}</div>`] : []),
-      ...(detail.notes ? [`<h2>Notes</h2><div class="mut">${printEsc(detail.notes).replace(/\n/g, '<br/>')}</div>`] : []),
+      ...(detail.notes ? [`<h2>Notes</h2><div class="mut" data-p-lines>${printEsc(detail.notes).replace(/\n/g, '<br/>')}</div>`] : []),
     ];
     const printed = printA5Document({
       docNo: detail.exchange_no,

@@ -15,6 +15,11 @@
 //    is reviewed again, not saved.
 //  - CREATE-17, AFTER-16, SALES-EXTRAS-9: Singapore days, whatever the device.
 //  - CREATE-14 (417, Q4 = A), CREATE-19, CREATE-4, CREATE-18: the page parts.
+//  - 457 (the Owner, 22 Oct 2026, item 9): every invoice has its correct
+//    path: Correct Invoice on a completed FOC invoice and on a once-settled
+//    (locked) unpaid one, for Owners and Managers, never Edit Invoice there;
+//    no Make FOC / Remove FOC on a locked invoice; no instalment fields when
+//    correcting a completed FOC invoice; late fees still never corrected.
 //  - W4-B04-IM-ADD-CUSTOMER: no Add customer button for Inventory Managers,
 //    on the form and on each split-panel row.
 //
@@ -152,8 +157,10 @@ test('CREATE-14 (417, Q4 = A): the bin only where a delete can succeed, and a re
   assert.match(page, /rpc\('delete_invoice', \{ p_invoice_id: inv\.id, p_reason: reason \}\)/);
   assert.match(between('const handleDelete = async', 'Refund and cancellation requests'), /if \(!reason\) \{ setDeleteErr\(/, 'no reason, no call');
   assert.doesNotMatch(page, /Paid invoices cannot be deleted/, 'the server says why, not a page special case');
-  assert.match(between("detail.status === 'completed_foc'", ': <>{copyButtons}\n'), /\{copyButtons\}\{refundCancelButton\}/,
-    'a completed FOC is undone with the guided Cancel');
+  // 457 (the Owner, 22 Oct 2026): and Owners and Managers correct it, as a paid invoice.
+  assert.match(between("detail.status === 'completed_foc'", ': <>{copyButtons}\n'),
+    /\? <>\{copyButtons\}\s*\{canCorrectInvoice && \(\s*<button className="btn btn-secondary" onClick=\{openEdit\} disabled=\{!docReady\}\s*title=\{docWaitTitle \?\? 'Correct this invoice with a reason and revision history'\}>\s*<FileText size=\{14\} \/> Correct Invoice<\/button>\s*\)\}\s*\{refundCancelButton\}<\/>/,
+    'a completed FOC is corrected (Owners and Managers) or undone with the guided Cancel');
 });
 
 test('CREATE-19: FOC is not offered to Inventory Managers; Confirm FOC asks; Remove FOC takes a reason', () => {
@@ -207,4 +214,30 @@ test('CREATE-18: what could never run is gone; status types stay for history', (
   const types = readFileSync('src/types/index.ts', 'utf8');
   assert.match(types, /refund_requested: 'Refund Requested'/, 'the retired statuses keep their labels');
   assert.match(readFileSync('src/lib/invoices/business.ts', 'utf8'), /export function invoiceDateSearch/, 'invoiceDateSearch is kept');
+});
+
+test('457: every invoice has its correct path, and none offers a save that always fails', () => {
+  // Correct Invoice is Owners' and Managers' on a completed FOC (staffMayCorrect is asked only for paid and part-paid).
+  assert.match(page, /const canCorrectInvoice = \(canManageInvoice \|\| staffMayCorrect\) && !isLateFeeInvoice;/, 'never on a late fee');
+  assert.match(between('const [staffMayCorrect, setStaffMayCorrect]', 'const isLateFeeInvoice'),
+    /if \(!isStaff \|\| !id \|\| !\['paid', 'partially_paid'\]\.includes\(String\(detail\?\.status\)\)/, 'staff are never asked about a completed FOC');
+  // A once-settled invoice (locked_at) is an audited correction, unpaid or not.
+  assert.match(between('const needsAuditedCorrection = ', ';\n'), /\|\| Boolean\(detail\?\.locked_at\)\)$/);
+  const editBranch = between("(detail.status === 'unpaid' || detail.status === 'draft') && Number(detail.paid_amount) === 0", 'Edit Invoice</button>');
+  assert.match(editBranch, /&& detailPayments\.length === 0\s*\/\/[^\n]*\n\s*&& !detail\.locked_at\s*\? <>\{copyButtons\}/, 'Edit Invoice only on an invoice never settled');
+  assert.match(between("              : <>{copyButtons}\n                  {canCorrectInvoice && needsAuditedCorrection", '{settleButton}</>'),
+    /Correct Invoice<\/button>\}/, 'the once-settled unpaid invoice falls to Correct Invoice');
+  // The form asks for the reason where the server does.
+  assert.match(page, /setEditingPaid\(!\['draft', 'unpaid'\]\.includes\(String\(detail\.status\)\) \|\| detailPayments\.length > 0\s*\|\| Boolean\(detail\.locked_at\) \|\| Boolean\(\(detail as any\)\.is_topup\) \|\| Boolean\(\(detail as any\)\.is_exchange\)\);/);
+  assert.match(page, /<Modal title=\{editingPaid \? "Correct Invoice" : editingInvoiceId \? "Edit Invoice" : "New Invoice"\}/);
+  // Make FOC / Remove FOC: not on a locked invoice (the server says "Invoice is locked").
+  assert.equal((page.match(/Number\(detail\.paid_amount\) === 0 && !detail\.locked_at && canGiveFoc\(profile\?\.role\)/g) ?? []).length, 1, 'Make FOC');
+  assert.equal((page.match(/Number\(detail\.paid_amount\) === 0\s*&& !detail\.locked_at && canGiveFoc\(profile\?\.role\)/g) ?? []).length, 2, 'and Remove FOC');
+  // Correcting a completed FOC invoice: no instalment fields, none sent, none checked.
+  assert.match(page, /const correctingFoc = editingPaid && !!editingInvoiceId && editBaseRef\.current\?\.status === 'completed_foc';/);
+  assert.match(page, /\{editingPaid && !correctingFoc && <InstalmentFields value=\{cInstalment\}/);
+  assert.match(page, /\.\.\.\(correctingFoc \? \{\} : \{\s*instalment_category: cInstalment\.instalment_category \|\| null,\s*instalment_method_id: cInstalment\.instalment_method_id \|\| null,\s*instalment_months: cInstalment\.instalment_months \|\| null,\s*\}\),/);
+  assert.match(page, /const instalmentError = correctingFoc \? null : validateInstalment\(cInstalment\);/);
+  // Cancelled and refunded: Owners and Managers, never a late fee (as before).
+  assert.match(page, /: detail\.status === 'cancelled' \|\| detail\.status === 'refunded'\n\s*\? <>\{copyButtons\}\{isOwnerOrManager\(profile\?\.role\) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick=\{openEdit\}/);
 });

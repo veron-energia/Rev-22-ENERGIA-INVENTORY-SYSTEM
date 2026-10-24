@@ -17,6 +17,13 @@
 // after it (416 rule 11, CREATE-5); a payment row fits a phone (CREATE-13);
 // the request banner and button (417); Confirm FOC asks first, Remove FOC
 // takes a reason, and neither is offered to Inventory Managers (CREATE-19).
+//
+// 457 (the Owner, 22 Oct 2026): Owners and Managers (never staff or
+// Inventory Managers) get Correct Invoice on a completed FOC invoice: the
+// reason asked, the line's FOC restored, no instalment fields, the summary
+// before the save. A once-settled invoice unpaid again (its FOC taken off)
+// gets Correct Invoice too, never an Edit Invoice the server always refuses,
+// and no Make FOC.
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -146,6 +153,13 @@ const scenarios = {
     tables: { ...base, invoices: [invoice({ status: 'completed_foc', paid_amount: 0, total_amount: 0, subtotal: 0, is_full_foc: true, foc_total: 100 })],
       invoice_items: [lineOf({ foc_quantity: 1, foc_amount: 100, is_foc: true, line_total: 0, foc_reason: 'Fixture reason' })], invoice_payments: [] },
     financial: { total: 0, net_received: 0, outstanding: 0, refund_due: 0, refunded: 0, status: 'completed_foc' },
+  },
+  // 457: a completed FOC invoice whose FOC a correction took off: unpaid
+  // again, no payment, but once settled (locked_at is never cleared).
+  foc_reopened: {
+    tables: { ...base, invoices: [invoice({ status: 'unpaid', paid_amount: 0, locked_at: date, paid_at: date, foc_confirmed_at: date, edit_count: 1 })],
+      invoice_items: [lineOf()], invoice_payments: [] },
+    financial: { total: 100, net_received: 0, outstanding: 100, refund_due: 0, refunded: 0, status: 'unpaid' },
   },
   foc_open: {
     tables: { ...base, invoices: [invoice({ status: 'unpaid', paid_amount: 0, total_amount: 0, subtotal: 0, is_full_foc: true, foc_total: 100 })],
@@ -530,7 +544,7 @@ try {
     ok('and the date received cannot be after today (Singapore)',
        /^\d{4}-\d{2}-\d{2}$/.test(await modal.getByLabel('Date received', { exact: true }).getAttribute('max') ?? ''));
     // Its label holds the textarea, whose text then joins the label's own.
-    const notes = modal.locator('label', { hasText: /^Notes/ }).locator('textarea');
+    const notes = modal.locator('label', { hasText: /^Internal notes \(not printed\)/ }).locator('textarea');
     await notes.fill('First note');
     await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
     await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
@@ -575,7 +589,7 @@ try {
     // Correct Invoice opens unlocked, with no summary (CREATE-5).
     await mount(page, 'paid', 'owner');
     modal = await openCorrection(page);
-    await modal.locator('label', { hasText: /^Notes/ }).locator('textarea').fill('Left open');
+    await modal.locator('label', { hasText: /^Internal notes \(not printed\)/ }).locator('textarea').fill('Left open');
     await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
     await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
     await page.getByTestId('correction-preview').waitFor();
@@ -614,6 +628,68 @@ try {
     ok('and has no payment entry', await page.getByText('Record Payment', { exact: false }).count() === 0);
     ok('its FOC reason is shown to staff on screen, but never on the print or PDF (Q7)',
        (await page.locator('.modal').last().innerText()).includes('Fixture reason'));
+    // 457 (the Owner, 22 Oct 2026): Owners and Managers correct a completed FOC
+    // invoice as a paid one (a reason, the revision history); staff never.
+    ok('457: staff are not offered Correct Invoice on a completed FOC invoice, and the page did not ask',
+       await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 0
+       && await page.evaluate(() => !window.__calls.some(c => c.name === 'staff_may_correct_invoice')));
+    for (const role of ['owner', 'manager']) {
+      await mount(page, 'foc_done', role);
+      await page.getByRole('button', { name: 'Correct Invoice', exact: true }).waitFor();
+      ok(`457: ${role === 'owner' ? 'an Owner' : 'a Manager'} is offered Correct Invoice on it, beside Refund / Cancel, and no Edit Invoice`,
+         await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).count() === 1
+         && await page.getByRole('button', { name: 'Edit Invoice', exact: true }).count() === 0);
+    }
+    await mount(page, 'foc_done', 'owner');
+    await openCorrection(page);
+    const focForm = page.getByRole('dialog', { name: 'Correct Invoice' });
+    await focForm.waitFor();
+    ok('457: it opens as Correct Invoice, asking for the reason',
+       await focForm.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 1);
+    ok('457: with the line\'s FOC restored as saved',
+       await focForm.getByLabel('Line 1 free quantity', { exact: true }).inputValue() === '1');
+    ok('457: and no instalment fields (a free invoice has no instalment terms)',
+       await focForm.locator('legend', { hasText: /^Instalment$/ }).count() === 0);
+    await page.evaluate(() => { window.__calls = []; });
+    const focSave = await save(page, 'Wrong item given free');
+    const focCalls = await page.evaluate(() => window.__calls.map(c => c.name));
+    ok('457: saving shows the summary first, then sends correct_invoice with the reason, the FOC kept, no instalment terms',
+       focCalls.indexOf('preview_invoice_correction') >= 0 && focCalls.indexOf('preview_invoice_correction') < focCalls.indexOf('correct_invoice')
+       && focSave?.args?.p_reason === 'Wrong item given free'
+       && focSave?.args?.p_items?.[0]?.foc_quantity === 1 && focSave?.args?.p_items?.[0]?.invoice_item_id === 'line'
+       && !('instalment_category' in (focSave?.args?.p_header ?? {})),
+       JSON.stringify(focSave?.args ?? {}).slice(0, 300));
+    await mount(page, 'foc_done', 'inventory_manager');
+    await page.getByRole('button', { name: 'Close', exact: true }).first().waitFor();
+    ok('457: an Inventory Manager is not offered Correct Invoice on it',
+       await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 0);
+    // 457: once settled, unpaid again (its FOC taken off): Correct Invoice, never an Edit Invoice that always fails.
+    await mount(page, 'foc_reopened', 'owner');
+    await page.getByRole('button', { name: 'Correct Invoice', exact: true }).waitFor();
+    ok('457: a once-settled unpaid invoice offers an Owner Correct Invoice, not Edit Invoice',
+       await page.getByRole('button', { name: 'Edit Invoice', exact: true }).count() === 0);
+    ok('457: and no Make FOC (the server says "Invoice is locked")',
+       await page.getByRole('button', { name: 'Make FOC', exact: true }).count() === 0);
+    await openCorrection(page);
+    const againForm = page.getByRole('dialog', { name: 'Correct Invoice' });
+    await againForm.waitFor();
+    ok('457: its form asks for the reason, with the instalment fields (it can be paid by instalments)',
+       await againForm.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 1
+       && await againForm.locator('legend', { hasText: /^Instalment$/ }).count() === 1);
+    const againSave = await save(page, 'Two pairs after all');
+    ok('457: and sends correct_invoice with the reason', againSave?.args?.p_reason === 'Two pairs after all'
+       && 'instalment_category' in (againSave?.args?.p_header ?? {}), JSON.stringify(againSave?.args ?? {}).slice(0, 200));
+    await mount(page, 'foc_reopened', 'staff');
+    await page.getByRole('button', { name: 'Close', exact: true }).first().waitFor();
+    ok('457: staff get neither Edit Invoice nor Correct Invoice on it (the server refuses them)',
+       await page.getByRole('button', { name: 'Edit Invoice', exact: true }).count() === 0
+       && await page.getByRole('button', { name: 'Correct Invoice', exact: true }).count() === 0);
+    // A never-settled unpaid invoice still offers Edit Invoice, with no reason.
+    await mount(page, 'unpaid', 'owner');
+    await page.getByRole('button', { name: 'Edit Invoice', exact: true }).click();
+    ok('457: an invoice never settled still opens as Edit Invoice, with no reason asked',
+       await page.getByRole('dialog', { name: 'Edit Invoice' }).count() === 1
+       && await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 0);
     await mount(page, 'foc_open', 'owner');
     await page.getByRole('button', { name: 'Confirm FOC Invoice', exact: true }).click();
     await page.getByTestId('confirm-foc-question').waitFor();

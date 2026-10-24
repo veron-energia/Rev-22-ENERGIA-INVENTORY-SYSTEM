@@ -400,6 +400,12 @@ export interface Invoice {
   manual_discount?: number | null;
   /** Internal. Required when a manual discount is set or changed; never on customer documents. */
   manual_discount_reason?: string | null;
+  /** Internal notes (not printed): staff's own and the system's (website order and Stripe ids,
+   *  exchange and top-up reasons, late-fee and voucher-claim references). Never on customer documents. */
+  notes?: string | null;
+  /** 456 (the Owner, 22 Oct 2026): the note printed on the invoice, up to 500 characters: on the
+   *  invoice screen and on every copy (print, PDF, image), above the signatures under "Note". */
+  print_note?: string | null;
   total_amount: number;
   paid_amount: number;
   created_at: string;

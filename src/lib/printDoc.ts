@@ -7,6 +7,7 @@
  * chrome here is what stops the two drifting apart the next time either is
  * touched.
  */
+import { PRINT_PAGES_SCRIPT } from './invoices/printPages.mjs';
 
 /**
  * Stored text on its way into HTML.
@@ -133,6 +134,10 @@ export const PRINT_CSS = `
             letter-spacing:0.08em;white-space:nowrap;}
   /* Push the signatures and footer to the bottom of the taller half-page. */
   .copy .signrow{margin-top:auto;}
+  /* The head and the tail of a copy, wrapped so a long copy can go on to more
+     sheets (src/lib/invoices/printPages.mjs). They draw no box of their own,
+     so a copy lays out exactly as without them. */
+  .p-head,.p-tail{display:contents;}
   @media print { .sheet{page-break-inside:avoid;page-break-after:avoid;} }
 `;
 
@@ -160,7 +165,9 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
     b.co_reg_no ? `Co. Reg No.: ${esc(b.co_reg_no)}` : '',
   ].filter(Boolean).join(' &nbsp;|&nbsp; ');
 
-  const itemRows = o.lines.map(l => `
+  // Each line with its sub-lines in a body of its own, so a copy that goes on
+  // to another sheet never splits them (printPages.mjs).
+  const itemRows = o.lines.map(l => `<tbody class="p-row">
     <tr>
       <td>${esc(l.name)}</td>
       <td class="r">${esc(l.qty ?? '')}</td>
@@ -168,7 +175,7 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       <td class="r"><strong>${l.total == null ? '' : (typeof l.total === 'number' ? money(l.total) : esc(l.total))}</strong></td>
     </tr>
     ${(l.subLines ?? []).map(sl => `<tr class="sub"><td colspan="3">— ${esc(sl)}</td><td></td></tr>`).join('')}
-  `).join('');
+  </tbody>`).join('');
 
   const payTable = (o.payments ?? []).length
     ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>
@@ -176,7 +183,8 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       </tbody></table>` : '';
 
   return `
-    <div class="copy">
+    <div class="copy" data-doc-no="${esc(o.docNo)}">
+      <div class="p-head">
       ${logosTop}
       <div class="head">
         <div><h1>Energia</h1><div class="mut">Wellness &amp; Retail</div>
@@ -194,9 +202,11 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       ${(o.billToLines ?? []).map(l => `<div class="mut">${esc(l)}</div>`).join('')}
       <h2>Items</h2>
       ${(o.beforeItems ?? []).join('')}
-      <table><thead><tr>
+      </div>
+      <table class="p-items"><thead><tr>
         <th>${esc(o.itemHeading ?? 'Item')}</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th>
-      </tr></thead><tbody>${itemRows}</tbody></table>
+      </tr></thead>${itemRows}</table>
+      <div class="p-tail">
       <table class="totals"><tbody>
         ${o.totals.map(t => `<tr${t.grand ? ' class="grand"' : ''}><td>${esc(t.label)}</td><td class="r">${esc(t.value)}</td></tr>`).join('')}
       </tbody></table>
@@ -212,10 +222,12 @@ export function buildCopy(o: PrintDocOptions, copyLabel: string): string {
       ${o.policyText ? `<div class="policy"><b>CANCELLATION / EXCHANGE / REFUND POLICY</b><br/>${esc(o.policyText).replace(/\n/g, '<br/>')}</div>` : ''}
       ${payRow ? `<div class="payfoot"><strong>How to pay</strong> &nbsp; ${payRow}</div>` : ''}
       ${footerBits ? `<div class="footer">${footerBits}</div>` : ''}
+      </div>
     </div>`;
 }
 
-/** Open a print window with the customer and office copies. */
+/** Open a print window with the customer and office copies. A copy longer
+ *  than its half goes on to more sheets, both copies in step (printPages.mjs). */
 export function printA5Document(o: PrintDocOptions): boolean {
   const html = `<!doctype html><html><head><title>${esc(o.docNo)}</title>
     <style>${PRINT_CSS}</style></head><body>
@@ -224,7 +236,8 @@ export function printA5Document(o: PrintDocOptions): boolean {
       <div class="cut"><span>✂  CUT HERE</span></div>
       ${buildCopy(o, 'OFFICE COPY')}
     </div>
-    <script>window.onload=function(){window.print();}</script>
+    <script>${PRINT_PAGES_SCRIPT}
+    window.onload=function(){try{paginatePrintCopies(planCopyPages);}catch(e){}window.print();}</script>
   </body></html>`;
   const w = window.open('', '_blank');
   if (!w) { alert('Please allow pop-ups to print.'); return false; }

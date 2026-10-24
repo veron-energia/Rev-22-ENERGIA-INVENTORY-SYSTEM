@@ -37,6 +37,11 @@
 // line have given way shortens its payments to one row, and if even that
 // does not fit, takes a second page; there the line has room again. The line
 // itself never causes either. AFTER-9: an exchange note under the header.
+// Item 5 (the Owner, 22 Oct 2026): a copy with more rows than two pages hold
+// lists every one, on as many pages as they need, each page saying Page k of
+// N; a row taller than a page goes on between its notes; payments that do not
+// fit under the totals on the last page of rows shorten, then go on a page of
+// their own.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
@@ -470,16 +475,116 @@ test('when even one row does not fit, the copy takes a second page, with every p
   assert.equal(first.filter(i => i.text === 'Continued on page 2').length, 1, 'said once');
 });
 
-test('more rows than two pages hold with the footer: drawn as before, the footer still on the copy', () => {
-  for (const pays of [1, 12]) {
-    const pdf = buildDocumentPdf(doc(40, pays));
-    assert.equal(pdf.getNumberOfPages(), 2);
-    const [first, second] = drawnPages(pdf);
-    assert.ok(continued(first), `${pays}: the rows page 1 holds, then the continued note`);
-    assert.deepEqual(rowNames(first), rowNames(drawn(doc(9, 0))), `${pays}: page 1's rows`);
-    assert.ok(first.some(i => i.text === 'Total'), `${pays}: the totals stay with the items`);
-    assert.ok(footerY(second) >= ON_PAGE - 0.01, `${pays}: the footer on the second page, on the page`);
+// Item 5 (the Owner, 22 Oct 2026): more rows than two pages hold are no longer cut at page 1
+// ("…continued — see the full invoice in store"): every row is listed, on as many A5 pages as
+// they need, each page saying which it is of how many.
+test('more rows than two pages hold: every row listed, on as many pages as they need, each saying Page k of N', () => {
+  for (const [n, pays] of [[24, 1], [40, 1], [40, 12], [80, 2], [150, 1]]) {
+    const at = `${n} rows, ${pays} payment(s)`;
+    const pdf = buildDocumentPdf(doc(n, pays));
+    const pages = drawnPages(pdf), N = pdf.getNumberOfPages();
+    assert.equal(pages.length, N, `${at}: one content stream a page`);
+    assert.ok(N >= (n >= 40 ? 3 : 2), `${at}: ${N} pages`);
+    assert.deepEqual(pages.flatMap(rowNames), Array.from({ length: n }, (_, k) => `Test item ${k + 1}`), `${at}: every row, once, in order`);
+    assert.ok(!pages.some(continued), `${at}: no "see the full invoice in store" cut`);
+    for (const [k, p] of pages.entries()) {
+      assert.equal(p.filter(i => i.text === `Page ${k + 1} of ${N}`).length, 1, `${at}: page ${k + 1} says which it is`);
+      assert.equal(p.some(i => i.text === `Continued on page ${k + 2}`), k < N - 1, `${at}: page ${k + 1} says where it goes on`);
+      if (k > 0) assert.ok(p.some(i => i.text === 'INV-T-0001 (continued)'), `${at}: page ${k + 1} says what it continues`);
+      if (rowNames(p).length) assert.ok(p.some(i => i.text === 'ITEM') && p.some(i => i.text === 'TOTAL'), `${at}: the column heads on page ${k + 1}`);
+      assert.ok(p.every(i => i.y >= ON_PAGE - 0.01 - 3 * PT_PER_MM), `${at}: nothing drawn off the foot of page ${k + 1}`);
+    }
+    const last = pages.at(-1);
+    assert.ok(footerY(last) >= ON_PAGE - 0.01, `${at}: the footer on the last page, on the page`);
+    assert.ok(last.some(i => i.text === 'Staff Signature') && !pages.slice(0, -1).some(p => p.some(i => i.text === 'Staff Signature')), `${at}: the signatures on the last page only`);
+    // The totals never stand alone: they follow the last row on its page.
+    const withTotal = pages.findIndex(p => p.some(i => i.text === 'Total'));
+    assert.ok(rowNames(pages[withTotal]).at(-1) === `Test item ${n}`, `${at}: the totals with the last row`);
+    const listed = pages.flat().filter(i => i.text.startsWith('Cash · ')).length;
+    assert.ok(listed === pays || paymentsShortened(pages.flat()), `${at}: every payment, or their summary`);
   }
+  // A page the rows go on from is used down to its foot, not only down to the room the totals need.
+  const [first] = drawnPages(buildDocumentPdf(doc(80, 1)));
+  assert.ok(rowNames(first).length > rowNames(drawn(doc(9, 0))).length, 'page 1 holds more rows than a one-page copy lists');
+  // One page: no page numbers.
+  assert.ok(!drawn(doc(3, 1)).some(i => /^Page \d+ of \d+$/.test(i.text)));
+});
+
+test('a row taller than a page goes on between its notes; any other row is never split', () => {
+  const tallLine = (k) => ({ name: 'Promotion: Fixture Big Bundle', qty: 1, unit: 10, total: 10,
+    notes: Array.from({ length: k }, (_, j) => `Fixture content item ${j + 1} × 1 (included)`) });
+  for (const [where, k] of [['middle', 70], ['last', 70], ['last', 40]]) {
+    const lines = Array.from({ length: 6 }, (_, j) => ({ name: `Test item ${j + 1}`, qty: 1, unit: 10, total: 10, notes: [] }));
+    lines.splice(where === 'last' ? 6 : 3, 0, tallLine(k));
+    const pdf = buildDocumentPdf(doc(lines.length, 1, null, { lines, policyText: POLICY_195 }));
+    const pages = drawnPages(pdf), N = pages.length;
+    const at = `${k} notes, ${where}`;
+    const contents = pages.flat().filter(i => i.text.startsWith('Fixture content item')).map(i => i.text);
+    assert.deepEqual(contents, Array.from({ length: k }, (_, j) => `Fixture content item ${j + 1} × 1 (included)`), `${at}: every note once, in order`);
+    assert.ok(pages.filter(p => p.some(i => i.text.startsWith('Fixture content item'))).length >= 2, `${at}: over more than one page`);
+    assert.deepEqual(pages.flatMap(rowNames), lines.filter(l => l.name.startsWith('Test item')).map(l => l.name), `${at}: every other row`);
+    assert.ok(pages.every(p => p.every(i => i.y >= ON_PAGE - 0.01 - 3 * PT_PER_MM)), `${at}: nothing off the foot of a page`);
+    assert.ok(footerY(pages.at(-1)) >= ON_PAGE - 0.01, `${at}: the footer on the last page`);
+    assert.ok(pages.every((p, j) => p.some(i => i.text === `Page ${j + 1} of ${N}`)), `${at}: Page k of N`);
+  }
+  // Promotions of a few notes each: each row with all its notes on one page.
+  const promos = Array.from({ length: 30 }, (_, j) => ({ name: `Test promo ${j + 1}`, qty: 1, unit: 10, total: 10,
+    notes: ['Fixture content A × 1 (included)', 'Fixture content B × 1 (included)', 'Fixture content C × 1 (included)'] }));
+  const pages = drawnPages(buildDocumentPdf(doc(30, 1, null, { lines: promos })));
+  for (const p of pages) {
+    const names = p.filter(i => /^Test promo \d+$/.test(i.text)).length;
+    assert.equal(p.filter(i => i.text.startsWith('Fixture content')).length, names * 3, 'a row\'s notes on its own page');
+  }
+  assert.equal(pages.flat().filter(i => /^Test promo \d+$/.test(i.text)).length, 30);
+});
+
+test('a first row that does not fit under the header but fits a page starts page 2, whole (review, 23 Oct 2026)', () => {
+  // The review's case: a promotion of 39-41 notes first (138-145 mm) was split from its notes on
+  // page 1 though it fits a page of its own (rows start 23 mm down a later page; 196 mm hold rows).
+  const promo = k => ({ name: 'Promotion: Fixture Bundle', qty: 1, unit: 10, total: 10,
+    notes: Array.from({ length: k }, (_, j) => `Fixture content item ${j + 1} × 1 (included)`) });
+  const plainRows = n => Array.from({ length: n }, (_, j) => ({ name: `Test item ${j + 1}`, qty: 1, unit: 10, total: 10, notes: [] }));
+  for (const [k, after] of [[39, 6], [41, 6], [30, 0]]) {
+    const lines = [promo(k), ...plainRows(after)];
+    const pages = drawnPages(buildDocumentPdf(doc(lines.length, 1, null, { lines, policyText: POLICY_195 })));
+    const at = `${k} notes, ${after} rows after it`;
+    const where = pages.map(p => p.filter(i => i.text.startsWith('Fixture content item') || i.text === 'Promotion: Fixture Bundle').length);
+    assert.equal(where.filter(Boolean).length, 1, `${at}: the row and its notes on one page — ${JSON.stringify(where)}`);
+    assert.equal(where[1], k + 1, `${at}: on page 2`);
+    assert.ok(!pages[0].some(i => i.text === 'ITEM') && pages[1].some(i => i.text === 'ITEM'), `${at}: the column heads with the rows, not over an empty page 1`);
+    assert.ok(pages[0].some(i => i.text === 'BILL TO') && pages[0].some(i => i.text === 'Continued on page 2'), `${at}: page 1 ends at Bill To`);
+    assert.ok(pages.every(p => p.every(i => i.y >= ON_PAGE - 0.01 - 3 * PT_PER_MM)), `${at}: nothing off the foot of a page`);
+    assert.deepEqual(pages.flatMap(rowNames), lines.slice(1).map(l => l.name), `${at}: every other row`);
+    // The totals with the last row, the footer on the last page.
+    const withTotal = pages.findIndex(p => p.some(i => i.text === 'Total'));
+    assert.ok(pages[withTotal].some(i => i.text === (after ? `Test item ${after}` : 'Promotion: Fixture Bundle')), `${at}: the totals with the last row`);
+    assert.ok(footerY(pages.at(-1)) >= ON_PAGE - 0.01, `${at}: the footer on its page`);
+  }
+});
+
+test('when the payments onward do not fit under the totals on the last page of rows, they shorten, then take a page of their own', () => {
+  // Rows that end low on their last page: the payments and the foot cannot follow the totals there.
+  const seen = { ownPage: 0, shortened: 0 };
+  for (const pays of [1, 2, 12]) {
+    for (let n = 15; n <= 40; n++) {
+      const at = `${n} rows, ${pays} payment(s)`;
+      const pdf = buildDocumentPdf(doc(n, pays, OWNERS));
+      const pages = drawnPages(pdf);
+      const last = pages.at(-1);
+      // The rows went on to a second page, and the payments to a page of their own after it.
+      if (pages.length >= 3 && !rowNames(last).length && rowNames(pages.at(-2)).length) {
+        seen.ownPage++;
+        assert.ok(pages.at(-2).some(i => i.text === 'Total') && last.some(i => i.text === 'PAYMENT METHODS'), `${at}: the totals with the rows, the payments on`);
+      }
+      if (paymentsShortened(pages.flat())) seen.shortened++;
+      assert.ok(footerY(last) >= ON_PAGE - 0.01, `${at}: the footer on its page`);
+      assert.ok(pages.every(p => p.every(i => i.y >= ON_PAGE - 0.01 - 3 * PT_PER_MM)), `${at}: nothing off the foot of a page`);
+      assert.deepEqual(pages.flatMap(rowNames), Array.from({ length: n }, (_, k) => `Test item ${k + 1}`), `${at}: every row`);
+      const listed = pages.flat().filter(i => i.text.startsWith('Cash · ')).length;
+      assert.ok(listed === pays || paymentsShortened(pages.flat()), `${at}: every payment, or their summary`);
+    }
+  }
+  assert.ok(seen.ownPage > 0 && seen.shortened > 0, JSON.stringify(seen));
 });
 
 test('promotion contents never push a row off the copy (AFTER-9)', () => {

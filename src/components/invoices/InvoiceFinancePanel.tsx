@@ -7,6 +7,7 @@ import { InvoiceBenefitEvidenceReview } from './InvoiceBenefitEvidenceReview';
 import { InvoiceRewardResolution } from './InvoiceRewardResolution';
 import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
 import { type WaitingAnswers, unansweredItems, withWaitingAnswers } from '../../lib/special/waitingItems';
+import { stillOutAfter } from '../../lib/special/rentalFollows';
 import { calendarDate } from '../../lib/calendarDates';
 import { type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs,
   receivedText } from '../../lib/special/rentalReturn';
@@ -123,14 +124,18 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     });
     return () => { cancelled = true; };
   }, [invoiceId, payments]);
-  const cancelledNow = options?.financial?.status === 'cancelled';
+  // 458: a refund ends a rental out as a cancellation does (the whole invoice
+  // or the rental's line refunded, or some of its machines), so the rentals
+  // still with the customer are read for every invoice once its figures are
+  // in, not only a cancelled one.
+  const statusNow: string | undefined = options?.financial?.status;
   const loadAwaiting = () => supabase.rpc('invoice_rentals_awaiting_return', { p_invoice_id: invoiceId })
     .then(({ data, error }) => setAwaitingRentals(error ? [] : ((data as AwaitingRental[]) ?? [])));
   useEffect(() => {
-    if (!canManage || !cancelledNow) { setAwaitingRentals([]); return; }
+    if (!canManage || !statusNow) { setAwaitingRentals([]); return; }
     void loadAwaiting();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invoiceId, canManage, cancelledNow, payments]);
+  }, [invoiceId, canManage, statusNow, payments]);
   const close = () => { setMode(''); setReceiveFor(null); onRequestHandled?.(); onActiveChange?.(false); };
   const open = async (next: Mode) => {
     onActiveChange?.(true);
@@ -293,7 +298,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     {receivedNote && <p role="status">{receivedNote}</p>}
     {canManage && !mode && awaitingRentals.length > 0 &&
       <div role="status" data-testid="rentals-still-out">
-        <p>Rented {awaitingRentals.length === 1 ? 'item' : 'items'} still with the customer after the cancellation:{' '}
+        <p>Rented {awaitingRentals.length === 1 ? 'item' : 'items'} still with the customer {stillOutAfter(statusNow)}:{' '}
           {awaitingRentals.map(r => `${r.item} (${r.rental_no})`).join(', ')}. Record each one when it is
           back. Damaged and lost items are never put back on sale.</p>
       </div>}

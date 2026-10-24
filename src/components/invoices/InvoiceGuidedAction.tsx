@@ -6,6 +6,7 @@ import './invoice-controls.css';
 import { useWaitingItems, WaitingItemsQuestion } from './WaitingItemsQuestion';
 import { type WaitingAnswers, unansweredItems, waitingAnswerList, waitingAnswersOf, waitingItemLabel,
   withWaitingAnswers } from '../../lib/special/waitingItems';
+import { rentalOutDoneNote, rentalOutReviewNote } from '../../lib/special/rentalFollows';
 import { type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs,
   receivedChoices, receivedText, rentalsToReceive } from '../../lib/special/rentalReturn';
 
@@ -527,7 +528,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     const rows = receivedChoices(toReceive, receiveChoice);
     if (!rows.length) return;
     setBusy(true); setReceiveError('');
-    const note = (reviewing ? detail?.reason : reason)?.trim() || 'Received after the cancellation';
+    const note = (reviewing ? detail?.reason : reason)?.trim()
+      || (plan?.action === 'cancel' ? 'Received after the cancellation' : 'Received after the refund');  // 458
     const notes: string[] = [];
     const left: AwaitingRental[] = [];
     for (const r of toReceive) {
@@ -574,7 +576,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
         {canApprove && toReceive.length > 0 && (
           <fieldset className="invoice-guided-stock">
             <legend>Rented items still with the customer</legend>
-            <p className="muted">Cancelling ends the rental but does not bring the item back. Record each one only
+            {/* 458: a refund ends a rental out as a cancellation does. */}
+            <p className="muted">{rentalOutDoneNote(plan?.action ?? '')} Record each one only
               when it is actually in your hands. Damaged and lost items are never put back on sale. An item not back
               yet stays on the invoice, where it can be received later.</p>
             {toReceive.map(r => {
@@ -916,9 +919,9 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
               </fieldset>
             )}
 
-            {canApprove && planAction === 'cancel' && plan.lines.some(l => l.line_kind === 'rental') && (
-              <p className="muted">A rented item still with the customer stays out until it comes back. After the
-                cancellation you can record it as back, damaged or lost.</p>
+            {/* 458: a refund ends a rental out as a cancellation does. */}
+            {canApprove && planAction && plan.lines.some(l => l.line_kind === 'rental') && rentalOutReviewNote(planAction) && (
+              <p className="muted">{rentalOutReviewNote(planAction)}</p>
             )}
 
             {canApprove && plan.overrides_required.length > 0 && (

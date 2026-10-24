@@ -249,7 +249,9 @@ begin
 end $f$;
 -- Sold as p_line, then the Owner corrects the paid invoice's line to p_fix
 -- (its price alone: the same quantity, rate type and periods). The rental
--- keeps the fee it was raised at; p_line_total is what the line now holds.
+-- keeps the fee it was raised at (before 458) or takes the line's (458: a
+-- waiting rental follows its corrected line); p_line_total is what the line
+-- now holds. Either way the fee as sold is read from the line below.
 create function pg_temp.t426_corrected(p_line jsonb, p_fix jsonb, p_line_total numeric) returns uuid language plpgsql as $f$
 declare v_r uuid; v_inv uuid; v_li uuid; v_fee numeric;
 begin
@@ -259,8 +261,10 @@ begin
   perform correct_invoice(v_inv, jsonb_build_array(jsonb_build_object('invoice_item_id', v_li, 'kind', 'rental',
     'special_product_id', pg_temp.t426_id('special')) || p_line || p_fix), '{}'::jsonb, 'T426 sample');
   if (select line_total from invoice_items where id = v_li) is distinct from p_line_total
-     or (select (status::text, rental_fee, invoice_item_id) from rentals where id = v_r)
-        is distinct from ('awaiting_fulfilment'::text, v_fee, v_li)
+     or ((select (status::text, rental_fee, invoice_item_id) from rentals where id = v_r)
+           is distinct from ('awaiting_fulfilment'::text, v_fee, v_li)
+         and (select (status::text, rental_fee, invoice_item_id) from rentals where id = v_r)
+           is distinct from ('awaiting_fulfilment'::text, p_line_total, v_li))
      or public.special_doc_invoice_problem(v_inv, v_li) is not null then
     raise exception 'Fixture: the corrected rental is % on a line of %', (select (status, rental_fee, invoice_item_id) from rentals where id = v_r),
       (select (line_total, foc_quantity, line_discount) from invoice_items where id = v_li); end if;

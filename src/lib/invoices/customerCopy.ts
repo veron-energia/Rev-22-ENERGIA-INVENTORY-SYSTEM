@@ -99,3 +99,42 @@ export function escapeHtml(value: unknown): string {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+
+/** 456 (the Owner, 22 Oct 2026): the most a note printed on the invoice may hold (the server refuses more). */
+export const PRINT_NOTE_MAX = 500;
+
+/**
+ * A note as every copy shows it: Windows line breaks made plain, spaces at the
+ * ends of lines dropped, two or more blank lines kept as one, and nothing
+ * around it. Null when nothing is left.
+ */
+function copyNoteText(value: unknown): string | null {
+  const t = String(value ?? '').replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return t ? t : null;
+}
+
+/**
+ * 456 (the Owner, 22 Oct 2026): the note every copy of an invoice prints (both
+ * halves of the paper copy, the PDF, the image, and so WhatsApp and email),
+ * under "Note" above the signatures, and the invoice screen shows: the
+ * invoice's print_note, never its Notes. Notes are internal ("Internal notes
+ * (not printed)"): they hold what the system writes (website order and Stripe
+ * ids, exchange and top-up reasons, late-fee and voucher-claim references).
+ */
+export function printedNote(inv: { print_note?: unknown } | null | undefined): string | null {
+  return copyNoteText(inv?.print_note);
+}
+
+/**
+ * 456 (item 6, the exchange half): an exchange's own note
+ * (product_exchanges.notes, which exchange_invoice_details returns as 'notes'
+ * from 455), printed under "Exchange Details" on its replacement invoice.
+ */
+export function exchangeNote(ex: { found?: boolean; notes?: unknown } | null | undefined): string | null {
+  return ex?.found ? copyNoteText(ex.notes) : null;
+}
+
+/** A note in the printed copy's HTML: escaped (CREATE-18), its line breaks kept. */
+export function noteHtml(note: string): string {
+  return escapeHtml(note).replace(/\n/g, '<br/>');
+}

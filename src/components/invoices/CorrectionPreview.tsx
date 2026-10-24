@@ -22,6 +22,8 @@ const AREA: Record<string, string> = {
   vouchers: 'Vouchers given free',
   // 416: the corrected total and status, and a save the lines would be refused for.
   total: 'Total and status', correction: 'The corrected lines',
+  // 458: the rentals that change with their lines, customer and store.
+  rentals: 'Rentals',
 };
 
 /**

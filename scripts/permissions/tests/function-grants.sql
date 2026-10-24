@@ -117,6 +117,10 @@ declare
                              -- bundles in any mix (the page reaches it through
                              -- create_exchange_with_details('items', ...), which checks who asks)
                              'create_items_exchange',
+                             -- 458: rentals follow their invoice's correction and refund (correct_invoice
+                             -- and settle_waiting_special_docs_on_refund call them, as the definer)
+                             'invoice_rental_correction_check','invoice_rentals_follow_lines',
+                             'rental_end_on_refund','rentals_follow_refund',
                              -- 402: the TikTok ads engine, which Pabbly calls with the service key
                              -- and nobody signs in to use: the sheet write and its pieces, the
                              -- calendar import, the morning email and the earlier sheet writes
