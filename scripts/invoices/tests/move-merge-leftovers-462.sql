@@ -128,6 +128,14 @@
 -- AFTERs, and T1, T1r, T2, T2c, V3, V4 and KNOWN 1 to 4 end the 463 way (the
 -- Owner's decisions 2 and 3, the summary while a reopening waits, the
 -- guard); 463's own suite checks them.
+-- Where 470 is in too (-v nomig=1), the forwarder is at 470's AFTER: credit
+-- given back while the package's invoice is cancelled, or its reopening
+-- waits, is held back by the cancellation for the benefits' holder, on the
+-- lot the records name (P7: CW1, CW3, W3p and X1p once each, X2p after its
+-- forward while paid; each case ends as before), and KNOWN K7b (462's NOT
+-- COVERED 10) ends the 470 way: all of it paid back, nothing on a lot no
+-- record names. 470's own suite (cancelled-package-refund-470) checks it and
+-- its siblings.
 -- Run on a copy of production as it is (464 in: 432fcb99, 1379 functions;
 -- 465 and 467, TikTok only, do not change what it checks):
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/invoices/tests/move-merge-leftovers-462.sql
@@ -165,6 +173,10 @@ create function pg_temp.t462_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and exists (select 1 from pg_trigger where tgname = 'credit_given_back_follows'
                   and tgrelid = 'public.customer_credit_ledger'::regclass) $f$;
+-- 470 is in: the forwarder at 470's AFTER (470 adds nothing).
+create function pg_temp.t462_470_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'b7720a148f5371bd2bd844d3076ea3b2' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger runs. Here the suite is
 -- one transaction, so the trigger's queued rows are run at this point.
@@ -1092,25 +1104,27 @@ create function pg_temp.t462_grant_set(p_sig text) returns text[] language sql a
 insert into t462_fp values ('start', pg_temp.t462_fingerprint()), ('grants', pg_temp.t462_grants());
 -- The six functions 462 changes: BEFORE (production, 24 Oct 2026, at 464)
 -- and AFTER; the four it adds.
-create temp table t462_md5(sig text primary key, before text, after text, after463 text);
+create temp table t462_md5(sig text primary key, before text, after text, after463 text, after470 text);
 insert into t462_md5 values
-  ('invoice_credit_transfer_origin(uuid)', 'e778a9e4ff81567a493b8ca479d8222b', '1e8beeccfbf7e432edffc1598acddb53', null),
-  ('apply_reopened_invoice_benefits()', '3e659dafdbacb00ad953f99d00c3c6c9', '4efef2f1e97bed6a3f0eed0df4e2df51', '36eaa7224e514d3e7e42e3eeb51acfb5'),
-  ('invoice_reopen_preview(uuid)', '4b49c0c64eeb1b5962b605bbf56ea159', 'e09ebf9c0841ef5463f96b26f4933541', null),
-  ('merge_customer_records(uuid,uuid,text,uuid)', '2e0c9852099ab88d8f27827b5f9a3846', 'ba05c2b1fb4c0e14d369c01d06a635b0', null),
-  ('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)', 'c1827889748d29f7a6626294333bd94f', '130c25c6ce3d91b7b421e6f4c3d02353', 'c01606c84ee13ddcd88c15521d6d9aed'),
-  ('invoice_transferable_benefits(uuid)', '362d6d076c4751ab5dbe760f6d7a0d37', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb'),
-  ('credit_lot_ancestry(uuid)', null, '52b3cae789b6b52a12bb2f798af40cbe', null),
-  ('invoice_credit_live_holder(uuid,uuid,timestamp with time zone)', null, 'a5692590ef3e8a7a7dd7e8ff7cfa9568', null),
-  ('credit_given_back_follows(uuid)', null, '9d75978de5b247a8de1aaee4e894a698', '844b73106bbf362768ed4a899ceb00d5'),
-  ('trg_credit_given_back_follows()', null, '84e2d978b74b56a9508e4f4f5b518c22', null);
--- (463, where it is in, changes four of them: its AFTERs, after463.)
+  ('invoice_credit_transfer_origin(uuid)', 'e778a9e4ff81567a493b8ca479d8222b', '1e8beeccfbf7e432edffc1598acddb53', null, null),
+  ('apply_reopened_invoice_benefits()', '3e659dafdbacb00ad953f99d00c3c6c9', '4efef2f1e97bed6a3f0eed0df4e2df51', '36eaa7224e514d3e7e42e3eeb51acfb5', null),
+  ('invoice_reopen_preview(uuid)', '4b49c0c64eeb1b5962b605bbf56ea159', 'e09ebf9c0841ef5463f96b26f4933541', null, null),
+  ('merge_customer_records(uuid,uuid,text,uuid)', '2e0c9852099ab88d8f27827b5f9a3846', 'ba05c2b1fb4c0e14d369c01d06a635b0', null, null),
+  ('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)', 'c1827889748d29f7a6626294333bd94f', '130c25c6ce3d91b7b421e6f4c3d02353', 'c01606c84ee13ddcd88c15521d6d9aed', null),
+  ('invoice_transferable_benefits(uuid)', '362d6d076c4751ab5dbe760f6d7a0d37', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb', null),
+  ('credit_lot_ancestry(uuid)', null, '52b3cae789b6b52a12bb2f798af40cbe', null, null),
+  ('invoice_credit_live_holder(uuid,uuid,timestamp with time zone)', null, 'a5692590ef3e8a7a7dd7e8ff7cfa9568', null, null),
+  ('credit_given_back_follows(uuid)', null, '9d75978de5b247a8de1aaee4e894a698', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2'),
+  ('trg_credit_given_back_follows()', null, '84e2d978b74b56a9508e4f4f5b518c22', null, null);
+-- (463, where it is in, changes four of them: its AFTERs, after463; 470,
+-- where it is in, the forwarder: after470.)
 create function pg_temp.t462_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when pg_temp.t462_463_in() then coalesce(m.after463, m.after) else m.after end end)
+                                = case when pg_temp.t462_470_in() then coalesce(m.after470, m.after463, m.after)
+                                       when pg_temp.t462_463_in() then coalesce(m.after463, m.after) else m.after end end)
     from t462_md5 m $f$;
 \if :{?nomig}
 do $$ begin
@@ -1565,14 +1579,31 @@ begin
   -- P7 Nothing is forwarded while the invoice is cancelled or its reopening
   -- waits (the critics' 1): CW1, CW3, W3p and X1p forward nothing (the
   -- payment that settles the reopening gives it to the holder); X2p only
-  -- the refund made while it was paid.
-  perform pg_temp.t462_check(
-        not exists (select 1 from customer_credit_ledger e where e.source_type like 'credit_given_back_reassignment_%'
-                     and e.source_record_id in (pg_temp.t462_id('after/CW1/inv'), pg_temp.t462_id('after/CW3/inv'),
-                                                pg_temp.t462_id('after/W3p/inv'), pg_temp.t462_id('after/X1p/inv')))
-    and (select count(*) from customer_credit_ledger e where e.source_type = 'credit_given_back_reassignment_in'
-          and e.source_record_id = pg_temp.t462_id('after/X2p/inv')) = 1,
-    'P7 credit was forwarded while the invoice was cancelled or its reopening waited');
+  -- the refund made while it was paid. Where 470 is in, credit given back
+  -- while the invoice is cancelled or its reopening waits is held back by
+  -- the cancellation for the holder at that commit, on a lot the records
+  -- name (CW1, CW3, W3p and X1p once each, X2p a second time, each with its
+  -- two held-back rows and its Audit Log row); each case ends as before (A).
+  if pg_temp.t462_470_in() then
+    perform pg_temp.t462_check(
+          (select bool_and((select count(*) from customer_credit_ledger e where e.source_type = 'credit_given_back_reassignment_in'
+                              and e.source_record_id = pg_temp.t462_id('after/' || k || '/inv')) = case when k = 'X2p' then 2 else 1 end
+                       and (select count(*) from customer_credit_ledger e where e.source_type = 'invoice_cancel_benefit'
+                              and e.reason = 'Held back by the invoice''s cancellation for whoever holds its benefits now'
+                              and e.source_record_id = pg_temp.t462_id('after/' || k || '/inv')) = 2
+                       and (select count(*) from audit_logs a where a.action = 'credit_given_back_followed' and a.new_data ? 'held_back'
+                              and a.record_id = pg_temp.t462_id('after/' || k || '/inv')) = 1)
+             from unnest(array['CW1', 'CW3', 'W3p', 'X1p', 'X2p']) k),
+      'P7 (470 in) credit given back while the invoice was cancelled or its reopening waited was not held back once for the holder');
+  else
+    perform pg_temp.t462_check(
+          not exists (select 1 from customer_credit_ledger e where e.source_type like 'credit_given_back_reassignment_%'
+                       and e.source_record_id in (pg_temp.t462_id('after/CW1/inv'), pg_temp.t462_id('after/CW3/inv'),
+                                                  pg_temp.t462_id('after/W3p/inv'), pg_temp.t462_id('after/X1p/inv')))
+      and (select count(*) from customer_credit_ledger e where e.source_type = 'credit_given_back_reassignment_in'
+            and e.source_record_id = pg_temp.t462_id('after/X2p/inv')) = 1,
+      'P7 credit was forwarded while the invoice was cancelled or its reopening waited');
+  end if;
   -- P8 The chain limit (the critics' 2): (a) a lot twelve reissues down
   -- (twelve merges), the last record spent from it, the rest moved, the
   -- benefits changed, that session refunded: refused at commit, naming the
@@ -1606,7 +1637,9 @@ begin
   o := pg_temp.t462_run('P', 'P9', 'sale A cp; spend A; spend A; move 1 F; change B; unspend S1; move 1 G; delete B; delete A; unspend S2');
   perform pg_temp.t462_check(o->>'error' like 'unspend S2: Credit given back on lot % belongs with the benefits of invoice %, but whoever holds them, the invoice''s customer and the customer it went back to are all deleted. Nothing was recorded; ask the Owner.'
       and o->'holds' @> '{"A":"0.00","B":"0.00","F":"60.00","G":"20.00"}', 'P9 ' || o::text);
-  raise notice 'PASS P: the forwarder runs at commit (S4: the S$20 stays on the lot the invoice names until the call commits, then it is B''s, recorded in the invoice''s Audit Log; A''s statement shows it returned and taken off, B''s it added); thirteen lines refunded at once give one new lot two lots down (L13); nothing is forwarded for the 446 pair, a reversal or a provenance repair; no deleted record holds credit; fourteen separate refunds keep the chain one lot down (CH1, CH2 with its moved lot traced; CH3 grows only where the holder spent); nothing is forwarded while the invoice is cancelled or its reopening waits (CW1, CW3, W3p, X1p; X2p only while paid); a chain past 12 is refused at commit (P8a, P8b), a thirteenth reopening''s payment too (P8c), eleven follow (P8d); with every record deleted the refund is refused (P9)';
+  raise notice 'PASS P: the forwarder runs at commit (S4: the S$20 stays on the lot the invoice names until the call commits, then it is B''s, recorded in the invoice''s Audit Log; A''s statement shows it returned and taken off, B''s it added); thirteen lines refunded at once give one new lot two lots down (L13); nothing is forwarded for the 446 pair, a reversal or a provenance repair; no deleted record holds credit; fourteen separate refunds keep the chain one lot down (CH1, CH2 with its moved lot traced; CH3 grows only where the holder spent); nothing is forwarded while the invoice is cancelled or its reopening waits%; a chain past 12 is refused at commit (P8a, P8b), a thirteenth reopening''s payment too (P8c), eleven follow (P8d); with every record deleted the refund is refused (P9)',
+    case when pg_temp.t462_470_in() then ' (470 in: it is held back for the holder instead, CW1, CW3, W3p, X1p, X2p)'
+         else ' (CW1, CW3, W3p, X1p; X2p only while paid)' end;
 end $$;
 
 -- ===== K. KNOWN: not covered by 462 (each checked as it is) =====
@@ -1658,13 +1691,27 @@ begin
   -- there with that lot's holder: the reopening's payment then gives it to
   -- the benefits' holder (X2p), but a refund by line of the cancelled
   -- package does not reach it (K7b: S$80 of S$100 paid back, A keeps S$20).
+  -- 470, where it is in, settles it: held back by the cancellation for B on
+  -- a lot the records name, so the refund by line pays back all S$100,
+  -- nobody keeps anything and no lot no record names holds credit (470's
+  -- suite checks it and its siblings).
   r := pg_temp.t462_run('K', 'K7b', 'sale A cp; spend A; spend A; move 1 F; change B; unspend S1; cancel; unspend S2; back 1 all');
-  perform pg_temp.t462_check(r->'holds' @> '{"A":"20.00","B":"0.00","F":"0.00"}' and (r->>'net')::numeric = 20 and r->>'status' = 'cancelled'
-      and r->>'invariants' like '%S$20.00 on a lot no record names%', 'K7 K7b: ' || r::text || ': look at 462''s NOT COVERED 10 again');
+  if pg_temp.t462_470_in() then
+    perform pg_temp.t462_check(r->'holds' @> '{"A":"0.00","B":"0.00","F":"0.00"}' and (r->>'net')::numeric = 0 and r->>'status' = 'cancelled'
+        and coalesce(r->>'invariants', '') = '' and r->>'error' is null, 'K7 K7b (470 in): ' || r::text || ': look at 470 again');
+  else
+    perform pg_temp.t462_check(r->'holds' @> '{"A":"20.00","B":"0.00","F":"0.00"}' and (r->>'net')::numeric = 20 and r->>'status' = 'cancelled'
+        and r->>'invariants' like '%S$20.00 on a lot no record names%', 'K7 K7b: ' || r::text || ': look at 462''s NOT COVERED 10 again');
+  end if;
   if pg_temp.t462_463_in() then
     raise notice 'NOTE K: 463 is in: (1) T1 B S$100, (2) V3/V4 B holds the two vouchers, (3) the W1 summary lists what the payment gives, (4) the retired record refused (463''s suite checks each)';
   end if;
-  raise notice 'KNOWN K: (not covered by 462) (7) credit a refunded sale gives back while the package''s invoice is cancelled stays on the lot it went back to: a refund by line of the cancelled package does not reach it (K7b: A keeps S$20, S$80 of S$100 paid back; reopened and paid, it goes to the holder, X2p); (1) a Move to the same customer at another store stays with A after a customer change (T1: A S$100), and (2) a Premium Bundle''s vouchers stay with A (V3, V4): the Owner''s decisions 2 and 3 of 24 Oct 2026, for 463; (3) the review summary of a change while a reopening waits lists no benefits (W1, 460''s NOT COVERED 7, for 463); (4) create_invoice_with_details takes a retired record (K6s, 463''s optional guard); (5) a merge of a record that spent wallet credit is refused (S1m, 445''s NOT COVERED 1); (6) a lot an Owner moved still reads "Fully spent; it stays with the original customer" (461''s NOT COVERED 2; no page shows it)';
+  if pg_temp.t462_470_in() then
+    raise notice 'NOTE K: 470 is in: (7) K7b pays back all S$100, nobody keeps anything (470''s suite checks it and its siblings)';
+  end if;
+  raise notice 'KNOWN K: (not covered by 462) (7) %; (1) a Move to the same customer at another store stays with A after a customer change (T1: A S$100), and (2) a Premium Bundle''s vouchers stay with A (V3, V4): the Owner''s decisions 2 and 3 of 24 Oct 2026, for 463; (3) the review summary of a change while a reopening waits lists no benefits (W1, 460''s NOT COVERED 7, for 463); (4) create_invoice_with_details takes a retired record (K6s, 463''s optional guard); (5) a merge of a record that spent wallet credit is refused (S1m, 445''s NOT COVERED 1); (6) a lot an Owner moved still reads "Fully spent; it stays with the original customer" (461''s NOT COVERED 2; no page shows it)',
+    case when pg_temp.t462_470_in() then 'credit a refunded sale gives back while the package''s invoice is cancelled: settled by 470 (K7b pays back all S$100)'
+         else 'credit a refunded sale gives back while the package''s invoice is cancelled stays on the lot it went back to: a refund by line of the cancelled package does not reach it (K7b: A keeps S$20, S$80 of S$100 paid back; reopened and paid, it goes to the holder, X2p)' end;
 end $$;
 
 rollback;

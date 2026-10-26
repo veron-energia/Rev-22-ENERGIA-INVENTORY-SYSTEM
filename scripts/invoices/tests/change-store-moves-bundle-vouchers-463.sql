@@ -105,6 +105,9 @@
 -- everything is rolled back. Every name, code and amount is invented
 -- (@example.com); the phones are numbers kept for fiction (ACMA,
 -- +61491570000 to +61491570999).
+-- Where 470 is in too (-v nomig=1), the forwarder is at 470's AFTER (470
+-- adds nothing); every case here ends as before (470's suite checks what it
+-- changes).
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -131,6 +134,10 @@ create function pg_temp.t463_462_in() returns boolean language sql as $f$
                   and tgrelid = 'public.customer_credit_ledger'::regclass) $f$;
 create function pg_temp.t463_in() returns boolean language sql as $f$
   select to_regprocedure('public.invoice_benefit_moved_to_other(uuid)') is not null $f$;
+-- 470 is in: the forwarder at 470's AFTER.
+create function pg_temp.t463_470_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'b7720a148f5371bd2bd844d3076ea3b2' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger runs. Here the suite is
 -- one transaction, so the trigger's queued rows are run at this point.
@@ -1039,23 +1046,25 @@ create function pg_temp.t463_grant_set(p_sig text) returns text[] language sql a
   select array_agg(x::text order by x::text) from pg_proc p, unnest(p.proacl) x where p.oid = to_regprocedure('public.' || p_sig) $f$;
 -- The eight functions 463 changes: BEFORE (production at 464 with 462 in,
 -- 24 Oct 2026) and AFTER; the two it adds.
-create temp table t463_md5(sig text primary key, before text, after text);
+create temp table t463_md5(sig text primary key, before text, after text, after470 text);
 insert into t463_md5 values
-  ('invoice_own_voucher_ids(uuid)', '9340840f1ce4e031ec3613198688ba2e', 'ee0202627b9500dcbad103d3ade2401f'),
-  ('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)', '130c25c6ce3d91b7b421e6f4c3d02353', 'c01606c84ee13ddcd88c15521d6d9aed'),
-  ('invoice_transferable_benefits(uuid)', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb'),
-  ('apply_reopened_invoice_benefits()', '4efef2f1e97bed6a3f0eed0df4e2df51', '36eaa7224e514d3e7e42e3eeb51acfb5'),
-  ('credit_given_back_follows(uuid)', '9d75978de5b247a8de1aaee4e894a698', '844b73106bbf362768ed4a899ceb00d5'),
-  ('preview_invoice_correction(uuid,jsonb)', '3047239c7418179e84927f6f00e7f2eb', 'f26752231c100461e11caddc03c98a33'),
-  ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0', '0ac29c7aa909dd756ec572645ca86448'),
-  ('apply_reopened_invoice_vouchers()', '28d3b7a69b91ddebcdb200559d96a0ef', '6684840544d1ad8a28e2415934300054'),
-  ('invoice_benefit_moved_to_other(uuid)', null, '7016bed898e1bbe9d0ac4a05037d07c2'),
-  ('invoice_benefit_moved_from_spent(uuid)', null, '901fde963b051cfd93fcd9f7dab7149e');
+  ('invoice_own_voucher_ids(uuid)', '9340840f1ce4e031ec3613198688ba2e', 'ee0202627b9500dcbad103d3ade2401f', null),
+  ('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)', '130c25c6ce3d91b7b421e6f4c3d02353', 'c01606c84ee13ddcd88c15521d6d9aed', null),
+  ('invoice_transferable_benefits(uuid)', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb', null),
+  ('apply_reopened_invoice_benefits()', '4efef2f1e97bed6a3f0eed0df4e2df51', '36eaa7224e514d3e7e42e3eeb51acfb5', null),
+  ('credit_given_back_follows(uuid)', '9d75978de5b247a8de1aaee4e894a698', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2'),
+  ('preview_invoice_correction(uuid,jsonb)', '3047239c7418179e84927f6f00e7f2eb', 'f26752231c100461e11caddc03c98a33', null),
+  ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0', '0ac29c7aa909dd756ec572645ca86448', null),
+  ('apply_reopened_invoice_vouchers()', '28d3b7a69b91ddebcdb200559d96a0ef', '6684840544d1ad8a28e2415934300054', null),
+  ('invoice_benefit_moved_to_other(uuid)', null, '7016bed898e1bbe9d0ac4a05037d07c2', null),
+  ('invoice_benefit_moved_from_spent(uuid)', null, '901fde963b051cfd93fcd9f7dab7149e', null);
+-- (470, where it is in, changes the forwarder: after470.)
 create function pg_temp.t463_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
-                            and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after end)
+                            and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
+                                = case when pg_temp.t463_470_in() then coalesce(m.after470, m.after) else m.after end end)
     from t463_md5 m $f$;
 insert into t463_fp values ('start', pg_temp.t463_fingerprint()), ('grants', pg_temp.t463_grants());
 \if :{?nomig}
