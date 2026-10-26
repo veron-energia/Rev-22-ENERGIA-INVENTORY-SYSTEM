@@ -794,7 +794,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                     <p className="invoice-guided-figure">{money(fx.money_returned.total)}</p>
                     <ul>{(fx.money_returned.destinations ?? []).map(d => (
                       <li key={d.payment_id}>{money(d.amount)} to {d.wallet && paymentLabel ? (paymentLabel(d.payment_id, d.method) || d.method) : d.method}
-                        {d.wallet ? ' — restores the original credit' : ''}</li>))}</ul>
+                        {d.wallet ? " — back to the credit it was paid from (held back there while that package is cancelled or refunded, or, if it was paid in full before, while its reopening waits for payment: see that package's invoice)" : ''}</li>))}</ul>
                     <p className="muted">Recording this does not send money anywhere. It records that
                       the money was returned; making the payment is a separate act.</p>
                   </section>

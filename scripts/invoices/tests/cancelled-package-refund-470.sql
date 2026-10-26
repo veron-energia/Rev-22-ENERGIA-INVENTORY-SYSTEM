@@ -120,6 +120,14 @@
 -- already, add -v nomig=1 (S checks it as tested; R, Q, 9 and M are skipped;
 -- every case after 470 is still checked). Sections 9 let the install fail on
 -- purpose (psql prints its ERROR); the suite then checks that message.
+-- Where 471 is in too (-v nomig=1; the Owner, 26 Oct 2026, answering NOT
+-- COVERED 1: "Yes, fix it after 470"), the forwarder is at 471's AFTER (S),
+-- and without a reissue credit given back while the package is cancelled or
+-- refunded is held back too, in place: G2 and G3 (controls here) and KNOWN K
+-- (1) end the 471 way (A holds nothing; G3 pays it all back; RX0 ends as
+-- RX1), and P6 finds C0's held-back row on A's own lot. Every other case
+-- ends as with 470 alone. 471's own suite
+-- (plain-cancelled-package-credit-471) checks those cases and their siblings.
 -- Disposable database only; everything is rolled back. Every name, code and
 -- amount is invented (@example.com); the phones are numbers kept for fiction
 -- (ACMA, +61491570000 to +61491570999).
@@ -153,6 +161,10 @@ create function pg_temp.t470_462_in() returns boolean language sql as $f$
 create function pg_temp.t470_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and position('-- 470 (the Owner, 24 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
+-- 471 is in too: the forwarder is 471's (its text says so; S checks its md5).
+create function pg_temp.t470_471_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and position('-- 471 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger on the ledger runs (470
 -- adds no trigger: its change is in the function that trigger runs). Here
@@ -989,12 +1001,14 @@ create function pg_temp.t470_grant_set(p_sig text) returns text[] language sql a
 insert into t470_fp values ('start', pg_temp.t470_fingerprint()), ('grants', pg_temp.t470_grants()), ('triggers', pg_temp.t470_inv_triggers());
 -- The function 470 changes: BEFORE (production, 24 Oct 2026: 463's AFTER)
 -- and AFTER. It adds nothing.
-create temp table t470_md5(sig text primary key, before text, after text);
+-- (471, where it is in, changes it again: after471.)
+create temp table t470_md5(sig text primary key, before text, after text, after471 text);
 insert into t470_md5 values
-  ('credit_given_back_follows(uuid)', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2');
+  ('credit_given_back_follows(uuid)', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7');
 create function pg_temp.t470_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
-                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after end)
+                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
+                            = case when pg_temp.t470_471_in() then m.after471 else m.after end end)
     from t470_md5 m $f$;
 do $$ begin
   perform pg_temp.t470_check(pg_temp.t470_462_in() and pg_temp.t470_463_in(), 'S 462 and 463 are in (470 goes in after them)');
@@ -1226,6 +1240,18 @@ do $$ declare c record; begin
 end $$;
 \endif
 
+-- Where 471 is in too (-v nomig=1): without a reissue, credit given back
+-- while the package is cancelled is held back in place too (471), so the
+-- controls G2 and G3 end the 471 way: A holds nothing, and G3's refund by
+-- line pays it back (net S$0). (471's suite checks them and their siblings.)
+do $$ begin
+  if pg_temp.t470_471_in() then
+    update t470_cases set expect = '{"holds":{"A":"0.00","F":"0.00"},"status":"cancelled","net":20}' where k = 'G2';
+    update t470_cases set expect = '{"holds":{"A":"0.00","F":"0.00"},"status":"cancelled","net":0,"error":null}' where k = 'G3';
+    raise notice 'NOTE 471: 471 is in: G2 and G3 end the 471 way (A S$0; G3 net S$0), KNOWN K (1) is checked as 471 settles it, P6 finds C0''s held-back row in place';
+  end if;
+end $$;
+
 -- ===== 10. Install 470, twice =====
 \if :{?nomig}
 do $$ begin raise notice 'NOTE 10: -v nomig=1, so 470 is not installed here (R, Q, 9 and M are skipped)'; end $$;
@@ -1434,6 +1460,9 @@ begin
   -- P6 Nothing more than before for the controls: nothing forwarded without
   -- a reissue (C0, C2), nothing held where a correction moved nothing (K7fd:
   -- S1's forward alone) or the package stayed paid (K7gr: two forwards).
+  -- Where 471 is in, C0's S2 refunded while cancelled (no reissue) is held
+  -- back in place: one held-back row, on A's own lot (the lot the sale
+  -- names), and still nothing forwarded.
   perform pg_temp.t470_check(
         not exists (select 1 from customer_credit_ledger e where e.source_type like 'credit_given_back_reassignment_%'
                      and e.source_record_id in (pg_temp.t470_id('after/C0/inv'), pg_temp.t470_id('after/C2/inv'))),
@@ -1444,9 +1473,19 @@ begin
     and (select count(*) from customer_credit_ledger e where e.source_type = 'credit_given_back_reassignment_in'
           and e.source_record_id = pg_temp.t470_id('after/K7gr/inv')) = 2
     and not exists (select 1 from customer_credit_ledger e where e.source_record_id in (pg_temp.t470_id('after/K7fd/inv'), pg_temp.t470_id('after/K7gr/inv'),
-                                                                                       pg_temp.t470_id('after/C0/inv'), pg_temp.t470_id('after/LG2/inv'))
-                     and e.reason = 'Held back by the invoice''s cancellation for whoever holds its benefits now'),
-    'P6 K7fd/K7gr/C0/LG2: something was held back');
+                                                                                       pg_temp.t470_id('after/LG2/inv'))
+                     and e.reason = 'Held back by the invoice''s cancellation for whoever holds its benefits now')
+    and (select count(*) from customer_credit_ledger e
+          where e.source_record_id = pg_temp.t470_id('after/C0/inv')
+            and e.reason = 'Held back by the invoice''s cancellation for whoever holds its benefits now'
+            and e.lot_id = (select s.credit_lot_id from credit_package_sales s where s.invoice_id = pg_temp.t470_id('after/C0/inv'))
+            and e.customer_id = pg_temp.t470_id('after/C0/A') and e.amount = 20)
+        = case when pg_temp.t470_471_in() then 1 else 0 end
+    and (select count(*) from customer_credit_ledger e
+          where e.source_record_id = pg_temp.t470_id('after/C0/inv')
+            and e.reason = 'Held back by the invoice''s cancellation for whoever holds its benefits now')
+        = case when pg_temp.t470_471_in() then 1 else 0 end,
+    'P6 K7fd/K7gr/C0/LG2: something was held back' || case when pg_temp.t470_471_in() then ' (471 in: C0''s one held-back row in place expected)' else '' end);
   -- P7 Every record deleted while cancelled: S2's refund is refused at
   -- commit, for the Owner, nothing recorded (462's P9 while paid).
   o := pg_temp.t470_run('P', 'P9c', 'sale A cp; spend A; spend A; move 1 F; change B; unspend S1; cancel; delete B; delete A; unspend S2');
@@ -1479,11 +1518,27 @@ begin
   -- lot: after a guided Cancel that recorded the refund (G2, G3: A S$20, net
   -- S$20), and on a package refunded in full with an override (RX0: A S$20 of
   -- a refunded invoice).
-  perform pg_temp.t470_check((select v->'holds' from t470_res where phase = 'after' and k = 'G2') @> '{"A":"20.00"}'
-      and (select (v->>'net')::numeric from t470_res where phase = 'after' and k = 'G3') = 20, 'K1 G2/G3: look at 470''s NOT COVERED 1 again');
+  -- Where 471 is in (the Owner's answer to it, 26 Oct 2026), it is settled:
+  -- held back in place, so A holds nothing; G3's refund by line pays it all
+  -- back (net S$0); RX0 ends as RX1 (held back, owed to nobody: NOT COVERED
+  -- 2, accepted).
   o := pg_temp.t470_run('K', 'RX0', 'sale A cp; spend A; backx 1; unspend S1');
-  perform pg_temp.t470_check(o->'holds' @> '{"A":"20.00"}' and o->>'status' = 'refunded' and (o->>'net')::numeric = 0
-      and o->>'invariants' like '%refunded, but S$20.00 of its credit is still held%', 'K1 RX0: ' || o::text || ': look at 470''s NOT COVERED 1 again');
+  if pg_temp.t470_471_in() then
+    perform pg_temp.t470_check((select v->'holds' from t470_res where phase = 'after' and k = 'G2') @> '{"A":"0.00"}'
+        and (select (v->>'net')::numeric from t470_res where phase = 'after' and k = 'G2') = 20
+        and (select (v->>'net')::numeric from t470_res where phase = 'after' and k = 'G3') = 0
+        and (select v->>'error' from t470_res where phase = 'after' and k = 'G3') is null,
+      'K1 (471 in) G2/G3: not held back in place: look at 471 again');
+    perform pg_temp.t470_check(o->'holds' @> '{"A":"0.00"}' and o->>'status' = 'refunded' and (o->>'net')::numeric = 0
+        and coalesce(o->>'invariants', '') = ''
+        and (select cancelled_unused_value from invoice_benefit_values where id = pg_temp.t470_own(pg_temp.t470_id('K/RX0/inv'))) = 20,
+      'K1 (471 in) RX0: ' || o::text || ': look at 471 again');
+  else
+    perform pg_temp.t470_check((select v->'holds' from t470_res where phase = 'after' and k = 'G2') @> '{"A":"20.00"}'
+        and (select (v->>'net')::numeric from t470_res where phase = 'after' and k = 'G3') = 20, 'K1 G2/G3: look at 470''s NOT COVERED 1 again');
+    perform pg_temp.t470_check(o->'holds' @> '{"A":"20.00"}' and o->>'status' = 'refunded' and (o->>'net')::numeric = 0
+        and o->>'invariants' like '%refunded, but S$20.00 of its credit is still held%', 'K1 RX0: ' || o::text || ': look at 470''s NOT COVERED 1 again');
+  end if;
   -- K2 (NOT COVERED 2): held back on a refunded invoice, owed to nobody (RX1:
   -- the row holds back S$20, net S$0).
   perform pg_temp.t470_check((select cancelled_unused_value from invoice_benefit_values where id = pg_temp.t470_own(pg_temp.t470_id('after/RX1/inv'))) = 20
@@ -1492,7 +1547,10 @@ begin
   -- spendable until its payment (K7w2: B cannot spend it).
   perform pg_temp.t470_check((select v->>'error' from t470_res where phase = 'after' and k = 'K7w2') like 'spend B: Only 0 of the requested 20.00 could be funded by eligible credit%',
     'K3 K7w2: look at 470''s NOT COVERED 3 again');
-  raise notice 'KNOWN K: (not covered by 470) (1) without a reissue, credit given back while the package is cancelled or refunded stays spendable on the package''s own lot (G2, G3: A S$20 after a guided Cancel that recorded the refund; RX0: A S$20 of a package refunded in full with an override); (2) held back on a refunded invoice, owed to nobody (RX1); (3) credit given back while a reopening waits is not spendable until its payment (K7w2)';
+  raise notice 'KNOWN K: (not covered by 470) (1) %; (2) held back on a refunded invoice, owed to nobody (RX1); (3) credit given back while a reopening waits is not spendable until its payment (K7w2)',
+    case when pg_temp.t470_471_in()
+         then 'without a reissue: settled by 471 (G2, G3: held back in place, A S$0, G3 paid back in full; RX0 ends as RX1)'
+         else 'without a reissue, credit given back while the package is cancelled or refunded stays spendable on the package''s own lot (G2, G3: A S$20 after a guided Cancel that recorded the refund; RX0: A S$20 of a package refunded in full with an override)' end;
 end $$;
 
 rollback;

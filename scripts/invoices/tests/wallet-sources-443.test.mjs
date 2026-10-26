@@ -259,7 +259,7 @@ test('every place a payment row is shown or printed uses its label with the sour
   assert.match(page, /paymentLabel=\{\(paymentId, fallback\) => paymentLabel\(/, 'the refund and correction panel');
   assert.match(panel, /paymentLabel\?: \(paymentId: string, fallback: string\) => string;/);
   assert.match(panel, /\$\{sourceLabel\(s\)\} · \$\{s\.wallet \? 'restore credit' : 'actual refund'\}/);
-  assert.match(panel, /\$\{sourceLabel\(s\)\} · \$\{s\.wallet \? 'credit restored' : 'money returned'\}/);
+  assert.match(panel, /\$\{sourceLabel\(s\)\} · \$\{s\.wallet \? 'credit restored or held back' : 'money returned'\}/);
   assert.match(panel, /label: `\$\{payLabel\(p\.id, methods\.find/);
   // The guided Cancel/Refund (step 4, Money returned), opened from the invoice.
   assert.match(guided, /paymentLabel\?: \(paymentId: string, fallback: string\) => string;/);

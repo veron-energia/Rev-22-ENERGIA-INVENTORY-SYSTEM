@@ -293,8 +293,9 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         part of what it sold ({usedValueText(usedValue ?? [])}), which the cancellation kept, and no amount owed back was stated when it was
         cancelled. Not all of it is owed back, so it cannot be recorded as paid back here.</p>}
     {canManage && f?.status === 'cancelled' && owedStated &&
-      <p role="status" data-testid="refund-owed-stated">Owed back to the customer: <strong>{money(f.refund_due)}</strong>, as stated
-        when it was cancelled.{Number(f.kept_for_used) > 0.005 ? ` ${money(f.kept_for_used)} is kept for what the customer already used.` : ''}</p>}
+      <p role="status" data-testid="refund-owed-stated">Owed back to the customer: <strong>{money(f.refund_due)}</strong> (what was stated
+        when it was cancelled, less what has been recorded since, plus the value of any of its credit a refund has given back
+        since).{Number(f.kept_for_used) > 0.005 ? ` ${money(f.kept_for_used)} is kept for what the customer already used.` : ''}</p>}
     {receivedNote && <p role="status">{receivedNote}</p>}
     {canManage && !mode && awaitingRentals.length > 0 &&
       <div role="status" data-testid="rentals-still-out">
@@ -341,10 +342,12 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       {mode === 'refund_due' && options && <>
         <p>This invoice is {String(f?.status ?? '').replace(/_/g, ' ')} and still holds <strong>{money(refundDue)}</strong> that has not been
           recorded as returned to the customer. Record it here once it has actually gone back: recording does not send money anywhere. It is
-          recorded against the original payments it came in on; a payment made with credit gets that credit back.</p>
+          recorded against the original payments it came in on; a payment made with credit gives that credit back (held back there while
+          the package it came from is cancelled or refunded, or, if it was paid in full before, while its reopening waits for payment: see
+          that package's invoice).</p>
         <strong>Paid back through</strong>
         {options.sources.filter(s => Number(s.remaining) > 0).map(s => <div key={s.payment_id}>{amountInput(
-          `${sourceLabel(s)} · ${s.wallet ? 'credit restored' : 'money returned'} · up to ${money(s.remaining)}`,
+          `${sourceLabel(s)} · ${s.wallet ? 'credit restored or held back' : 'money returned'} · up to ${money(s.remaining)}`,
           sourceAmounts[s.payment_id], Number(s.remaining), n => { setDueTouched(true); setSourceAmounts(v => ({ ...v, [s.payment_id]: n })); })}</div>)}
         {options.sources.every(s => Number(s.remaining) <= 0) && <p role="alert">No payment on this invoice still holds money, so there is nothing to record.</p>}
         <p>Recording {money(dueTotal)} of the {money(refundDue)} still due.</p>
@@ -373,7 +376,9 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       </>}
       {mode === 'refund' && options && <>
         {options.review_required && <p role="alert">Historical refunds need payment-source review before another refund can be recorded.</p>}
-        <p>Allocate the refund to invoice lines and original payment sources. Wallet portions return to their original credit source.</p>
+        <p>Allocate the refund to invoice lines and original payment sources. Wallet portions return to their original credit source
+          (held back there while the package it came from is cancelled or refunded, or, if it was paid in full before, while its reopening
+          waits for payment).</p>
         {Number(f?.refund_due) > 0 && options.benefits.length > 0 && <label><input type="checkbox" checked={benefitOverpayment} onChange={e => setBenefitOverpayment(e.target.checked)} /> Refund the correction overpayment from the selected unused benefits. Revoke their proportional unused value without reducing the corrected invoice charge again.</label>}
         {(options.lines || []).map(l => <div key={l.invoice_item_id}>
           {amountInput(`${l.name} (up to ${money(l.remaining)})`, lineAmounts[l.invoice_item_id], l.remaining, n => setLineAmounts(v => ({ ...v, [l.invoice_item_id]: n })))}

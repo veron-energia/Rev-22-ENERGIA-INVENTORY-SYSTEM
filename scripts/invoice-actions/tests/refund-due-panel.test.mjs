@@ -219,7 +219,7 @@ stub.options = cancelledBundle({ total: 900, net_received: 500, refund_due: 250,
 await render({ requestedMode: null, usedValue: ['session_used'] });
 const owedNote = document.querySelector('[data-testid="refund-owed-stated"]');
 check('the stated amount owed back is shown, and what is kept for what was used',
-  !!owedNote && owedNote.textContent.includes('S$250.00, as stated') && owedNote.textContent.includes('S$250.00 is kept'), owedNote?.textContent);
+  !!owedNote && owedNote.textContent.includes('S$250.00 (what was stated when it was cancelled') && owedNote.textContent.includes('S$250.00 is kept'), owedNote?.textContent);
 check('the "not all of it is owed back" refusal is not shown', !document.querySelector('[data-testid="refund-due-used"]'));
 const panelRecord = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Record refund paid');
 check('the panel offers "Record refund paid" itself (the footer leaves this invoice out)', !!panelRecord);

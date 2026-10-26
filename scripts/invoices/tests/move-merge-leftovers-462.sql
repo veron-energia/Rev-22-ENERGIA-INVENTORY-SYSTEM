@@ -136,6 +136,11 @@
 -- COVERED 10) ends the 470 way: all of it paid back, nothing on a lot no
 -- record names. 470's own suite (cancelled-package-refund-470) checks it and
 -- its siblings.
+-- Where 471 is in too (-v nomig=1), the forwarder is at 471's AFTER (470's
+-- rules, and without a reissue credit given back while the package is
+-- cancelled, refunded or its reopening waits is held back in place too):
+-- every case here ends as with 470 (S takes 471's AFTER); 471's own suite
+-- (plain-cancelled-package-credit-471) checks the plain case.
 -- Run on a copy of production as it is (464 in: 432fcb99, 1379 functions;
 -- 465 and 467, TikTok only, do not change what it checks):
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/invoices/tests/move-merge-leftovers-462.sql
@@ -173,10 +178,16 @@ create function pg_temp.t462_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and exists (select 1 from pg_trigger where tgname = 'credit_given_back_follows'
                   and tgrelid = 'public.customer_credit_ledger'::regclass) $f$;
--- 470 is in: the forwarder at 470's AFTER (470 adds nothing).
+-- 470 is in: the forwarder at 470's AFTER (470 adds nothing), or at 471's
+-- (which keeps 470's rules and adds nothing).
 create function pg_temp.t462_470_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
-     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'b7720a148f5371bd2bd844d3076ea3b2' $f$;
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure))
+         in ('b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7') $f$;
+-- 471 is in: the forwarder at 471's AFTER.
+create function pg_temp.t462_471_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = '1417d83e7d7be49209f5cd1369d07ec7' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger runs. Here the suite is
 -- one transaction, so the trigger's queued rows are run at this point.
@@ -1104,26 +1115,27 @@ create function pg_temp.t462_grant_set(p_sig text) returns text[] language sql a
 insert into t462_fp values ('start', pg_temp.t462_fingerprint()), ('grants', pg_temp.t462_grants());
 -- The six functions 462 changes: BEFORE (production, 24 Oct 2026, at 464)
 -- and AFTER; the four it adds.
-create temp table t462_md5(sig text primary key, before text, after text, after463 text, after470 text);
+create temp table t462_md5(sig text primary key, before text, after text, after463 text, after470 text, after471 text);
 insert into t462_md5 values
-  ('invoice_credit_transfer_origin(uuid)', 'e778a9e4ff81567a493b8ca479d8222b', '1e8beeccfbf7e432edffc1598acddb53', null, null),
-  ('apply_reopened_invoice_benefits()', '3e659dafdbacb00ad953f99d00c3c6c9', '4efef2f1e97bed6a3f0eed0df4e2df51', '36eaa7224e514d3e7e42e3eeb51acfb5', null),
-  ('invoice_reopen_preview(uuid)', '4b49c0c64eeb1b5962b605bbf56ea159', 'e09ebf9c0841ef5463f96b26f4933541', null, null),
-  ('merge_customer_records(uuid,uuid,text,uuid)', '2e0c9852099ab88d8f27827b5f9a3846', 'ba05c2b1fb4c0e14d369c01d06a635b0', null, null),
-  ('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)', 'c1827889748d29f7a6626294333bd94f', '130c25c6ce3d91b7b421e6f4c3d02353', 'c01606c84ee13ddcd88c15521d6d9aed', null),
-  ('invoice_transferable_benefits(uuid)', '362d6d076c4751ab5dbe760f6d7a0d37', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb', null),
-  ('credit_lot_ancestry(uuid)', null, '52b3cae789b6b52a12bb2f798af40cbe', null, null),
-  ('invoice_credit_live_holder(uuid,uuid,timestamp with time zone)', null, 'a5692590ef3e8a7a7dd7e8ff7cfa9568', null, null),
-  ('credit_given_back_follows(uuid)', null, '9d75978de5b247a8de1aaee4e894a698', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2'),
-  ('trg_credit_given_back_follows()', null, '84e2d978b74b56a9508e4f4f5b518c22', null, null);
+  ('invoice_credit_transfer_origin(uuid)', 'e778a9e4ff81567a493b8ca479d8222b', '1e8beeccfbf7e432edffc1598acddb53', null, null, null),
+  ('apply_reopened_invoice_benefits()', '3e659dafdbacb00ad953f99d00c3c6c9', '4efef2f1e97bed6a3f0eed0df4e2df51', '36eaa7224e514d3e7e42e3eeb51acfb5', null, null),
+  ('invoice_reopen_preview(uuid)', '4b49c0c64eeb1b5962b605bbf56ea159', 'e09ebf9c0841ef5463f96b26f4933541', null, null, null),
+  ('merge_customer_records(uuid,uuid,text,uuid)', '2e0c9852099ab88d8f27827b5f9a3846', 'ba05c2b1fb4c0e14d369c01d06a635b0', null, null, null),
+  ('move_invoice_benefits_to_customer(uuid,uuid,uuid,text)', 'c1827889748d29f7a6626294333bd94f', '130c25c6ce3d91b7b421e6f4c3d02353', 'c01606c84ee13ddcd88c15521d6d9aed', null, null),
+  ('invoice_transferable_benefits(uuid)', '362d6d076c4751ab5dbe760f6d7a0d37', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb', null, null),
+  ('credit_lot_ancestry(uuid)', null, '52b3cae789b6b52a12bb2f798af40cbe', null, null, null),
+  ('invoice_credit_live_holder(uuid,uuid,timestamp with time zone)', null, 'a5692590ef3e8a7a7dd7e8ff7cfa9568', null, null, null),
+  ('credit_given_back_follows(uuid)', null, '9d75978de5b247a8de1aaee4e894a698', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7'),
+  ('trg_credit_given_back_follows()', null, '84e2d978b74b56a9508e4f4f5b518c22', null, null, null);
 -- (463, where it is in, changes four of them: its AFTERs, after463; 470,
--- where it is in, the forwarder: after470.)
+-- where it is in, the forwarder: after470; 471 the forwarder again: after471.)
 create function pg_temp.t462_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when pg_temp.t462_470_in() then coalesce(m.after470, m.after463, m.after)
+                                = case when pg_temp.t462_471_in() then coalesce(m.after471, m.after470, m.after463, m.after)
+                                       when pg_temp.t462_470_in() then coalesce(m.after470, m.after463, m.after)
                                        when pg_temp.t462_463_in() then coalesce(m.after463, m.after) else m.after end end)
     from t462_md5 m $f$;
 \if :{?nomig}

@@ -1373,8 +1373,8 @@ try {
     await dlg.getByText('What this will do').waitFor();
     const review = await dlg.locator('.invoice-guided-review').innerText();
     ok('443: the guided refund names the credit it gives back as the invoice does',
-      review.includes(`S$40.00 to ${BRACKETED} — restores the original credit`)
-        && review.includes('S$60.00 to Wallet — Credit Package Paid — restores the original credit'), review);
+      review.includes(`S$40.00 to ${BRACKETED} — back to the credit it was paid from (held back there while that package is cancelled`)
+        && review.includes('S$60.00 to Wallet — Credit Package Paid — back to the credit it was paid from (held back there while that package is cancelled'), review);
     // Leave it without recording anything: Escape, and yes to discarding the reason typed.
     p.once('dialog', d => d.accept());
     await p.keyboard.press('Escape');
