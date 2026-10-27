@@ -811,10 +811,14 @@ do $$
 declare ro text := 'reopen_invoice(uuid,text,uuid)'; pv text := 'invoice_reopen_preview_before_sessions(uuid)';
 begin
   perform pg_temp.t451_check(pg_temp.t451_in()
-    -- reopen_invoice: 451's AFTER, or 458's (rentals follow the reopening: one line, where it raises the items)
-    and md5(pg_get_functiondef(('public.' || ro)::regprocedure)) in ('cb647331300b0a476c1da7b2cb599889', '0ff61e4ead121c198ea7f90a7fc78274')
-    -- the preview: 451's AFTER, or 474's (it also counts the credit still waiting for a reopening's payment)
-    and md5(pg_get_functiondef(('public.' || pv)::regprocedure)) in ('12206ed066495024421b3b44a6a9d8e2', '7e1ef2d25415e69b3f770fe2efd45190'), '10 451 is not installed as tested');
+    -- reopen_invoice: 451's AFTER, or 458's (rentals follow the reopening: one line, where it raises the items),
+    -- or 475's (a session still waiting from an earlier reopening is not queued again; 451's voucher step as it is)
+    and md5(pg_get_functiondef(('public.' || ro)::regprocedure)) in ('cb647331300b0a476c1da7b2cb599889', '0ff61e4ead121c198ea7f90a7fc78274',
+                                                                    '30066e137b9b75b5789a050c14debc04')
+    -- the preview: 451's AFTER, or 474's (it also counts the credit still waiting for a reopening's payment),
+    -- or 478's (it also names the credit a reopening gives at once for a package paid in part; 451's voucher figure as it is)
+    and md5(pg_get_functiondef(('public.' || pv)::regprocedure)) in ('12206ed066495024421b3b44a6a9d8e2', '7e1ef2d25415e69b3f770fe2efd45190',
+                                                                    '224855ab287067c1a75c4733a5ce66cd'), '10 451 is not installed as tested');
   if exists (select 1 from t451_fp where k = 'first') then
     perform pg_temp.t451_check((select fp from t451_fp where k = 'second') = (select fp from t451_fp where k = 'first'),
       '10 the second run of 451 changed functions');

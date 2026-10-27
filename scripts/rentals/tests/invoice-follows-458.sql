@@ -203,10 +203,13 @@ $$ select count(*)::int from rentals where invoice_id = p_inv and status::text i
 -- ═════ G The md5s and the grants ═════
 -- correct_invoice: 458's AFTER, or 464's (which builds on it), read as 458's here.
 -- (464's correct_invoice and 463's preview_invoice_correction, where they are
--- in, are read as 458's: they build on it.)
-select pg_temp.check((select replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- in, are read as 458's: they build on it. So is 475's reopen_invoice, which
+-- changes only its sessions step: a session still waiting from an earlier
+-- reopening is not queued again.)
+select pg_temp.check((select replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
                                      '=04d647e13e9424a9375942e5812e91a2', '=af9451fa15c2cf790edd70f799bae336'),
-                                     '=f26752231c100461e11caddc03c98a33', '=3047239c7418179e84927f6f00e7f2eb') from pg_temp.fn_md5s()
+                                     '=f26752231c100461e11caddc03c98a33', '=3047239c7418179e84927f6f00e7f2eb'),
+                                     '=30066e137b9b75b5789a050c14debc04', '=0ff61e4ead121c198ea7f90a7fc78274') from pg_temp.fn_md5s()
                        where fn in ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'preview_invoice_correction(uuid,jsonb)',
                                     'settle_waiting_special_docs_on_refund(uuid,jsonb,text)', 'create_special_docs_for_invoice(uuid)',
                                     'reopen_invoice(uuid,text,uuid)', 'fulfil_special_doc(text,uuid,uuid,text)',
@@ -223,7 +226,7 @@ select pg_temp.check((select replace(replace(string_agg(fn || '=' || md5, ', ' o
  || 'rentals_follow_refund(uuid,jsonb,text)=0426b050207ccb4fe0a991b3cafc9769, '
  || 'reopen_invoice(uuid,text,uuid)=0ff61e4ead121c198ea7f90a7fc78274, '
  || 'settle_waiting_special_docs_on_refund(uuid,jsonb,text)=edfd1f1beb7ab3b6739096a618cd6a96',
-  'G1 the six patched and four new functions have 458''s AFTER md5s (correct_invoice: or 464''s; preview_invoice_correction: or 463''s)');
+  'G1 the six patched and four new functions have 458''s AFTER md5s (correct_invoice: or 464''s; preview_invoice_correction: or 463''s; reopen_invoice: or 475''s)');
 select pg_temp.check(not exists (
     select 1 from unnest(array['invoice_rental_correction_check(uuid,jsonb,uuid,uuid)', 'invoice_rentals_follow_lines(uuid,jsonb,text)',
                                'rental_end_on_refund(uuid,integer,text)', 'rentals_follow_refund(uuid,jsonb,text)',
