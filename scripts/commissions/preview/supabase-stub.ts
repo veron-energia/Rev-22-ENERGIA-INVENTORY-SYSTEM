@@ -40,9 +40,55 @@ const STAFF_SALES = {
   ],
 };
 
+// commissions.html: the Commissions page's Balances and Payout History tabs,
+// shaped as affiliate_payout_overview sends them (410/414). Nine months:
+// unpaid, partly paid and paid ones, a month an affiliate owes money back on,
+// one under review and one with no month. #commissions-empty sends none.
+const commissionsMode = window.location.hash.replace('#commissions-', '');
+const REFERRERS = [
+  { referrer: 'ref-a', owed: 250, unpaid: 250, deduction: 0, payable: 250 },
+  { referrer: 'ref-b', owed: 20, unpaid: 20, deduction: 0, payable: 20 },
+  { referrer: 'ref-c', owed: 90, unpaid: 90, deduction: 0, payable: 0 },
+  { referrer: 'ref-d', owed: -35.5, unpaid: 0, deduction: 35.5, payable: 0 },
+];
+const refOf = (id: string) => REFERRERS.find(r => r.referrer === id)!;
+const balance = (referrer: string, month: string | null, earned: number, adjustments: number, paid: number, payable: number, review: string | null = null) => ({
+  referrer, month, earned, adjustments, paid, balance: +(earned + adjustments - paid).toFixed(2), tier1: earned, tier2: 0, review_reason: review, settled: 0,
+  payable, referrer_owed: refOf(referrer).owed, referrer_payable: refOf(referrer).payable, referrer_deduction: refOf(referrer).deduction,
+});
+const PAYOUT_OVERVIEW = {
+  groups: commissionsMode === 'empty' ? [] : [
+    balance('ref-a', '2026-10-01', 100, 0, 0, 100),
+    balance('ref-b', '2026-10-01', 50, -10, 60, 0),
+    balance('ref-d', '2026-10-01', 14.5, 0, 0, 0),
+    balance('ref-a', '2026-09-01', 200, 0, 50, 150),
+    balance('ref-b', '2026-09-01', 40, 0, 0, 20),
+    balance('ref-d', '2026-09-01', 120, -50, 120, 0),
+    balance('ref-a', '2026-08-01', 80, 0, 80, 0),
+    balance('ref-c', '2026-07-01', 90, 0, 30, 0, 'Payout allocation needs review.'),
+    balance('ref-c', null, 30, 0, 0, 0, 'Commission date is missing. Review the original invoice before recording a payout.'),
+  ],
+  referrers: commissionsMode === 'empty' ? [] : REFERRERS,
+  payouts: [
+    { id: 'pay-fix-1', referrer_customer_id: 'ref-a', payout_month: '2026-09-01', total_amount: 50, total_tier1: 50, total_tier2: 0, payment_date: '2026-10-05',
+      payment_method_id: 'm1', payment_method_name: 'Bank Transfer', reference: 'FIX-REF-1', notes: null, status: 'paid', version: 1, allocation_state: 'verified', allocation_review_reason: null },
+  ],
+  settlements: [],
+  methods: [{ id: 'm1', name: 'Bank Transfer', is_active: true, deleted_at: null, is_wallet_credit: false }],
+};
+const REFERRER_NAMES = [
+  { id: 'ref-a', full_name: 'Fixture Affiliate Alpha' }, { id: 'ref-b', full_name: 'Fixture Affiliate Bravo' },
+  { id: 'ref-c', full_name: 'Fixture Affiliate Charlie' }, { id: 'ref-d', full_name: 'Fixture Affiliate Delta' },
+];
+const APP_SETTINGS = {
+  commission_tier1_own_rate: 10, commission_tier1_third_rate: 5, commission_tier2_own_rate: 2, commission_tier2_third_rate: 1,
+  instalment_commission_from: null,
+};
+
 const TABLES: Record<string, () => any> = {
   invoices: () => INVOICES,
   profiles: () => STAFF,
+  app_settings: () => APP_SETTINGS,
 };
 
 const query = (table: string) => {
@@ -63,7 +109,9 @@ export const supabase = {
     const data = fn === 'invoice_sales_ledger' ? LEDGER
       : fn === 'report_sales_by_service_staff'
         ? (mode === 'stale' ? { ...STAFF_SALES, revenue: STAFF_SALES.revenue + 50, staff_total: STAFF_SALES.staff_total + 50 } : STAFF_SALES)
-      : fn === 'report_foc_summary' ? {} : [];
+      : fn === 'report_foc_summary' ? {}
+      : fn === 'affiliate_payout_overview' ? structuredClone(PAYOUT_OVERVIEW)
+      : fn === 'commission_referrer_names' ? REFERRER_NAMES : [];
     const error = fn === 'report_sales_by_service_staff' && mode === 'error'
       ? { message: 'canceling statement due to statement timeout' } : null;
     const q: any = {

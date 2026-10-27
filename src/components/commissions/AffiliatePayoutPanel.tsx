@@ -9,7 +9,8 @@ import '../invoices/invoice-controls.css';
 
 import { Balance, Payout, ReferrerBalance, payoutMoney as money, unavailableName, payoutInRange, payoutExportColumns, referrerBalances, monthPayable, monthKey, remainingPayable, deductionsOutstanding,
   Settlement, SettlementForm, SETTLEMENT_METHODS, SETTLEMENT_EARLIEST, settlementMethodLabel, settlementFormError, settlementInRange, settlementExportColumns,
-  firstPaidPayoutDate, sgDate } from '../../lib/affiliatePayoutPresentation';
+  firstPaidPayoutDate, sgDate,
+  BalanceStatusFilter, BALANCE_STATUS_FILTERS, BALANCE_MONTH_ALL, balanceMonthOptions, filterBalances, payableInView } from '../../lib/affiliatePayoutPresentation';
 type Method = { id: string; name: string; is_active: boolean; deleted_at: string | null; is_wallet_credit: boolean };
 type Form = { referrer: string; month: string; payout?: Payout; amount: string; method: string; date: string; reference: string; notes: string; reason: string; request: string };
 // 414: Mark as settled (a deduction settled some other way) and its Void.
@@ -33,6 +34,10 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
   const [loading, setLoading] = useState(true), [loadError, setLoadError] = useState(''), [success, setSuccess] = useState('');
   const [form, setForm] = useState<Form | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState(''), [uncertain, setUncertain] = useState(false);
   const [from, setFrom] = useState(''), [to, setTo] = useState('');
+  // The Balances tab's filters (the Owner, 27 Oct 2026): which rows are shown
+  // and exported. Every figure is worked out as before.
+  const [statusFilter, setStatusFilter] = useState<BalanceStatusFilter>('all'), [monthFilter, setMonthFilter] = useState(BALANCE_MONTH_ALL);
+  const filterId = React.useId();
   const [historyFor, setHistoryFor] = useState<Payout | null>(null), [history, setHistory] = useState<any>(null), [historyError, setHistoryError] = useState('');
   // 414: deductions marked as settled (voided ones too); none before 414.
   const [settlements, setSettlements] = useState<Settlement[]>([]);
@@ -95,6 +100,11 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
   const payableBy = useMemo(() => monthPayable(groups, refs), [groups, refs]);
   const payableOf = (g: Balance) => payableBy.get(monthKey(g)) ?? 0;
   const owing = useMemo(() => deductionsOutstanding(refs), [refs]);
+  const monthOptions = useMemo(() => balanceMonthOptions(groups), [groups]);
+  // A month no longer listed (a refresh moved its rows) goes back to All months.
+  const monthChoice = monthOptions.some(o => o.value === monthFilter) ? monthFilter : BALANCE_MONTH_ALL;
+  useEffect(() => { if (monthChoice !== monthFilter) setMonthFilter(monthChoice); }, [monthChoice, monthFilter]);
+  const visibleBalances = useMemo(() => filterBalances(groups, { status: statusFilter, month: monthChoice }), [groups, statusFilter, monthChoice]);
   const open = (referrer: string, month: string, balance: number, payout?: Payout) => {
     setError(''); setUncertain(false);
     setForm({ referrer, month, payout, amount: Number(payout?.total_amount ?? balance).toFixed(2), method: payout?.payment_method_id || '', date: payout?.payment_date || singaporeToday(), reference: payout?.reference || '', notes: payout?.notes || '', reason: '', request: crypto.randomUUID() });
@@ -201,9 +211,10 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
     {namesLoaded && !nameError && ids.some(id => !names[id]) && <div className="alert alert-info">No readable customer name was returned for the rows marked “Name unavailable”. Their full customer IDs are in the row tooltips and export; review the corresponding customer records to resolve their names.</div>}
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
       <strong>Remaining payable: {money(remainingPayable(refs))}</strong>
+      {mode === 'earned' && <strong role="status">Payable now in view: {money(payableInView(visibleBalances, payableBy))}</strong>}
       {owing.count > 0 && <span role="status">Deductions to recover: {money(owing.total)} ({owing.count} affiliate{owing.count === 1 ? '' : 's'}), taken from their later commission before anything more is paid.</span>}
       <button className="btn btn-secondary" onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh payouts'}</button>
-      {mode === 'payouts' ? <ExcelExportButton rows={visiblePayouts} filename="affiliate-payouts" sheetName="Commissions" dateOf={(p: Payout) => p.payment_date} dateLabel="Payment date" columns={payoutExportColumns(name)} /> : <ExcelExportButton rows={groups} filename="affiliate-balances" sheetName="Commissions" columns={[
+      {mode === 'payouts' ? <ExcelExportButton rows={visiblePayouts} filename="affiliate-payouts" sheetName="Commissions" dateOf={(p: Payout) => p.payment_date} dateLabel="Payment date" columns={payoutExportColumns(name)} /> : <ExcelExportButton rows={visibleBalances} filename="affiliate-balances" sheetName="Commissions" columns={[
           { header: 'Affiliate', value: (g: Balance) => name(g.referrer) }, { header: 'Affiliate ID', value: (g: Balance) => g.referrer },
           { header: 'Month', value: (g: Balance) => g.month || 'Date needs review' },
           ...(['earned', 'adjustments', 'paid'] as const).map(key => ({ header: key, value: (g: Balance) => Number(g[key]) })),
@@ -219,15 +230,29 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
       <label>Payment date from <input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label>
       <label>Payment date to <input type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
     </div>}
+    {mode === 'earned' && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 12 }}>
+      <div>
+        <label htmlFor={`${filterId}-status`}>Status</label>
+        <select id={`${filterId}-status`} aria-describedby={`${filterId}-status-hint`} value={statusFilter} onChange={e => setStatusFilter(e.target.value as BalanceStatusFilter)}>
+          {BALANCE_STATUS_FILTERS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+      </div>
+      <div>
+        <label htmlFor={`${filterId}-month`}>Commission month</label>
+        <select id={`${filterId}-month`} value={monthChoice} onChange={e => setMonthFilter(e.target.value)}>
+          {monthOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+      </div>
+      <p id={`${filterId}-status-hint`} style={{ flexBasis: '100%', margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>Paid: nothing remaining, including a month the affiliate owes money back on. Partly paid: something paid and something remaining. Unpaid: nothing paid yet.</p>
+    </div>}
     <div className="card table-wrap">
       {mode === 'earned' ? <table><thead><tr><th>Commission month</th><th>Affiliate</th><th>Earned</th><th>Adjustments</th><th>Paid</th><th>Remaining</th><th>Payable now</th><th>Action</th></tr></thead><tbody>
-        {groups.map(g => { const payable = payableOf(g), ref = refs.get(g.referrer); return <tr key={`${g.referrer}/${g.month}`}><td>{g.month?.slice(0, 7) || 'Date needs review'}</td><td title={g.referrer}>{name(g.referrer)}</td>
+        {visibleBalances.map(g => { const payable = payableOf(g), ref = refs.get(g.referrer); return <tr key={`${g.referrer}/${g.month}`}><td>{g.month?.slice(0, 7) || 'Date needs review'}</td><td title={g.referrer}>{name(g.referrer)}</td>
           <td>{money(g.earned)}</td><td>{money(g.adjustments)}</td><td>{money(g.paid)}</td><td>{money(Math.max(Number(g.balance), 0))}{Number(g.balance) < 0 && <div>Owed back: {money(-Number(g.balance))}</div>}{Number(g.settled ?? 0) > 0 && <div title={SETTLED_MONTHS_NOTE}>Settled: {money(Number(g.settled))}</div>}</td>
           <td>{money(payable)}{ref && ref.deduction > 0
             ? <div style={{ color: 'var(--danger)' }}>Affiliate owes {money(ref.deduction)} back; recovered from later commission first.{canPay && <div style={{ marginTop: 6 }}><button className="btn btn-secondary btn-sm" disabled={frozen} onClick={() => openSettle(g.referrer)}>Mark as settled</button></div>}</div>
             : !g.review_reason && payable < Math.max(Number(g.balance), 0) && <div>Limited by the affiliate's other months ({money(ref?.payable ?? 0)} payable in all).</div>}</td>
           <td>{g.review_reason && <p role="status">{g.review_reason}</p>}{canPay && <button className="btn btn-primary btn-sm" disabled={frozen || !g.month || !!g.review_reason || payable <= 0} onClick={() => open(g.referrer, g.month!, payable)}>Record payout</button>}</td></tr>; })}
         {!groups.length && <tr><td colSpan={8}>{loading ? 'Loading balances…' : 'No commission balances.'}</td></tr>}
+        {!!groups.length && !visibleBalances.length && <tr><td colSpan={8}>No balances match these filters.</td></tr>}
       </tbody></table> : <table><thead><tr><th>Payment date / month</th><th>Affiliate</th><th>Amount</th><th>Tier 1 / Tier 2</th><th>Method / reference / notes</th><th>Actions</th></tr></thead><tbody>
         {visiblePayouts.map(p => <tr key={p.id}><td>{p.payment_date}<div>{p.payout_month.slice(0, 7)} · {p.status}</div></td><td title={p.referrer_customer_id}>{name(p.referrer_customer_id)}</td><td>{money(p.total_amount)}</td><td>{money(p.total_tier1)} / {money(p.total_tier2)}</td>
           <td style={noteCell}>{p.payment_method_name || 'Historical method unavailable'}<div>{p.reference}</div><div>{p.notes}</div>{p.allocation_review_reason && <p>{p.allocation_review_reason}</p>}</td>

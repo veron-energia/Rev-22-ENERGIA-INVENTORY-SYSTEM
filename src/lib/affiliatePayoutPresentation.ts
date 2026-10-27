@@ -101,6 +101,71 @@ export const deductionsOutstanding = (referrers: Map<string, ReferrerBalance>) =
 
 export const monthKey = key;
 
+// ── The Balances tab's filters (the Owner, 27 Oct 2026) ──────────────────
+// A status and a commission month. They only choose which rows are shown and
+// exported; every figure is worked out as before.
+
+/** The table's Remaining column: the month's balance, never below 0 (what is
+ *  owed back is shown beside it instead). */
+export const balanceRemaining = (g: Pick<Balance, 'balance'>) => fromCents(Math.max(cents(g.balance), 0));
+
+export type BalanceStatus = 'unpaid' | 'partly_paid' | 'paid';
+export type BalanceStatusFilter = 'all' | BalanceStatus;
+export const BALANCE_STATUS_FILTERS: { value: BalanceStatusFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'unpaid', label: 'Unpaid' },
+  { value: 'partly_paid', label: 'Partly paid' },
+  { value: 'paid', label: 'Paid' },
+];
+/** A month by its numbers alone, review reason or missing month aside:
+ *    Paid         nothing remaining (Remaining is S$0.00), which includes a
+ *                 month the affiliate owes money back on;
+ *    Partly paid  something paid and something remaining;
+ *    Unpaid       nothing paid yet and something remaining. */
+export function balanceStatus(g: Pick<Balance, 'paid' | 'balance'>): BalanceStatus {
+  if (cents(balanceRemaining(g)) <= 0) return 'paid';
+  return cents(g.paid) > 0 ? 'partly_paid' : 'unpaid';
+}
+
+/** The month filter's "All months" and "Date needs review" choices. A month
+ *  choice is YYYY-MM, so neither can be mistaken for one. */
+export const BALANCE_MONTH_ALL = 'all';
+export const BALANCE_MONTH_NONE = 'none';
+/** The commission month a row is for (YYYY-MM, as the table shows it); null
+ *  for a row with no month ("Date needs review"). */
+export const balanceMonth = (g: Pick<Balance, 'month'>): string | null => (g.month ? String(g.month).slice(0, 7) : null);
+/** A commission month as the filter names it: 2026-10 is "Oct 2026". */
+export const commissionMonthLabel = (ym: string) => {
+  const m = /^(\d{4})-(\d{2})$/.exec(ym);
+  const n = m ? Number(m[2]) : 0;
+  return m && n >= 1 && n <= 12 ? `${MONTHS[n - 1]} ${m[1]}` : ym;
+};
+/** The month filter's choices: All months, each commission month that has
+ *  rows (newest first), and Date needs review when a row has no month. */
+export function balanceMonthOptions(groups: Pick<Balance, 'month'>[]): { value: string; label: string }[] {
+  const months = new Set<string>();
+  let undated = false;
+  for (const g of groups) {
+    const m = balanceMonth(g);
+    if (m) months.add(m); else undated = true;
+  }
+  return [
+    { value: BALANCE_MONTH_ALL, label: 'All months' },
+    ...[...months].sort((a, b) => b.localeCompare(a)).map(m => ({ value: m, label: commissionMonthLabel(m) })),
+    ...(undated ? [{ value: BALANCE_MONTH_NONE, label: 'Date needs review' }] : []),
+  ];
+}
+export type BalanceFilters = { status: BalanceStatusFilter; month: string };
+export const balanceMatches = (g: Pick<Balance, 'month' | 'paid' | 'balance'>, f: BalanceFilters) =>
+  (f.status === 'all' || balanceStatus(g) === f.status)
+  && (f.month === BALANCE_MONTH_ALL || (f.month === BALANCE_MONTH_NONE ? balanceMonth(g) === null : balanceMonth(g) === f.month));
+/** The rows shown (and exported), in the order they came. */
+export const filterBalances = <T extends Pick<Balance, 'month' | 'paid' | 'balance'>>(groups: T[], f: BalanceFilters): T[] =>
+  groups.filter(g => balanceMatches(g, f));
+/** "Payable now in view": the shown rows' Payable now added up. */
+export const payableInView = (rows: Balance[], payable: Map<string, number>) =>
+  fromCents(rows.reduce((sum, g) => sum + cents(payable.get(key(g)) ?? 0), 0));
+
 // ── 414: a deduction marked as settled ────────────────────────────────────
 // Commission paid out and then taken back is recovered from the affiliate's
 // later commission (410). The Owner decided on 9 Oct 2026 that an Owner or
