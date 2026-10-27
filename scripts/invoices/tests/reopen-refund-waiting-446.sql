@@ -104,7 +104,10 @@
 --      waits and is reinstated).
 --  13. Credit refunded while waiting, cancelled again before settling,
 --      reopened: all of it waits again, the refund counted once (part and
---      whole); paid: all the credit for S$200.
+--      whole); paid: all the credit for S$200. (Where 474 is in, the Reopen
+--      dialog also counts the credit still waiting: S$200, what the payment
+--      gives, where it said S$40, the refund's own row alone: 471's NOT
+--      COVERED 7.)
 --  14. A part-paid package's released lot, settled, cancelled, reopened,
 --      refunded while waiting: line B's credit alone; the second cycle right.
 --  15. Credit refunded before the reopening (its own ledger row waits too)
@@ -139,6 +142,10 @@ create function pg_temp.t446_fingerprint() returns text language sql as $f$
    where n.nspname = 'public' and p.prokind in ('f', 'p') $f$;
 create function pg_temp.t446_in() returns boolean language sql as $f$
   select position('-- 446 (the Owner' in pg_get_functiondef('public.refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)'::regprocedure)) > 0 $f$;
+-- 474 (471's NOT COVERED 7): the Reopen dialog's credit to reinstate also
+-- counts what an earlier reopening queued and still waits.
+create function pg_temp.t446_474_in() returns boolean language sql as $f$
+  select position('-- 474 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.invoice_reopen_preview_before_sessions(uuid)'::regprocedure)) > 0 $f$;
 -- 448 (446's NOT COVERED 1 fixed): a unit or credit a line refund paid back
 -- is not used.
 create function pg_temp.t448_in() returns boolean language sql as $f$
@@ -1261,7 +1268,10 @@ begin
   inv := pg_temp.t446_cwaiting(array['cp', 'cp']);
   perform pg_temp.t446_check(pg_temp.t446_cline_back(inv, pg_temp.t446_line(inv, 1), 40) = 'recorded', '13 S$40 of line A');
   perform cancel_invoice_recorded(inv, 'T446 13 cancel 2', gen_random_uuid());
-  perform pg_temp.t446_check((invoice_reopen_preview_before_sessions(inv)->>'credit_to_reinstate_after_settlement')::numeric = 40,
+  -- (474, where it is in: with the S$160 still waiting, S$200, what the
+  -- payment below gives)
+  perform pg_temp.t446_check((invoice_reopen_preview_before_sessions(inv)->>'credit_to_reinstate_after_settlement')::numeric
+                               = case when pg_temp.t446_474_in() then 200 else 40 end,
     '13 the Reopen dialog would add ' || (invoice_reopen_preview_before_sessions(inv)->>'credit_to_reinstate_after_settlement'));
   perform pg_temp.t446_creopen(inv);
   perform pg_temp.t446_check(pg_temp.t446_cwait(inv) = 200 and invoice_charge_total(inv) = 200, '13 reopened again: ' || pg_temp.t446_cmoney(inv));
@@ -1277,7 +1287,8 @@ begin
   perform pg_temp.t446_cpay(inv);
   perform pg_temp.t446_check(pg_temp.t446_cmoney(inv) = 'paid net 200.00 credit 220.00 waiting 0.00' and pg_temp.t446_statement_ok(),
     '13 line A, settled: ' || pg_temp.t446_cmoney(inv));
-  raise notice 'PASS 13: credit refunded while waiting (S$40, or line A whole with its Bonus), cancelled again before settling, reopened: all of it waits again (the Reopen dialog adds the refund once); paid: S$200 / S$220 for S$200';
+  raise notice 'PASS 13: credit refunded while waiting (S$40, or line A whole with its Bonus), cancelled again before settling, reopened: all of it waits again (the Reopen dialog %); paid: S$200 / S$220 for S$200',
+    case when pg_temp.t446_474_in() then 'shows all S$200 that waits, 474' else 'adds the refund once' end;
 end $$;
 
 -- ===== 14. A part-paid package's released credit, settled, then waiting =====

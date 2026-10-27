@@ -102,6 +102,11 @@
 -- suite then checks that message. Disposable database only; everything is
 -- rolled back. Every name, code and amount is invented (@example.com); the
 -- phones are numbers kept for fiction (ACMA).
+-- Where 474 is in (-v nomig=1; 471's NOT COVERED 7, the Owner, 26 Oct 2026:
+-- "fix the leftover gaps too"), the preview is at 474's AFTER: its voucher
+-- units, which this suite reads, are 451's text unchanged; its credit to
+-- reinstate also counts the credit still waiting (474's suite,
+-- reopen-dialog-waiting-credit-474, checks that). 10 then reads 474's md5.
 \set ON_ERROR_STOP on
 begin;
 
@@ -808,7 +813,8 @@ begin
   perform pg_temp.t451_check(pg_temp.t451_in()
     -- reopen_invoice: 451's AFTER, or 458's (rentals follow the reopening: one line, where it raises the items)
     and md5(pg_get_functiondef(('public.' || ro)::regprocedure)) in ('cb647331300b0a476c1da7b2cb599889', '0ff61e4ead121c198ea7f90a7fc78274')
-    and md5(pg_get_functiondef(('public.' || pv)::regprocedure)) = '12206ed066495024421b3b44a6a9d8e2', '10 451 is not installed as tested');
+    -- the preview: 451's AFTER, or 474's (it also counts the credit still waiting for a reopening's payment)
+    and md5(pg_get_functiondef(('public.' || pv)::regprocedure)) in ('12206ed066495024421b3b44a6a9d8e2', '7e1ef2d25415e69b3f770fe2efd45190'), '10 451 is not installed as tested');
   if exists (select 1 from t451_fp where k = 'first') then
     perform pg_temp.t451_check((select fp from t451_fp where k = 'second') = (select fp from t451_fp where k = 'first'),
       '10 the second run of 451 changed functions');

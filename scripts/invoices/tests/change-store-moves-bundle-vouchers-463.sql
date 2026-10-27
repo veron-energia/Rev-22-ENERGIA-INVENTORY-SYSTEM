@@ -111,6 +111,13 @@
 -- nothing; it holds back in place, without a reissue, what is given back
 -- while a package is cancelled, refunded or waiting); every case here ends
 -- as before (471's suite, plain-cancelled-package-credit-471, checks that).
+-- Where 472 is in too, the forwarder is at 472's AFTER (472 adds nothing; it
+-- reads a lot an Owner reversed as any other, which no case here has); every
+-- case here ends as before (reversed-lot-credit-held-back-472 checks it).
+-- Where 473 is in too, invoice_transferable_benefits is at 473's AFTER (473
+-- adds nothing; it judges a lot with the other lots of its package line,
+-- which only a package paid in part has: no case here is one); every case
+-- here ends as before (part-paid-package-change-partly-spent-473 checks it).
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -145,6 +152,15 @@ create function pg_temp.t463_470_in() returns boolean language sql as $f$
 create function pg_temp.t463_471_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = '1417d83e7d7be49209f5cd1369d07ec7' $f$;
+-- 472 is in: the forwarder at 472's AFTER (472 adds nothing; no case here
+-- gives credit back on a lot an Owner reversed).
+create function pg_temp.t463_472_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'f2a7a4d1ca28f0865b14e3f1e5e02bbb' $f$;
+-- 473 is in: the list at 473's AFTER (473 adds nothing; no case here is a
+-- package paid in part).
+create function pg_temp.t463_473_in() returns boolean language sql as $f$
+  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = 'a2332a22fe9975667e848de0d1e4480b' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger runs. Here the suite is
 -- one transaction, so the trigger's queued rows are run at this point.
@@ -1066,14 +1082,17 @@ insert into t463_md5 values
   ('invoice_benefit_moved_to_other(uuid)', null, '7016bed898e1bbe9d0ac4a05037d07c2', null),
   ('invoice_benefit_moved_from_spent(uuid)', null, '901fde963b051cfd93fcd9f7dab7149e', null);
 -- (470, where it is in, changes the forwarder: after470; 471, where it is
--- in, changes it again: its AFTER below.)
+-- in, changes it again, and 472 again: their AFTERs below; 473 the list:
+-- its AFTER below.)
 create function pg_temp.t463_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when pg_temp.t463_471_in() and m.sig = 'credit_given_back_follows(uuid)' then '1417d83e7d7be49209f5cd1369d07ec7'
-                                       when pg_temp.t463_470_in() or pg_temp.t463_471_in() then coalesce(m.after470, m.after) else m.after end end)
+                                = case when pg_temp.t463_473_in() and m.sig = 'invoice_transferable_benefits(uuid)' then 'a2332a22fe9975667e848de0d1e4480b'
+                                       when pg_temp.t463_472_in() and m.sig = 'credit_given_back_follows(uuid)' then 'f2a7a4d1ca28f0865b14e3f1e5e02bbb'
+                                       when pg_temp.t463_471_in() and m.sig = 'credit_given_back_follows(uuid)' then '1417d83e7d7be49209f5cd1369d07ec7'
+                                       when pg_temp.t463_470_in() or pg_temp.t463_471_in() or pg_temp.t463_472_in() then coalesce(m.after470, m.after) else m.after end end)
     from t463_md5 m $f$;
 insert into t463_fp values ('start', pg_temp.t463_fingerprint()), ('grants', pg_temp.t463_grants());
 \if :{?nomig}

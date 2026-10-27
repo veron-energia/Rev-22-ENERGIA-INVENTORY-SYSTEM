@@ -128,6 +128,11 @@
 -- RX1), and P6 finds C0's held-back row on A's own lot. Every other case
 -- ends as with 470 alone. 471's own suite
 -- (plain-cancelled-package-credit-471) checks those cases and their siblings.
+-- Where 472 is in too (-v nomig=1; the Owner, 26 Oct 2026: "fix the
+-- leftover gaps too"), the forwarder is at 472's AFTER (S); 472 changes only
+-- credit given back on a lot an Owner reversed, or behind a closed lot the
+-- records name, which no case here has, so every case ends as with 471
+-- (472's suite, reversed-lot-credit-held-back-472, checks those).
 -- Disposable database only; everything is rolled back. Every name, code and
 -- amount is invented (@example.com); the phones are numbers kept for fiction
 -- (ACMA, +61491570000 to +61491570999).
@@ -161,10 +166,15 @@ create function pg_temp.t470_462_in() returns boolean language sql as $f$
 create function pg_temp.t470_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and position('-- 470 (the Owner, 24 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
--- 471 is in too: the forwarder is 471's (its text says so; S checks its md5).
+-- 471 is in too: the forwarder is 471's (its text says so; S checks its md5;
+-- 472's keeps 471's text).
 create function pg_temp.t470_471_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and position('-- 471 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
+-- 472 is in too: the forwarder is 472's (its text says so; S checks its md5).
+create function pg_temp.t470_472_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and position('-- 472 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger on the ledger runs (470
 -- adds no trigger: its change is in the function that trigger runs). Here
@@ -1001,14 +1011,17 @@ create function pg_temp.t470_grant_set(p_sig text) returns text[] language sql a
 insert into t470_fp values ('start', pg_temp.t470_fingerprint()), ('grants', pg_temp.t470_grants()), ('triggers', pg_temp.t470_inv_triggers());
 -- The function 470 changes: BEFORE (production, 24 Oct 2026: 463's AFTER)
 -- and AFTER. It adds nothing.
--- (471, where it is in, changes it again: after471.)
-create temp table t470_md5(sig text primary key, before text, after text, after471 text);
+-- (471, where it is in, changes it again: after471; 472, where it is in,
+-- again: after472.)
+create temp table t470_md5(sig text primary key, before text, after text, after471 text, after472 text);
 insert into t470_md5 values
-  ('credit_given_back_follows(uuid)', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7');
+  ('credit_given_back_follows(uuid)', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7',
+   'f2a7a4d1ca28f0865b14e3f1e5e02bbb');
 create function pg_temp.t470_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                            = case when pg_temp.t470_471_in() then m.after471 else m.after end end)
+                            = case when pg_temp.t470_472_in() then m.after472
+                                   when pg_temp.t470_471_in() then m.after471 else m.after end end)
     from t470_md5 m $f$;
 do $$ begin
   perform pg_temp.t470_check(pg_temp.t470_462_in() and pg_temp.t470_463_in(), 'S 462 and 463 are in (470 goes in after them)');
