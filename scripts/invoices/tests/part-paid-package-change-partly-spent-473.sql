@@ -138,6 +138,11 @@ create function pg_temp.t473_472_in() returns boolean language sql as $f$
 -- 473 is in: the list is 473's (its text says so; S checks its md5).
 create function pg_temp.t473_in() returns boolean language sql as $f$
   select position('-- 473 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) > 0 $f$;
+-- 476 is in (it goes in after 473 to 475): a package paid in part is
+-- changed as the same package paid in full is (NOT COVERED 1 and 2: TQn2,
+-- K1 and K2 are then checked as 476 settles them).
+create function pg_temp.t473_476_in() returns boolean language sql as $f$
+  select position('-- 476 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) > 0 $f$;
 -- 470 is in (its text is in 471's and 472's too).
 create function pg_temp.t473_470_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
@@ -957,6 +962,19 @@ insert into t473_cases(k, kind, steps, expect) values
   '{"holds":{"A":"0.00","B":"60.00"},"status":"paid","customer":"B","error":null}'),
 ('TQcc', 'known', 'sale A cp; spend A; spend A; cancel; change B; reopen; pay',
   '{"holds":{"A":"0.00","B":"60.00"},"status":"paid","customer":"B","error":null}');
+-- 476 (the Owner, 27 Oct 2026: "Same as paid-in-full"; NOT COVERED 1 and 2):
+-- where 476 is in, TQn2's 'transfer' change is refused as "Partly spent" (the
+-- credit still to be released listed, blocking: nothing moves, the payment
+-- after it is not made), and K1's and K2's later payment gives the credit to
+-- whoever holds the package's benefits (A), not to the invoice's new
+-- customer: they are checked as 476 settles them. Where 476 is in, 473 is in
+-- too, so R never runs (-v nomig=1) and nothing compares them with before
+-- 473.
+update t473_cases set kind = 'fixed', expect = case k
+    when 'TQn2' then '{"holds":{"A":"0.00"},"status":"partially_paid","customer":"A","blocked":"Paid credit 60.00 (Partly spent)","movable":"-","error~":"change B: These benefits have already been used and cannot move with the invoice: Paid credit 60.00 (Partly spent). Resolve each one through the benefit transfer review before reassigning.%"}'
+    when 'K1' then '{"holds":{"A":"100.00","B":"0.00"},"status":"paid","customer":"B","error":null}'
+    else '{"holds":{"A":"80.00","B":"0.00"},"status":"paid","customer":"B","error":null}' end::jsonb
+ where k in ('TQn2', 'K1', 'K2') and pg_temp.t473_476_in();
 
 -- States made for the header's query (each where a 'transfer' change would
 -- be tried next): its reasons and counts ('-': listed nowhere).
@@ -1099,15 +1117,19 @@ create function pg_temp.t473_grant_set(p_sig text) returns text[] language sql a
 insert into t473_fp values ('start', pg_temp.t473_fingerprint()), ('grants', pg_temp.t473_grants()), ('triggers', pg_temp.t473_inv_triggers());
 -- The function 473 changes: BEFORE (production at 471 with 472 in, 26 Oct
 -- 2026: 463's AFTER) and AFTER. It adds nothing.
-create temp table t473_md5(sig text primary key, before text, after text);
+create temp table t473_md5(sig text primary key, before text, after text, after476 text);
 insert into t473_md5 values
-  ('invoice_transferable_benefits(uuid)', '68736a39ed765ee787242bc62bbaeebb', 'a2332a22fe9975667e848de0d1e4480b');
+  ('invoice_transferable_benefits(uuid)', '68736a39ed765ee787242bc62bbaeebb', 'a2332a22fe9975667e848de0d1e4480b',
+   -- 476, where it is in (it keeps 473's text, adds a row and judges a lot
+   -- of credit released before full payment by its release record: its AFTER)
+   '1546de1f83d970424d26e65941f4dcb8');
 create function pg_temp.t473_at(p_col text) returns boolean language plpgsql as $f$
 declare p text := current_setting('search_path'); v boolean;
 begin
   perform set_config('search_path', 'public', true);
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
-                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after end) into v
+                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
+                            = case when pg_temp.t473_476_in() then m.after476 else m.after end end) into v
     from t473_md5 m;
   perform set_config('search_path', p, true);
   return v;
@@ -1115,8 +1137,10 @@ end $f$;
 do $$ begin
   perform pg_temp.t473_check(pg_temp.t473_462_in() and pg_temp.t473_463_in() and pg_temp.t473_470_in() and pg_temp.t473_471_in()
       and pg_temp.t473_472_in()
-      and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'f2a7a4d1ca28f0865b14e3f1e5e02bbb',
-    'S 462, 463, 470, 471 and 472 are in, the forwarder at 472''s AFTER (473 goes in after them)');
+      -- (or at 477's AFTER, where 477 is in: it keeps 472's text)
+      and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure))
+          in ('f2a7a4d1ca28f0865b14e3f1e5e02bbb', 'a0f2f5ece30be439049dca275802237a'),
+    'S 462, 463, 470, 471 and 472 are in, the forwarder at 472''s AFTER or 477''s (473 goes in after 472)');
 end $$;
 \if :{?nomig}
 do $$ begin
@@ -1508,17 +1532,39 @@ begin
   -- nothing to block), and the payment gives B the rest (S$60), A having
   -- used S$40; once paid, the list blocks a further change.
   o := pg_temp.t473_run('K', 'N1', 'sale A cp 40; spend A; spend A');
+  if pg_temp.t473_476_in() then
+    -- 476 (the Owner, 27 Oct 2026: "Same as paid-in-full"): fixed where 476
+    -- is in: the list blocks the credit still to be released, "Partly
+    -- spent", and TQn2's change is refused with the paid-in-full package's
+    -- words, nothing moving.
+    perform pg_temp.t473_check(o->>'blocked' = 'Paid credit 60.00 (Partly spent)' and o->>'movable' = '-',
+      'K1 N1 (476 in): the list does not block the credit still to be released: ' || o::text);
+    perform pg_temp.t473_check((select v->'holds' from t473_res where phase = 'after' and k = 'TQn2') @> '{"A":"0.00"}'
+        and not (select v->'holds' from t473_res where phase = 'after' and k = 'TQn2') ? 'B'
+        and (select v->>'error' from t473_res where phase = 'after' and k = 'TQn2')
+            like 'change B: These benefits have already been used and cannot move with the invoice: Paid credit 60.00 (Partly spent).%',
+      'K1 TQn2 (476 in): the change is not refused as "Partly spent"');
+  else
   perform pg_temp.t473_check(o->>'blocked' = '-' and o->>'movable' = '-', 'K1 N1: the list blocks something: ' || o::text);
   perform pg_temp.t473_check((select v->'holds' from t473_res where phase = 'after' and k = 'TQn2') @> '{"A":"0.00","B":"60.00"}'
       and (select v->>'error' from t473_res where phase = 'after' and k = 'TQn2') is null
       and (select v->>'blocked' from t473_res where phase = 'after' and k = 'TQn2') = 'Paid credit 60.00 (Partly spent)',
     'K1 TQn2: look at NOT COVERED 1 again');
+  end if;
   -- K2 (NOT COVERED 2): 'keep' before full payment: the released credit
   -- stays with A, what the payment releases goes to B (K1: A S$40, B S$60;
   -- K2: A S$20, B S$60).
+  if pg_temp.t473_476_in() then
+    -- 476: fixed where 476 is in: what the payment releases goes to A, who
+    -- holds the package's benefits (K1: A S$100; K2: A S$80, S$20 used).
+    perform pg_temp.t473_check((select v->'holds' from t473_res where phase = 'after' and k = 'K1') @> '{"A":"100.00","B":"0.00"}'
+        and (select v->'holds' from t473_res where phase = 'after' and k = 'K2') @> '{"A":"80.00","B":"0.00"}',
+      'K2 K1/K2 (476 in): the later credit did not go to whoever holds the package''s benefits');
+  else
   perform pg_temp.t473_check((select v->'holds' from t473_res where phase = 'after' and k = 'K1') @> '{"A":"40.00","B":"60.00"}'
       and (select v->'holds' from t473_res where phase = 'after' and k = 'K2') @> '{"A":"20.00","B":"60.00"}',
     'K2 K1/K2: look at NOT COVERED 2 again');
+  end if;
   -- K3 (NOT COVERED 3): a cancelled partly spent package changed, reopened
   -- and paid: B S$60, as for the package paid in full.
   perform pg_temp.t473_check((select v->'holds' from t473_res where phase = 'after' and k = 'TQcr') @> '{"A":"0.00","B":"60.00"}'
@@ -1535,7 +1581,10 @@ begin
         and (select v->>'error' from t473_res where phase = 'mid' and k = 'MTQ') like 'change C: %(Partly spent)%',
       'K6 MTQ: look at NOT COVERED 6 again');
   end if;
-  raise notice 'KNOWN K: (473''s NOT COVERED) (1) all released credit spent, nothing on a lot: the change passes and the payment gives the new customer the rest (TQn2: B S$60); (2) ''keep'' before full payment splits too (K1: A S$40, B S$60; K2: A S$20, B S$60); (3) a cancelled partly spent package changed, then reopened and paid: B S$60, as paid in full (TQcr, TQcc); (5) two lots named in the refusal (TQ1, TU1, TQp1); (6) split before 473 stays split, a second change refused%',
+  raise notice 'KNOWN K: (473''s NOT COVERED) %; (3) a cancelled partly spent package changed, then reopened and paid: B S$60, as paid in full (TQcr, TQcc); (5) two lots named in the refusal (TQ1, TU1, TQp1); (6) split before 473 stays split, a second change refused%',
+    case when pg_temp.t473_476_in()
+         then '(1) and (2) fixed by 476 (TQn2 refused as "Partly spent", nothing moved; K1: A S$100; K2: A S$80)'
+         else '(1) all released credit spent, nothing on a lot: the change passes and the payment gives the new customer the rest (TQn2: B S$60); (2) ''keep'' before full payment splits too (K1: A S$40, B S$60; K2: A S$20, B S$60)' end,
     case when exists (select 1 from t473_res where phase = 'mid' and k = 'MTQ') then ' (MTQ)' else ' (not tried: -v nomig=1)' end;
 end $$;
 

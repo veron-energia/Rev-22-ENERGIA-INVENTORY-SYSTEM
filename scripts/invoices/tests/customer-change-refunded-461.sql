@@ -168,7 +168,11 @@ end $f$;
 -- Bundle's vouchers go along too, the Owner's decisions 2 and 3), or with
 -- 473 over 463 (473's AFTER of the list: a lot judged with the other lots of
 -- its package line, which only a package paid in part has; no case here is
--- one, so every case ends as with 463).
+-- one, so every case ends as with 463), or with 476 over 473 (476's AFTERs
+-- of the list and the mover: one more row, for the credit a package paid in
+-- part has still to release once what it released was spent, and a lot of
+-- credit released before full payment judged by its release record; no case
+-- here is a package paid in part either).
 create function pg_temp.t461_463_in() returns boolean language sql as $f$
   select to_regprocedure('public.invoice_benefit_moved_to_other(uuid)') is not null $f$;
 create function pg_temp.t461_as_tested() returns boolean language sql as $f$
@@ -178,7 +182,8 @@ create function pg_temp.t461_as_tested() returns boolean language sql as $f$
              ('362d6d076c4751ab5dbe760f6d7a0d37', 'c1827889748d29f7a6626294333bd94f'),
              ('d0d19b7c765337c3cd68096fdc6de7dd', '130c25c6ce3d91b7b421e6f4c3d02353'),
              ('68736a39ed765ee787242bc62bbaeebb', 'c01606c84ee13ddcd88c15521d6d9aed'),
-             ('a2332a22fe9975667e848de0d1e4480b', 'c01606c84ee13ddcd88c15521d6d9aed')) $f$;
+             ('a2332a22fe9975667e848de0d1e4480b', 'c01606c84ee13ddcd88c15521d6d9aed'),
+             ('1546de1f83d970424d26e65941f4dcb8', '142dd3252911480bd4a17e7c55b488d3')) $f$;
 create function pg_temp.t461_grants(p_sig text) returns text language sql as $f$
   select coalesce(string_agg(x::text, ',' order by x::text), '') from pg_proc p, unnest(p.proacl) x
    where p.oid = to_regprocedure('public.' || p_sig) $f$;
@@ -952,13 +957,14 @@ begin
   -- With 460 in (installed before the suite, or before 461 on this copy),
   -- the texts both give; without it, 461's alone.
   -- (With 462 in too, 462's AFTER of the list; with 463 over it, 463's; with
-  -- 473 over 463, 473's.)
+  -- 473 over 463, 473's; with 476 over 473, 476's.)
   perform pg_temp.t461_check((md5(pg_get_functiondef(('public.' || tb)::regprocedure))
                               in ('362d6d076c4751ab5dbe760f6d7a0d37', 'd0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb',
-                                  'a2332a22fe9975667e848de0d1e4480b')) = pg_temp.t461_460_in()
+                                  'a2332a22fe9975667e848de0d1e4480b', '1546de1f83d970424d26e65941f4dcb8')) = pg_temp.t461_460_in()
       and (md5(pg_get_functiondef(('public.' || tb)::regprocedure)) in ('d0d19b7c765337c3cd68096fdc6de7dd', '68736a39ed765ee787242bc62bbaeebb',
-                                                                         'a2332a22fe9975667e848de0d1e4480b')) = pg_temp.t461_462_in()
-      and (md5(pg_get_functiondef(('public.' || tb)::regprocedure)) in ('68736a39ed765ee787242bc62bbaeebb', 'a2332a22fe9975667e848de0d1e4480b')) = pg_temp.t461_463_in(),
+                                                                         'a2332a22fe9975667e848de0d1e4480b', '1546de1f83d970424d26e65941f4dcb8')) = pg_temp.t461_462_in()
+      and (md5(pg_get_functiondef(('public.' || tb)::regprocedure)) in ('68736a39ed765ee787242bc62bbaeebb', 'a2332a22fe9975667e848de0d1e4480b',
+                                                                         '1546de1f83d970424d26e65941f4dcb8')) = pg_temp.t461_463_in(),
     '10 461''s texts do not match whether 460 is in (' || pg_temp.t461_460_in()::text || ') and 462 (' || pg_temp.t461_462_in()::text || ')');
   if exists (select 1 from t461_fp where k = 'first') then
     perform pg_temp.t461_check((select fp from t461_fp where k = 'second') = (select fp from t461_fp where k = 'first'),

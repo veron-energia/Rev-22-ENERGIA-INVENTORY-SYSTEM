@@ -226,6 +226,11 @@ begin
     return md5(left(d, strpos(d, c_mv_s) + length(c_mv_s) - 1) || '…' || substr(d, strpos(d, c_mv_e)));
   end if;
   v_parts := string_to_array(d, E'\n  union all\n'); v_parts[2] := '…';
+  -- 476 (where it is in) adds a part after the credit rows (the credit a
+  -- package paid in part has still to release once what it released was
+  -- spent): left out too, as 461's part is.
+  v_parts := array(select u.x from unnest(v_parts) with ordinality u(x, o)
+                    where position('-- 476 (the Owner, 27 Oct 2026' in u.x) = 0 order by u.o);
   return md5(array_to_string(v_parts, E'\n  union all\n'));
 end $f$;
 create function pg_temp.t460_grants(p_sig text) returns text language sql as $f$

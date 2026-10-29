@@ -151,11 +151,15 @@ create function pg_temp.t474_475_in() returns boolean language sql as $f$
 -- 478 is in (it goes in after 474 to 477): the preview, 474's text with
 -- 478's lines added (by its AFTER md5), also names the credit a reopening
 -- gives at once for a package paid in part, and its explanation says so
--- (NOT COVERED 2: PT0, K2, is then checked as 478 settles it); every other
--- figure is 474's (P1 works 474's text back from 478's).
+-- (NOT COVERED 2: PT0, K2, is then checked as 478 settles it), and (the
+-- Owner's answer E, 27 Oct 2026) what the settling payment gives and who
+-- receives the credit (NOT COVERED 3: K2 checks PT0's receiver), and (as the
+-- Owner ticked answer E) the vouchers the settling payment gives and a
+-- Credit Package's reward units; every other figure is 474's (P1 works
+-- 474's text back from 478's).
 create function pg_temp.t474_478_in() returns boolean language sql as $f$
   select position('-- 478 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.invoice_reopen_preview_before_sessions(uuid)'::regprocedure)) > 0
-     and md5(pg_get_functiondef('public.invoice_reopen_preview_before_sessions(uuid)'::regprocedure)) = '224855ab287067c1a75c4733a5ce66cd' $f$;
+     and md5(pg_get_functiondef('public.invoice_reopen_preview_before_sessions(uuid)'::regprocedure)) = 'acbfc38a20a000e1af0e78d26fc7fc4c' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger on the ledger runs (474
 -- adds no trigger, and changes nothing a commit does). Here
@@ -1351,8 +1355,8 @@ end $$;
 -- just before the last Reopen of K5, CQ, WB10, CHws, MGw, RXqs, PBqs, MIX,
 -- PTF2, VQ, TH0, THq, PT0, CTL0 and PRc.
 -- 478 (the Owner, 27 Oct 2026): where 478 is in, 474's text is first worked
--- back from 478's (the lines 478 adds taken out: its block, its variable,
--- its key and its sentence; by md5), and 474's own figures are read from it
+-- back from 478's (the lines 478 adds taken out: its block, its variables,
+-- its keys and its sentence; by md5), and 474's own figures are read from it
 -- in the same undone block.
 create function pg_temp.t474_def474() returns text language plpgsql as $f$
 declare d text := pg_get_functiondef('public.invoice_reopen_preview_before_sessions(uuid)'::regprocedure);
@@ -1364,7 +1368,9 @@ begin
   z := a + position(E'\n end if;\n' in substr(d, a)) - 1;
   d := substr(d, 1, a - 1) || substr(d, z + length(E'\n end if;\n'));
   d := replace(d, ' v478 numeric:=0;', '');
-  d := replace(d, '''credit_released_on_reopen'',v478,', '');
+  d := replace(d, E'\n v478s numeric:=0; v478v int:=0; v478a int:=0; v478r jsonb:=''[]''::jsonb;  -- 478', '');
+  d := replace(d, E'\n v478u int:=0; v478sv int:=0; v478sa int:=0; v478su int:=0;  -- 478 (vouchers and reward units)', '');
+  d := replace(d, E'''credit_released_on_reopen'',v478,\n   ''bundle_vouchers_given_on_reopen'',v478v,''bundle_vouchers_to_choose_on_reopen'',v478a,''credit_from_settling_payment'',v478s,''credit_receivers'',v478r,\n   ''reward_units_given_on_reopen'',v478u,''bundle_vouchers_from_settling_payment'',v478sv,\n   ''bundle_vouchers_to_choose_from_settling_payment'',v478sa,''reward_units_from_settling_payment'',v478su,\n   ', '');
   d := replace(d, E'''Existing refunds remain recorded. Only net unrefunded payments settle the reopened invoice. ''\n     ||case when v478>0 then ''Package or bundle credit the net payments already pay for is released at once when the invoice is reopened. '' else '''' end\n     ||''Previously revoked credit is reinstated once the reopened invoice is fully settled.''',
                   '''Existing refunds remain recorded. Only net unrefunded payments settle the reopened invoice. Previously revoked credit is reinstated once the reopened invoice is fully settled.''');
   return d;
@@ -1416,7 +1422,10 @@ begin
     end;
     perform pg_temp.t474_check(pg_temp.t474_in() and (pg_temp.t474_at('after') or pg_temp.t474_478_in()), 'P1 451''s text was left in');
     -- 478: where it is in, every figure but its own and its explanation is 474's.
-    perform pg_temp.t474_check(p478 - 'credit_released_on_reopen' - 'explanation' = p474 - 'explanation',
+    perform pg_temp.t474_check(p478 - array['credit_released_on_reopen', 'bundle_vouchers_given_on_reopen', 'bundle_vouchers_to_choose_on_reopen',
+                                            'credit_from_settling_payment', 'credit_receivers', 'reward_units_given_on_reopen',
+                                            'bundle_vouchers_from_settling_payment', 'bundle_vouchers_to_choose_from_settling_payment',
+                                            'reward_units_from_settling_payment'] - 'explanation' = p474 - 'explanation',
       'P1 ' || c.k || ': 478 ' || p478::text || ' / 474 ' || p474::text);
     perform pg_temp.t474_check(p474 - 'credit_to_reinstate_after_settlement' = p451 - 'credit_to_reinstate_after_settlement'
         and (p474->>'credit_to_reinstate_after_settlement')::numeric
@@ -1497,10 +1506,16 @@ begin
     -- 478 (the Owner, 27 Oct 2026, answering NOT COVERED 2): fixed where 478
     -- is in: the dialog shows the S$20 the Reopen gives at once as its own
     -- figure ("Credit released at once on reopening"), beside S$0.00 to
-    -- reinstate after settlement, and its explanation says when each comes.
+    -- reinstate after settlement, and its explanation says when each comes;
+    -- and (answer E, NOT COVERED 3) the S$60 the settling payment gives, and
+    -- A, the invoice's customer, as the one who receives it all.
     perform pg_temp.t474_check((select shown from t474_dlg where pre = 'K/PT0' and n = 4) = 0
         and (select required from t474_dlg where pre = 'K/PT0' and n = 4) = 60
         and (select (preview->>'credit_released_on_reopen')::numeric from t474_dlg where pre = 'K/PT0' and n = 4) = 20
+        and (select (preview->>'credit_from_settling_payment')::numeric from t474_dlg where pre = 'K/PT0' and n = 4) = 60
+        and (select jsonb_array_length(preview->'credit_receivers') from t474_dlg where pre = 'K/PT0' and n = 4) = 1
+        and (select (preview->'credit_receivers'->0->>'customer_id')::uuid from t474_dlg where pre = 'K/PT0' and n = 4) = pg_temp.t474_id('K/PT0/A')
+        and (select (preview->'credit_receivers'->0->>'invoice_customer')::boolean from t474_dlg where pre = 'K/PT0' and n = 4)
         and (select preview->>'explanation' from t474_dlg where pre = 'K/PT0' and n = 4)
             = 'Existing refunds remain recorded. Only net unrefunded payments settle the reopened invoice. Package or bundle credit the net payments already pay for is released at once when the invoice is reopened. Previously revoked credit is reinstated once the reopened invoice is fully settled.'
         and (select status::text from invoices where id = inv) = 'partially_paid'
@@ -1522,7 +1537,7 @@ begin
     case when pg_temp.t474_475_in() then 'fixed by 475 (THq: queued once, the dialog''s 3 sessions reinstated once, paid)'
          else 'the payment refused, "Therapy session reopening changed" (THq: the dialog says 3 sessions)' end;
   raise notice 'KNOWN K: (474''s NOT COVERED) (2) paid in part, the Reopen itself releases S$20 at once: %',
-    case when pg_temp.t474_478_in() then 'fixed by 478 (PT0: "Credit released at once on reopening: S$20.00" beside S$0.00 after settlement; S$80 once paid)'
+    case when pg_temp.t474_478_in() then 'fixed by 478 (PT0: "Credit released at once on reopening: S$20.00" beside S$0.00 after settlement, S$60 from the settling payment, A its receiver; S$80 once paid)'
          else 'the dialog''s credit to reinstate after settlement S$0.00 (PT0; S$80 once paid)' end;
 end $$;
 

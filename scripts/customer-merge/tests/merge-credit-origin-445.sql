@@ -121,6 +121,14 @@ create function pg_temp.with_462() returns boolean language sql as
 $$ select to_regprocedure('public.credit_given_back_follows(uuid)') is not null $$;
 create function pg_temp.merge_md5() returns text language sql as
 $$ select case when pg_temp.with_462() then 'ba05c2b1fb4c0e14d369c01d06a635b0' else '2e0c9852099ab88d8f27827b5f9a3846' end $$;
+-- Where 477 is in (special-refund-move-repaired-lot-477.sql): the Move also
+-- takes credit a refund put back on a lot an Owner had reversed, or on a lot
+-- Cancel's write-off of credit released before full payment locked (their
+-- lock), and the recipient's lot is not locked: its AFTER of the Move. No
+-- case here moves a locked lot, so every case ends as before.
+create function pg_temp.move_md5() returns text language sql as
+$$ select case when position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
+               then '720d296a43524e7ac8843c6062030819' else '7aebd7120bc3928db46df0941cb20889' end $$;
 create function pg_temp.method(nm text) returns uuid language sql as
 $$ select id from public.payment_methods where name = nm and deleted_at is null $$;
 create function pg_temp.invoice(cust uuid, lines jsonb) returns uuid language sql as
@@ -558,8 +566,8 @@ insert into m445 select pg_temp.fp(), (select count(*) from public.customer_cred
                         (select md5(string_agg(to_jsonb(s)::text, '|' order by s.id)) from public.credit_package_sales s);
 \if :{?nomig}
 select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = pg_temp.merge_md5()
-    and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889',
-  'M0 445 is installed (nomig; 462''s merge where 462 is in)');
+    and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = pg_temp.move_md5(),
+  'M0 445 is installed (nomig; 462''s merge where 462 is in, 477''s Move where 477 is in)');
 \else
 select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = '099ecf3aae30b5faaf8fb36bc15ce888'
     and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = 'ea7e8ce0612752c75ba75748c9275c42',
@@ -680,9 +688,9 @@ select pg_temp.check(:'m12_failed' = 'false'
 \endif
 select pg_temp.check(pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)') = pg_temp.merge_md5()
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'merge_customer_records') = 1
-    and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889'
+    and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = pg_temp.move_md5()
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'transfer_invoice_unused_benefit') = 1,
-  'M3 merge_customer_records is 445''s (2e0c9852099ab88d8f27827b5f9a3846) and transfer_invoice_unused_benefit 445''s (7aebd7120bc3928db46df0941cb20889), with no overload');
+  'M3 merge_customer_records is 445''s (2e0c9852099ab88d8f27827b5f9a3846; 462''s where it is in) and transfer_invoice_unused_benefit 445''s (7aebd7120bc3928db46df0941cb20889; 477''s where it is in), with no overload');
 select pg_temp.check((select array_agg(x::text order by x::text) from pg_proc p, unnest(p.proacl) x where p.oid = 'public.merge_customer_records(uuid,uuid,text,uuid)'::regprocedure)
       = (select array_agg(x::text order by x::text) from unnest('{postgres=X/postgres,service_role=X/postgres}'::aclitem[]) x)
     and not has_function_privilege('anon', 'public.merge_customer_records(uuid,uuid,text,uuid)', 'execute')
@@ -1184,9 +1192,42 @@ begin
   return res || jsonb_build_object('refund', v_refund, 'reassign', v_reassign);
 end$$;
 -- With Move's old text (191's), rebuilt from 445's and checked by its md5: undone.
+-- (Where 477 is in, 477's changes are taken out first, giving 445's text.)
 savepoint v_old;
 do $$
 declare t text := pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure);
+  c477a constant text := $c$  -- 477 (the Owner, 27 Oct 2026, answering 472's NOT COVERED 4): credit a
+  -- refund or a correction put back on a lot an Owner had reversed
+  -- (reverse_credit_lot's 'reversal' row, on this lot or a lot it was
+  -- reissued from: a reissue copies the lock) can be moved: what the lot
+  -- holds now, so what the reversal took stays taken. 477 also (the Owner,
+  -- 27 Oct 2026, answer D, 477's NOT COVERED 1): so can credit on a lot
+  -- Cancel's write-off of credit released before full payment locked
+  -- (writeoff_released_credit_on_close, or what the forwarder holds back
+  -- the same way while the invoice is cancelled): a release record
+  -- (credit_package_progress_lots) names this lot or a lot it was reissued
+  -- from. The write-off locks such a lot also where it took nothing (all of
+  -- it was spent), so no ledger row of its own need be on it; what it took
+  -- stays taken. Every other lock is still refused: 328's repair
+  -- ('credit_lot_provenance_repair', on any of them), and a lock that no
+  -- Owner's reversal and no release record explains.
+  if l.status<>'active'
+     or l.is_locked
+        and not ((exists(select 1 from public.customer_credit_lots c join public.customer_credit_ledger e
+                                  on e.customer_id=c.customer_id and e.lot_id=c.id
+                          where c.id=any(public.credit_lot_ancestry(l.id))
+                            and e.entry_type='reverse' and e.source_type='reversal')
+                  or exists(select 1 from public.credit_package_progress_lots pl
+                             where pl.lot_id=any(public.credit_lot_ancestry(l.id))))
+                 and not exists(select 1 from public.customer_credit_lots c join public.customer_credit_ledger e
+                                     on e.customer_id=c.customer_id and e.lot_id=c.id
+                                 where c.id=any(public.credit_lot_ancestry(l.id))
+                                   and e.source_type='credit_lot_provenance_repair')) then
+   raise exception 'This credit lot is locked or reversed'; end if;$c$;
+  c477b constant text := $c$   -- 477: the recipient's lot is not locked (the lock stays on the lot
+   -- moved from, with the Owner's reversal row or the write-off it came from)
+   'is_locked',false,
+$c$;
   c445 constant text := $c$  -- 445: but not its link to a lot it replaced (reassigned_from_lot_id: an
   -- invoice reassignment's, 321, or a merge's): moved credit is traced through
   -- its transfer (invoice_credit_transfer_origin). A copied link made the
@@ -1194,6 +1235,7 @@ declare t text := pg_get_functiondef('public.transfer_invoice_unused_benefit(uui
   -- invoice_credit_lot_ids).
 $c$;
 begin
+  t := replace(replace(t, c477a, '  if l.status<>''active'' or l.is_locked then raise exception ''This credit lot is locked or reversed''; end if;'), c477b, '');
   t := replace(replace(t, c445, ''), '''reversal_of_lot_id'',null,''reassigned_from_lot_id'',null,', '''reversal_of_lot_id'',null,');
   if md5(t) <> 'ea7e8ce0612752c75ba75748c9275c42' then
     raise exception 'FIXTURE: Move''s old text could not be rebuilt (md5 %)', md5(t); end if;

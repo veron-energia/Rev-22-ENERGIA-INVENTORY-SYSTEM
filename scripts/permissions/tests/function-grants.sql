@@ -197,6 +197,11 @@ declare
                              -- moved came from a row partly spent before the Move (the
                              -- customer change and its list read it)
                              'invoice_benefit_moved_to_other','invoice_benefit_moved_from_spent',
+                             -- 476: whom what a package line paid in part gives later
+                             -- goes to, and which sale a line was sold in (the release,
+                             -- the settlement's issuers, the part-payment commission and
+                             -- the Pay dialog's read call them)
+                             'credit_line_benefits_holder','credit_line_sale_group',
                              -- 412: a staff login follows its profile (signed out and banned when
                              -- the profile is closed, unbanned when it opens again), and the
                              -- profiles trigger that calls it

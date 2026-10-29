@@ -11,6 +11,7 @@ import { stillOutAfter } from '../../lib/special/rentalFollows';
 import { calendarDate } from '../../lib/calendarDates';
 import { type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs,
   receivedText } from '../../lib/special/rentalReturn';
+import { reopenVoucherLine, reopenRewardUnitsLine, settlingPaymentLine, settlingVouchersLine, reopenReceiverNotes } from '../../lib/invoices/reopenReceivers.mjs';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
 const cents = (n: unknown) => Math.round((Number(n) || 0) * 100) / 100;
@@ -419,7 +420,22 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         <p>{preview.explanation}</p>
         <p>Invoice total: {money(preview.total)} · Net payments: {money(preview.net_received)} · Payment required to settle again: {money(Math.max(0, Number(preview.total) - Number(preview.net_received)))}</p>
         <p>Voucher units to replace after settlement: {Number(preview.voucher_units_to_reinstate_after_settlement || 0)}</p>
+        {/* 478 (the Owner, 27 Oct 2026): a package or bundle paid in part gets
+            the credit its payments buy back as soon as it is reopened, not
+            after settlement; the explanation above says when each comes.
+            And (answer E) a bundle settled at once gives its vouchers then,
+            the settling payment gives the paid credit not yet released and
+            the Bonus, and a note names whoever receives any of it when that
+            is not the invoice's customer (all the server's figures); and (as
+            the Owner ticked it) the vouchers the settling payment gives and
+            a Credit Package's reward units, at once or with that payment. */}
+        {Number(preview.credit_released_on_reopen || 0) > 0 && <p>Credit released at once on reopening: {money(preview.credit_released_on_reopen)}</p>}
+        {reopenVoucherLine(preview) && <p>{reopenVoucherLine(preview)}</p>}
+        {reopenRewardUnitsLine(preview) && <p>{reopenRewardUnitsLine(preview)}</p>}
         <p>Revoked credit to reinstate after settlement: {money(preview.credit_to_reinstate_after_settlement)}</p>
+        {settlingPaymentLine(preview) && <p>{settlingPaymentLine(preview)}</p>}
+        {settlingVouchersLine(preview) && <p>{settlingVouchersLine(preview)}</p>}
+        {reopenReceiverNotes(preview).map(note => <p role="note" key={note} data-testid="reopen-receiver-note">{note}</p>)}
         {!!preview.sessions_to_reinstate_after_settlement && <p>Unused therapy sessions to reinstate after settlement: {preview.sessions_to_reinstate_after_settlement}</p>}
         {preview.blockers?.map((b: string) => <p role="alert" key={b}>{b}</p>)}
         {preview.stock_to_issue?.map((s: any, idx: number) => <p key={idx}>Stock to issue: {s.quantity} × {s.item_name || s.item_id || s.product_id}</p>)}

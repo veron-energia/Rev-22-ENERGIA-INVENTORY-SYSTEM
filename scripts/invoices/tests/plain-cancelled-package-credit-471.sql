@@ -221,6 +221,14 @@ create function pg_temp.t471_in() returns boolean language sql as $f$
 create function pg_temp.t471_472_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and position('-- 472 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
+-- 477 is in too: the forwarder is 477's (its text says so; it keeps 471's
+-- and 472's; no case here gives credit back on a lot 328's repair replaced
+-- or moves a locked one, and PTsp's special document refunded onto the lot
+-- a Cancel closed now opens it, then the forwarder takes it back as before,
+-- so every case ends as with 472).
+create function pg_temp.t471_477_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
 -- 473 is in too: the list of what a customer change can move is 473's.
 create function pg_temp.t471_473_in() returns boolean language sql as $f$
   select position('-- 473 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) > 0 $f$;
@@ -1343,14 +1351,16 @@ create function pg_temp.t471_grant_set(p_sig text) returns text[] language sql a
 insert into t471_fp values ('start', pg_temp.t471_fingerprint()), ('grants', pg_temp.t471_grants()), ('triggers', pg_temp.t471_inv_triggers());
 -- The function 471 changes: BEFORE (production, 26 Oct 2026: 470's AFTER)
 -- and AFTER. It adds nothing. (472, where it is in, changes it again:
--- after472.)
-create temp table t471_md5(sig text primary key, before text, after text, after472 text);
+-- after472; 477 again: after477.)
+create temp table t471_md5(sig text primary key, before text, after text, after472 text, after477 text);
 insert into t471_md5 values
-  ('credit_given_back_follows(uuid)', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb');
+  ('credit_given_back_follows(uuid)', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb',
+   'a0f2f5ece30be439049dca275802237a');
 create function pg_temp.t471_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                            = case when pg_temp.t471_472_in() then m.after472 else m.after end end)
+                            = case when pg_temp.t471_477_in() then m.after477
+                                   when pg_temp.t471_472_in() then m.after472 else m.after end end)
     from t471_md5 m $f$;
 do $$ begin
   perform pg_temp.t471_check(pg_temp.t471_462_in() and pg_temp.t471_463_in() and pg_temp.t471_470_in(),

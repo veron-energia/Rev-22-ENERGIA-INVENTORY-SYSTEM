@@ -118,6 +118,13 @@
 -- adds nothing; it judges a lot with the other lots of its package line,
 -- which only a package paid in part has: no case here is one); every case
 -- here ends as before (part-paid-package-change-partly-spent-473 checks it).
+-- Where 476 is in too, the list and the mover are at 476's AFTERs (a row for
+-- the credit a package paid in part has still to release once what it
+-- released was spent, a lot of credit released before full payment judged by
+-- its release record, and all such a package gives later goes to whoever
+-- holds its benefits, through 476's sell_premium_bundle among others: no
+-- case here is a package paid in part); every case here ends as before
+-- (part-paid-change-same-as-paid-in-full-476 checks it).
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
@@ -157,10 +164,22 @@ create function pg_temp.t463_471_in() returns boolean language sql as $f$
 create function pg_temp.t463_472_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'f2a7a4d1ca28f0865b14e3f1e5e02bbb' $f$;
+-- 477 is in: the forwarder at 477's AFTER (477 adds nothing; no case here
+-- gives credit back on a lot 328's repair replaced, refunds a special
+-- document onto a closed lot or moves a locked lot).
+create function pg_temp.t463_477_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'a0f2f5ece30be439049dca275802237a' $f$;
 -- 473 is in: the list at 473's AFTER (473 adds nothing; no case here is a
 -- package paid in part).
 create function pg_temp.t463_473_in() returns boolean language sql as $f$
-  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = 'a2332a22fe9975667e848de0d1e4480b' $f$;
+  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure))
+         in ('a2332a22fe9975667e848de0d1e4480b', '1546de1f83d970424d26e65941f4dcb8') $f$;
+-- 476 is in: the list at 476's AFTER (it keeps 473's text, adds a row for a
+-- package paid in part and judges a lot of credit released before full
+-- payment by its release record, as its mover does: no case here is one).
+create function pg_temp.t463_476_in() returns boolean language sql as $f$
+  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = '1546de1f83d970424d26e65941f4dcb8' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger runs. Here the suite is
 -- one transaction, so the trigger's queued rows are run at this point.
@@ -1083,16 +1102,20 @@ insert into t463_md5 values
   ('invoice_benefit_moved_from_spent(uuid)', null, '901fde963b051cfd93fcd9f7dab7149e', null);
 -- (470, where it is in, changes the forwarder: after470; 471, where it is
 -- in, changes it again, and 472 again: their AFTERs below; 473 the list:
--- its AFTER below.)
+-- its AFTER below; 476 the list and the mover again: their AFTERs below;
+-- 477 the forwarder again: its AFTER below.)
 create function pg_temp.t463_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when pg_temp.t463_473_in() and m.sig = 'invoice_transferable_benefits(uuid)' then 'a2332a22fe9975667e848de0d1e4480b'
+                                = case when pg_temp.t463_476_in() and m.sig = 'invoice_transferable_benefits(uuid)' then '1546de1f83d970424d26e65941f4dcb8'
+                                       when pg_temp.t463_476_in() and m.sig = 'move_invoice_benefits_to_customer(uuid,uuid,uuid,text)' then '142dd3252911480bd4a17e7c55b488d3'
+                                       when pg_temp.t463_473_in() and m.sig = 'invoice_transferable_benefits(uuid)' then 'a2332a22fe9975667e848de0d1e4480b'
+                                       when pg_temp.t463_477_in() and m.sig = 'credit_given_back_follows(uuid)' then 'a0f2f5ece30be439049dca275802237a'
                                        when pg_temp.t463_472_in() and m.sig = 'credit_given_back_follows(uuid)' then 'f2a7a4d1ca28f0865b14e3f1e5e02bbb'
                                        when pg_temp.t463_471_in() and m.sig = 'credit_given_back_follows(uuid)' then '1417d83e7d7be49209f5cd1369d07ec7'
-                                       when pg_temp.t463_470_in() or pg_temp.t463_471_in() or pg_temp.t463_472_in() then coalesce(m.after470, m.after) else m.after end end)
+                                       when pg_temp.t463_470_in() or pg_temp.t463_471_in() or pg_temp.t463_472_in() or pg_temp.t463_477_in() then coalesce(m.after470, m.after) else m.after end end)
     from t463_md5 m $f$;
 insert into t463_fp values ('start', pg_temp.t463_fingerprint()), ('grants', pg_temp.t463_grants());
 \if :{?nomig}

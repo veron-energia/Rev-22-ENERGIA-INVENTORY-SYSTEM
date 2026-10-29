@@ -816,9 +816,10 @@ begin
     and md5(pg_get_functiondef(('public.' || ro)::regprocedure)) in ('cb647331300b0a476c1da7b2cb599889', '0ff61e4ead121c198ea7f90a7fc78274',
                                                                     '30066e137b9b75b5789a050c14debc04')
     -- the preview: 451's AFTER, or 474's (it also counts the credit still waiting for a reopening's payment),
-    -- or 478's (it also names the credit a reopening gives at once for a package paid in part; 451's voucher figure as it is)
+    -- or 478's (it also names what a reopening of a package paid in part gives at once, what the settling payment gives, its vouchers
+    -- and a package's reward units among them, and to whom; 451's voucher figure as it is)
     and md5(pg_get_functiondef(('public.' || pv)::regprocedure)) in ('12206ed066495024421b3b44a6a9d8e2', '7e1ef2d25415e69b3f770fe2efd45190',
-                                                                    '224855ab287067c1a75c4733a5ce66cd'), '10 451 is not installed as tested');
+                                                                    'acbfc38a20a000e1af0e78d26fc7fc4c'), '10 451 is not installed as tested');
   if exists (select 1 from t451_fp where k = 'first') then
     perform pg_temp.t451_check((select fp from t451_fp where k = 'second') = (select fp from t451_fp where k = 'first'),
       '10 the second run of 451 changed functions');

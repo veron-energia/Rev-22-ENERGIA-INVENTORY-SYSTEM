@@ -149,6 +149,13 @@
 -- lot judged with the other lots of its package line: only a package paid
 -- in part has two; no case here is one), so every case here ends as before
 -- (S takes 473's AFTER; part-paid-package-change-partly-spent-473 checks it).
+-- Where 476 is in too, the list and the mover are at 476's AFTERs (one more
+-- row, for the credit a package paid in part has still to release once what
+-- it released was spent; a lot of credit released before full payment judged
+-- by its release record; and all such a package gives later goes to whoever
+-- holds its benefits: no case here is one), so every case here ends as
+-- before (S takes 476's AFTERs; part-paid-change-same-as-paid-in-full-476
+-- checks it).
 -- Run on a copy of production as it is (464 in: 432fcb99, 1379 functions;
 -- 465 and 467, TikTok only, do not change what it checks):
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/invoices/tests/move-merge-leftovers-462.sql
@@ -186,12 +193,13 @@ create function pg_temp.t462_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and exists (select 1 from pg_trigger where tgname = 'credit_given_back_follows'
                   and tgrelid = 'public.customer_credit_ledger'::regclass) $f$;
--- 470 is in: the forwarder at 470's AFTER (470 adds nothing), or at 471's
--- or 472's (which keep 470's rules and add nothing).
+-- 470 is in: the forwarder at 470's AFTER (470 adds nothing), or at 471's,
+-- 472's or 477's (which keep 470's rules and add nothing).
 create function pg_temp.t462_470_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure))
-         in ('b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb') $f$;
+         in ('b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb',
+             'a0f2f5ece30be439049dca275802237a') $f$;
 -- 471 is in: the forwarder at 471's AFTER.
 create function pg_temp.t462_471_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
@@ -202,12 +210,25 @@ create function pg_temp.t462_471_in() returns boolean language sql as $f$
 create function pg_temp.t462_472_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'f2a7a4d1ca28f0865b14e3f1e5e02bbb' $f$;
+-- 477 is in: the forwarder at 477's AFTER (it keeps 472's rules but for a
+-- lot 328's repair replaced, which no case here has, and the special
+-- document's refund and the Move are 477's: no case here refunds one onto a
+-- closed lot or moves a locked lot, so every case ends as with 472).
+create function pg_temp.t462_477_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and md5(pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) = 'a0f2f5ece30be439049dca275802237a' $f$;
 -- 473 is in: the list of what a customer change can move at 473's AFTER (it
 -- goes in after 472; it judges a lot with the other lots of its package
 -- line, which only a package paid in part has: no case here is one, so
 -- every case ends as with 472).
 create function pg_temp.t462_473_in() returns boolean language sql as $f$
-  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = 'a2332a22fe9975667e848de0d1e4480b' $f$;
+  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure))
+         in ('a2332a22fe9975667e848de0d1e4480b', '1546de1f83d970424d26e65941f4dcb8') $f$;
+-- 476 is in: the list at 476's AFTER (it keeps 473's text, adds a row for a
+-- package paid in part and judges a lot of credit released before full
+-- payment by its release record, as the mover does: no case here is one).
+create function pg_temp.t462_476_in() returns boolean language sql as $f$
+  select md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = '1546de1f83d970424d26e65941f4dcb8' $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger runs. Here the suite is
 -- one transaction, so the trigger's queued rows are run at this point.
@@ -1152,12 +1173,21 @@ insert into t462_md5 values
 -- 472 the forwarder again: after472; 473 the list: after473.)
 update t462_md5 set after472 = 'f2a7a4d1ca28f0865b14e3f1e5e02bbb' where sig = 'credit_given_back_follows(uuid)';
 update t462_md5 set after473 = 'a2332a22fe9975667e848de0d1e4480b' where sig = 'invoice_transferable_benefits(uuid)';
+-- (476, where it is in, the list and the mover again: after476.)
+alter table t462_md5 add column after476 text;
+update t462_md5 set after476 = '1546de1f83d970424d26e65941f4dcb8' where sig = 'invoice_transferable_benefits(uuid)';
+update t462_md5 set after476 = '142dd3252911480bd4a17e7c55b488d3' where sig = 'move_invoice_benefits_to_customer(uuid,uuid,uuid,text)';
+-- (477, where it is in, the forwarder again: after477.)
+alter table t462_md5 add column after477 text;
+update t462_md5 set after477 = 'a0f2f5ece30be439049dca275802237a' where sig = 'credit_given_back_follows(uuid)';
 create function pg_temp.t462_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when pg_temp.t462_473_in() then coalesce(m.after473, m.after472, m.after471, m.after470, m.after463, m.after)
+                                = case when pg_temp.t462_477_in() then coalesce(m.after477, m.after476, m.after473, m.after472, m.after471, m.after470, m.after463, m.after)
+                                       when pg_temp.t462_476_in() then coalesce(m.after476, m.after473, m.after472, m.after471, m.after470, m.after463, m.after)
+                                       when pg_temp.t462_473_in() then coalesce(m.after473, m.after472, m.after471, m.after470, m.after463, m.after)
                                        when pg_temp.t462_472_in() then coalesce(m.after472, m.after471, m.after470, m.after463, m.after)
                                        when pg_temp.t462_471_in() then coalesce(m.after471, m.after470, m.after463, m.after)
                                        when pg_temp.t462_470_in() then coalesce(m.after470, m.after463, m.after)

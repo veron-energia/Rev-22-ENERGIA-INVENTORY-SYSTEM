@@ -73,6 +73,14 @@
 -- cancelled (473 allows it, as for a package paid in full) and ends as
 -- R328c did. Every other case ends as with 472 alone (473's suite,
 -- part-paid-package-change-partly-spent-473, checks it).
+-- Where 477 is in too (-v nomig=1; 472's NOT COVERED 1, 2 and 4, the Owner,
+-- 27 Oct 2026): the known cases end as 477 settles them: PTsx and PTsxs
+-- held back (A S$0, S$20 held back), PTsxp A spends it; R328 and R328s held
+-- back (S$100 held back), R328p A S$100 and Cancel takes it all, R328cc B
+-- S$100 (R328c as 473 leaves it); K1, K2 and K4 check that, and P6 lets the
+-- R328 cases reissue (477 reads 328's link as a reissue's). Every other case
+-- ends as with 472 alone (477's suite, special-refund-move-repaired-lot-477,
+-- checks it).
 --
 --   S. Where it starts: 462, 463, 470 and 471 in, the triggers on invoices
 --      as read; 472 in (nomig) or not, the forwarder at 471's AFTER.
@@ -149,6 +157,12 @@ create function pg_temp.t472_in() returns boolean language sql as $f$
 -- 'transfer' change of a partly spent package paid in part is refused).
 create function pg_temp.t472_473_in() returns boolean language sql as $f$
   select position('-- 473 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) > 0 $f$;
+-- 477 is in too: the forwarder is 477's (its text says so; it keeps 472's),
+-- and so are the special document's refund and the Move.
+create function pg_temp.t472_477_in() returns boolean language sql as $f$
+  select position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0
+     and position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.refund_special_credit(text,uuid)'::regprocedure)) > 0
+     and position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0 $f$;
 -- 470 is in (its text is in 471's and 472's too).
 create function pg_temp.t472_470_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
@@ -958,6 +972,23 @@ insert into t472_cases(k, kind, steps, expect) values
 -- Where 473 is in too (-v nomig=1): R328c's 'transfer' change of a package
 -- paid in part whose released credit was partly spent is refused, as for
 -- the same package paid in full (473; 471's NOT COVERED 9), so it ends there.
+-- Where 477 is in too (-v nomig=1): the known cases as 477 settles them
+-- (472's NOT COVERED 1 and 2): a special document's refund opens the lot,
+-- so the S$20 is held back while cancelled (PTsx, PTsxs) and A's to spend
+-- while paid (PTsxp); credit given back on the lot 328's repair replaced
+-- goes to the lot the records name: held back while cancelled (R328,
+-- R328s), A's on that lot while paid, Cancel taking it all (R328p), B's
+-- after the change made while cancelled (R328cc). R328c stays as 473
+-- leaves it (the change refused; nothing given back).
+create temp table t472_exp477(k text primary key, expect jsonb not null);
+insert into t472_exp477 values
+  ('PTsx', '{"holds":{"A":"0.00"},"status":"cancelled","net":100,"held":20,"error":null}'),
+  ('PTsxs', '{"holds":{"A":"0.00"},"status":"cancelled","net":100,"held":20,"error~":"spend A: Only 0 of the requested 20.00 could be funded by eligible credit%"}'),
+  ('PTsxp', '{"holds":{"A":"0.00"},"status":"paid","net":100,"held":0,"error":null}'),
+  ('R328', '{"holds":{"A":"0.00"},"status":"cancelled","net":100,"held":100,"error":null}'),
+  ('R328s', '{"holds":{"A":"0.00"},"status":"cancelled","net":100,"held":100,"error~":"spend A: Only 0 of the requested 20.00 could be funded by eligible credit%"}'),
+  ('R328p', '{"holds":{"A":"100.00"},"status":"paid","net":100,"held":0,"error":null}'),
+  ('R328cc', '{"holds":{"A":"0.00","B":"100.00"},"status":"paid","net":100,"held":0,"error":null}');
 create temp table t472_exp473(k text primary key, expect jsonb not null);
 insert into t472_exp473 values
   ('R328c', '{"holds":{"A":"80.00"},"status":"paid","net":100,"held":0,"error~":"change B: These benefits have already been used and cannot move with the invoice: Paid credit %0.00 (Partly spent); Paid credit %0.00 (Partly spent). Resolve%"}');
@@ -1076,13 +1107,15 @@ create function pg_temp.t472_grant_set(p_sig text) returns text[] language sql a
   select array_agg(x::text order by x::text) from pg_proc p, unnest(p.proacl) x where p.oid = to_regprocedure('public.' || p_sig) $f$;
 insert into t472_fp values ('start', pg_temp.t472_fingerprint()), ('grants', pg_temp.t472_grants()), ('triggers', pg_temp.t472_inv_triggers());
 -- The function 472 changes: BEFORE (production, 26 Oct 2026: 471's AFTER)
--- and AFTER. It adds nothing.
-create temp table t472_md5(sig text primary key, before text, after text);
+-- and AFTER. It adds nothing. (477, where it is in, changes it again:
+-- after477.)
+create temp table t472_md5(sig text primary key, before text, after text, after477 text);
 insert into t472_md5 values
-  ('credit_given_back_follows(uuid)', '1417d83e7d7be49209f5cd1369d07ec7', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb');
+  ('credit_given_back_follows(uuid)', '1417d83e7d7be49209f5cd1369d07ec7', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb', 'a0f2f5ece30be439049dca275802237a');
 create function pg_temp.t472_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
-                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after end)
+                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
+                            = case when pg_temp.t472_477_in() then m.after477 else m.after end end)
     from t472_md5 m $f$;
 do $$ begin
   perform pg_temp.t472_check(pg_temp.t472_462_in() and pg_temp.t472_463_in() and pg_temp.t472_470_in() and pg_temp.t472_471_in(),
@@ -1410,6 +1443,7 @@ begin
   for c in select * from t472_cases order by ord loop
     o := pg_temp.t472_run('after', c.k, c.steps);
     v_exp := case when pg_temp.t472_473_in() then coalesce((select e.expect from t472_exp473 e where e.k = c.k), c.expect) else c.expect end;
+    if pg_temp.t472_477_in() then v_exp := coalesce((select e.expect from t472_exp477 e where e.k = c.k), v_exp); end if;
     perform pg_temp.t472_check(pg_temp.t472_meets(o, v_exp),
       'A ' || c.k || ': ' || coalesce(pg_temp.t472_diff(o, v_exp), '') || ' ' || o::text);
     perform pg_temp.t472_check(coalesce(o->>'invariants', '') = '', 'A ' || c.k || ' invariants: ' || (o->>'invariants'));
@@ -1420,7 +1454,8 @@ begin
     -- an amount owed back on an invoice that is no longer cancelled is read
     -- by nothing, so it is not compared)
     if c.kind in ('control', 'known') and b is not null
-       and not (pg_temp.t472_473_in() and exists (select 1 from t472_exp473 e where e.k = c.k)) then
+       and not (pg_temp.t472_473_in() and exists (select 1 from t472_exp473 e where e.k = c.k))
+       and not (pg_temp.t472_477_in() and exists (select 1 from t472_exp477 e where e.k = c.k)) then
       perform pg_temp.t472_check(o - 'error' - case when o->>'status' = 'cancelled' then '' else 'owed' end
                                  = b - 'error' - case when b->>'status' = 'cancelled' then '' else 'owed' end
           and regexp_replace(coalesce(o->>'error', ''), 'INV-[0-9-]+', 'INV', 'g') = regexp_replace(coalesce(b->>'error', ''), 'INV-[0-9-]+', 'INV', 'g'),
@@ -1572,9 +1607,12 @@ begin
     'P6 PXp/PXrp/MV1p: something was held back');
   perform pg_temp.t472_check(not exists (select 1 from customer_credit_ledger x
                    where x.source_record_id in (select pg_temp.t472_id('after/' || k || '/inv') from t472_cases
-                                                 where k not in ('RV1', 'RV1b', 'RV1r', 'RV1p', 'PXh', 'PXhc', 'O1'))
+                                                 where k not in ('RV1', 'RV1b', 'RV1r', 'RV1p', 'PXh', 'PXhc', 'O1')
+                                                   -- 477, where it is in: credit given back on the lot 328's
+                                                   -- repair replaced goes to the lot the records name
+                                                   and not (pg_temp.t472_477_in() and k like 'R328%'))
                      and x.source_type like 'credit_given_back_reassignment_%'),
-    'P6 a case forwarded credit to a new lot (other than RV1..., PXh, PXhc and O1)');
+    'P6 a case forwarded credit to a new lot (other than RV1..., PXh, PXhc and O1; and R328... where 477 is in)');
   raise notice 'PASS P: PX held back where it is on the lot an Owner reversed (the package''s own lot, opened and still locked, one held-back row, the reversal''s S$60 still taken, the Audit Log, the statement at S$0); S8g owed back S$0 -> S$20 by its money (the refund options, refund due and Cancel''s), nothing after the refund by line, S2g S$5; RV1p the closed lot B holds replaced by a new lot of B''s with the S$20 (RV1: held back on it); O1o held back on the original reversed lot; PXw queued for the reopening''s payment, then A S$40; nothing more for the controls';
 end $$;
 
@@ -1589,6 +1627,20 @@ begin
   -- (R328c). A lot with 327's source (what the real repair replaced) cannot
   -- be spent from, so no sale is paid from one and nothing is given back on
   -- it: a S$50 lot of that source for a new customer funds nothing.
+  -- Where 477 is in (it settles NOT COVERED 1): the S$20 goes to the lot the
+  -- records name: held back while cancelled (R328: A S$0, S$100 held back;
+  -- R328s refused), A's on that lot while paid with Cancel taking it all
+  -- (R328p), B's after the change made while cancelled (R328cc).
+  if pg_temp.t472_477_in() then
+    perform pg_temp.t472_check((select v->'holds'->>'A' from t472_res where phase = 'after' and k = 'R328') = '0.00'
+        and (select (v->>'held')::numeric from t472_res where phase = 'after' and k = 'R328') = 100
+        and (select v->>'error' from t472_res where phase = 'after' and k = 'R328s') like 'spend A: Only 0 of the requested 20.00%'
+        and coalesce((select (v->>'cancel_left')::numeric from t472_res where phase = 'after' and k = 'R328p'), 0) = 0
+        and (select v->'holds' from t472_res where phase = 'after' and k = 'R328c') @> '{"A":"80.00"}'
+        and (select v->'holds' from t472_res where phase = 'after' and k = 'R328cc') @> '{"A":"0.00","B":"100.00"}'
+        and coalesce((select (v->>'cancel_left')::numeric from t472_res where phase = 'after' and k = 'R328cc'), 0) = 0,
+      'K1 R328 (477 in): NOT COVERED 1 is not settled as 477 settles it');
+  else
   perform pg_temp.t472_check((select v->'holds'->>'A' from t472_res where phase = 'after' and k = 'R328') = '20.00'
       and (select v->>'error' from t472_res where phase = 'after' and k = 'R328s') is null
       and (select (v->>'cancel_left')::numeric from t472_res where phase = 'after' and k = 'R328p') = 20
@@ -1596,6 +1648,7 @@ begin
           @> case when pg_temp.t472_473_in() then '{"A":"80.00"}'::jsonb else '{"A":"20.00","B":"80.00"}'::jsonb end
       and (select v->'holds' from t472_res where phase = 'after' and k = 'R328cc') @> '{"A":"20.00","B":"80.00"}',
     'K1 R328: look at NOT COVERED 1 again');
+  end if;
   c := pg_temp.t472_cust('K/L327/A');
   inv := pg_temp.t472_id('after/R328/inv'); it := (select id from invoice_items where invoice_id = inv limit 1);
   lot := grant_customer_credit(c, 'paid', 50, 'credit_package_progress', it, pg_temp.t472_id('store'), sg_today(), null,
@@ -1611,13 +1664,26 @@ begin
   -- K2 (NOT COVERED 2): a special document's refund after an Owner's
   -- reversal puts the S$20 on the closed lot ('reversed') without opening
   -- it: no one can spend it, cancelled or paid; 472 passes it over.
+  -- Where 477 is in (it settles NOT COVERED 2): the refund opens the lot
+  -- ('active', still locked), the S$20 held back there while cancelled, A's
+  -- to spend while paid (PTsxp spends it).
   inv := pg_temp.t472_id('after/PTsx/inv'); lot := pg_temp.t472_own_lot(inv);
+  if pg_temp.t472_477_in() then
+    perform pg_temp.t472_check((select status from customer_credit_lots where id = lot) = 'active'
+        and (select is_locked from customer_credit_lots where id = lot)
+        and (select remaining_amount from customer_credit_lots where id = lot) = 0
+        and pg_temp.t472_held(lot) = 20
+        and (select v->>'error' from t472_res where phase = 'after' and k = 'PTsxs') like 'spend A: Only 0 of the requested 20.00%'
+        and (select v->>'error' from t472_res where phase = 'after' and k = 'PTsxp') is null,
+      'K2 PTsx (477 in): NOT COVERED 2 is not settled as 477 settles it');
+  else
   perform pg_temp.t472_check((select status from customer_credit_lots where id = lot) = 'reversed'
       and (select remaining_amount from customer_credit_lots where id = lot) = 20
       and pg_temp.t472_held(lot) = 0
       and (select v->>'error' from t472_res where phase = 'after' and k = 'PTsxs') like 'spend A: Only 0 of the requested 20.00%'
       and (select v->>'error' from t472_res where phase = 'after' and k = 'PTsxp') like 'spend A: Only 0 of the requested 20.00%',
     'K2 PTsx: look at NOT COVERED 2 again');
+  end if;
   -- K3 (NOT COVERED 3): credit given back before 472 on such a lot stays
   -- spendable (MPXs: A spent it after 472) until the next refund holds it
   -- back with the new credit (MPX2: S$40).
@@ -1630,11 +1696,24 @@ begin
   -- K4 (NOT COVERED 4): the lot stays locked once a refund opened it: its
   -- holder can spend it (PXp: S$20 A's), but a Move of it is refused, as for
   -- 471's lots a Cancel closed.
+  -- Where 477 is in (it settles NOT COVERED 4): the Move takes what the lot
+  -- holds now (A S$0, F S$20).
   o := pg_temp.t472_run('K', 'MVX', 'sale A cp; spend A; spend A; reverse A; unspend S1; move 1 F');
+  if pg_temp.t472_477_in() then
+    perform pg_temp.t472_check(o->>'error' is null and o->'holds' @> '{"A":"0.00","F":"20.00"}' and coalesce(o->>'invariants', '') = ''
+        and coalesce((o->>'cancel_left')::numeric, 0) = 0,
+      'K4 MVX (477 in): NOT COVERED 4 is not settled as 477 settles it: ' || o::text);
+  else
   perform pg_temp.t472_check(o->>'error' like 'move 1 F: This credit lot is locked or reversed%' and o->'holds' @> '{"A":"20.00"}',
     'K4 MVX: look at NOT COVERED 4 again: ' || o::text);
+  end if;
+  if pg_temp.t472_477_in() then
+    raise notice 'KNOWN K: 477 is in: 472''s NOT COVERED 1 (R328: held back, A S$100 on the named lot, B S$100), 2 (PTsx: held back on the opened lot, PTsxp spent) and 4 (MVX: moved, F S$20) are settled as 477 settles them; a lot with 327''s source funds nothing (L327); (3) credit given back before 472 left spendable until the next refund of a sale paid from that chain%',
+      case when exists (select 1 from t472_res where phase = 'mid' and k = 'MPXs') then ' (MPXs, then MPX2 S$40)' else ' (not tried: -v nomig=1)' end;
+  else
   raise notice 'KNOWN K: (472''s NOT COVERED) (1) a lot 328''s repair replaced passed over (the stand-in R328: A S$20 of a cancelled package, Cancel leaving S$20 when paid, A''s after a change), and a lot with 327''s source funds nothing (L327), so on production no sale is paid from one; (2) a special document''s refund leaves the credit on the closed lot, which no one can spend (PTsx, PTsxs, PTsxp); (3) credit given back before 472 left spendable until the next refund of a sale paid from that chain%; (4) a Move of credit on a lot an Owner reversed and a refund opened again refused (MVX: locked)',
     case when exists (select 1 from t472_res where phase = 'mid' and k = 'MPXs') then ' (MPXs, then MPX2 S$40)' else ' (not tried: -v nomig=1)' end;
+  end if;
 end $$;
 
 rollback;

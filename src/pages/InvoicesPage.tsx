@@ -52,6 +52,7 @@ import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates'
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
 import { PRINT_PAGES_SCRIPT } from '../lib/invoices/printPages.mjs';
 import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMethodLabel, type WalletAvailability } from '../lib/invoices/walletSources.mjs';
+import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/creditReceivers.mjs';
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
 import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
@@ -553,6 +554,11 @@ const InvoicesPage: React.FC = () => {
   // label, e.g. 'Wallet — Paid Credit (Premium Bundle)'.
   const [payAvail, setPayAvail] = useState<WalletAvailability | null>(null);
   const [paySources, setPaySources] = useState<Record<string, string[]>>({});
+  // 476 (the Owner, 27 Oct 2026, answer E): the Credit Package and Premium
+  // Bundle lines whose credit a payment gives to someone other than the
+  // invoice's customer (invoice_credit_receivers; null until read, or
+  // before 476), for Record Payment to say so.
+  const [payReceivers, setPayReceivers] = useState<CreditReceivers | null>(null);
   const [warehouses, setWarehouses] = useState<any[]>([]);
   const [fulfilBusy, setFulfilBusy] = useState(false);
   const [fulfilErr, setFulfilErr] = useState<string | null>(null);
@@ -1770,6 +1776,16 @@ const InvoicesPage: React.FC = () => {
     if (inv.customer_id) {
       supabase.rpc('invoice_wallet_availability', { p_invoice_id: inv.id })
         .then(({ data, error }) => { if (!superseded()) setPayAvail(error ? null : ((data as WalletAvailability) ?? null)); });
+    }
+    // 476 (answer E): who receives a package's credit when it is not the
+    // invoice's customer (a 'keep' change left its benefits with the buyer),
+    // with the same care: an answer for this invoice's earlier customer is
+    // dropped at once. Read only while Record Payment can show; without 476
+    // the read answers with an error and no note shows.
+    setPayReceivers(prev => (prev?.invoice_id === inv.id && prev?.customer_id === inv.customer_id ? prev : null));
+    if (inv.customer_id && !['paid', 'cancelled', 'refunded', 'completed_foc'].includes(inv.status)) {
+      supabase.rpc('invoice_credit_receivers', { p_invoice_id: inv.id })
+        .then(({ data, error }) => { if (!superseded()) setPayReceivers(error ? null : ((data as CreditReceivers) ?? null)); });
     }
     // And the sources of its wallet payments (CREDIT-SPLIT-13), which the
     // copies print beside each one, so the copies wait for them (below): a
@@ -5221,6 +5237,14 @@ const InvoicesPage: React.FC = () => {
                     <div>Wallet Credit cannot be used to purchase a Credit Package or Premium Bundle.</div>
                   </div>
                 )}
+                {/* 476 (the Owner, 27 Oct 2026, answer E): who receives a
+                    package's credit when it is not the invoice's customer. */}
+                {creditReceiverNotes(payReceivers, detail).map(note => (
+                  <div key={note} role="note" className="alert alert-info" data-testid="credit-receiver-note" style={{ margin: '6px 0' }}>
+                    <span>ℹ</span>
+                    <div>{note}</div>
+                  </div>
+                ))}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {payLines.map((pl, i) => (
                     <React.Fragment key={i}>

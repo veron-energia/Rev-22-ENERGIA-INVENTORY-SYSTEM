@@ -175,6 +175,13 @@ create function pg_temp.t470_471_in() returns boolean language sql as $f$
 create function pg_temp.t470_472_in() returns boolean language sql as $f$
   select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
      and position('-- 472 (the Owner, 26 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
+-- 477 is in too: the forwarder is 477's (its text says so; it keeps 470's to
+-- 472's; no case here gives credit back on a lot 328's repair replaced or
+-- refunds a special document onto a closed lot, so every case ends as with
+-- 472).
+create function pg_temp.t470_477_in() returns boolean language sql as $f$
+  select to_regprocedure('public.credit_given_back_follows(uuid)') is not null
+     and position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.credit_given_back_follows(uuid)'::regprocedure)) > 0 $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger on the ledger runs (470
 -- adds no trigger: its change is in the function that trigger runs). Here
@@ -1012,15 +1019,16 @@ insert into t470_fp values ('start', pg_temp.t470_fingerprint()), ('grants', pg_
 -- The function 470 changes: BEFORE (production, 24 Oct 2026: 463's AFTER)
 -- and AFTER. It adds nothing.
 -- (471, where it is in, changes it again: after471; 472, where it is in,
--- again: after472.)
-create temp table t470_md5(sig text primary key, before text, after text, after471 text, after472 text);
+-- again: after472; 477 again: after477.)
+create temp table t470_md5(sig text primary key, before text, after text, after471 text, after472 text, after477 text);
 insert into t470_md5 values
   ('credit_given_back_follows(uuid)', '844b73106bbf362768ed4a899ceb00d5', 'b7720a148f5371bd2bd844d3076ea3b2', '1417d83e7d7be49209f5cd1369d07ec7',
-   'f2a7a4d1ca28f0865b14e3f1e5e02bbb');
+   'f2a7a4d1ca28f0865b14e3f1e5e02bbb', 'a0f2f5ece30be439049dca275802237a');
 create function pg_temp.t470_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                            = case when pg_temp.t470_472_in() then m.after472
+                            = case when pg_temp.t470_477_in() then m.after477
+                                   when pg_temp.t470_472_in() then m.after472
                                    when pg_temp.t470_471_in() then m.after471 else m.after end end)
     from t470_md5 m $f$;
 do $$ begin

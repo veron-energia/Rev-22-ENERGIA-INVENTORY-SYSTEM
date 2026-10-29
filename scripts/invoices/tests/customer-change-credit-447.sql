@@ -506,11 +506,47 @@ end$$;
 -- Whether 462 is in (its merge text).
 create function pg_temp.with_462() returns boolean language sql as
 $$ select to_regprocedure('public.credit_given_back_follows(uuid)') is not null $$;
+-- The Move as tested: 445's, or 477's where 477 is in (it also takes credit
+-- a refund put back on a lot an Owner had reversed, or on a lot Cancel's
+-- write-off of credit released before full payment locked; no case here
+-- moves a locked lot, so every case ends as before).
+create function pg_temp.move_md5() returns text language sql as
+$$ select case when position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
+               then '720d296a43524e7ac8843c6062030819' else '7aebd7120bc3928db46df0941cb20889' end $$;
 -- 447's text, read from what is installed: 455's, or 460's or 461's (or
 -- both, or 462 over both, or 463 over 462) with their changes taken out.
+-- 476 (part-paid-change-same-as-paid-in-full-476.sql), where it is in: one
+-- more way a lot moves (credit released before full payment that holds all
+-- its release record counts), taken out as it went in.
+create function pg_temp.without_476(p_t text) returns text language sql as
+$$ select replace(p_t, $w476$
+            -- 476 (the Owner, 27 Oct 2026, answer C): or, for credit released
+            -- before full payment that no benefit row names (the line not
+            -- settled), it holds all that the release records whose lot it is
+            -- now (credit_lot_current) count as released: what was taken back
+            -- without being used (the payment corrected lower; a Cancel's
+            -- write-off, then a reopening and a refund paid back onto it) is
+            -- no longer counted, so nothing on it was used and it moves, as the
+            -- list (invoice_transferable_benefits) makes the same test, on the
+            -- same conditions as 461's (no reopening waits, the invoice
+            -- neither cancelled nor refunded). Read again once the lot is
+            -- locked. A lot Cancel's write-off locked keeps its lock on the
+            -- new customer's lot, as every reissue here carries the lot's
+            -- fields over.
+            or not exists (select 1 from public.invoice_benefit_values b
+                            where b.lot_id = l.id and b.invoice_id = p_invoice_id)
+               and l.remaining_amount >= nullif((select sum(pl.released_amount)
+                                                   from public.credit_package_progress_lots pl
+                                                  where pl.invoice_id = p_invoice_id and public.credit_lot_current(pl.lot_id) = l.id
+                                                    and not exists (select 1 from public.invoice_benefit_values bv
+                                                                     where bv.lot_id = any (public.credit_lot_chain(pl.lot_id)))), 0)
+               and not exists (select 1 from public.invoice_reopen_benefits q
+                                where q.invoice_id = p_invoice_id and q.applied_at is null)
+               and not exists (select 1 from public.invoices iv
+                                where iv.id = p_invoice_id and iv.status in ('cancelled', 'refunded'))$w476$, '') $$;
 create function pg_temp.as_447() returns text language sql as
-$$ select pg_temp.without_461(pg_temp.without_460(pg_temp.without_462(pg_temp.without_463(
-          pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure))))) $$;
+$$ select pg_temp.without_461(pg_temp.without_460(pg_temp.without_462(pg_temp.without_463(pg_temp.without_476(
+          pg_get_functiondef('public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)))))) $$;
 
 -- 417's text of move_invoice_benefits_to_customer, rebuilt from 447's (the
 -- block 447 adds taken out; where 460 or 461 is in, from their text with
@@ -661,8 +697,8 @@ select pg_temp.check(md5(pg_temp.as_447()) = 'e313e87b4ab4c0063d924430996ffbd3'
     and (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'move_invoice_benefits_to_customer') = 1
     and pg_temp.md5_of('merge_customer_records(uuid,uuid,text,uuid)')
         = case when pg_temp.with_462() then 'ba05c2b1fb4c0e14d369c01d06a635b0' else '2e0c9852099ab88d8f27827b5f9a3846' end
-    and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = '7aebd7120bc3928db46df0941cb20889',
-  'M3 move_invoice_benefits_to_customer is 447''s (e313e87b4ab4c0063d924430996ffbd3; where 460, 461 or 462 is in, with their changes taken out), with no overload; 445''s merge (462''s where it is in) and Move are unchanged');
+    and pg_temp.md5_of('transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)') = pg_temp.move_md5(),
+  'M3 move_invoice_benefits_to_customer is 447''s (e313e87b4ab4c0063d924430996ffbd3; where 460, 461 or 462 is in, with their changes taken out), with no overload; 445''s merge (462''s where it is in) and Move (477''s where it is in) are unchanged');
 select pg_temp.check((select array_agg(x::text order by x::text) from pg_proc p, unnest(p.proacl) x
                        where p.oid = 'public.move_invoice_benefits_to_customer(uuid,uuid,uuid,text)'::regprocedure)
       = (select array_agg(x::text order by x::text) from unnest('{postgres=X/postgres,service_role=X/postgres}'::aclitem[]) x)
