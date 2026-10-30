@@ -27,7 +27,9 @@
 --      450 is refused and nothing is changed (every run).
 --
 -- Disposable local database only (a copy of production as it is: run it on 450's copy, where it
--- installs 453 twice, or with -v skip_install=1 where 453 is already in); everything is rolled back.
+-- installs 453 twice, or with -v skip_install=1 where 453 is already in, and always once 480 is: 453's
+-- installer then refuses, as it should, since 480 changed customer_downline_visits); everything is
+-- rolled back.
 -- Every name and email is invented (@example.com); phones are ACMA's fictional ranges
 -- (+61 2 5550 ....), found free at run time. Every check runs, then the file fails if any did.
 --   psql -X -v ON_ERROR_STOP=1 [-v skip_install=1] -f scripts/customers/tests/staff-profile-453.sql
@@ -199,10 +201,13 @@ set local client_min_messages = notice;
 -- ═════ G The md5s and the grants ═════
 select pg_temp.check((select array_agg(f.fn || ' ' || f.md5 order by f.fn) from pg_temp.fn_md5s() f
                        where f.fn in ('customer_profile_stats(uuid)', 'customer_purchase_timeline(uuid)', 'customer_downline_visits(uuid)'))
-    = array['customer_downline_visits(uuid) 5bee190a80a8e9624e7d15e16eb95ca1',
+    = array['customer_downline_visits(uuid) '
+              -- 480 adds each row's cal.com booking to it (its AFTER), the role check as 453 left it.
+              || (select case when f.md5 = 'ea3f28ea932506eda6937fa687298d6d' then f.md5 else '5bee190a80a8e9624e7d15e16eb95ca1' end
+                    from pg_temp.fn_md5s() f where f.fn = 'customer_downline_visits(uuid)'),
             'customer_profile_stats(uuid) 93c1a7b762b99c7e28fdad0facc17ac8',
             'customer_purchase_timeline(uuid) 9fdfb23164e62e6e9309e02470a3520e'],
-  'G1 the three functions are at 453''s AFTER md5s');
+  'G1 the three functions are at 453''s AFTER md5s (customer_downline_visits: or 480''s)');
 select pg_temp.check((select array_agg(f.fn || ' ' || f.md5 order by f.fn) from pg_temp.fn_md5s() f
                        where f.fn in ('require_active_staff(text[])', 'customer_centre_visits()', 'is_owner_or_manager()',
                                       'referrer_downline(uuid)', 'customer_overview(uuid)'))

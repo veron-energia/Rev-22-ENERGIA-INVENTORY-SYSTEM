@@ -202,6 +202,13 @@ declare
                              -- the settlement's issuers, the part-payment commission and
                              -- the Pay dialog's read call them)
                              'credit_line_benefits_holder','credit_line_sale_group',
+                             -- 480: cal.com bookings: the webhook's and the calendar fill's
+                             -- (the Edge Function calcom-webhook, and the fill with its monthly
+                             -- catch-up, with the service key), whose booking it is, the one booking and
+                             -- state a customer's row shows (customer_downline_visits and
+                             -- affiliate_portal_network call it), and the ingest's helpers
+                             'calcom_booking_ingest','calcom_booking_backfill','calcom_booking_owner',
+                             'calcom_customer_bookings','calcom_booking_apply','calcom_parse_time',
                              -- 412: a staff login follows its profile (signed out and banned when
                              -- the profile is closed, unbanned when it opens again), and the
                              -- profiles trigger that calls it
@@ -440,9 +447,21 @@ begin
      and to_regprocedure('public.allocate_invoice_wallet_credit(uuid,numeric,text)') is not null then
     raise exception 'FAIL: the three-argument allocate_invoice_wallet_credit(uuid,numeric,text) is back beside 443''s four-argument one'; end if;
 
+  -- 16. Once 480 is in, the cal.com bookings (a phone and an email inbox per
+  --     booking, from the webhook and the calendar fill) are reached through
+  --     their functions only: no client role holds the table, and the service
+  --     role may only read it (the functions write it, keeping its order and
+  --     re-send rules).
+  if to_regclass('public.calcom_bookings') is not null
+     and (has_table_privilege('anon', 'public.calcom_bookings', 'select,insert,update,delete,truncate,references,trigger')
+          or has_table_privilege('authenticated', 'public.calcom_bookings', 'select,insert,update,delete,truncate,references,trigger')
+          or has_table_privilege('service_role', 'public.calcom_bookings', 'insert,update,delete,truncate,references,trigger')
+          or not (select c.relrowsecurity from pg_class c where c.oid = to_regclass('public.calcom_bookings'))) then
+    raise exception 'FAIL: calcom_bookings is open to a client role, writable by the service role, or without row-level security'; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy', n;
+  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy or the cal.com bookings', n;
 end $$;

@@ -23,6 +23,7 @@
     "test:auth-email:db": "node scripts/auth-email/tests/database.mjs",
     "check:auth-email": "deno check --no-lock supabase/functions/auth-signup-request/index.ts supabase/functions/auth-resend-verification/index.ts supabase/functions/auth-request-recovery/index.ts supabase/functions/auth-change-password/index.ts supabase/functions/admin-invite-user/index.ts supabase/functions/auth-accept-invitation/index.ts",
     "check:web-orders": "deno check --no-lock supabase/functions/web-ticket-order/index.ts && deno test --no-lock --allow-env supabase/functions/web-ticket-order/",
+    "check:calcom-webhook": "deno check --no-lock supabase/functions/calcom-webhook/index.ts && deno test --no-lock --allow-env supabase/functions/calcom-webhook/",
     "test:auth-email:delivery": "deno run --no-lock --allow-net=127.0.0.1:8787 --allow-read --allow-write=scripts/auth-email/preview scripts/auth-email/local-delivery-check.ts",
     "check:deliverability": "sh scripts/auth-email/check-deliverability.sh",
     "test:invoice-dates": "node scripts/invoice-dates/tests/dates.test.mjs",
