@@ -3,10 +3,13 @@ import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
 import { ExcelExportButton } from '../ExcelExport';
 import { sgDate } from '../../lib/referral/campaign.mjs';
+import { bookingView } from '../../lib/referral/booking.mjs';
+import type { BookingFields } from '../../lib/referral/booking.mjs';
+import BookingCell from './BookingCell';
 import { RefreshCw } from 'lucide-react';
 
-/** One row of customer_downline_visits (398). */
-export interface DownlineRow {
+/** One row of customer_downline_visits (398; 480: its cal.com booking). */
+export interface DownlineRow extends BookingFields {
   customer_id: string; name: string; phone: string | null;
   /** The Singapore date of the referral, else of the customer's creation. */
   joined_on: string | null; joined_from_created: boolean;
@@ -21,10 +24,10 @@ const Table: React.FC<{ rows: DownlineRow[]; tier2?: boolean }> = ({ rows, tier2
   <div className="table-wrap" style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', maxHeight: 280, overflowY: 'auto' }}>
     <table style={{ fontSize: 12.5 }}>
       <thead><tr>
-        <th>Name</th>{tier2 && <th>Referred by</th>}<th>Phone</th><th>Joined</th><th>Visited</th><th>First visit</th>
+        <th>Name</th>{tier2 && <th>Referred by</th>}<th>Phone</th><th>Joined</th><th>Visited</th><th>First visit</th><th>Booking</th>
       </tr></thead>
       <tbody>
-        {rows.length === 0 && <tr><td colSpan={tier2 ? 6 : 5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 14 }}>No one yet</td></tr>}
+        {rows.length === 0 && <tr><td colSpan={tier2 ? 7 : 6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 14 }}>No one yet</td></tr>}
         {rows.map(r => (
           <tr key={r.customer_id}>
             <td><strong>{r.name}</strong></td>
@@ -35,6 +38,7 @@ const Table: React.FC<{ rows: DownlineRow[]; tier2?: boolean }> = ({ rows, tier2
             </td>
             <td>{r.visited ? <span className="badge badge-success">Yes</span> : <span className="badge badge-muted">No</span>}</td>
             <td>{r.visited ? sgDate(r.first_visit_on) : '—'}</td>
+            <td><BookingCell row={r} /></td>
           </tr>
         ))}
       </tbody>
@@ -49,6 +53,8 @@ const Table: React.FC<{ rows: DownlineRow[]; tier2?: boolean }> = ({ rows, tier2
  * Admins, Managers and Staff (453, the Owner, 22 Oct 2026: the roles that see
  * a customer's full Profile); the database refuses anyone else, an Inventory
  * Manager included. Used on the Customers and Affiliates pages.
+ * 480 (the Owner, 29 Oct 2026): each one's cal.com booking (Booking; Booking
+ * and Booking Status in the export).
  */
 const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () => void }> = ({ customerId, name, onClose }) => {
   const [data, setData] = useState<Downline | null>(null);
@@ -66,7 +72,7 @@ const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () =>
 
   const all = data ? [...data.tier1.map(r => ({ ...r, tier: 'Tier 1' })), ...data.tier2.map(r => ({ ...r, tier: 'Tier 2' }))] : [];
   return (
-    <Modal title={`Downline — ${name}`} maxWidth={760} onClose={onClose}
+    <Modal title={`Downline — ${name}`} maxWidth={1000} onClose={onClose}
       footer={<>
         {data && <ExcelExportButton rows={all} filename={`downline-${name.replace(/[^\w-]+/g, '-').toLowerCase()}`} sheetName="Downline"
           columns={[
@@ -78,6 +84,8 @@ const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () =>
             { header: 'Joined Is Created Date', value: r => r.joined_from_created ? 'Yes' : 'No' },
             { header: 'Visited', value: r => r.visited ? 'Yes' : 'No' },
             { header: 'First Visit', value: r => r.visited ? sgDate(r.first_visit_on) : '' },
+            { header: 'Booking', value: r => bookingView(r).text, sortValue: r => (bookingView(r).text ? r.booking_at : null) },
+            { header: 'Booking Status', value: r => bookingView(r).label },
           ]} />}
         <button className="btn btn-secondary" onClick={onClose}>Close</button>
       </>}>
@@ -88,6 +96,7 @@ const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () =>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             Joined is the referral date; links made before referral dates were recorded show the date the customer was created.
             Visited means a health survey through the centre&apos;s own QR link, or a consultant&apos;s survey with answers, a note or a file; an event&apos;s survey counts only from a later day&apos;s note or file.
+            {' '}Booking is the customer&apos;s next cal.com booking, else their last one (cancelled ones are left out); Miss means no visit and no purchase at the centre were recorded on that booking&apos;s day.
           </div>
           <div>
             <label>Tier 1 — referred by {data.name} ({data.tier1.length}, {visitedOf(data.tier1)} visited)</label>

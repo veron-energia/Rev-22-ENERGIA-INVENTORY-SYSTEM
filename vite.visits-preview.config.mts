@@ -7,6 +7,9 @@
 //   http://localhost:5190/?view=customers&role=owner
 //   http://localhost:5190/?view=promotion&role=owner&status=final
 //   http://localhost:5190/?view=network
+// 480: each row's cal.com booking (upcoming, came, Miss, No booking) on the
+// Downline window and on My Network (?bookings=old: a database before 480).
+//   http://localhost:5190/?view=downline&role=staff
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';

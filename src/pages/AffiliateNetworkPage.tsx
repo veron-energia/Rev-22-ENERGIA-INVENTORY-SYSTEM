@@ -4,6 +4,7 @@ import { portalRpc, usePortalRpc, money, dateStr } from '../lib/affiliatePortal'
 import { DesktopTableCard, MobileCards, MCard, EmptyNote, PortalError } from '../components/AffiliateResponsive';
 import { progressLine, portalNotYetVisitedLine, windowLabel, sgDayOf } from '../lib/referral/campaign.mjs';
 import type { PortalProgress } from '../lib/referral/campaign.mjs';
+import BookingCell from '../components/referrals/BookingCell';
 
 /** 398: the signed-in affiliate's own progress in the referral promotion
  *  (affiliate_portal_campaign_progress): their friends counted and the next
@@ -41,20 +42,29 @@ const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
   );
 };
 
+// 480 (the Owner, 29 Oct 2026): each member's cal.com booking (Booking), from
+// affiliate_portal_network's booking_at and booking_state: the start and the
+// state only. With the extra column a word or a date in the table no longer
+// breaks in the middle (the portal's cards break anywhere, for phones), so
+// the table needs the content column's full width: below 1200 px
+// (.portal-network in globals.css) this page shows its cards instead, and
+// Your Commission is never left behind a sideways scroll (phones held
+// sideways, tablets).
 const NetTable: React.FC<{ rows: any[]; showParent?: boolean }> = ({ rows, showParent }) => (
   <>
     <DesktopTableCard>
-      <table className="table" style={{ width: '100%' }}>
+      <table className="table" style={{ width: '100%', overflowWrap: 'normal' }}>
         <thead><tr>
-          <th>Customer</th>{showParent && <th>Referred By</th>}<th>Joined</th>
+          <th>Customer</th>{showParent && <th>Referred By</th>}<th>Joined</th><th>Booking</th>
           <th style={{ textAlign: 'right' }}>Purchases</th><th style={{ textAlign: 'right' }}>Total Spent</th><th style={{ textAlign: 'right' }}>Your Commission</th>
         </tr></thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={showParent ? 6 : 5} style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>No members yet</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={showParent ? 7 : 6} style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>No members yet</td></tr>}
           {rows.map((r, i) => (
             <tr key={i}>
               <td>{r.customer_name}</td>{showParent && <td>{r.parent_name}</td>}
               <td>{dateStr(r.referral_date || r.joined_at)}</td>
+              <td><BookingCell row={r} /></td>
               <td style={{ textAlign: 'right' }}>{r.purchases}</td>
               <td style={{ textAlign: 'right' }}>{money(r.total_spent)}</td>
               <td style={{ textAlign: 'right' }}>{money(r.your_commission)}</td>
@@ -71,6 +81,7 @@ const NetTable: React.FC<{ rows: any[]; showParent?: boolean }> = ({ rows, showP
             rows={[
               ...(showParent ? [['Referred By', r.parent_name] as [React.ReactNode, React.ReactNode]] : []),
               ['Joined', dateStr(r.referral_date || r.joined_at)],
+              ['Booking', <BookingCell row={r} />],
               ['Purchases', String(r.purchases)],
               ['Total Spent', money(r.total_spent)],
               ['Your Commission', money(r.your_commission)],
@@ -90,14 +101,17 @@ const AffiliateNetworkPage: React.FC = () => {
     <AffiliateLayout>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>My Network</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your direct referrals and their referrals — the two levels you earn from.</p>
+      <p data-booking-note style={{ color: 'var(--text-muted)', fontSize: 12.5, marginTop: -12, marginBottom: 20 }}>
+        Booking is each person&apos;s next appointment at the centre, or their last one; Miss means no visit and no purchase at the centre were recorded that day.
+      </p>
       {promo?.campaign && <PromotionCard p={promo} />}
       {err ? <PortalError message={err} onRetry={retry} /> : !n ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
-        <>
+        <div className="portal-network">
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Tier 1 — Direct Referrals ({(n.tier1 ?? []).length})</h3>
           <div style={{ marginBottom: 20 }}><NetTable rows={n.tier1 ?? []} /></div>
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Tier 2 — Their Referrals ({(n.tier2 ?? []).length})</h3>
           <NetTable rows={n.tier2 ?? []} showParent />
-        </>
+        </div>
       )}
     </AffiliateLayout>
   );

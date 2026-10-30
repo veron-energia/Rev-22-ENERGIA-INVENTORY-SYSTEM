@@ -307,6 +307,14 @@ tbody tr:hover { background: var(--surface-2); }
   .portal-desktop-only { display: none !important; }
   .portal-mobile-only { display: block !important; }
 }
+/* 480: My Network's tables (6 and 7 columns, words kept whole) fit only at
+   the content column's full width (1200 px and up: the 240 px sidebar and the
+   960 px content column); narrower, the page shows its cards instead of
+   leaving Your Commission behind a sideways scroll. */
+@media (max-width: 1199px) {
+  .portal-network .portal-desktop-only { display: none !important; }
+  .portal-network .portal-mobile-only { display: block !important; }
+}
 
 /* Mobile record card */
 .portal-mobile-card { padding: 14px; margin-bottom: 10px; }
