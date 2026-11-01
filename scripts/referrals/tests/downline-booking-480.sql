@@ -67,7 +67,10 @@
 --      nothing changed; so is a database whose Adelphi store is renamed or deleted (N8).
 --
 -- Disposable local database only (a copy of production as it is: run it on 478's copy, where it installs
--- 480 twice, or with -v skip_install=1 where 480 is already in); everything is rolled back. A copy without
+-- 480 twice, or with -v skip_install=1 where 480 is already in, also once 482 is: 482 changes only the state
+-- rule's answer for a customer with no booking who has come in, which no fixture here is, so G1 accepts 482's
+-- AFTER for calcom_customer_bookings and N6/N8 accept 480's own refusal at that function, which comes first
+-- there; 484, on hold, is not covered here: its checks come with it); everything is rolled back. A copy without
 -- production's stores gets made-up RETAIL-ADELPHI and ADELPHI-VAN stores for the run. Every name and email is
 -- invented (@example.com / @example.invalid; Gmail addresses with made-up local parts); phones are ACMA's
 -- fictional range (+61 2 5550 ....), found free at run time. Every check runs, then the file fails if any did.
@@ -1328,10 +1331,13 @@ select pg_temp.check((select array_agg(f.fn || ' ' || f.md5 order by f.fn) from 
             'calcom_booking_backfill(jsonb,timestamp with time zone,timestamp with time zone,timestamp with time zone,boolean,text[],boolean) b68af462ad32de7af3f8b98a8491a7e1',
             'calcom_booking_ingest(jsonb) 55d6b6b8b7509911a225f494313212d9',
             'calcom_booking_owner(text,text) 959a5a8280ac20155068b3fa9aae73f3',
-            'calcom_customer_bookings(uuid[],date) 2e651a5d2367ba26bfd9e8e00d95823e',
+            'calcom_customer_bookings(uuid[],date) '
+              -- 482 (the Owner, 30 Oct 2026) answers 'visited' for a customer with no booking who has come in (its AFTER).
+              || (select case when f.md5 = '14987e9e9f033290010042a5632bc81c' then f.md5 else '2e651a5d2367ba26bfd9e8e00d95823e' end
+                    from pg_temp.fn_md5s() f where f.fn = 'calcom_customer_bookings(uuid[],date)'),
             'calcom_parse_time(text) 773399bc477ceb3476dd84a6a9251f2d',
             'customer_downline_visits(uuid) ea3f28ea932506eda6937fa687298d6d'],
-  'G1 the eight functions are at 480''s AFTER md5s');
+  'G1 the eight functions are at 480''s AFTER md5s (calcom_customer_bookings: or 482''s)');
 select pg_temp.check((select array_agg(p.proname || ' ' || (select array_agg(x::text order by x::text) from unnest(p.proacl) x)::text order by p.proname)
                         from pg_proc p where p.pronamespace = 'public'::regnamespace
                          and (p.proname like 'calcom%' or p.proname in ('customer_downline_visits', 'affiliate_portal_network')))
@@ -1416,8 +1422,12 @@ alter table public.calcom_bookings add column attendee_name text;
 \set ON_ERROR_STOP on
 \set n6_msg :LAST_ERROR_MESSAGE
 rollback to savepoint n6;
-select pg_temp.check(:'n6_msg' like '480: public.calcom_bookings exists and is not this migration''s%',
-  'N6 a calcom_bookings table of another shape is refused: ' || :'n6_msg');
+-- Once 482 is in, 480's file refuses earlier, at the state rule (482's now, not 480's): right, it never runs over 482.
+create function pg_temp.refused_at_482(msg text) returns boolean language sql as
+$$ select (select f.md5 from pg_temp.fn_md5s() f where f.fn = 'calcom_customer_bookings(uuid[],date)') = '14987e9e9f033290010042a5632bc81c'
+      and msg like '480: public.calcom_customer_bookings(uuid[],date) exists and is not this migration''s (md5 14987e9e9f033290010042a5632bc81c)%' $$;
+select pg_temp.check(:'n6_msg' like '480: public.calcom_bookings exists and is not this migration''s%' or pg_temp.refused_at_482(:'n6_msg'),
+  'N6 a calcom_bookings table of another shape is refused (where 482 is in, at the state rule first): ' || :'n6_msg');
 select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'customer_downline_visits(uuid)') = 'ea3f28ea932506eda6937fa687298d6d'
     and not exists (select 1 from pg_attribute where attrelid = 'public.calcom_bookings'::regclass and attname = 'attendee_name'),
   'N7 after the refusals the function and the table are 480''s');
@@ -1439,10 +1449,11 @@ update public.stores set deleted_at = now() where code = 'RETAIL-ADELPHI';
 \set ON_ERROR_STOP on
 \set n9_msg :LAST_ERROR_MESSAGE
 rollback to savepoint n9;
-select pg_temp.check(:'n8_msg' = '480: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0'
-    and :'n9_msg' = '480: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0'
+select pg_temp.check(((:'n8_msg' = '480: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0'
+                       and :'n9_msg' = '480: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0')
+                      or (pg_temp.refused_at_482(:'n8_msg') and pg_temp.refused_at_482(:'n9_msg')))
     and (select count(*) from public.stores where code = 'RETAIL-ADELPHI' and deleted_at is null) = 1,
-  'N8 with the Adelphi store renamed, or deleted, 480 is refused (all undone): ' || :'n8_msg');
+  'N8 with the Adelphi store renamed, or deleted, 480 is refused (all undone; where 482 is in, at the state rule first): ' || :'n8_msg');
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;
