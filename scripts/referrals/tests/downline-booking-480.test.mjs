@@ -65,7 +65,8 @@ test('bookingView: the state, the text and the export\'s word', () => {
   assert.deepEqual(bookingView({}), v('unknown', '', '', '', ''));
   assert.deepEqual(bookingView({ booking_state: 'toString' }), v('unknown', '', '', '', ''));
   assert.deepEqual(bookingView(null), v('unknown', '', '', '', ''));
-  assert.deepEqual(BOOKING_STATUS_LABELS, { upcoming: 'Upcoming', came: 'Came', miss: 'Miss', none: 'No booking' });
+  // 482 adds visited, "Came in" (no booking, but they have come in): downline-booking-482.test.mjs.
+  assert.deepEqual(BOOKING_STATUS_LABELS, { upcoming: 'Upcoming', came: 'Came', miss: 'Miss', visited: 'Came in', none: 'No booking' });
 });
 
 // ── The pages ───────────────────────────────────────────────────────────────
@@ -265,6 +266,7 @@ test('My Network: a Booking column in both tiers and a Booking line on each card
   assert.ok(backend.calls.some(c => c.name === 'affiliate_portal_network'));
   const tables = document.querySelectorAll('.portal-desktop-only table');
   assert.equal(tables.length, 2);
+  // This fixture sends no 'phone' (as before 484), so Tier 1 has no Phone column: affiliate-network-phone-484.test.mjs.
   assert.deepEqual([...tables[0].querySelectorAll('thead th')].map(th => th.textContent),
     ['Customer', 'Joined', 'Booking', 'Purchases', 'Total Spent', 'Your Commission']);
   assert.deepEqual([...tables[1].querySelectorAll('thead th')].map(th => th.textContent),

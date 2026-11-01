@@ -9,6 +9,11 @@
 //   http://localhost:5190/?view=network
 // 480: each row's cal.com booking (upcoming, came, Miss, No booking) on the
 // Downline window and on My Network (?bookings=old: a database before 480).
+// 482: and a grey "Came in" (no booking, but they have come in).
+// 484: My Network's Tier 1 Phone column and card line, shown only once the
+// database sends a number (?phones=none, the default: no 'phone' key, as
+// production before 484; null: every Tier 1 phone null, the same page;
+// mixed: some numbers, "—" for the others; all).
 //   http://localhost:5190/?view=downline&role=staff
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';

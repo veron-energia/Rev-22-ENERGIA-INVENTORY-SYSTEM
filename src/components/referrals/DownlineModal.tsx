@@ -54,7 +54,9 @@ const Table: React.FC<{ rows: DownlineRow[]; tier2?: boolean }> = ({ rows, tier2
  * a customer's full Profile); the database refuses anyone else, an Inventory
  * Manager included. Used on the Customers and Affiliates pages.
  * 480 (the Owner, 29 Oct 2026): each one's cal.com booking (Booking; Booking
- * and Booking Status in the export).
+ * and Booking Status in the export). 482 (the Owner, 30 and 31 Oct 2026):
+ * "Came in" for someone with no booking who has come in (Booking Status
+ * "Came in", Booking empty).
  */
 const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () => void }> = ({ customerId, name, onClose }) => {
   const [data, setData] = useState<Downline | null>(null);
@@ -97,6 +99,7 @@ const DownlineModal: React.FC<{ customerId: string; name: string; onClose: () =>
             Joined is the referral date; links made before referral dates were recorded show the date the customer was created.
             Visited means a health survey through the centre&apos;s own QR link, or a consultant&apos;s survey with answers, a note or a file; an event&apos;s survey counts only from a later day&apos;s note or file.
             {' '}Booking is the customer&apos;s next cal.com booking, else their last one (cancelled ones are left out); Miss means no visit and no purchase at the centre were recorded on that booking&apos;s day.
+            {' '}Came in under Booking means they have no cal.com booking but have come to the centre (a visit, or a purchase at the centre).
           </div>
           <div>
             <label>Tier 1 — referred by {data.name} ({data.tier1.length}, {visitedOf(data.tier1)} visited)</label>

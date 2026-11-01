@@ -42,6 +42,18 @@ const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
   );
 };
 
+/** 484 (the Owner, 31 Oct 2026): a direct referral's phone number as the database sends it (affiliate_portal_network's
+ *  'phone' on Tier 1 rows), or null when the row has none to show: null, blank, not text, or no 'phone' at all. */
+const phoneOf = (row: any): string | null => (typeof row?.phone === 'string' && row.phone.trim() !== '' ? row.phone : null);
+
+/** 484: the number in the font of the staff Downline's phone cell and kept whole; a grey "—" when the row has none. */
+const PhoneCell: React.FC<{ row: any }> = ({ row }) => {
+  const phone = phoneOf(row);
+  return phone
+    ? <span data-phone="number" style={{ fontFamily: 'var(--font-display)', whiteSpace: 'nowrap' }}>{phone}</span>
+    : <span data-phone="none" style={{ color: 'var(--text-muted)' }}>—</span>;
+};
+
 // 480 (the Owner, 29 Oct 2026): each member's cal.com booking (Booking), from
 // affiliate_portal_network's booking_at and booking_state: the start and the
 // state only. With the extra column a word or a date in the table no longer
@@ -49,22 +61,29 @@ const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
 // the table needs the content column's full width: below 1200 px
 // (.portal-network in globals.css) this page shows its cards instead, and
 // Your Commission is never left behind a sideways scroll (phones held
-// sideways, tablets).
-const NetTable: React.FC<{ rows: any[]; showParent?: boolean }> = ({ rows, showParent }) => (
+// sideways, tablets). 482 (the Owner, 30 and 31 Oct 2026): "Came in" (grey,
+// no date) for a member with no booking who has come to the centre.
+// 484 (the Owner, 31 Oct 2026): Tier 1 (the affiliate's direct referrals) has
+// a Phone column right after Booking, and a Phone line right after Booking on
+// each card (showPhone), once the database sends a Tier 1 number; until then
+// both are as before. Tier 2 has neither (the database sends no Tier 2 number
+// at all).
+const NetTable: React.FC<{ rows: any[]; showParent?: boolean; showPhone?: boolean }> = ({ rows, showParent, showPhone }) => (
   <>
     <DesktopTableCard>
       <table className="table" style={{ width: '100%', overflowWrap: 'normal' }}>
         <thead><tr>
-          <th>Customer</th>{showParent && <th>Referred By</th>}<th>Joined</th><th>Booking</th>
+          <th>Customer</th>{showParent && <th>Referred By</th>}<th>Joined</th><th>Booking</th>{showPhone && <th>Phone</th>}
           <th style={{ textAlign: 'right' }}>Purchases</th><th style={{ textAlign: 'right' }}>Total Spent</th><th style={{ textAlign: 'right' }}>Your Commission</th>
         </tr></thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={showParent ? 7 : 6} style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>No members yet</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={6 + (showParent ? 1 : 0) + (showPhone ? 1 : 0)} style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 18 }}>No members yet</td></tr>}
           {rows.map((r, i) => (
             <tr key={i}>
               <td>{r.customer_name}</td>{showParent && <td>{r.parent_name}</td>}
               <td>{dateStr(r.referral_date || r.joined_at)}</td>
               <td><BookingCell row={r} /></td>
+              {showPhone && <td><PhoneCell row={r} /></td>}
               <td style={{ textAlign: 'right' }}>{r.purchases}</td>
               <td style={{ textAlign: 'right' }}>{money(r.total_spent)}</td>
               <td style={{ textAlign: 'right' }}>{money(r.your_commission)}</td>
@@ -82,6 +101,7 @@ const NetTable: React.FC<{ rows: any[]; showParent?: boolean }> = ({ rows, showP
               ...(showParent ? [['Referred By', r.parent_name] as [React.ReactNode, React.ReactNode]] : []),
               ['Joined', dateStr(r.referral_date || r.joined_at)],
               ['Booking', <BookingCell row={r} />],
+              ...(showPhone ? [['Phone', <PhoneCell row={r} />] as [React.ReactNode, React.ReactNode]] : []),
               ['Purchases', String(r.purchases)],
               ['Total Spent', money(r.total_spent)],
               ['Your Commission', money(r.your_commission)],
@@ -96,6 +116,9 @@ const AffiliateNetworkPage: React.FC = () => {
   // 398. Optional: before the database has it, the page is as it was.
   const [promo, setPromo] = useState<PortalProgress | null>(null);
   useEffect(() => { portalRpc<PortalProgress>('affiliate_portal_campaign_progress').then(setPromo).catch(() => setPromo(null)); }, []);
+  // 484 (the Owner, 31 Oct 2026): Tier 1's Phone column and card line, and the note's sentence about them, only once
+  // the database sends at least one Tier 1 number; until then the page is as it was.
+  const showPhone = (n?.tier1 ?? []).some((r: any) => phoneOf(r) !== null);
 
   return (
     <AffiliateLayout>
@@ -103,12 +126,14 @@ const AffiliateNetworkPage: React.FC = () => {
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your direct referrals and their referrals — the two levels you earn from.</p>
       <p data-booking-note style={{ color: 'var(--text-muted)', fontSize: 12.5, marginTop: -12, marginBottom: 20 }}>
         Booking is each person&apos;s next appointment at the centre, or their last one; Miss means no visit and no purchase at the centre were recorded that day.
+        {' '}Came in means they have come to the centre without a booking.
+        {showPhone && ' Phone numbers are shown for your direct referrals only.'}
       </p>
       {promo?.campaign && <PromotionCard p={promo} />}
       {err ? <PortalError message={err} onRetry={retry} /> : !n ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
         <div className="portal-network">
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Tier 1 — Direct Referrals ({(n.tier1 ?? []).length})</h3>
-          <div style={{ marginBottom: 20 }}><NetTable rows={n.tier1 ?? []} /></div>
+          <div style={{ marginBottom: 20 }}><NetTable rows={n.tier1 ?? []} showPhone={showPhone} /></div>
           <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Tier 2 — Their Referrals ({(n.tier2 ?? []).length})</h3>
           <NetTable rows={n.tier2 ?? []} showParent />
         </div>

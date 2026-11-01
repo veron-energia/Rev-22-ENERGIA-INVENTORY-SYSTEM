@@ -40,10 +40,26 @@ const report = {
 
 // 480: each row's cal.com booking, in all four states in both tiers (?bookings=old
 // leaves them out, as a database before 480 answers): upcoming (Sat 31 Oct 2026,
-// 2:00 pm in Singapore), came, missed, and none.
+// 2:00 pm in Singapore), came, missed, and none. 482: and visited, which reads
+// "Came in" (no booking, but they have come in: Tia Ong and Vic Tan by a visit, Uma
+// Koh by a purchase only, so her Visited column reads No).
 const oldDatabase = params.get('bookings') === 'old';
-const bk = (state: 'upcoming' | 'came' | 'miss' | 'none', at: string | null) =>
+const bk = (state: 'upcoming' | 'came' | 'miss' | 'visited' | 'none', at: string | null) =>
   oldDatabase ? {} : { booking_state: state, booking_at: at };
+// 484: My Network shows Tier 1's Phone column and card line (and the note's
+// sentence) only once the database sends a Tier 1 number. ?phones= picks what
+// it sends (fictional +61 2 5550 numbers; Tier 2 rows never carry one):
+//   none   (the default) no 'phone' key: production before 484, so right after
+//          the pages push: no Phone column, no card line, no sentence;
+//   null   every Tier 1 row 'phone': null (no number to show yet): as none;
+//   mixed  Uma Koh and Tia Ong (told at sign-up) with numbers, the others null:
+//          the column, the line and the sentence, "—" for the others;
+//   all    every Tier 1 row with a number.
+const phones = params.get('phones') ?? 'none';
+const ph = (phone: string, told: boolean) => {
+  if (phones === 'all' || (phones === 'mixed' && told)) return { phone };
+  return phones === 'null' || phones === 'mixed' ? { phone: null } : {};
+};
 const UPCOMING = '2026-10-31T06:00:00+00:00';
 const CAME = '2026-10-24T03:30:00+00:00';
 const MISSED = '2026-10-27T08:00:00+00:00';
@@ -52,12 +68,16 @@ const LATER = '2026-11-02T02:00:00+00:00';
 const downline = {
   customer_id: 'c-fay', name: 'Fay Lum',
   tier1: [
+    { customer_id: 'f-15', name: 'Uma Koh', phone: '+61255509106', joined_on: '2026-10-19', joined_from_created: false, visited: false, first_visit_on: null, ...bk('visited', null) },
+    { customer_id: 'f-14', name: 'Tia Ong', phone: '+61255509105', joined_on: '2026-10-18', joined_from_created: false, visited: true, first_visit_on: '2026-10-20', ...bk('visited', null) },
     { customer_id: 'f-2', name: 'Gia Lo', phone: '+6591398051', joined_on: '2026-10-03', joined_from_created: false, visited: true, first_visit_on: '2026-10-05', ...bk('came', CAME) },
     { customer_id: 'f-9', name: 'Cal Ee', phone: '+6591398042', joined_on: '2026-08-04', joined_from_created: true, visited: false, first_visit_on: null, ...bk('none', null) },
     { customer_id: 'f-4', name: 'Ian Su', phone: '+6591398053', joined_on: '2026-10-10', joined_from_created: false, visited: false, first_visit_on: null, ...bk('upcoming', UPCOMING) },
     { customer_id: 'f-10', name: 'Dee Ho', phone: '+61255509101', joined_on: '2026-10-12', joined_from_created: false, visited: false, first_visit_on: null, ...bk('miss', MISSED) },
   ],
   tier2: [
+    { customer_id: 'f-16', name: 'Vic Tan', phone: '+61255509107', parent_id: 'f-2', parent_name: 'Gia Lo',
+      joined_on: '2026-10-20', joined_from_created: false, visited: true, first_visit_on: '2026-10-22', ...bk('visited', null) },
     { customer_id: 'f-6', name: 'Oli Ting', phone: '+6591398059', parent_id: 'f-2', parent_name: 'Gia Lo',
       joined_on: '2026-10-11', joined_from_created: false, visited: true, first_visit_on: '2026-10-12', ...bk('upcoming', LATER) },
     { customer_id: 'f-11', name: 'Pam Yeo', phone: '+61255509102', parent_id: 'f-2', parent_name: 'Gia Lo',
@@ -111,11 +131,14 @@ function rpcData(name: string, a: any): any {
       items: (a?.p_items ?? []).map((i: any, k: number) => ({ ...i, use_no: `SU-PREVIEW-010${k}` })) };
     case 'void_referral_campaign_reward': return { success: true };
     case 'affiliate_portal_network': return { tier1: [
-      { customer_name: 'Gia Lo', tier: 'tier1', referral_date: '2026-10-03T02:00:00Z', joined_at: '2026-10-03T02:00:00Z', purchases: 1, total_spent: 120, your_commission: 18, ...bk('came', CAME) },
-      { customer_name: 'Cal Ee', tier: 'tier1', referral_date: null, joined_at: '2026-08-04T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('none', null) },
-      { customer_name: 'Ian Su', tier: 'tier1', referral_date: '2026-10-10T02:00:00Z', joined_at: '2026-10-10T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('upcoming', UPCOMING) },
-      { customer_name: 'Dee Ho', tier: 'tier1', referral_date: '2026-10-12T02:00:00Z', joined_at: '2026-10-12T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('miss', MISSED) },
+      { customer_name: 'Uma Koh', tier: 'tier1', referral_date: '2026-10-19T02:00:00Z', joined_at: '2026-10-19T02:00:00Z', purchases: 1, total_spent: 60, your_commission: 9, ...bk('visited', null), ...ph('+61255509106', true) },
+      { customer_name: 'Tia Ong', tier: 'tier1', referral_date: '2026-10-18T02:00:00Z', joined_at: '2026-10-18T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('visited', null), ...ph('+61255509105', true) },
+      { customer_name: 'Gia Lo', tier: 'tier1', referral_date: '2026-10-03T02:00:00Z', joined_at: '2026-10-03T02:00:00Z', purchases: 1, total_spent: 120, your_commission: 18, ...bk('came', CAME), ...ph('+61255509108', false) },
+      { customer_name: 'Cal Ee', tier: 'tier1', referral_date: null, joined_at: '2026-08-04T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('none', null), ...ph('+61255509110', false) },
+      { customer_name: 'Ian Su', tier: 'tier1', referral_date: '2026-10-10T02:00:00Z', joined_at: '2026-10-10T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('upcoming', UPCOMING), ...ph('+61255509109', false) },
+      { customer_name: 'Dee Ho', tier: 'tier1', referral_date: '2026-10-12T02:00:00Z', joined_at: '2026-10-12T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('miss', MISSED), ...ph('+61255509101', false) },
     ], tier2: [
+      { customer_name: 'Vic Tan', tier: 'tier2', parent_name: 'Gia Lo', referral_date: '2026-10-20T02:00:00Z', joined_at: '2026-10-20T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('visited', null) },
       { customer_name: 'Oli Ting', tier: 'tier2', parent_name: 'Gia Lo', referral_date: '2026-10-11T02:00:00Z', joined_at: '2026-10-11T02:00:00Z', purchases: 1, total_spent: 80, your_commission: 4, ...bk('upcoming', LATER) },
       { customer_name: 'Pam Yeo', tier: 'tier2', parent_name: 'Gia Lo', referral_date: '2026-10-14T02:00:00Z', joined_at: '2026-10-14T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('miss', MISSED) },
       { customer_name: 'Ray Chu', tier: 'tier2', parent_name: 'Ian Su', referral_date: '2026-10-15T02:00:00Z', joined_at: '2026-10-15T02:00:00Z', purchases: 0, total_spent: 0, your_commission: 0, ...bk('came', CAME) },

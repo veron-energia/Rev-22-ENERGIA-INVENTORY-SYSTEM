@@ -3,8 +3,10 @@
 // booking a row shows and its state (calcom_customer_bookings: the next one
 // from today in Singapore, else the last one; 'came' when that day has a
 // visit by the visit rule or a settled purchase at the Adelphi centre, else
-// 'miss'; 'none'); these helpers only word it, so both screens and the
-// export say the same thing.
+// 'miss'; with no booking, 482 (the Owner, 30 Oct 2026): 'visited' when they
+// have come in, by the same evidence on any day up to today, else 'none');
+// these helpers only word it, so both screens and the export say the same
+// thing ('visited' reads "Came in": the Owner, 31 Oct 2026).
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -32,18 +34,26 @@ export function bookingWhen(ts) {
   return p ? `${p.day}, ${p.time}` : '';
 }
 
-/** The export's word for each state. */
-export const BOOKING_STATUS_LABELS = { upcoming: 'Upcoming', came: 'Came', miss: 'Miss', none: 'No booking' };
+/**
+ * The export's word for each state. 482: 'visited' (no booking, but they have
+ * come in) is "Came in" (the Owner, 31 Oct 2026), the word both screens show
+ * too, so it never reads as the Visited column.
+ */
+export const BOOKING_STATUS_LABELS = { upcoming: 'Upcoming', came: 'Came', miss: 'Miss', visited: 'Came in', none: 'No booking' };
+
+/** The states that carry no booking, so no date: 'visited' and 'none' (and 'unknown'). */
+const NO_DATE = new Set(['visited', 'none', 'unknown']);
 
 /**
- * What a row shows: its state ('upcoming', 'came', 'miss', 'none', or
- * 'unknown' when the row has no booking_state: a database before 480), the
- * date and time ('' for none; also as day and time, so a narrow column can
- * put the time under the day), and the export's status word ('' unknown).
+ * What a row shows: its state ('upcoming', 'came', 'miss', 'visited', 'none',
+ * or 'unknown' when the row has no booking_state: a database before 480), the
+ * date and time ('' for visited and none; also as day and time, so a narrow
+ * column can put the time under the day), and the export's status word (''
+ * unknown).
  */
 export function bookingView(row) {
   const state = row && Object.prototype.hasOwnProperty.call(BOOKING_STATUS_LABELS, row.booking_state) ? row.booking_state : 'unknown';
-  const parts = state === 'unknown' || state === 'none' ? null : bookingParts(row.booking_at);
+  const parts = NO_DATE.has(state) ? null : bookingParts(row.booking_at);
   return { state, text: parts ? `${parts.day}, ${parts.time}` : '', day: parts?.day ?? '', time: parts?.time ?? '',
            label: BOOKING_STATUS_LABELS[state] ?? '' };
 }
