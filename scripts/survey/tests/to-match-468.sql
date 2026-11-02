@@ -161,12 +161,15 @@ $$ select pg_temp.err(format('select public.create_customer_from_held_survey(%L,
 create function pg_temp.close_form(key text) returns text language sql as
 $$ select pg_temp.err(format('select public.close_held_health_survey(%L, %L)', pg_temp.fx('hs:' || key), 'The same person again')) $$;
 
+-- 485 (2 Nov 2026) replaced submit_health_survey again: 468's rule stands, and
+-- since 485 a form no longer fills the email of a record with a portal login
+-- or an affiliate record. Its AFTER is accepted too.
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
-                     = '014a970de2e5dee64e4027459cac5280'
+                     in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308')
     and (select md5(pg_get_constraintdef(oid)) from pg_constraint
           where conrelid = 'public.health_survey_holds'::regclass and conname = 'health_survey_holds_reason_check')
         = '378c1861f7ffacb38d2e6e8c69e45cc8',
-  'P0 468 is installed (submit_health_survey and the reason check are its AFTER versions)');
+  'P0 468 is installed (submit_health_survey is its AFTER version or 485''s, the reason check its AFTER version)');
 select pg_temp.check(not exists (select 1 from public.customers where public.normalize_customer_phone(phone) like '+614915705__')
     and not exists (select 1 from public.health_surveys where public.normalize_customer_phone(phone) like '+614915705__'),
   'P0 no customer or survey uses the test phones +61 491 570 5xx (the checks below assume so)');
@@ -589,12 +592,15 @@ select pg_temp.check(not exists (select 1 from m468 m
     and (select count(*) from pg_constraint where conrelid = 'public.health_survey_holds'::regclass)
         = (select count(*) from m468 where fn like 'constraint %'),
   'M running 468 a second time changed no constraint of health_survey_holds');
+-- 485 (2 Nov 2026) replaced submit_health_survey again: 468's rule stands, and
+-- since 485 a form no longer fills the email of a record with a portal login
+-- or an affiliate record. Its AFTER is accepted too.
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
-                     = '014a970de2e5dee64e4027459cac5280'
+                     in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308')
     and (select md5(pg_get_constraintdef(oid)) from pg_constraint
           where conrelid = 'public.health_survey_holds'::regclass and conname = 'health_survey_holds_reason_check')
         = '378c1861f7ffacb38d2e6e8c69e45cc8',
-  'M submit_health_survey and the reason check are 468''s AFTER versions');
+  'M submit_health_survey is 468''s AFTER version or 485''s, the reason check 468''s AFTER version');
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;

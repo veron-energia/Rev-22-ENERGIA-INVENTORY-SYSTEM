@@ -292,7 +292,8 @@ export const RegistrationHoldsPanel: React.FC<{
             {action.kind === 'attach' && action.customer && (
               <p style={{ margin: 0, fontSize: 13.5 }}>
                 <strong>{action.hold.full_name}</strong> is <strong>{action.customer.full_name}</strong>. Their name and phone stay
-                as they are; an empty email is filled from the registration. Their referrer is not changed.
+                as they are; an empty email is filled from the registration, except an affiliate's, even a former
+                affiliate's (add it in Edit customer if it is theirs). Their referrer is not changed.
               </p>
             )}
             {action.kind === 'attach' && !action.customer && (

@@ -543,17 +543,22 @@ select pg_temp.check(not exists (select 1 from m433 m
     and (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f') = (select count(*) from m433),
   'M running 433 a second time changed no function');
 -- With 419 applied, four of them are 419's AFTER versions (its header); with
--- 468, submit_health_survey is 468's. A row that is not true (a function
--- drifted, or missing) fails: bool_and would skip a null.
+-- 468, submit_health_survey is 468's, or 485's; with 485 (2 Nov 2026: a form's
+-- email no longer goes onto a record with a portal login or an affiliate
+-- record, not even when staff attach it) attach_held_health_survey is 485's.
+-- A row that is not true (a function drifted, or missing) fails: bool_and would
+-- skip a null.
 select pg_temp.check(bool_and(coalesce(md5(pg_get_functiondef(to_regprocedure(fn)))
                                          = case when to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null
                                                 then coalesce(ok419, ok) else ok end
-                                       or md5(pg_get_functiondef(to_regprocedure(fn))) = ok468, false)),
-  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s, once 468 is)')
-  from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185', '014a970de2e5dee64e4027459cac5280'),
+                                       or md5(pg_get_functiondef(to_regprocedure(fn))) = any (string_to_array(ok468, ',')), false)),
+  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s or 485''s and attach_held_health_survey 485''s, once they are)')
+  from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185',
+                                                                         '014a970de2e5dee64e4027459cac5280,860743f4f2e92f669e257121de0a9308'),
                ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978', null, null),
                ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b', '0487502f033b56452140c81e108a8ebc', null),
-               ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249', null),
+               ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249',
+                                                                         '8a66d8e6d7008c79d94c5b20ffecb4df'),
                ('public.create_customer_from_held_survey(uuid,text)',   'd503d8b599f90768c8d909b91cd453e1', '733db65d708db7c64b5c4de03493d409', null),
                ('public.close_held_health_survey(uuid,text)',           'ee4789b1d716e4fbf498a5f38e722735', null, null)) t(fn, ok, ok419, ok468);
 

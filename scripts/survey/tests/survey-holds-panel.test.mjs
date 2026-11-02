@@ -172,6 +172,14 @@ test('Attach needs a note, then sends the form, the customer and the note', asyn
   } finally { ui.close(); }
 });
 
+test('485: the Attach window says an affiliate\'s email is not filled from the form', async () => {
+  const ui = await mount();
+  try {
+    await ui.click('[data-attach="c-bee"]');
+    assert.match(ui.text().replace(/\s+/g, ' '), /empty details \(email, date of birth, sex, occupation, how they heard about us\) are filled from the form, except the email of an affiliate, even a former one \(add it in Edit customer if it is theirs\)\./);
+  } finally { ui.close(); }
+});
+
 test('Attach to another customer needs the customer and the note', async () => {
   const ui = await mount();
   try {
