@@ -18,7 +18,7 @@
 --      otherwise:
 --        * a SECURITY INVOKER function runs as the caller, under the table
 --          rules, so it can do nothing the login could not do directly;
---        * the five signed-out endpoints and the affiliate portal;
+--        * the six signed-out endpoints and the affiliate portal;
 --        * functions that answer only about the caller (the policy helpers);
 --        * functions that refuse such a login with their own message, or that
 --          return only rows of the caller's stores or role (the inventory of
@@ -235,9 +235,11 @@ do $$
 declare
   -- Each list names functions by their full signature, so a new overload of a
   -- named function is not named: it must refuse like any new function.
-  -- The five signed-out endpoints (339; function-grants.sql check 2).
+  -- The six signed-out endpoints (339; function-grants.sql check 2).
   c_public constant text[] := array[
       'active_customer_source_options()', 'affiliate_referral_signup(text,text,text,text,text,text)',
+      -- 484: the app's /r/ page signs up through it, naming the notice it showed
+      'affiliate_referral_signup_with_notice(text,text,text,text,text,text,text)',
       'public_affiliate_referral_info(text)', 'submit_health_survey(text,jsonb,jsonb,text)',
       'survey_link_info(text)'];
   -- The affiliate portal: the signed-in affiliate's own figures (each starts

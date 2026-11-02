@@ -37,8 +37,12 @@
 --      480's file refuses to run over 482.
 --
 -- Disposable local database only (a copy of production as it is: run it where 480 is in and 482 is not, and it
--- installs 482 twice, or with -v skip_install=1 where 482 is in; 484, on hold, is not covered here: its checks
--- come with it); everything is rolled back. A copy without
+-- installs 482 twice, or with -v skip_install=1 where 482 is in, also once 484 is: 484 adds 'phone' to My
+-- Network's Tier 1 rows, null here (no fixture referral was told at sign-up), so R4 accepts that key while it is
+-- null, G1 accepts 484's AFTER for My Network, and N4b, N7 and N10 accept the refusals that come first there
+-- (482's file at its pin of My Network, 480's at My Network): neither runs over 484. Installing 482 needs a
+-- database without 484 (482's guard refuses over it); 484's own checks are in affiliate-network-phone-484.sql);
+-- everything is rolled back. A copy without
 -- production's stores gets made-up RETAIL-ADELPHI and ADELPHI-VAN stores for the run, and a copy built with psql
 -- (no migration rows past 478) gets 480's row in supabase_migrations.schema_migrations as production has it, for
 -- the run. Every name and email is invented (@example.invalid); phones are ACMA's fictional range
@@ -65,6 +69,10 @@ $$ select p.oid::regprocedure::text, md5(pg_get_functiondef(p.oid))
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f' $$;
 create function pg_temp.md5_of(sig text) returns text language sql set search_path = public as
 $$ select md5(pg_get_functiondef(to_regprocedure('public.' || sig))) $$;
+-- 484 (the Owner, 31 Oct and 1 Nov 2026) is in: My Network at its AFTER. Each Tier 1 row then carries 'phone', null
+-- for every fixture here (none was told at sign-up through the /r/ page).
+create function pg_temp.net484() returns boolean language sql set search_path = public as
+$$ select md5(pg_get_functiondef('public.affiliate_portal_network()'::regprocedure)) = '070d1b485d32cec99fa627b816a91b4a' $$;
 set local lock_timeout = '10s';
 set local statement_timeout = '600s';
 create temp table failed(n serial, msg text);
@@ -426,8 +434,10 @@ select pg_temp.check((select bool_and((select array_agg(k order by k) from jsonb
                                 'parent_name', 'phone', 'visited'])
                         from jsonb_array_elements(pg_temp.body(pg_temp.tx('dl'))::jsonb -> 'tier2') r)
     and (select array_agg(k order by k) from jsonb_object_keys(pg_temp.body(pg_temp.tx('dl'))::jsonb) k) = array['customer_id', 'name', 'phone', 'tier1', 'tier2']
-    and (select bool_and((select array_agg(k order by k) from jsonb_object_keys(r) k)
-                        = array['booking_at', 'booking_state', 'customer_name', 'joined_at', 'purchases', 'referral_date', 'tier', 'total_spent', 'your_commission'])
+    and (select bool_and((select array_agg(k order by k) from jsonb_object_keys(r - 'phone') k)
+                        = array['booking_at', 'booking_state', 'customer_name', 'joined_at', 'purchases', 'referral_date', 'tier', 'total_spent', 'your_commission']
+                        -- 484: every Tier 1 row has 'phone', null here (no fixture referral was told at sign-up); before 484, no such key.
+                        and case when pg_temp.net484() then r -> 'phone' = 'null'::jsonb else not (r ? 'phone') end)
                         from jsonb_array_elements(pg_temp.body(pg_temp.tx('net'))::jsonb -> 'tier1') r)
     and (select bool_and((select array_agg(k order by k) from jsonb_object_keys(r) k)
                         = array['booking_at', 'booking_state', 'customer_name', 'joined_at', 'parent_name', 'purchases', 'referral_date', 'tier', 'total_spent',
@@ -435,7 +445,7 @@ select pg_temp.check((select bool_and((select array_agg(k order by k) from jsonb
                         from jsonb_array_elements(pg_temp.body(pg_temp.tx('net'))::jsonb -> 'tier2') r)
     and (select array_agg(k order by k) from jsonb_object_keys(pg_temp.body(pg_temp.tx('net'))::jsonb) k) = array['tier1', 'tier2']
     and pg_temp.body(pg_temp.tx('net')) !~ '\+6125550' and pg_temp.body(pg_temp.tx('net')) !~* '@example',
-  'R4 each row has the keys it had (480''s), nothing else; the answers'' top-level keys as before; the portal shows no phone or email');
+  'R4 each row has the keys it had (480''s), nothing else (once 484 is in, also a Tier 1 ''phone'', null here); the answers'' top-level keys as before; the portal shows no phone or email');
 select pg_temp.check((select jsonb_object_agg(r ->> 'name', jsonb_build_array(r -> 'visited', r -> 'first_visit_on'))
                         from jsonb_array_elements(pg_temp.body(pg_temp.tx('dl'))::jsonb -> 'tier1') r
                        where r ->> 'name' in ('T482 vis', 'T482 a_paid', 'T482 bd_today', 'T482 vfut', 'T482 nothing'))
@@ -529,7 +539,10 @@ select pg_temp.check(pg_temp.state(pg_temp.try_as('service', format('select coun
 -- ═════ G md5s and grants ═════
 select pg_temp.check((select array_agg(f.fn || ' ' || f.md5 order by f.fn) from pg_temp.fn_md5s() f
                        where f.fn like 'calcom%' or f.fn in ('customer_downline_visits(uuid)', 'affiliate_portal_network()'))
-    = array['affiliate_portal_network() d1c387fb852392da041b5d8207655879',
+    = array['affiliate_portal_network() '
+              -- 484 (the Owner, 31 Oct and 1 Nov 2026): a Tier 1 number only for a referral told at sign-up (its AFTER).
+              || (select case when f.md5 = '070d1b485d32cec99fa627b816a91b4a' then f.md5 else 'd1c387fb852392da041b5d8207655879' end
+                    from pg_temp.fn_md5s() f where f.fn = 'affiliate_portal_network()'),
             'calcom_booking_apply(text,text,timestamp with time zone,timestamp with time zone,bigint,text,text,text,timestamp with time zone,text,text) 844d56ae966ca4e1e633e070e0195256',
             'calcom_booking_backfill(jsonb,timestamp with time zone,timestamp with time zone,timestamp with time zone,boolean,text[],boolean) b68af462ad32de7af3f8b98a8491a7e1',
             'calcom_booking_ingest(jsonb) 55d6b6b8b7509911a225f494313212d9',
@@ -537,7 +550,7 @@ select pg_temp.check((select array_agg(f.fn || ' ' || f.md5 order by f.fn) from 
             'calcom_customer_bookings(uuid[],date) 14987e9e9f033290010042a5632bc81c',
             'calcom_parse_time(text) 773399bc477ceb3476dd84a6a9251f2d',
             'customer_downline_visits(uuid) ea3f28ea932506eda6937fa687298d6d'],
-  'G1 the state rule is at 482''s AFTER md5; the two screens'' functions and the other cal.com functions are still 480''s');
+  'G1 the state rule is at 482''s AFTER md5; the two screens'' functions and the other cal.com functions are still 480''s (My Network: or 484''s)');
 select pg_temp.check((select array_agg(p.proname || ' ' || (select array_agg(x::text order by x::text) from unnest(p.proacl) x)::text order by p.proname)
                         from pg_proc p where p.pronamespace = 'public'::regnamespace
                          and p.proname in ('calcom_customer_bookings', 'customer_downline_visits', 'affiliate_portal_network'))
@@ -571,13 +584,28 @@ select pg_temp.check((select after1 = before from r482),
 select pg_temp.check((select seq_after1 = seq_before from r482),
   'N4 and moved no sequence: ' || (select coalesce(string_agg(k, ', '), 'none') from r482, jsonb_each(seq_after1) e(k, v) where seq_before -> k is distinct from v));
 \endif
--- Run where 482 is in: "already this version; left alone", nothing changed.
+-- Run where 482 is in: "already this version; left alone", nothing changed. Once 484 is in, 482's file refuses at its
+-- pin of My Network (480's, or 484's first draft, never applied), changing nothing: it never runs over 484.
 create temp table m482c as select * from pg_temp.fn_md5s();
 savepoint n4b;
+\set ON_ERROR_STOP off
 \ir ../../../supabase/482_downline_and_network_show_visited_without_booking.sql
-select pg_temp.check(not exists (select 1 from m482c m full join pg_temp.fn_md5s() b on b.fn = m.fn where m.fn is null or b.fn is null or b.md5 <> m.md5),
-  'N4b 482 run again where it is in changes nothing (already this version; left alone)');
+\set n4b_err :ERROR
+\set n4b_msg :LAST_ERROR_MESSAGE
+\set ON_ERROR_STOP on
+\if :n4b_err
 rollback to savepoint n4b;
+select 0 as n4b_diff \gset
+\else
+select count(*) as n4b_diff from m482c m full join pg_temp.fn_md5s() b on b.fn = m.fn
+ where m.fn is null or b.fn is null or b.md5 <> m.md5 \gset
+rollback to savepoint n4b;
+\endif
+select pg_temp.check(:'n4b_diff' = '0'
+    and case when pg_temp.net484()
+             then :'n4b_err' = 'true' and :'n4b_msg' = '482: public.affiliate_portal_network() is missing or not the version this was tested against. Re-read it and re-test before applying.'
+             else :'n4b_err' = 'false' end,
+  'N4b 482 run again where it is in changes nothing (already this version; left alone; once 484 is in, refused at My Network)');
 -- A state rule changed since (a comment added): refused, nothing changed.
 savepoint n5;
 do $$ begin
@@ -622,9 +650,13 @@ update public.stores set deleted_at = now() where code = 'RETAIL-ADELPHI';
 \set ON_ERROR_STOP on
 \set n7b_msg :LAST_ERROR_MESSAGE
 rollback to savepoint n7b;
-select pg_temp.check(:'n7_msg' = '482: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0'
-    and :'n7b_msg' = '482: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0',
-  'N7 with the Adelphi store renamed, or deleted, 482 is refused: ' || :'n7_msg');
+select pg_temp.check((:'n7_msg' = '482: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0'
+                      and :'n7b_msg' = '482: exactly one store in use must be coded RETAIL-ADELPHI (the Adelphi centre); found 0')
+    -- once 484 is in, 482 refuses first at its pin of My Network
+    or (pg_temp.net484()
+        and :'n7_msg' = '482: public.affiliate_portal_network() is missing or not the version this was tested against. Re-read it and re-test before applying.'
+        and :'n7b_msg' = :'n7_msg'),
+  'N7 with the Adelphi store renamed, or deleted, 482 is refused (where 484 is in, at My Network first): ' || :'n7_msg');
 -- The visit rule, or the Downline's function, changed since: refused.
 savepoint n8;
 do $$ begin
@@ -672,8 +704,11 @@ savepoint n10;
 \set ON_ERROR_STOP on
 \set n10_msg :LAST_ERROR_MESSAGE
 rollback to savepoint n10;
-select pg_temp.check(:'n10_msg' like '480: public.calcom_customer_bookings(uuid[],date) exists and is not this migration''s (md5 14987e9e9f033290010042a5632bc81c)%',
-  'N10 480''s file refuses to run over 482: ' || :'n10_msg');
+select pg_temp.check(:'n10_msg' like '480: public.calcom_customer_bookings(uuid[],date) exists and is not this migration''s (md5 14987e9e9f033290010042a5632bc81c)%'
+    -- once 484 is in, 480's file refuses first at My Network (484's)
+    or (pg_temp.net484()
+        and :'n10_msg' like '480: public.affiliate_portal_network() is neither production''s version of 29 Oct 2026 nor this file''s (md5 070d1b485d32cec99fa627b816a91b4a)%'),
+  'N10 480''s file refuses to run over 482 (where 484 is in, at My Network first): ' || :'n10_msg');
 select pg_temp.check(pg_temp.md5_of('calcom_customer_bookings(uuid[],date)') = '14987e9e9f033290010042a5632bc81c'
     and (select count(*) from public.stores where code = 'RETAIL-ADELPHI' and deleted_at is null) = 1
     and exists (select 1 from supabase_migrations.schema_migrations where version = '20261030052953')

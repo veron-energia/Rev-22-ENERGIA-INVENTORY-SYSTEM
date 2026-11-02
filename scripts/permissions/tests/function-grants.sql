@@ -12,7 +12,9 @@
 do $$
 declare
   v_public text[] := array['survey_link_info','submit_health_survey','active_customer_source_options',
-                           'public_affiliate_referral_info','affiliate_referral_signup'];
+                           'public_affiliate_referral_info','affiliate_referral_signup',
+                           -- 484: the app's /r/ page signs up through it, naming the notice it showed
+                           'affiliate_referral_signup_with_notice'];
   -- Reached only from inside another SECURITY DEFINER function, which runs as
   -- the owner. A staff member calling any of these directly could earn a
   -- commission twice, approve their own transfer, or burn an invoice number.
@@ -58,6 +60,9 @@ declare
                              'web_order_make_invoice','web_order_rename_people','web_order_paid','web_order_names',
                              -- 378: who counts as staff for affiliate account claims
                              'affiliate_claim_staff',
+                             -- 484: whether a portal login's link to its record is proven
+                             -- (called inside affiliate_portal_network only)
+                             'affiliate_login_link_proof',
                              -- 380: staff-link orders, the website's sync and staff list, and their rules
                              'web_order_door','web_order_sync','web_order_staff','web_order_door_method_name',
                              'web_order_seller','web_order_door_review','web_order_invoice_methods',
@@ -278,7 +283,7 @@ declare
                              'cancel_rental','cancel_special_sale','pay_special_with_credit'];
   bad text; n int;
 begin
-  -- 1. Nothing outside the five signed-out endpoints is callable with the anon
+  -- 1. Nothing outside the six signed-out endpoints is callable with the anon
   --    key, which ships in the browser bundle.
   select string_agg(p.proname, ', ' order by p.proname) into bad
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -289,7 +294,7 @@ begin
   if bad is not null then
     raise exception 'FAIL: callable by anon outside the public allowlist: %', bad; end if;
 
-  -- 2. The five are still reachable, or the public survey and the referral
+  -- 2. The six are still reachable, or the public survey and the referral
   --    landing page stop working for signed-out visitors.
   select string_agg(x, ', ') into bad from unnest(v_public) x
    where not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -459,9 +464,26 @@ begin
           or not (select c.relrowsecurity from pg_class c where c.oid = to_regclass('public.calcom_bookings'))) then
     raise exception 'FAIL: calcom_bookings is open to a client role, writable by the service role, or without row-level security'; end if;
 
+  -- 17. Once 484 is in, the marks of referrals told at sign-up that their
+  --     referrer sees their phone number (referral_phone_notices) are reached
+  --     through their functions only: no client role holds the table or any
+  --     column of it, the service role may only read it, and row-level
+  --     security is on with no policy. A mark is what lets a number reach an
+  --     affiliate's My Network.
+  if to_regclass('public.referral_phone_notices') is not null
+     and (has_any_column_privilege('anon', 'public.referral_phone_notices', 'select,insert,update,references')
+          or has_table_privilege('anon', 'public.referral_phone_notices', 'delete,truncate,trigger')
+          or has_any_column_privilege('authenticated', 'public.referral_phone_notices', 'select,insert,update,references')
+          or has_table_privilege('authenticated', 'public.referral_phone_notices', 'delete,truncate,trigger')
+          or has_any_column_privilege('service_role', 'public.referral_phone_notices', 'insert,update,references')
+          or has_table_privilege('service_role', 'public.referral_phone_notices', 'delete,truncate,trigger')
+          or not (select c.relrowsecurity from pg_class c where c.oid = to_regclass('public.referral_phone_notices'))
+          or exists (select 1 from pg_policy p where p.polrelid = to_regclass('public.referral_phone_notices'))) then
+    raise exception 'FAIL: referral_phone_notices is open to a client role, writable by the service role, without row-level security or with a policy'; end if;
+
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 5 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy or the cal.com bookings', n;
+  raise notice 'PASS: only the 6 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy, the cal.com bookings or the told-at-sign-up marks', n;
 end $$;
