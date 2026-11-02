@@ -113,6 +113,22 @@
   .rl-page .rl-field .phone-input input { width: 100%; }
 }
 
+/* 484: the notice between the Phone field and the button (what the affiliate
+   who invited them will see). Plain, readable text on a light panel across the
+   card's full width; a long first name wraps rather than widening the card. */
+.rl-notice {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: #f7f5ee;
+  border: 1px solid var(--rl-line);
+  border-radius: 6px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #444;
+  text-align: left;
+  overflow-wrap: break-word;
+}
+
 .rl-cta {
   display: block;
   width: 100%;

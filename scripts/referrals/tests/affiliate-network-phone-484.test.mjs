@@ -11,8 +11,10 @@
 //     appear one by one): a "Phone" column right after Booking in the table (1200 px and wider) and a "Phone" line
 //     right after Booking on each Tier 1 card (narrower); the number as the database sends it, in the font of the
 //     staff Downline's phone cell (var(--font-display)), kept whole; a grey "—" (var(--text-muted)) on a row
-//     without one (null, blank, not text, or no key); and the note's sentence "Phone numbers are shown for your
-//     direct referrals only."
+//     without one (null, blank, not text, or no key); and the note's sentence (push #2, the Owner, 1 Nov 2026) "A
+//     phone number shows only for a direct referral who registered through your link after being told you would
+//     see it. Use it only to help them with their visit."
+//   * Loading, or not loaded: no sentence, whatever the answer will hold; it comes with the numbers.
 //   * Tier 2: never a Phone column or line; a number sent there is never shown and never shows Tier 1's column.
 //   * The staff Downline is unchanged.
 //
@@ -133,13 +135,16 @@ const MIDDLE_ONLY = withPhones([null, undefined, '+61255509303', '   ', null, nu
 let root = null;
 let backend = null;
 const tick = async (n = 10) => { for (let i = 0; i < n; i++) await act(async () => { await new Promise(r => setTimeout(r, 0)); }); };
-async function mount(element, answers) {
+/** Mount with the backend's answers; gates[name] holds that call until it resolves, failures[name] fails it. */
+async function mount(element, answers, { gates = {}, failures = {} } = {}) {
   if (root) await act(async () => root.unmount());
   document.body.innerHTML = '<div id="root"></div>';
   backend = { calls: [], answers };
   backend.rpc = async (name, args) => {
     backend.calls.push({ name, args });
     await Promise.resolve();
+    if (gates[name]) await gates[name];
+    if (failures[name]) return { data: null, error: { message: failures[name] } };
     return { data: structuredClone(backend.answers[name] ?? null), error: null };
   };
   globalThis.__backend = backend;
@@ -160,7 +165,8 @@ const TIER1_HEADS_PHONE = ['Customer', 'Joined', 'Booking', 'Phone', 'Purchases'
 const TIER2_HEADS = ['Customer', 'Referred By', 'Joined', 'Booking', 'Purchases', 'Total Spent', 'Your Commission'];
 const NOTE = "Booking is each person's next appointment at the centre, or their last one; Miss means no visit and no purchase at the "
   + 'centre were recorded that day. Came in means they have come to the centre without a booking.';
-const PHONE_SENTENCE = ' Phone numbers are shown for your direct referrals only.';
+const PHONE_SENTENCE = ' A phone number shows only for a direct referral who registered through your link after being told you would '
+  + 'see it. Use it only to help them with their visit.';
 
 const tables = () => { const t = document.querySelectorAll('.portal-desktop-only table'); assert.equal(t.length, 2); return t; };
 const heads = table => [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
@@ -216,7 +222,7 @@ function checkHidden(label) {
   assert.equal(document.querySelectorAll('[data-phone]').length, 0, `${label}: no phone cell anywhere`);
   for (const c of cards(1)) assert.deepEqual(keys(c), ['Joined', 'Booking', 'Purchases', 'Total Spent', 'Your Commission'], `${label}: no Phone line`);
   assert.equal(note(), NOTE, `${label}: the note as 482 left it, no phone sentence`);
-  assert.ok(!/Phone numbers|\+6125550|5550 93/.test(document.body.textContent), `${label}: nothing of a phone on screen`);
+  assert.ok(!/phone number|\+6125550|5550 93/i.test(document.body.textContent), `${label}: nothing of a phone on screen`);
   checkSpans(label);
   checkTier2(label);
 }
@@ -264,6 +270,35 @@ test('some numbers: the Phone column and card line right after Booking and the s
 test('a number on a middle Tier 1 row only: the column, line and sentence, "—" for the rest', async () => {
   await network(MIDDLE_ONLY);
   checkShown('a middle row only', { 'Cat One': '+61255509303' });
+});
+
+test('while My Network loads, or when it could not load: no sentence about phone numbers; it comes with the numbers', async () => {
+  // A page showing the sentence while loading used to fail only the source test below; this catches it on screen.
+  let release;
+  const gate = new Promise(r => { release = r; });
+  await mount(React.createElement(M.AffiliateNetworkPage), { affiliate_portal_network: MIXED, affiliate_portal_campaign_progress: { campaign: null } },
+    { gates: { affiliate_portal_network: gate } });
+  assert.ok(backend.calls.some(c => c.name === 'affiliate_portal_network'), 'asked');
+  assert.ok(document.body.textContent.includes('Loading…'), 'still loading');
+  assert.equal(note(), NOTE, 'loading: the note as 482 left it');
+  assert.ok(!/phone number/i.test(document.body.textContent), 'loading: nothing about phone numbers');
+  assert.equal(document.querySelectorAll('.portal-network, [data-phone]').length, 0, 'loading: no tables yet');
+  release();
+  await tick();
+  checkShown('loaded after the wait', { 'Ada One': '+61255509301', 'Fay One': '02 5550 9306' });
+
+  // Not loaded: the error and Try again, no sentence; Try again brings the numbers and the sentence together.
+  const failures = { affiliate_portal_network: 'Failed to fetch' };
+  await mount(React.createElement(M.AffiliateNetworkPage), { affiliate_portal_network: MIXED, affiliate_portal_campaign_progress: { campaign: null } },
+    { failures });
+  assert.ok(document.querySelector('[data-portal-error]'), 'the error is shown');
+  assert.equal(note(), NOTE, 'not loaded: no sentence');
+  assert.ok(!/phone number/i.test(document.body.textContent));
+  delete failures.affiliate_portal_network;
+  const retry = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Try again');
+  await act(async () => { retry.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
+  await tick();
+  checkShown('after Try again', { 'Ada One': '+61255509301', 'Fay One': '02 5550 9306' });
 });
 
 test('every Tier 1 row with a number: each shown as the database sends it', async () => {
@@ -317,7 +352,8 @@ test('the source: one phone reader, Tier 1 only, shown only when Tier 1 has a nu
   assert.match(src, /<NetTable rows=\{n\.tier1 \?\? \[\]\} showPhone=\{showPhone\} \/>/);
   assert.match(src, /<NetTable rows=\{n\.tier2 \?\? \[\]\} showParent \/>/);
   assert.match(src, /\{showPhone && <th>Phone<\/th>\}/);
-  assert.match(src, /\{showPhone && ' Phone numbers are shown for your direct referrals only\.'\}/);
+  assert.match(src, /\{showPhone && ' A phone number shows only for a direct referral who registered through your link after being told you would see it\. Use it only to help them with their visit\.'\}/);
+  assert.doesNotMatch(src, /Phone numbers are shown for your direct referrals only/, 'the old sentence is gone');
   assert.equal(src.match(/phoneOf\(/g).length, 2, 'the one reader, used by the cell and by the page');
   assert.match(src, /fontFamily: 'var\(--font-display\)'/);
   assert.match(read('src/components/referrals/DownlineModal.tsx'), /<td style=\{\{ fontFamily: 'var\(--font-display\)' \}\}>\{r\.phone \?\? '—'\}<\/td>/);

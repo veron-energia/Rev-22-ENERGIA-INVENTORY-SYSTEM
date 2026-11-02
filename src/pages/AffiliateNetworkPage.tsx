@@ -127,7 +127,7 @@ const AffiliateNetworkPage: React.FC = () => {
       <p data-booking-note style={{ color: 'var(--text-muted)', fontSize: 12.5, marginTop: -12, marginBottom: 20 }}>
         Booking is each person&apos;s next appointment at the centre, or their last one; Miss means no visit and no purchase at the centre were recorded that day.
         {' '}Came in means they have come to the centre without a booking.
-        {showPhone && ' Phone numbers are shown for your direct referrals only.'}
+        {showPhone && ' A phone number shows only for a direct referral who registered through your link after being told you would see it. Use it only to help them with their visit.'}
       </p>
       {promo?.campaign && <PromotionCard p={promo} />}
       {err ? <PortalError message={err} onRetry={retry} /> : !n ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (

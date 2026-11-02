@@ -15,7 +15,9 @@ nav?.addEventListener('navigate', (e: any) => {
     const out = document.getElementById('leaving')!;
     out.dataset.url = to;
     out.dataset.calls = JSON.stringify(rpcCalls);
-    out.textContent = `Would open: ${decodeURIComponent(to)}`;
+    // 484: the sign-up functions called, in order (two with ?notice=missing: the fallback).
+    const signups = rpcCalls.filter(c => c.fn.startsWith('affiliate_referral_signup')).map(c => c.fn).join(' → ');
+    out.textContent = `Would open: ${decodeURIComponent(to)} · Signed up through: ${signups}`;
     out.style.display = 'block';
   }
 });

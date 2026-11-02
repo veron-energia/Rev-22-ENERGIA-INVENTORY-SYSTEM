@@ -4,6 +4,7 @@ import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import PhoneInput from '../components/PhoneInput';
 import { referralBookingUrl } from '../lib/referral/bookingLink.mjs';
+import { REFERRAL_NOTICE_VERSION, referralNotice } from '../lib/referral/notice.mjs';
 import '../styles/referral-landing.css';
 
 // Public /r/:referralCode — creates a CUSTOMER under the affiliate. It does NOT
@@ -23,6 +24,13 @@ import '../styles/referral-landing.css';
 // appointment carries the affiliate's name. Existing customers are not sent
 // there: the offer is for first timers, so somebody already on file stays put
 // and is told nothing changed.
+//
+// 484 (the Owner, 1 Nov 2026): each form card tells the person, under the
+// Phone field and above the button, what the affiliate who invited them will
+// see (notice.mjs), and the sign-up says which notice was shown, so the
+// database records that they were told. Only then does their phone number
+// show in that affiliate's My Network. It is a notice, not consent: no tick
+// box and no "agree".
 
 const HERO_IMG = 'https://energia.sg/wp-content/uploads/2025/01/6719068c50fcd_mockup-1024x758.png.webp';
 const LOGO_IMG = 'https://energia.sg/wp-content/uploads/2021/03/Energia-Logo-Rectangle-Two.png.webp';
@@ -103,10 +111,16 @@ const ReferralSignupPage: React.FC = () => {
     if (!f.first.trim()) { setErr('Please enter your name.'); return; }
     if (!f.phone || !phoneValid) { setErr('Please enter a valid mobile/phone number.'); return; }
     setBusy(true);
-    const { data, error } = await supabase.rpc('affiliate_referral_signup', {
+    const args = {
       p_code: referralCode, p_first_name: f.first.trim(), p_last_name: f.last.trim(),
       p_phone: f.phone.trim(), p_email: f.email.trim() || null, p_honeypot: hp || null,
-    });
+    };
+    // 484: the same six keys and the version of the notice above the button.
+    // A database without this function (484 not applied yet, or undone)
+    // answers PGRST202; then, and only then, the six keys go to
+    // affiliate_referral_signup, which registers the person without the mark.
+    let { data, error } = await supabase.rpc('affiliate_referral_signup_with_notice', { ...args, p_notice: REFERRAL_NOTICE_VERSION });
+    if (error?.code === 'PGRST202') ({ data, error } = await supabase.rpc('affiliate_referral_signup', args));
     if (error) { setBusy(false); setErr(phoneErrorMessage(error.message)); return; }
     const res = data as any;
     if (res?.ok === false) { setBusy(false); setErr(res.message || 'Registration could not be completed.'); return; }
@@ -197,8 +211,9 @@ const ReferralSignupPage: React.FC = () => {
         <label className="rl-label">Phone <span className="rl-req">*</span></label>
         <PhoneInput value={f.phone} onChange={(e164, valid) => { setF(s => ({ ...s, phone: e164 })); setPhoneValid(valid); }} />
       </div>
+      <p className="rl-notice" id={`${idp}-notice`} data-notice={REFERRAL_NOTICE_VERSION}>{referralNotice(info?.affiliate_name)}</p>
       {err && <p className="rl-error">{err}</p>}
-      <button className="rl-cta" disabled={busy} onClick={submit}>
+      <button className="rl-cta" disabled={busy} onClick={submit} aria-describedby={`${idp}-notice`}>
         {busy ? 'Registering…' : 'YES! I WANT THIS FREE BUNDLE'}
       </button>
       <p className="rl-cta-note">Limited slots. First come, first served.</p>
