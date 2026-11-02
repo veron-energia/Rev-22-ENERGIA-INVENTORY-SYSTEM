@@ -30,14 +30,34 @@
 --      herself under that record's name (affiliate_name hold): attached to the
 --      retired id she is herself, her VIP paid while held lands on the kept
 --      record and earns her upline once and her nothing; made a new customer
---      under that name: not referred.
+--      under that name: not referred. After the holds, her sign-up record
+--      (her portal login and her affiliate record) is joined to her older
+--      record (its own phone and email) by 437's Link to this customer,
+--      unticked (link_affiliate_signup), whose merge the Owner kept allowed
+--      under 486 (2 Nov 2026). That sign-up is put in by hand, unlike any
+--      sign-up 437 makes: the login has no sign-up name or phone, so that her
+--      merged record's own rule is tested alone (a login's sign-up phone and
+--      name would cover the same people), and the listing is inserted (437
+--      lists no older record that shares no phone, email inbox or same-words
+--      name with the sign-up). MB7: on production's shape (437's own sign-up
+--      and listing, the older record on the login's inbox), the note names
+--      the login. 486: that merge by hand (keeping the older record, which
+--      has neither a portal login nor an affiliate record) is refused (MB6).
 --   MC A chain A -> B -> C on an email inbox (R6-1): the end of the chain is
 --      the candidate, the note and the check name it.
 --   MD Merged before the registration: the kept record with the phone holds
 --      them as before; the kept record without it: a new customer, referred at
 --      once (436's rule: nobody has the phone; NOT COVERED); the affiliate's
 --      merged record's phone: a check at once (not referred at once); her
---      merged record's name: held as herself.
+--      merged record's name: held as herself. The affiliate's record is
+--      merged by hand, as one was on 26 Sep 2026, with production's merge
+--      preview of 2 Nov 2026 in place for that one merge (MD0; when it
+--      cannot be rebuilt, MD0 fails, that merge is skipped and the rest still
+--      runs). The record merged on 26 Sep also held her portal login; this
+--      one holds none, so that her merged record's own rule is tested alone.
+--      486 refuses that merge now (MD5).
+--      (MB6 and MD5 fail where 486 is not in: the merge goes through there,
+--      and is undone at once.)
 --   ME Merged after staff attached them: they follow the merge (as before).
 --   MF The kept record already has the phone: one candidate, 436's note and
 --      check.
@@ -206,6 +226,64 @@ $$ insert into customers(full_name, phone, email) values (sfx_name, phone, email
 create function pg_temp.merge(keep text, gone text) returns text language sql as
 $$ select pg_temp.err(format('select public.merge_customer_records(%L, %L, %L, %L)', pg_temp.fx(keep), pg_temp.fx(gone),
                              'The same person (test)', gen_random_uuid())) $$;
+-- 437's Link to this customer, unticked (the customer keeps their phone), for the sign-up listed for the fresh
+-- record, as the signed-in Owner: 'ok', or what it answered or raised.
+create function pg_temp.link(fresh text, keep text) returns text language plpgsql as
+$$declare v_match uuid := (select m.id from public.affiliate_signup_matches m
+                            where m.fresh_customer_id = pg_temp.fx(fresh) and m.status = 'open');
+  v jsonb;
+begin
+  v := public.link_affiliate_signup(v_match, pg_temp.fx(keep), 'The same person (test)', gen_random_uuid());
+  return case when (v->>'ok')::boolean then 'ok' else coalesce(v->>'message', v::text) end;
+exception when others then return sqlerrm;
+end$$;
+-- 486: a merge by hand (merge_customer_records) keeping a record with neither a portal login nor an affiliate record
+-- and retiring the affiliate's, as the signed-in Owner: the preview's blocking issues and the merge's answer
+-- ('merged', or what it raised), tried in a block that is always undone (where 486 is not in, the merge goes through
+-- and is undone at once).
+create function pg_temp.by_hand(keep text, gone text) returns jsonb language plpgsql as
+$$declare v_pv jsonb; v_ans text;
+begin
+  begin
+    v_pv := public.preview_customer_merge(pg_temp.fx(keep), pg_temp.fx(gone));
+  exception when others then v_pv := jsonb_build_object('error', sqlerrm);
+  end;
+  begin
+    perform public.merge_customer_records(pg_temp.fx(keep), pg_temp.fx(gone), 'The same person (test, by hand)', gen_random_uuid());
+    v_ans := 'merged';
+    raise exception 'the merge by hand went through; undone' using errcode = 'P0486';
+  exception when sqlstate 'P0486' then null;
+            when others then v_ans := sqlerrm;
+  end;
+  return jsonb_build_object('issues', coalesce((select jsonb_agg(x->>'issue') from jsonb_array_elements(v_pv->'blocking') x), '[]'::jsonb),
+    'details', (select string_agg(x->>'detail', ' ') from jsonb_array_elements(v_pv->'blocking') x),
+    'can_merge', v_pv->'can_merge', 'error', v_pv->'error', 'answer', v_ans);
+end$$;
+-- A merge by hand as made before 486 (an affiliate's record retired into a record with neither a portal login nor an
+-- affiliate record, as one was on 26 Sep 2026): run with production's merge preview of 2 Nov 2026 in place for that
+-- one merge, then the installed preview put back. That preview is the installed text with 486's block (from its first
+-- comment line to its "end;") taken out, as 486's UNDO takes it out (where 486 is not in, the installed text itself).
+-- Unless it is that text to the byte (md5 f66c9d63...), nothing is merged and the answer says why (MD0 fails, and the
+-- checks after it still run); this file stops if the installed preview is not back afterwards, with its grants.
+-- Everything is rolled back.
+create function pg_temp.merge_before_486(keep text, gone text) returns text language plpgsql as
+$$declare c_pv constant regprocedure := 'public.preview_customer_merge(uuid,uuid)'::regprocedure;
+  v_now text := pg_get_functiondef(c_pv); v_acl text := (select p.proacl::text from pg_proc p where p.oid = c_pv);
+  v_from int; v_to int; v_old text; v_res text;
+begin
+  v_from := strpos(v_now, E'\n\n  -- 486 (the Owner, 2 Nov 2026):');
+  v_to := strpos(v_now, E'\n  end;\n\n  return jsonb_build_object(');
+  v_old := case when v_from > 0 and v_to > v_from then left(v_now, v_from - 1) || substr(v_now, v_to + length(E'\n  end;'))
+                else v_now end;
+  if md5(v_old) <> 'f66c9d63369ef3b831ca74906a99b587' then
+    return format('not merged: production''s merge preview of 2 Nov 2026 could not be rebuilt from the installed one (md5 %s)', md5(v_old)); end if;
+  if v_old <> v_now then execute v_old; end if;
+  v_res := pg_temp.merge(keep, gone);
+  if v_old <> v_now then execute v_now; end if;
+  if md5(pg_get_functiondef(c_pv)) <> md5(v_now) or (select p.proacl::text from pg_proc p where p.oid = c_pv) is distinct from v_acl then
+    raise exception 'the installed merge preview was not put back as it was'; end if;
+  return v_res;
+end$$;
 -- 440 (where it is applied) reads an affiliate login's sign-up details from the server's own copy
 -- (affiliate_signup_identities), not from its user metadata. A fixture login is given that copy too, made
 -- the way 440's backfill makes it from the login (its email and raw_user_meta_data), so every check below
@@ -427,12 +505,23 @@ select pg_temp.check(pg_temp.tx('ma6_att') = 'Customer not found.' and (pg_temp.
   'MA6 a candidate deleted another way (not merged): not listed, and attaching to it is still "Customer not found.": ' || pg_temp.tx('ma6_att'));
 
 -- ═════ MB The affiliate's own record merged into an older one ═════
-do $$ declare fa uuid; ka uuid; u2 uuid; begin
+-- Bea's sign-up, put in by hand: a fresh record (phone 10: her portal login, left without a sign-up name or phone, and
+-- her affiliate record), listed for her older record (phone 11, its own email), which 437 itself would not list; Link
+-- to this customer, unticked, joins them below, after the holds, without its phone.
+do $$ declare fa uuid; ka uuid; u2 uuid; bl uuid := gen_random_uuid(); begin
   fa := pg_temp.cust('Bea Testaff', pg_temp.ph(10), pg_temp.mail('bea'));
   insert into customer_affiliates(customer_id, status, referral_code) values (fa, 'active', 'HB' || pg_temp.tx('sfx'));
-  ka := pg_temp.cust('Bea T Testaff', pg_temp.ph(11), null);
+  ka := pg_temp.cust('Bea T Testaff', pg_temp.ph(11), pg_temp.mail('bea-old'));
   u2 := pg_temp.cust('Bea Upline', pg_temp.ph(12), null);
   update customers set referred_by = u2 where id = ka;
+  insert into auth.users(id, email, email_confirmed_at) values (bl, pg_temp.mail('bea'), now());
+  set local session_replication_role = replica;  -- the welcome WhatsApp's trigger off for this one insert
+  insert into affiliate_accounts(auth_user_id, customer_id, affiliate_id, status)
+  values (bl, fa, (select id from customer_affiliates where customer_id = fa), 'claimed');
+  set local session_replication_role = origin;
+  perform pg_temp.signup_copy(bl);
+  insert into affiliate_signup_matches(auth_user_id, fresh_customer_id, entered_phone, entered_name, reason, candidate_ids)
+  values (bl, fa, pg_temp.ph(10), 'Bea Testaff', 'name_match', array[ka]);
   insert into fx values ('bea', fa), ('bea_k', ka), ('bea_up', u2);
   insert into tx values ('code_bea', 'HB' || pg_temp.tx('sfx'));
 end $$;
@@ -446,9 +535,12 @@ select pg_temp.check((pg_temp.pp('mb1')).hold_reason = 'phone_in_use' and (pg_te
     and (pg_temp.pp('mb3')).hold_reason = 'affiliate_name' and (pg_temp.vorder('mb2v')).waiting_for_match,
   'MB0 before the merge: Ned held on Bea''s phone, Bea herself (twice, new phones) held under her name, her VIP waits');
 select pg_temp.as_user('owner');
-select pg_temp.put('mb_merge', pg_temp.merge('bea_k', 'bea'));
+-- 486: that merge by hand is refused (MB6); Link to this customer makes it.
+select pg_temp.put('mb_hand', pg_temp.by_hand('bea_k', 'bea')::text);
+select pg_temp.put('mb_merge', pg_temp.link('bea', 'bea_k'));
 select pg_temp.as_service();
 select pg_temp.check(pg_temp.tx('mb_merge') = 'ok'
+    and (select (phone, email) = (pg_temp.ph(11), pg_temp.mail('bea-old')) from customers where id = pg_temp.fx('bea_k'))
     and (select referrer_customer_id from event_registrations where id = (pg_temp.pp('mb1')).registration_ref) = pg_temp.fx('bea_k')
     and pg_temp.cands('mb1') = array[pg_temp.fx('bea_k')] and pg_temp.cands('mb2') = array[pg_temp.fx('bea_k')],
   'MB1 merged into Bea T Testaff (her phone not taken): the link''s referrer and both holds'' candidate are the kept record: ' || pg_temp.tx('mb_merge'));
@@ -482,6 +574,42 @@ select pg_temp.check(pg_temp.tx('mb5_make') = 'ok' and (pg_temp.pp('mb3')).refer
     and pg_temp.check_of((pg_temp.pp('mb3')).customer_id) is null
     and not exists (select 1 from referral_signup_events e where e.new_customer_id = (pg_temp.pp('mb3')).customer_id),
   'MB5 her merged record''s name, made a new customer: not referred (no referrer, no check, no sign-up event): ' || pg_temp.tx('mb5_make'));
+select pg_temp.check((pg_temp.tx('mb_hand')::jsonb)->'issues' = '["duplicate_has_affiliate_account"]'::jsonb
+    and not ((pg_temp.tx('mb_hand')::jsonb)->>'can_merge')::boolean
+    and (pg_temp.tx('mb_hand')::jsonb)->>'answer' = 'This merge needs review first: ' || ((pg_temp.tx('mb_hand')::jsonb)->>'details'),
+  'MB6 (486) the same merge by hand (keeping Bea T Testaff, who had neither a portal login nor an affiliate record, and retiring her sign-up record) is refused (duplicate_has_affiliate_account): '
+  || coalesce((pg_temp.tx('mb_hand')::jsonb)->>'answer', 'none') || coalesce(' (preview: ' || ((pg_temp.tx('mb_hand')::jsonb)->>'error') || ')', ''));
+-- MB7, on production's shape: Esme signs up through 437 itself (complete_affiliate_onboarding, as in L9), her login
+-- with the name and phone she signed up with (its user metadata, and 440's copy); her older record has the login's
+-- email inbox, so 437 lists it (email_match). Someone else is held on her sign-up phone; then Link to this customer,
+-- unticked.
+do $$ declare k uuid; u uuid := gen_random_uuid(); r jsonb; begin
+  k := pg_temp.cust('Esme Testold', pg_temp.ph(16), pg_temp.mail('esme'));
+  insert into auth.users(id, email, email_confirmed_at, raw_user_meta_data)
+  values (u, pg_temp.mail('esme'), now(), jsonb_build_object('first_name', 'Esme', 'last_name', 'Signup', 'phone', pg_temp.ph(15)));
+  perform set_config('request.jwt.claim.sub', u::text, true);
+  perform set_config('request.jwt.claim.role', 'authenticated', true);
+  r := public.complete_affiliate_onboarding(null, null, null, true);
+  insert into fx values ('esme', (r->>'customer_id')::uuid), ('esme_k', k);
+  insert into tx values ('code_esme', r->>'referral_code');
+end $$;
+select pg_temp.as_service();
+select pg_temp.reg1('mb7', 'Eli', 'Testnext', pg_temp.ph(15), pg_temp.mail('eli'), pg_temp.tx('code_esme'));
+select pg_temp.as_user('owner');
+select pg_temp.put('mb7_link', pg_temp.link('esme', 'esme_k'));
+select pg_temp.as_service();
+select pg_temp.check(pg_temp.tx('mb7_link') = 'ok'
+    and (select m.reason = 'email_match' and m.candidate_ids = array[pg_temp.fx('esme_k')]
+           from affiliate_signup_matches m where m.fresh_customer_id = pg_temp.fx('esme'))
+    and (select count(*) from affiliate_signup_identities i join affiliate_accounts a on a.auth_user_id = i.auth_user_id
+          where a.customer_id = pg_temp.fx('esme_k') and i.full_name = 'Esme Signup' and i.phone = pg_temp.ph(15)) = 1
+    and (pg_temp.pp('mb7')).hold_reason = 'phone_in_use' and (pg_temp.pp('mb7')).referral_outcome = 'held'
+    and pg_temp.note('mb7') = format('Shares the phone of Esme Testold (or Esme Signup, whose affiliate login is on her record), the affiliate '
+      || 'whose link (%s) was used. If this is Esme Testold, link that record: not referred. If it is someone else, make a new customer: '
+      || 'they become Esme Testold''s referral once an Owner or Manager checks them as a different person (Affiliates page), and no '
+      || 'commission comes before that.', pg_temp.tx('code_esme')),
+  'MB7 on production''s shape (437''s own sign-up and listing; the login has its sign-up name and phone): after the Link, the note names the login: '
+  || coalesce(pg_temp.note('mb7'), pg_temp.tx('mb7_link')));
 
 -- ═════ MC A chain on an email inbox ═════
 do $$ begin
@@ -531,7 +659,12 @@ end $$;
 select pg_temp.as_user('owner');
 select pg_temp.put('md_m1', pg_temp.merge('kim_k', 'kim'));
 select pg_temp.put('md_m2', pg_temp.merge('moe_k', 'moe'));
-select pg_temp.put('md_m3', pg_temp.merge('cora_k', 'cora'));
+-- Cora's record merged by hand into Cora Testold: refused now (486; MD5), so made as before 486 (MD0).
+select pg_temp.put('md_hand', pg_temp.by_hand('cora_k', 'cora')::text);
+select pg_temp.put('md_m3', pg_temp.merge_before_486('cora_k', 'cora'));
+select pg_temp.check(pg_temp.tx('md_m3') = 'ok',
+  'MD0 Cora''s record merged by hand into Cora Testold with production''s merge preview of 2 Nov 2026 in place (md5 f66c9d63...), the installed one put back: '
+  || pg_temp.tx('md_m3'));
 select pg_temp.as_service();
 select pg_temp.reg1('md1', 'Lou', 'Other', pg_temp.ph(30), pg_temp.mail('lou'), pg_temp.tx('code_alma'));
 select pg_temp.reg1('md2', 'Max', 'Other', pg_temp.ph(31), pg_temp.mail('max'), pg_temp.tx('code_alma'));
@@ -575,6 +708,11 @@ select pg_temp.check((pg_temp.pp('md4')).hold_reason = 'affiliate_name' and (pg_
     and exists (select 1 from audit_logs l where l.record_id = pg_temp.fx('md4') and l.action = 'event_registration_self_referral'
                   and l.new_data->>'name_from' = 'merged_record'),
   'MD4 her merged record''s name on a new phone and email: held as herself (audited: name_from merged_record)');
+select pg_temp.check((pg_temp.tx('md_hand')::jsonb)->'issues' = '["duplicate_has_affiliate_account"]'::jsonb
+    and not ((pg_temp.tx('md_hand')::jsonb)->>'can_merge')::boolean
+    and (pg_temp.tx('md_hand')::jsonb)->>'answer' = 'This merge needs review first: ' || ((pg_temp.tx('md_hand')::jsonb)->>'details'),
+  'MD5 (486) Cora''s record (her affiliate record) merged by hand into Cora Testold (who had neither a portal login nor an affiliate record) is refused now (duplicate_has_affiliate_account): '
+  || coalesce((pg_temp.tx('md_hand')::jsonb)->>'answer', 'none') || coalesce(' (preview: ' || ((pg_temp.tx('md_hand')::jsonb)->>'error') || ')', ''));
 
 -- ═════ ME Merged after staff attached them ═════
 do $$ begin

@@ -9,13 +9,36 @@
 -- customer's package (Move, 186), opening balances (Paid, Legacy) and Adjust
 -- credit (Bonus, Promotional, Exchange), and a second bundle whose Bonus an
 -- Owner moved on to someone else. The record kept (Kilo) holds an opening
--- balance. Mike is merged into Kilo.
+-- balance and, from G on, a portal login (no affiliate record of his own):
+-- 486 refuses to retire the affiliate's record into a record that has
+-- neither. Mike is merged into Kilo.
 --
 --   M  445 installs, a second run changes nothing, its self-test leaves no
 --      row; the fingerprint moves by its two functions; an unknown version
 --      of either, of a function it relies on, a new column naming a lot, a
 --      trigger on a table it repoints, or a lot a Move granted that names a
 --      lot it did not replace stops it.
+--   G  (486) While Kilo has neither a portal login nor an affiliate record,
+--      Mike, who holds the affiliate record, cannot be merged into him: the
+--      preview lists duplicate_has_affiliate_account alone, the merge
+--      refuses with its words, and nothing changes (G1 fails where 486 is
+--      not in; the merge it then lets through is undone). Then Kilo is given
+--      the portal login, and Mike's affiliate record is carried across to
+--      him by the merges below, as before.
+--      That login is a shape only this test makes (as in
+--      merge-duplicates.sql): an affiliate_accounts row with no
+--      affiliate_id, on a record with no affiliate record, put in with
+--      session_replication_role = replica (no welcome WhatsApp and no
+--      foreign-key checks for that insert; the row meets its keys). The
+--      app's two ways to make a login (complete_affiliate_onboarding and
+--      resolve_affiliate_account_claim) find or make the record's affiliate
+--      record first and name it, so Kilo would hold an affiliate record too
+--      and these merges would stop as two affiliate records (production,
+--      2 Nov 2026: 86 logins, every one naming its own record's affiliate
+--      record). The merges below carry Mike's affiliate record to Kilo only
+--      because 486 lets a record kept with a login take the duplicate's
+--      affiliate record (486's first NOT COVERED); closing that gap means
+--      rebuilding G and those merges again.
 --   N  Everything but the credit is as 425's merge leaves it, on the same
 --      records: the answer, the audit rows, every other record naming either
 --      customer, the customers, the wallets, the ledger rows (but for the
@@ -85,7 +108,8 @@
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/customer-merge/tests/merge-credit-origin-445.sql
 -- (it installs 445 twice; with -v nomig=1 where 445 is in already). Every
 -- name, phone and email below is invented: ACMA fictional mobile numbers
--- (+61491570840..+61491570853) and @example.com addresses. A copy without
+-- (+61491570840..+61491570853), @example.com addresses and an
+-- @example.invalid one for Kilo's portal login. A copy without
 -- production's five wallet methods gets them, as 82 seeds them, for the run.
 \set ON_ERROR_STOP on
 begin;
@@ -733,6 +757,44 @@ begin
     || 'bundle Paid 500 + 500, Bonus 50 + 20, a linked Legacy 45; other 177; 3472 in all), Kilo an opening balance: ' || (b -> 'sources')::text);
 end $$;
 insert into audit_mark select id from public.audit_logs;
+
+-- ═════ G 486: not into a record with neither ═════
+-- Kilo has neither a portal login nor an affiliate record yet; Mike holds the
+-- affiliate record. Then Kilo is given a portal login, no affiliate record of
+-- his own: a shape only this test makes (see G above), put in with the
+-- triggers off for that one insert (the welcome WhatsApp's, and the
+-- foreign-key checks, which the row meets).
+do $$
+declare w0 text; w1 text; p jsonb; e text;
+begin
+  perform set_config('request.jwt.claim.sub', pg_temp.fx('owner')::text, true);
+  w0 := pg_temp.world(pg_temp.fx('kilo'), pg_temp.fx('mike'));
+  p := public.preview_customer_merge(pg_temp.fx('kilo'), pg_temp.fx('mike'));
+  begin
+    perform public.merge_customer_records(pg_temp.fx('kilo'), pg_temp.fx('mike'), 'T445 the same person', gen_random_uuid());
+    -- reached only when the call returns: what it left, before it is undone
+    w1 := pg_temp.world(pg_temp.fx('kilo'), pg_temp.fx('mike'));
+    raise exception 'the merge went through (undone)';
+  exception when others then e := sqlerrm;
+  end;
+  w1 := coalesce(w1, pg_temp.world(pg_temp.fx('kilo'), pg_temp.fx('mike')));
+  perform pg_temp.check((p ->> 'can_merge')::boolean is false
+      and jsonb_array_length(p -> 'blocking') = 1
+      and p -> 'blocking' -> 0 ->> 'issue' = 'duplicate_has_affiliate_account'
+      and e = 'This merge needs review first: ' || (p -> 'blocking' -> 0 ->> 'detail')
+      and w1 = w0,
+    'G1 486: Mike, who holds the affiliate record, is not merged into Kilo while Kilo has neither a portal login nor an affiliate record: '
+    || 'the preview lists duplicate_has_affiliate_account alone, the merge refuses with its words, and nothing changes: ' || coalesce(e, '?')
+    || case when w1 = w0 then '' else ' (something changed)' end);
+end $$;
+do $$
+declare u uuid := gen_random_uuid();
+begin
+  insert into auth.users(id, email, email_confirmed_at) values (u, 't445-kilo-login@example.invalid', now());
+  set local session_replication_role = replica;
+  insert into public.affiliate_accounts(auth_user_id, customer_id, status) values (u, pg_temp.fx('kilo'), 'claimed');
+  set local session_replication_role = origin;
+end $$;
 
 -- ═════ N / Q The same records merged by 425's text, then undone ═════
 savepoint n425;

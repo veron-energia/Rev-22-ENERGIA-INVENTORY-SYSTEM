@@ -26,6 +26,17 @@
 --      at once (436).
 --   A  The affiliate's own record merged into an older one: someone on its phone is held as on her live
 --      phone and waits for the check when made a customer; she herself (that record's name) is herself.
+--      Her sign-up record (her portal login and her affiliate record) is joined to her older record (its
+--      own phone and email) by 437's Link to this customer, unticked (link_affiliate_signup), whose merge
+--      the Owner kept allowed under 486 (2 Nov 2026). That sign-up is put in by hand, unlike any sign-up
+--      437 makes: the login has no sign-up name or phone, so that her merged record's own rule is tested
+--      alone (a login's sign-up phone and name would cover the same people), and the listing is inserted
+--      (437 lists no older record that shares no phone, email inbox or same-words name with the sign-up).
+--      A5: on production's shape (437's own sign-up and listing, the older record on the login's inbox),
+--      someone on her sign-up phone is held, and the note names the login. 486: that merge by hand
+--      (keeping the older record, which has neither a portal login nor an affiliate record) is refused
+--      (duplicate_has_affiliate_account) (A4; it fails where 486 is not in: the merge goes through there,
+--      and is undone at once).
 --   O  An old 8-digit number on the merged-away record (as 425 reads it): held.
 --   P  A registration follows only the merged-away records that match (event_web_kept_customer is not
 --      called for the others).
@@ -170,6 +181,39 @@ $$ insert into customers(full_name, phone, email) values (sfx_name, phone, email
 create function pg_temp.merge(keep text, gone text) returns text language sql as
 $$ select pg_temp.err(format('select public.merge_customer_records(%L, %L, %L, %L)', pg_temp.fx(keep), pg_temp.fx(gone),
                              'The same person (test)', gen_random_uuid())) $$;
+-- 437's Link to this customer, unticked (the customer keeps their phone), for the sign-up listed for the fresh
+-- record, as the signed-in Owner: 'ok', or what it answered or raised.
+create function pg_temp.link(fresh text, keep text) returns text language plpgsql as
+$$declare v_match uuid := (select m.id from public.affiliate_signup_matches m
+                            where m.fresh_customer_id = pg_temp.fx(fresh) and m.status = 'open');
+  v jsonb;
+begin
+  v := public.link_affiliate_signup(v_match, pg_temp.fx(keep), 'The same person (test)', gen_random_uuid());
+  return case when (v->>'ok')::boolean then 'ok' else coalesce(v->>'message', v::text) end;
+exception when others then return sqlerrm;
+end$$;
+-- 486: the same merge by hand (merge_customer_records, keeping the record with neither a portal login nor an
+-- affiliate record), as the signed-in Owner: the preview's blocking issues and the merge's answer ('merged', or what
+-- it raised), tried in a block that is always undone (where 486 is not in, the merge goes through and is undone at
+-- once).
+create function pg_temp.by_hand(keep text, gone text) returns jsonb language plpgsql as
+$$declare v_pv jsonb; v_ans text;
+begin
+  begin
+    v_pv := public.preview_customer_merge(pg_temp.fx(keep), pg_temp.fx(gone));
+  exception when others then v_pv := jsonb_build_object('error', sqlerrm);
+  end;
+  begin
+    perform public.merge_customer_records(pg_temp.fx(keep), pg_temp.fx(gone), 'The same person (test, by hand)', gen_random_uuid());
+    v_ans := 'merged';
+    raise exception 'the merge by hand went through; undone' using errcode = 'P0486';
+  exception when sqlstate 'P0486' then null;
+            when others then v_ans := sqlerrm;
+  end;
+  return jsonb_build_object('issues', coalesce((select jsonb_agg(x->>'issue') from jsonb_array_elements(v_pv->'blocking') x), '[]'::jsonb),
+    'details', (select string_agg(x->>'detail', ' ') from jsonb_array_elements(v_pv->'blocking') x),
+    'can_merge', v_pv->'can_merge', 'error', v_pv->'error', 'answer', v_ans);
+end$$;
 
 -- ═════ Fixtures ═════
 do $$
@@ -295,13 +339,22 @@ do $$ begin
   insert into fx values ('dee', pg_temp.cust('Dee Deletedrec', pg_temp.ph(30), null)),
                         ('fin', pg_temp.cust('Fin Gonerec', pg_temp.ph(31), null)), ('fin_k', pg_temp.cust('Fin Keptrec', pg_temp.ph(32), null));
 end $$;
--- A: the affiliate Gia signed up on a fresh record (phone 40), linked to her older record (phone 41) without its phone.
-do $$ declare g uuid; gk uuid; gu uuid; begin
+-- A: the affiliate Gia's sign-up, put in by hand: a fresh record (phone 40: her portal login, left without a sign-up
+-- name or phone, and her affiliate record), listed for her older record (phone 41, its own email), which 437 itself
+-- would not list; Link to this customer, unticked, joins them below without its phone.
+do $$ declare g uuid; gk uuid; gu uuid; gl uuid := gen_random_uuid(); begin
   g := pg_temp.cust('Gia Freshrec', pg_temp.ph(40), pg_temp.mail('gia'));
   insert into customer_affiliates(customer_id, status, referral_code) values (g, 'active', 'HG' || pg_temp.tx('sfx'));
-  gk := pg_temp.cust('Gia Testold', pg_temp.ph(41), null);
+  gk := pg_temp.cust('Gia Testold', pg_temp.ph(41), pg_temp.mail('gia-old'));
   gu := pg_temp.cust('Gia Upline', pg_temp.ph(42), null);
   update customers set referred_by = gu where id = gk;
+  insert into auth.users(id, email, email_confirmed_at) values (gl, pg_temp.mail('gia'), now());
+  set local session_replication_role = replica;  -- the welcome WhatsApp's trigger off for this one insert
+  insert into affiliate_accounts(auth_user_id, customer_id, affiliate_id, status)
+  values (gl, g, (select id from customer_affiliates where customer_id = g), 'claimed');
+  set local session_replication_role = origin;
+  insert into affiliate_signup_matches(auth_user_id, fresh_customer_id, entered_phone, entered_name, reason, candidate_ids)
+  values (gl, g, pg_temp.ph(40), 'Gia Freshrec', 'name_match', array[gk]);
   insert into fx values ('gia', g), ('gia_k', gk), ('gia_up', gu);
   insert into tx values ('code_gia', 'HG' || pg_temp.tx('sfx'));
 end $$;
@@ -322,9 +375,11 @@ insert into fx select 'ola', c.id from c;
 set local session_replication_role = origin;
 do $$ begin insert into fx values ('ola_k', pg_temp.cust('Ola Keptrec', pg_temp.ph(50), null)); end $$;
 select pg_temp.as_user('owner');
+-- A: Gia's sign-up record merged by hand into her older record is refused (486; A4); the Link makes that merge.
+select pg_temp.put('a4_hand', pg_temp.by_hand('gia_k', 'gia')::text);
 select pg_temp.put('merges', concat_ws(',', pg_temp.merge('hana_k', 'hana'), pg_temp.merge('cb', 'ca'), pg_temp.merge('cc', 'cb'),
   pg_temp.merge('kim_k', 'kim'), pg_temp.merge('ret_k', 'ret'), pg_temp.merge('mo_k', 'mo'), pg_temp.merge('fin_k', 'fin'),
-  pg_temp.merge('gia_k', 'gia'), pg_temp.merge('ola_k', 'ola')));
+  pg_temp.link('gia', 'gia_k'), pg_temp.merge('ola_k', 'ola')));
 select pg_temp.as_service();
 update customers set deleted_at = now() where id in (pg_temp.fx('dee'), pg_temp.fx('fin_k'));
 select pg_temp.check(pg_temp.tx('merges') = 'ok,ok,ok,ok,ok,ok,ok,ok,ok'
@@ -332,7 +387,8 @@ select pg_temp.check(pg_temp.tx('merges') = 'ok,ok,ok,ok,ok,ok,ok,ok,ok'
     and public.event_web_kept_customer(pg_temp.fx('ca')) = pg_temp.fx('cc')
     and public.event_web_kept_customer(pg_temp.fx('fin')) is null and public.event_web_kept_customer(pg_temp.fx('dee')) is null
     and (select customer_id from customer_affiliates where referral_code = pg_temp.tx('code_gia')) = pg_temp.fx('gia_k')
-    and pg_temp.live_on(pg_temp.ph(1)) = 0 and (select phone from customers where id = pg_temp.fx('hana')) = pg_temp.ph(1),
+    and pg_temp.live_on(pg_temp.ph(1)) = 0 and (select phone from customers where id = pg_temp.fx('hana')) = pg_temp.ph(1)
+    and pg_temp.live_on(pg_temp.ph(40)) = 0 and (select (phone, email) = (pg_temp.ph(41), pg_temp.mail('gia-old')) from customers where id = pg_temp.fx('gia_k')),
   'F the merges: the retired records keep their phones and emails, the kept records do not have them (Gia''s link now names Gia Testold): '
   || pg_temp.tx('merges'));
 
@@ -518,6 +574,42 @@ select pg_temp.check(pg_temp.tx('a1_make') = 'ok' and (pg_temp.pp('a1')).referra
 select pg_temp.check((pg_temp.pp('a2')).hold_reason = 'phone_in_use' and pg_temp.tx('a2_att') = 'ok'
     and (pg_temp.pp('a2')).customer_id = pg_temp.fx('gia_k') and (pg_temp.pp('a2')).referral_outcome = 'self',
   'A3 she herself (her merged-away record''s name, on its phone): held, then attached to the retired id: her kept record, herself: ' || coalesce(pg_temp.tx('a2_att'), 'none'));
+select pg_temp.check((pg_temp.tx('a4_hand')::jsonb)->'issues' = '["duplicate_has_affiliate_account"]'::jsonb
+    and not ((pg_temp.tx('a4_hand')::jsonb)->>'can_merge')::boolean
+    and (pg_temp.tx('a4_hand')::jsonb)->>'answer' = 'This merge needs review first: ' || ((pg_temp.tx('a4_hand')::jsonb)->>'details'),
+  'A4 (486) the same merge by hand (keeping Gia Testold, who had neither a portal login nor an affiliate record, and retiring her sign-up record) is refused (duplicate_has_affiliate_account): '
+  || coalesce((pg_temp.tx('a4_hand')::jsonb)->>'answer', 'none') || coalesce(' (preview: ' || ((pg_temp.tx('a4_hand')::jsonb)->>'error') || ')', ''));
+-- A5, on production's shape: Iris signs up through 437 itself (complete_affiliate_onboarding), her login with the
+-- name and phone she signed up with (its user metadata, and 440's copy); her older record has the login's email
+-- inbox, so 437 lists it (email_match). Link to this customer, unticked; then someone else registers on her sign-up
+-- phone.
+do $$ declare k uuid; u uuid := gen_random_uuid(); r jsonb; begin
+  k := pg_temp.cust('Iris Testold', pg_temp.ph(44), pg_temp.mail('iris'));
+  insert into auth.users(id, email, email_confirmed_at, raw_user_meta_data)
+  values (u, pg_temp.mail('iris'), now(), jsonb_build_object('first_name', 'Iris', 'last_name', 'Signup', 'phone', pg_temp.ph(43)));
+  perform set_config('request.jwt.claim.sub', u::text, true);
+  perform set_config('request.jwt.claim.role', 'authenticated', true);
+  r := public.complete_affiliate_onboarding(null, null, null, true);
+  insert into fx values ('iris', (r->>'customer_id')::uuid), ('iris_k', k);
+  insert into tx values ('code_iris', r->>'referral_code');
+end $$;
+select pg_temp.as_user('owner');
+select pg_temp.put('a5_link', pg_temp.link('iris', 'iris_k'));
+select pg_temp.as_service();
+select pg_temp.reg1('a5', 'Eli', 'Testnext', pg_temp.ph(43), pg_temp.mail('eli'), pg_temp.tx('code_iris'));
+select pg_temp.check(pg_temp.tx('a5_link') = 'ok'
+    and (select m.reason = 'email_match' and m.candidate_ids = array[pg_temp.fx('iris_k')]
+           from affiliate_signup_matches m where m.fresh_customer_id = pg_temp.fx('iris'))
+    and (select count(*) from affiliate_signup_identities i join affiliate_accounts a on a.auth_user_id = i.auth_user_id
+          where a.customer_id = pg_temp.fx('iris_k') and i.full_name = 'Iris Signup' and i.phone = pg_temp.ph(43)) = 1
+    and (pg_temp.pp('a5')).match = 'held' and (pg_temp.pp('a5')).hold_reason = 'phone_in_use' and (pg_temp.pp('a5')).referral_outcome = 'held'
+    and (pg_temp.pp('a5')).candidate_customer_ids = array[pg_temp.fx('iris')] and pg_temp.cands('a5') = array[pg_temp.fx('iris_k')]
+    and pg_temp.note('a5') = format('Shares the phone of Iris Testold (or Iris Signup, whose affiliate login is on her record), the affiliate '
+      || 'whose link (%s) was used. If this is Iris Testold, link that record: not referred. If it is someone else, make a new customer: '
+      || 'they become Iris Testold''s referral once an Owner or Manager checks them as a different person (Affiliates page), and no '
+      || 'commission comes before that.', pg_temp.tx('code_iris')),
+  'A5 on production''s shape (437''s own sign-up and listing; the login has its sign-up name and phone): someone else on her sign-up phone is held, and the note names the login: '
+  || coalesce(pg_temp.note('a5'), pg_temp.tx('a5_link')));
 
 -- ═════ O An old number on the merged-away record ═════
 select pg_temp.reg1('o1', 'Wes', 'Other', '+65 ' || substr(pg_temp.tx('legacy8'), 1, 4) || ' ' || substr(pg_temp.tx('legacy8'), 5),

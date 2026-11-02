@@ -37,7 +37,11 @@
 --      again refused when someone else asked to hide it too),
 --      merges (the told record into one holding the same number: shown; another number: none; the referrer's own
 --      record merged: the login and the marks follow; two marked records: a withdrawal on either hides), Delete and
---      restore, a hard delete takes the marks.
+--      restore, a hard delete takes the marks. The referrer's own record retired into an older one with neither a
+--      portal login nor an affiliate record: since 486 a merge by hand that way is refused and changes nothing (R8a);
+--      the shape production has from a merge by hand of 26 Sep 2026 is made with production's merge preview of 2 Nov
+--      2026 swapped in for that merge alone (R8), and through 437's Link to this customer, which 486 lets through
+--      while it refuses the same merge by hand (R8b, undone after).
 --   X  Who may: signed out may call the wrapper (as the old function) and nothing else of 484; a signed-in login may
 --      not call the proof or read the marks; the service role reads the marks and cannot write them; grants as sets;
 --      row level security on, no policy.
@@ -58,7 +62,8 @@
 -- made-up RETAIL-ADELPHI and ADELPHI-VAN stores for the run, and one built with psql (no migration rows past 478)
 -- gets 480's row in supabase_migrations.schema_migrations, for the run. Every name and email is invented
 -- (@example.invalid; Gmail addresses with made-up local parts); phones are ACMA's fictional range (+61 2 5550 ....),
--- found free at run time. Every check runs, then the file fails if any did.
+-- found free at run time. Every check runs, then the file fails if any did. R8a and R8b need 486 (the merge guard)
+-- in: without it they fail, and nothing else does.
 --   psql -X -v ON_ERROR_STOP=1 [-v skip_install=1] -f scripts/referrals/tests/affiliate-network-phone-484.sql
 \set ON_ERROR_STOP on
 begin;
@@ -967,17 +972,119 @@ select pg_temp.check(pg_temp.tx('r7_merge')::jsonb ->> 'success' = 'true' and pg
     and (select count(*) from public.referral_phone_notices n join public.customers c on c.id = n.customer_id where c.full_name = 'T484 Twin') = 2,
   'R7 two marked records merged (no key to trip): a withdrawn mark on either hides the number; none withdrawn: the kept record''s own typed number');
 -- A's own record merged into an older one (A2): the referrals, the affiliate record, the login and the marks follow;
--- the login is proven through the merge (its record was made with its account).
+-- the login is proven through the merge (its record was made with its account). Production has this shape from a
+-- merge by hand (26 Sep 2026), and 437's Link to this customer still makes it (R8b). Since 486 that merge by hand is
+-- refused (R8a), so R8's merge runs with production's merge preview of 2 Nov 2026 swapped in for it alone: rebuilt
+-- from the installed text by cutting 486's block out by position, from its first comment line to its "end;" before
+-- the return, as event-website-439 does (so wording inside the block may change), and required to be the text 486's
+-- UNDO puts back (md5 f66c9d63; where 486 is not in, the installed text is that already); then the installed text
+-- put back.
 insert into public.customers (full_name, phone, created_at) values ('T484 Aff a2', pg_temp.ph(90), now() - interval '60 days');
-do $$ declare v jsonb; begin perform pg_temp.as_owner();
-  v := public.merge_customer_records((select id from public.customers where full_name = 'T484 Aff a2'), pg_temp.fx('a'), 'T484 referrer duplicate', gen_random_uuid());
-  perform pg_temp.as_server(); perform pg_temp.put('r8_merge', v::text); end $$;
+-- R8a: that merge by hand (an Owner), in a block that undoes it should it go through.
+do $$ declare v jsonb; v_msg text; begin
+  begin
+    perform pg_temp.as_owner();
+    v := public.merge_customer_records((select id from public.customers where full_name = 'T484 Aff a2'), pg_temp.fx('a'), 'T484 referrer duplicate', gen_random_uuid());
+    v_msg := 'merged (undone here): ' || v::text;
+    raise exception using errcode = 'P0E84';
+  exception when sqlstate 'P0E84' then null;
+            when others then v_msg := sqlerrm;
+  end;
+  perform pg_temp.as_server(); perform pg_temp.put('r8a_merge', v_msg); end $$;
+select pg_temp.check(pg_temp.tx('r8a_merge') = 'This merge needs review first: The duplicate holds the portal login, the affiliate record and '
+                       || (select count(*) from public.referral_phone_notices n where n.referrer_customer_id = pg_temp.fx('a'))
+                       || ' /r/ phone-notice mark(s) naming it as referrer; the record to keep has neither a portal login nor an affiliate record. '
+                       || 'A merge decides that two records are one person, not whose login it is: keep the affiliate''s record and merge the other one into it.'
+    and (select c.deleted_at is null from public.customers c where c.id = pg_temp.fx('a'))
+    and exists (select 1 from public.affiliate_accounts x where x.auth_user_id = pg_temp.fx('a_login') and x.customer_id = pg_temp.fx('a'))
+    and exists (select 1 from public.customer_affiliates f where f.id = pg_temp.fx('a_aff') and f.customer_id = pg_temp.fx('a'))
+    and not exists (select 1 from public.audit_logs l where l.action = 'customers_merged' and l.new_data ->> 'merged_from' = pg_temp.fx('a')::text)
+    and pg_temp.t1('a_login', 'T484 Keep') = pg_temp.ph(40),
+  'R8a since 486 the same merge by hand (keeping A2, with neither a portal login nor an affiliate record, and retiring A''s record) is refused and changes nothing: '
+  || pg_temp.tx('r8a_merge'));
+-- R8: the merge, with production's preview of 2 Nov 2026 swapped in for it alone.
+do $r8$
+declare v_inst text := pg_get_functiondef('public.preview_customer_merge(uuid,uuid)'::regprocedure); v_def text; v jsonb;
+        v_from int; v_to int;
+begin
+  v_from := strpos(v_inst, E'\n\n  -- 486 (the Owner, 2 Nov 2026):');
+  v_to := strpos(v_inst, E'\n  end;\n\n  return jsonb_build_object(');
+  v_def := case when v_from > 0 and v_to > v_from then left(v_inst, v_from - 1) || substr(v_inst, v_to + length(E'\n  end;'))
+                else v_inst end;
+  perform pg_temp.put('r8_preview', md5(v_inst) || ' ' || md5(v_def));
+  if md5(v_def) is distinct from 'f66c9d63369ef3b831ca74906a99b587' then
+    v := jsonb_build_object('success', false, 'error', 'production''s preview of 2 Nov 2026 was not rebuilt from the installed text; no merge');
+  else
+    execute v_def;
+    begin
+      perform pg_temp.as_owner();
+      v := public.merge_customer_records((select id from public.customers where full_name = 'T484 Aff a2'), pg_temp.fx('a'), 'T484 referrer duplicate', gen_random_uuid());
+    exception when others then v := jsonb_build_object('success', false, 'error', sqlerrm);
+    end;
+    perform pg_temp.as_server();
+    execute v_inst;
+  end if;
+  perform pg_temp.put('r8_merge', v::text);
+  perform pg_temp.put('r8_back', md5(pg_get_functiondef('public.preview_customer_merge(uuid,uuid)'::regprocedure)));
+end $r8$;
 select pg_temp.check(pg_temp.tx('r8_merge')::jsonb ->> 'success' = 'true'
     and public.affiliate_login_link_proof(pg_temp.fx('a_login'), (select id from public.customers where full_name = 'T484 Aff a2')) = 'own_record'
     and pg_temp.t1('a_login', 'T484 Keep') = pg_temp.ph(40) and pg_temp.t1('a_login', 'T484 Household') = pg_temp.ph(41)
     and pg_temp.t1('a_login', 'T484 Seminar') = 'null'
-    and not exists (select 1 from public.referral_phone_notices n where n.referrer_customer_id = pg_temp.fx('a')),
-  'R8 the referrer''s record merged into another: the login and the marks follow; proven through the merge; the told numbers still show, the others still none');
+    and not exists (select 1 from public.referral_phone_notices n where n.referrer_customer_id = pg_temp.fx('a'))
+    and split_part(pg_temp.tx('r8_preview'), ' ', 2) = 'f66c9d63369ef3b831ca74906a99b587'
+    and pg_temp.tx('r8_back') = split_part(pg_temp.tx('r8_preview'), ' ', 1),
+  'R8 the referrer''s record merged into another: the login and the marks follow; proven through the merge; the told numbers still show, the others still none'
+  || ' (merged with production''s preview of 2 Nov 2026 swapped in, the installed one put back; md5s installed, swapped in, after: '
+  || pg_temp.tx('r8_preview') || ' ' || pg_temp.tx('r8_back') || coalesce('; ' || (pg_temp.tx('r8_merge')::jsonb ->> 'error'), '') || ')');
+-- R8b: the same shape made by 437's Link to this customer (an Owner's or a Manager's decision about whose login it is,
+-- which 486 lets through), with the merge preview as installed: a fresh sign-up record made with its account (a login
+-- and an affiliate record), with a told referral and a seminar one, linked to an older customer who has neither (and
+-- an email of their own, so the Link copies none). First the preview is asked about the same merge by hand, as an
+-- Owner: 486's guard alone must refuse it (duplicate_has_affiliate_account), so the Link going through is 486 letting
+-- it through. Read in a savepoint, then undone: the checks after see R8's state. Its sign-up listing is put in by
+-- hand, as in event-website-439 and -441: 437's own sign-up would not list this older record (no shared phone, inbox
+-- or same-words name).
+savepoint r8b;
+select pg_temp.mk_aff('lnk', 91, '0 seconds');
+select pg_temp.signup('wrap', 'anon', pg_temp.code('lnk'), 'T484', 'Lnktold', pg_temp.ph(92), null, 'r-page-2026-11', null),
+       pg_temp.signup('old', 'anon', pg_temp.code('lnk'), 'T484', 'Lnkseminar', pg_temp.ph(93), null, null, null);
+insert into public.customers (full_name, phone, email, created_at)
+  values ('T484 Lnk older', pg_temp.ph(94), pg_temp.mail('lnkolder'), now() - interval '60 days');
+insert into public.affiliate_signup_matches (auth_user_id, fresh_customer_id, entered_phone, entered_name, reason, candidate_ids)
+  select pg_temp.fx('lnk_login'), pg_temp.fx('lnk'), pg_temp.ph(91), 'T484 Aff lnk', 'name_match', array[c.id]
+    from public.customers c where c.full_name = 'T484 Lnk older';
+do $$ declare v jsonb; m uuid; k uuid; begin
+  m := (select x.id from public.affiliate_signup_matches x where x.auth_user_id = pg_temp.fx('lnk_login') and x.status = 'open');
+  k := (select c.id from public.customers c where c.full_name = 'T484 Lnk older');
+  begin
+    perform pg_temp.as_owner();
+    perform pg_temp.put('r8b_byhand', coalesce((select string_agg(x ->> 'issue', ',') from jsonb_array_elements(public.preview_customer_merge(k, pg_temp.fx('lnk')) -> 'blocking') x), 'none'));
+  exception when others then perform pg_temp.put('r8b_byhand', 'error: ' || sqlerrm);
+  end;
+  begin
+    perform pg_temp.as_owner();
+    v := public.link_affiliate_signup(m, k, 'T484 same person', gen_random_uuid());
+  exception when others then v := jsonb_build_object('ok', false, 'error', sqlerrm);
+  end;
+  perform pg_temp.as_server(); perform pg_temp.put('r8b_link', v::text); end $$;
+select coalesce(pg_temp.tx('r8b_link')::jsonb ->> 'ok' = 'true'
+    and pg_temp.md5_of('preview_customer_merge(uuid,uuid)') = split_part(pg_temp.tx('r8_preview'), ' ', 1)
+    and exists (select 1 from public.affiliate_accounts x join public.customers c on c.id = x.customer_id
+                 where x.auth_user_id = pg_temp.fx('lnk_login') and c.full_name = 'T484 Lnk older')
+    and exists (select 1 from public.customer_affiliates f join public.customers c on c.id = f.customer_id
+                 where f.id = pg_temp.fx('lnk_aff') and c.full_name = 'T484 Lnk older')
+    and (select c.deleted_at is not null from public.customers c where c.id = pg_temp.fx('lnk'))
+    and public.affiliate_login_link_proof(pg_temp.fx('lnk_login'), (select c.id from public.customers c where c.full_name = 'T484 Lnk older')) = 'own_record'
+    and pg_temp.t1('lnk_login', 'T484 Lnktold') = pg_temp.ph(92) and pg_temp.t1('lnk_login', 'T484 Lnkseminar') = 'null'
+    and not exists (select 1 from public.referral_phone_notices n where n.referrer_customer_id = pg_temp.fx('lnk'))
+    and pg_temp.tx('r8b_byhand') = 'duplicate_has_affiliate_account', false) as r8b_ok,
+       coalesce(pg_temp.tx('r8b_link')::jsonb ->> 'error', pg_temp.tx('r8b_link')::jsonb ->> 'message', 'linked')
+         || ' (by hand: ' || coalesce(pg_temp.tx('r8b_byhand'), 'not asked') || ')' as r8b_said \gset
+rollback to savepoint r8b;
+select pg_temp.check(:'r8b_ok' = 't',
+  'R8b the same shape made by 437''s Link to this customer, which 486 lets through (the merge preview as installed, which refuses the same merge by hand): the login, the affiliate record, the referrals and the mark follow; proven through the merge; the told number shows, the seminar''s none: '
+  || :'r8b_said');
 
 -- ═════ X Who may ═════
 select pg_temp.check(pg_temp.acl_of('affiliate_login_link_proof(uuid,uuid)') = array['postgres=X/postgres', 'service_role=X/postgres']
