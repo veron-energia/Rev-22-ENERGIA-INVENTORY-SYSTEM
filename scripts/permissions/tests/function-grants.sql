@@ -214,6 +214,12 @@ declare
                              -- affiliate_portal_network call it), and the ingest's helpers
                              'calcom_booking_ingest','calcom_booking_backfill','calcom_booking_owner',
                              'calcom_customer_bookings','calcom_booking_apply','calcom_parse_time',
+                             -- 481: the stock units a refund by line paid back since the sale or
+                             -- the last reopening (invoice_stock_to_deduct,
+                             -- invoice_product_net_deducted, invoice_goods_status and the
+                             -- warehouse fulfilment trigger read it; signed-in staff reach it
+                             -- only through the Goods panel's invoice_goods_status)
+                             'invoice_refunded_stock',
                              -- 412: a staff login follows its profile (signed out and banned when
                              -- the profile is closed, unbanned when it opens again), and the
                              -- profiles trigger that calls it

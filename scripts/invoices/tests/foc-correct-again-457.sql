@@ -256,7 +256,9 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('confirm_foc_invoice(uuid,text)', 'ba8b1ce2a5671989b927891f0cb7b1a2'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('deduct_invoice_stock(uuid,text)', '32183fe9e7c15ed0b11307c48289831a'),
-               ('invoice_stock_to_deduct(uuid)', '6356494ccb8545d46c56b788f8f85f54'),
+               -- (481's AFTER where it is in, after 479: less the units a
+               -- refund by line paid back since the last reopening)
+               ('invoice_stock_to_deduct(uuid)', '6356494ccb8545d46c56b788f8f85f54|5480e6042b4521829ebce1ef14937162'),
                ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b'),
                ('trg_issue_sold_vouchers_on_paid()', 'c840d0d2754e7a8e889848ea8269a293|cf0b5610b77edfea2683751d5c25ca1d'),
                ('cancel_invoice_recorded(uuid,text,uuid)', 'de52d9dbaef8ab15163bef35cb9d733d'),

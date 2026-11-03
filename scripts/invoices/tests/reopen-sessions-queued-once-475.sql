@@ -62,11 +62,36 @@
 --   Known (475's NOT COVERED, the same with and without 475): THw, THb, THgc,
 --   THrf (a session's refund by line, the guided Cancel with the money
 --   recorded and Refund in full, while it waits or once cancelled again:
---   refused), THchw, THchc, THchk (a customer change: refused).
+--   refused), THchw, THchc, THchk (a customer change: refused). Where 479 is
+--   in (the Owner, 27 Oct 2026, answer F, and 29 Oct 2026, "Keep today's
+--   result" and, ~18:45 SGT, "Keep today's refusal": 475's NOT COVERED 1 and
+--   2 fixed as far as 479 fixes them), these seven are checked as 479
+--   leaves them ('expect479'): the refund by line goes through, its sessions
+--   off the queue (THw, THb); the guided Cancel with the money recorded and
+--   Refund in full go through where their plan comes out in whole sessions
+--   and voucher units at the value 479 gives the sessions, paying back what
+--   the refund options offer: here the S$40 held for the 2 sessions
+--   cancelled with their money, the session a refund by line paid back
+--   before the reopening left waiting, not offered again (THgc, THrf; for
+--   where they are still refused or find nothing, 479's NOT COVERED 10, 13,
+--   14 and 16; where another line is on the invoice with something to
+--   refund and the plan is cut to the money held, they are refused as before
+--   479 wherever the cut gives the waiting sessions some of the money, so
+--   what they do does not follow the order the lines are listed in, 479's
+--   NOT COVERED 10); the change goes through, the sessions
+--   following 460's rule: here, the invoice selling only them (no
+--   'transfer' or 'keep' asked), to B (THchw, THchc, THchk); with 'keep' on
+--   an invoice that issued credit or vouchers they stay with whoever holds
+--   those (479's CKv); and K1, K2 and K4 as fixed checks.
 -- In every case 462's invariants (474's reading of them), the sessions'
 -- own (one waiting row per session, of what it shows; nothing waits once
--- settled; held by the invoice's customer) and Cancel (tried, undone)
--- taking all of the invoice's credit back from whoever holds it.
+-- settled; held by the invoice's customer; where 479 is in, as 479 counts
+-- them: a session's rows and its refunds by line since the reopening add up
+-- to what it shows, and it is held by whoever holds the invoice's benefits)
+-- and Cancel (tried, undone) taking all of the invoice's credit back from
+-- whoever holds it. The invoice form's customer change sends a therapy line
+-- with its service, as InvoicesPage.tsx does (before 479 this suite sent it
+-- without, which the change also refused while a session waited).
 --
 --   S. Where it starts: 462, 463, 470 to 474 in; 475 in (nomig) or not,
 --      reopen_invoice at 458's AFTER.
@@ -97,6 +122,15 @@
 --   K. KNOWN (475's NOT COVERED), checked as they are: 1 (THw, THb, THgc,
 --      THrf), 2 (THchw, THchc, THchk), 3 (a session queued twice before 475:
 --      'dup'), 4 (a waiting row no longer what its session shows: 'shrink').
+--      Where 479 is in: 1 FIXED as far as 479 fixes it (the refund by line;
+--      the guided Cancel and Refund in full where their plan is whole units
+--      at the value 479 gives the sessions, offering no session a refund by
+--      line paid back before the reopening, refused as before 479 where
+--      their plan is cut to the money held while another line has something
+--      to refund; 479's NOT COVERED 10, 13, 14 and 16)
+--      and 2 FIXED (the sessions follow 460's rule; checked as 479 leaves
+--      them), 3 as before, 4 settled once the next reopening queued the
+--      difference (479 sums a session's rows; its NOT COVERED 7).
 --
 -- Run on a copy of production as it is (474 in, 27 Oct 2026: c1940191, 1387
 -- functions):
@@ -151,6 +185,11 @@ create function pg_temp.t475_474_in() returns boolean language sql as $f$
 -- 475 is in: reopen_invoice is 475's (its text says so; S checks its md5).
 create function pg_temp.t475_in() returns boolean language sql as $f$
   select position('-- 475 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.reopen_invoice(uuid,text,uuid)'::regprocedure)) > 0 $f$;
+-- 479 is in (a waiting session's refund by line and customer change go
+-- through, the guided flows where their plan is whole units: 475's NOT
+-- COVERED 1 and 2): its refund's text says so.
+create function pg_temp.t475_479_in() returns boolean language sql as $f$
+  select position('-- 479 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.refund_invoice_therapy_sessions(uuid,numeric,text,uuid)'::regprocedure)) > 0 $f$;
 -- What a commit does at the end of each app call (each is its own
 -- transaction in the app): 462's deferred trigger on the ledger runs (475
 -- adds no trigger, and changes nothing a commit does). Here
@@ -300,6 +339,7 @@ end $f$;
 create function pg_temp.t475_lines(p_inv uuid) returns jsonb language sql as $f$
   select jsonb_agg(jsonb_strip_nulls(jsonb_build_object('invoice_item_id', it.id, 'kind', it.line_kind,
            'credit_package_id', it.credit_package_id, 'premium_bundle_id', it.premium_bundle_id, 'voucher_id', it.voucher_id,
+           'therapy_service_id', it.therapy_service_id,  -- as InvoicesPage.tsx sends a therapy line (479's suite)
            'quantity', it.quantity, 'unit_price', it.unit_price, 'voucher_selection', it.bundle_voucher_selection)) order by it.id)
     from invoice_items it where it.invoice_id = p_inv $f$;
 create function pg_temp.t475_change(p_inv uuid, p_cust uuid, p_action text default 'transfer', p_store text default null)
@@ -645,16 +685,25 @@ create function pg_temp.t475_sessions(p_pre text) returns jsonb language plpgsql
 declare inv uuid := pg_temp.t475_id(p_pre || '/inv'); probs text := ''; s record; st text;
 begin
   st := (select status::text from invoices where id = inv);
+  -- 479 (where it is in): what a session's refund by line since the
+  -- invoice was last reopened took off its rows (its 'refund' events since
+  -- reopened_at); 0 before 479 (such a refund was refused).
   for s in select x.*, (select count(*) from invoice_reopen_sessions q where q.session_id = x.id and q.applied_at is null) as nrows,
-                  (select coalesce(sum(q.quantity), 0) from invoice_reopen_sessions q where q.session_id = x.id and q.applied_at is null) as qsum
+                  (select coalesce(sum(q.quantity), 0) from invoice_reopen_sessions q where q.session_id = x.id and q.applied_at is null) as qsum,
+                  case when pg_temp.t475_479_in() then
+                    (select coalesce(sum(-e.quantity), 0) from invoice_therapy_session_events e
+                      where e.session_id = x.id and e.event_kind = 'refund'
+                        and e.created_at > (select i.reopened_at from invoices i where i.id = inv)) else 0 end as since
              from customer_therapy_sessions x where x.invoice_id = inv loop
-    if s.nrows > 1 then probs := probs || format(' a session waits on %s rows (%s);', s.nrows, s.qsum); end if;
-    if s.nrows > 0 and s.qsum <> s.quantity_refunded + s.quantity_cancelled then
+    if s.nrows > 1 and not pg_temp.t475_479_in() then probs := probs || format(' a session waits on %s rows (%s);', s.nrows, s.qsum); end if;
+    if s.nrows > 0 and s.qsum + s.since <> s.quantity_refunded + s.quantity_cancelled then
       probs := probs || format(' a waiting session''s rows hold %s, it shows %s;', s.qsum, s.quantity_refunded + s.quantity_cancelled); end if;
     if s.nrows > 0 and st in ('paid', 'completed_foc') then probs := probs || ' settled with a session still waiting;'; end if;
     if s.nrows > 0 and not s.is_current then probs := probs || ' a replaced session waits;'; end if;
-    if s.is_current and s.customer_id is distinct from (select customer_id from invoices where id = inv) then
+    if s.is_current and not pg_temp.t475_479_in() and s.customer_id is distinct from (select customer_id from invoices where id = inv) then
       probs := probs || ' the sessions are not held by the invoice''s customer;'; end if;
+    if s.is_current and pg_temp.t475_479_in() and invoice_credit_live_holder(inv, s.customer_id, s.created_at) is distinct from s.customer_id then
+      probs := probs || ' the sessions are not held by whoever holds the invoice''s benefits;'; end if;
   end loop;
   return jsonb_build_object(
     'sess', coalesce((select string_agg(format('%s/%s r%s c%s %s', x.quantity_purchased - x.quantity_used - x.quantity_refunded - x.quantity_cancelled,
@@ -854,7 +903,8 @@ create function pg_temp.t475_listed(p_inv uuid) returns text language sql as $f$
 -- 'known' (a NOT COVERED item, checked as it is: the same with and without
 -- 475, as a control). Every case also checks the invariants, the sessions'
 -- own, and that Cancel takes everything back from whoever holds it.
-create temp table t475_cases(k text primary key, kind text not null, steps text not null, expect jsonb not null, q text, pre int, ord serial);
+create temp table t475_cases(k text primary key, kind text not null, steps text not null, expect jsonb not null, q text, pre int, ord serial,
+                            expect479 jsonb);
 insert into t475_cases(k, kind, steps, expect, q, pre) values
 -- 474's K1: a 3-session line, cancelled, S$20 refunded by line, reopened (it
 -- waits), cancelled again, reopened, paid; a third reopening.
@@ -938,6 +988,35 @@ insert into t475_cases(k, kind, steps, expect, q, pre) values
   '{"status":"cancelled","error~":"change B: Settle the pending session reopening before changing its allocation%","swait":1,"squeued":3,"sholder":"A","sinv":""}', '1/1', null),
 ('THchk', 'known', 'sale A th; cancel; backt 1 20; reopen; change B keep',
   '{"status":"partially_paid","error~":"change B keep: Settle the pending session reopening before changing its allocation%","swait":1,"squeued":3,"sholder":"A","sinv":""}', null, null);
+
+-- Where 479 is in, the seven known cases are 475's NOT COVERED 1 and 2 fixed
+-- as far as 479 fixes them (the Owner, 27 Oct 2026, answer F, and 29 Oct
+-- 2026): a refund by line takes its sessions off the queue (the session
+-- refunded; the rows hold what it shows less what was refunded since the
+-- reopening); the guided Cancel and Refund in full pay back what the refund
+-- options offer (479 leaves them as they are): the S$40 held for the 2
+-- sessions cancelled with their money, 2 sessions off the queue, the one a
+-- refund by line paid back before the reopening still waiting, not offered
+-- again (Refund in full leaves the invoice part-paid for the rest: 479's NOT
+-- COVERED 1; where their plan is not whole units, or not at the value 479
+-- gives the sessions, they are still refused, and where the sessions were
+-- all paid back by line before the reopening they offer nothing of them:
+-- 479's NOT COVERED 10, 13 and 14; with another line on the invoice with
+-- something to refund and the plan cut to the money held, they are refused
+-- as before 479 wherever the cut gives the waiting sessions some of the
+-- money: 479's NOT COVERED 10 and 16, the Owner, 29 Oct 2026 ~18:45 SGT,
+-- "Keep today's refusal"); a customer change of an invoice
+-- with only the therapy line (no 'transfer' or 'keep' asked) takes the
+-- waiting sessions to B ('keep' sent anyway, too: 479's NOT COVERED 4).
+update t475_cases set expect479 = x.e::jsonb from (values
+  ('THw', '{"status":"partially_paid","error":null,"swait":1,"squeued":2,"stwice":0,"sinv":"","sess":"0/3 r2 c1 refunded","sholder":"A"}'),
+  ('THb', '{"status":"cancelled","error":null,"swait":1,"squeued":2,"stwice":0,"sinv":"","sess":"0/3 r2 c1 refunded","sholder":"A"}'),
+  ('THgc', '{"status":"cancelled","error":null,"net":0,"swait":1,"squeued":1,"stwice":0,"sinv":"","sess":"0/3 r3 c0 refunded","sholder":"A"}'),
+  ('THrf', '{"status":"partially_paid","error":null,"net":0,"swait":1,"squeued":1,"stwice":0,"sinv":"","sess":"0/3 r3 c0 refunded","sholder":"A"}'),
+  ('THchw', '{"status":"partially_paid","error":null,"swait":1,"squeued":3,"sholder":"B","sinv":""}'),
+  ('THchc', '{"status":"cancelled","error":null,"swait":1,"squeued":3,"sholder":"B","sinv":""}'),
+  ('THchk', '{"status":"partially_paid","error":null,"swait":1,"squeued":3,"sholder":"B","sinv":""}')) x(k, e)
+ where t475_cases.k = x.k;
 
 -- States for the header's query (Q), made before 475 (R): what it lists for
 -- each, by reason, with its count (null: not listed).
@@ -1277,6 +1356,8 @@ declare c record; o jsonb; b jsonb; pa jsonb; pb jsonb; res text := ''; n int :=
 begin
   for c in select * from t475_cases order by ord loop
     o := pg_temp.t475_run('after', c.k, c.steps);
+    -- 479 (where it is in): the known cases as 479 leaves them.
+    if pg_temp.t475_479_in() and c.expect479 is not null then c.expect := c.expect479; end if;
     perform pg_temp.t475_check(pg_temp.t475_meets(o, c.expect) and coalesce(o->>'invariants', '') = '' and coalesce(o->>'sinv', '') = ''
         and coalesce((o->>'cancel_left')::numeric, 0) = 0,
       'A ' || c.kind || ' ' || c.k || ': ' || coalesce(pg_temp.t475_diff(o, c.expect), '') || ' ' || o::text);
@@ -1362,18 +1443,43 @@ begin
   -- K1 (NOT COVERED 1): a session's refund by line while its reopening
   -- waits or once cancelled again, the guided Cancel with the money recorded
   -- and Refund in full while it waits: refused (252's rule), after 475 as
-  -- before; "Record refund paid" with no line then works (THrp).
+  -- before; "Record refund paid" with no line then works (THrp). Where 479
+  -- is in: FIXED as far as 479 fixes it, they go through (A checked them as
+  -- 479 leaves them: the guided ones pay back the S$40 their plan offers,
+  -- the session a refund by line paid back before the reopening still
+  -- waiting; where they are still refused or find nothing: 479's NOT
+  -- COVERED 10, 13, 14 and 16; a plan cut to the money held while another
+  -- line has something to refund is refused as before 479: its NOT COVERED
+  -- 10).
+  if pg_temp.t475_479_in() then
+    perform pg_temp.t475_check((select bool_and(v->>'error' is null) from t475_res where phase = 'after' and k in ('THw', 'THb', 'THgc', 'THrf'))
+        and (select count(*) from t475_res where phase = 'after' and k in ('THw', 'THb', 'THgc', 'THrf')) = 4
+        and (select v->>'status' from t475_res where phase = 'after' and k = 'THrp') = 'paid',
+      'K1 with 479: look at 479 again');
+  else
   perform pg_temp.t475_check((select bool_and(v->>'error' like '%: Settle the reopened invoice before changing its queued sessions%')
                                 from t475_res where phase = 'after' and k in ('THw', 'THb', 'THgc', 'THrf'))
       and (select count(*) from t475_res where phase = 'after' and k in ('THw', 'THb', 'THgc', 'THrf')) = 4
       and (select v->>'status' from t475_res where phase = 'after' and k = 'THrp') = 'paid',
     'K1: look at NOT COVERED 1 again');
+  end if;
   -- K2 (NOT COVERED 2): a customer change while a session waits, or once
-  -- cancelled again: refused (252's rule).
+  -- cancelled again: refused (252's rule). Where 479 is in: FIXED, it goes
+  -- through, the sessions following 460's rule: here (only the therapy line,
+  -- no 'transfer' or 'keep' asked) to B; with 'keep' on an invoice that
+  -- issued credit or vouchers they stay with whoever holds those (479's
+  -- CKv).
+  if pg_temp.t475_479_in() then
+    perform pg_temp.t475_check((select bool_and(v->>'error' is null and v->>'sholder' = 'B') from t475_res
+                                 where phase = 'after' and k in ('THchw', 'THchc', 'THchk'))
+        and (select count(*) from t475_res where phase = 'after' and k in ('THchw', 'THchc', 'THchk')) = 3,
+      'K2 with 479: look at 479 again');
+  else
   perform pg_temp.t475_check((select bool_and(v->>'error' like '%: Settle the pending session reopening before changing its allocation%')
                                 from t475_res where phase = 'after' and k in ('THchw', 'THchc', 'THchk'))
       and (select count(*) from t475_res where phase = 'after' and k in ('THchw', 'THchc', 'THchk')) = 3,
     'K2: look at NOT COVERED 2 again');
+  end if;
   -- K3 (NOT COVERED 3): a session queued twice before 475 (made by hand,
   -- 'dup'): listed by the header's query (2); reopened again after 475,
   -- nothing more is queued; its payment is still refused.
@@ -1391,10 +1497,22 @@ begin
   inv := pg_temp.t475_id('K/THshr/inv');
   perform pg_temp.t475_check(pg_temp.t475_listed(inv) = '1/1,3/1', 'K4 THshr listed as ' || coalesce(pg_temp.t475_listed(inv), 'nothing'));
   o := pg_temp.t475_run('K', 'THshr', 'sale A th; cancel; backt 1 20; reopen; cancel; shrink; reopen; pay', 7);
+  -- Where 479 is in, the payment sums the session's rows (2 and 1, what it
+  -- shows), so it settles: 3 of 3 (479's NOT COVERED 7).
+  if pg_temp.t475_479_in() then
+    perform pg_temp.t475_check(o->>'error' is null and o->>'status' = 'paid' and o->>'sess' = '3/3 r0 c0 available'
+        and not exists (select 1 from invoice_reopen_sessions q where q.invoice_id = inv and q.applied_at is null),
+      'K4 THshr with 479: ' || o::text);
+  else
   perform pg_temp.t475_check(o->>'error' like 'pay: Therapy session reopening changed; reload its original evidence%'
       and (select array_agg(q.quantity order by q.quantity desc) from invoice_reopen_sessions q where q.invoice_id = inv and q.applied_at is null) = '{2,1}',
     'K4 THshr: ' || o::text);
+  end if;
+  if pg_temp.t475_479_in() then
+    raise notice 'KNOWN K: (475''s NOT COVERED, 479 in) (1) FIXED by 479: a session''s refund by line while its reopening waits or once cancelled again goes through, the sessions refunded off the queue; the guided Cancel with the money recorded and Refund in full go through where their plan comes out in whole sessions and voucher units at the value 479 gives the sessions, paying back what the refund options offer (here the S$40 held for 2 cancelled sessions), a session a refund by line paid back before the reopening not offered again (the Owner, 29 Oct 2026); still refused or finding nothing: 479''s NOT COVERED 10, 13, 14 and 16; with another line on the invoice with something to refund and the plan cut to the money held, refused as before 479 wherever the cut gives the waiting sessions some of the money (479''s NOT COVERED 10: the Owner, 29 Oct 2026, "Keep today''s refusal"); (2) FIXED by 479: a customer change then goes through, the sessions following 460''s rule (here, an invoice selling only them, to B; with ''keep'' on an invoice that issued credit or vouchers, they stay with whoever holds those: 479''s CKv); (3) a session queued twice before 475: still refused, nothing more queued; (4) a waiting row no longer what its session shows: the difference queued, and the payment now settles it (479 sums the rows)';
+  else
   raise notice 'KNOWN K: (475''s NOT COVERED) (1) a session''s refund by line, the guided Cancel with the money recorded and Refund in full while its reopening waits or once cancelled again: refused, "Settle the reopened invoice before changing its queued sessions" ("Record refund paid" with no line works); (2) a customer change then: refused, "Settle the pending session reopening before changing its allocation"; (3) a session queued twice before 475: still refused, nothing more queued; (4) a waiting row no longer what its session shows: the difference queued, the payment refused';
+  end if;
 end $$;
 
 rollback;
