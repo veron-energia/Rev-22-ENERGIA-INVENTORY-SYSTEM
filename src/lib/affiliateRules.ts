@@ -90,7 +90,7 @@ export function rulesExamples(r: Rates): { id: string; title: string; lines: str
   const refunded = share(corset.tier1, 46800 - 20000, 46800);
   const ownBuy = earns(10000, 'own', r);
   return [
-    { id: 'tier1', title: 'Ann, whom you referred, buys one of our own products for S$468',
+    { id: 'tier1', title: 'Ann, whom you referred, buys one of Energia\'s own products for S$468',
       lines: [`You earn Tier 1: ${t1o} of S$468.00 = ${sgd(corset.tier1)}.`,
               `The person who referred you earns Tier 2: ${t2o} of ${sgd(corset.tier1)} = ${sgd(corset.tier2)}.`] },
     { id: 'tier2', title: 'Ben, whom Ann referred, buys the same product',
@@ -98,7 +98,7 @@ export function rulesExamples(r: Rates): { id: string; title: string; lines: str
     { id: 'third', title: 'Ann buys a third-party machine for S$2,886',
       lines: [`You earn Tier 1: ${t1t} of S$2,886.00 = ${sgd(machine.tier1)}.`,
               `Tier 2: ${t2t} of ${sgd(machine.tier1)} = ${sgd(machine.tier2)}.`] },
-    { id: 'promotion', title: 'Ann buys a S$300 promotion whose items normally cost S$200 (ours) and S$100 (third-party)',
+    { id: 'promotion', title: 'Ann buys a S$300 promotion whose items normally cost S$200 (Energia\'s own) and S$100 (third-party)',
       lines: [`S$200.00 of it earns ${t1o}: ${sgd(promoOwn.tier1)}. S$100.00 earns ${t1t}: ${sgd(promoThird.tier1)}.`,
               `You earn Tier 1: ${sgd(promoOwn.tier1 + promoThird.tier1)}. Tier 2: ${sgd(promoOwn.tier2 + promoThird.tier2)}.`] },
     { id: 'bundle', title: 'Ann buys a S$15,000 Premium Bundle',
@@ -108,13 +108,13 @@ export function rulesExamples(r: Rates): { id: string; title: string; lines: str
       lines: [`You earn Tier 1: ${sgd(pkg.tier1)}. Tier 2: ${sgd(pkg.tier2)}. Spending the credit later earns nothing more.`] },
     { id: 'therapy', title: 'Ann pays S$199 for a therapy session',
       lines: [`You earn Tier 1: ${t1o} of S$199.00 = ${sgd(therapy.tier1)}. Tier 2: ${sgd(therapy.tier2)}.`] },
-    { id: 'parts', title: 'Ann pays S$1,000 for one of our products in two parts: S$400 in October and S$600 in November',
+    { id: 'parts', title: 'Ann pays S$1,000 for one of Energia\'s own products in two parts: S$400 in October and S$600 in November',
       lines: [`October: ${sgd(october)} (her S$400.00 share of the ${sgd(parts.tier1)}).`,
               `November: ${sgd(parts.tier1 - october)}, the rest, when it is paid in full.`] },
     { id: 'refund', title: 'Ann returns part of her S$468 purchase and is refunded S$200',
       lines: [`Your Tier 1 becomes ${sgd(refunded)} instead of ${sgd(corset.tier1)}.`,
               `If ${sgd(corset.tier1)} was already paid to you, ${sgd(corset.tier1 - refunded)} comes off your next commission.`] },
-    { id: 'own-purchase', title: 'You buy one of our own products for S$100 yourself',
+    { id: 'own-purchase', title: 'You buy one of Energia\'s own products for S$100 yourself',
       lines: ['You earn nothing on your own purchase.',
               `The person who referred you earns Tier 1: ${sgd(ownBuy.tier1)}; their referrer earns Tier 2: ${sgd(ownBuy.tier2)}.`] },
   ];

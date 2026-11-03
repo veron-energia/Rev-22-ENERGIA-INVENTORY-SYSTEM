@@ -112,7 +112,7 @@ test('a first read that fails shows the setup card with Try again, which reads a
   const sb = backend('staff', { fail: { profiles: 'Failed to fetch' } });
   sb.auth.session = SESSION;
   await d.mount(app(sb));
-  assert.ok(d.text().includes('Account setup needed') && d.text().includes('could not reach the server'));
+  assert.ok(d.text().includes('Account setup needed') && d.text().includes('server could not be reached'));
   sb.fail.profiles = undefined;
   await d.click(d.button('Try again'));
   assert.ok(document.getElementById('page'), d.text());
@@ -131,7 +131,7 @@ test('a login with no account yet whose re-read fails shows the error, not the v
   sb.fail.profiles = 'Failed to fetch';
   await d.click(d.button('Finish onboarding'));
   assert.ok(!document.getElementById('verify'), 'not sent back to verify (before the fix it was)');
-  assert.ok(d.text().includes('Could not load your account') && d.text().includes('could not reach the server'), d.text());
+  assert.ok(d.text().includes('Could not load your account') && d.text().includes('server could not be reached'), d.text());
   // Try again, with the connection back and the account now made, opens the portal.
   sb.fail.profiles = undefined;
   sb.tables.affiliate_accounts.push({ id: 'aa-1', auth_user_id: 'u-new', customer_id: 'c-1', affiliate_id: null, status: 'claimed' });
@@ -149,7 +149,7 @@ test('a pending invitee whose re-read fails is told the connection failed, not "
   pending.is_active = true; pending.invitation_status = 'accepted';
   sb.fail.profiles = 'Failed to fetch';
   await d.click(d.button('Try again'));
-  assert.ok(d.text().includes('could not reach the server'), d.text());
+  assert.ok(d.text().includes('server could not be reached'), d.text());
   assert.ok(!d.text().includes('deactivated'), 'the old "deactivated" is not kept (before the fix it was)');
   sb.fail.profiles = undefined;
   await d.click(d.button('Try again'));

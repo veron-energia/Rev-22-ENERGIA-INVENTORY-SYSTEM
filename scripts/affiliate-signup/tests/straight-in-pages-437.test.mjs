@@ -235,7 +235,7 @@ test('G: the login page sends a login with no affiliate account to finish its si
   await d.setValue(document.querySelector('input[type="email"]'), EMAIL);
   await d.setValue(document.querySelector('input[type="password"]'), 'a-long-password-437');
   await d.click(d.button('Sign In'));
-  assert.match(d.text(), /not switched on yet\. Open the link we emailed you, or send it again below/);
+  assert.match(d.text(), /not switched on yet\. Open the link Energia emailed you, or send it again below/);
   assert.doesNotMatch(d.text(), /waiting to be switched on/);
   await d.click(d.button('Send the sign-up link again'));
   assert.deepEqual(client.calls.filter(c => c.fn === 'auth-resend-verification').map(c => c.body), [{ email: EMAIL }]);
@@ -324,7 +324,7 @@ test('F: a link that could not verify the email lands on the Account page, which
   assert.equal(where(), '/affiliate/account');
   assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Not verified');
   const section = document.querySelector('[data-section="verify-email"]');
-  assert.match(section?.querySelector('[data-note="verify-failed"]')?.textContent ?? '', /We could not verify your email from that link\. Send a new one\./);
+  assert.match(section?.querySelector('[data-note="verify-failed"]')?.textContent ?? '', /Your email could not be verified from that link\. Send a new one\./);
   assert.ok(d.button('Send verification email', section));
 });
 

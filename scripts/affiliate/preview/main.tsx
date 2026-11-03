@@ -5,6 +5,7 @@ import '../../../src/styles/globals.css';
 import AffiliateLayout from '../../../src/components/AffiliateLayout';
 import AffiliateRulesPage from '../../../src/pages/AffiliateRulesPage';
 import AffiliateAccountPage from '../../../src/pages/AffiliateAccountPage';
+import AffiliateNetworkPage from '../../../src/pages/AffiliateNetworkPage';
 
 // The real shell, with the real stylesheet. Resize the window (or emulate a
 // width) and read the badge: it reports which of the two navigations the CSS
@@ -45,15 +46,17 @@ const page = new URLSearchParams(window.location.search).get('page');
 const rules = page === 'rules';
 // ?page=account: the Account page with Your details (491); ?route= in the stub.
 const account = page === 'account';
+// ?page=network: My Network (492: every Tier 1 number; no card once the promotion is final, ?promo=running shows it)
+const network = page === 'network';
 
 createRoot(document.getElementById('root')!).render(
-  <MemoryRouter initialEntries={[rules ? '/affiliate/rules' : account ? '/affiliate/account' : '/affiliate/dashboard']}>
-    {rules ? <AffiliateRulesPage /> : account ? <AffiliateAccountPage /> : (
+  <MemoryRouter initialEntries={[rules ? '/affiliate/rules' : account ? '/affiliate/account' : network ? '/affiliate/network' : '/affiliate/dashboard']}>
+    {rules ? <AffiliateRulesPage /> : account ? <AffiliateAccountPage /> : network ? <AffiliateNetworkPage /> : (
       <AffiliateLayout>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13.5 }}>Your Energia affiliate overview</p>
       </AffiliateLayout>
     )}
-    {!rules && !account && <Probe />}
+    {!rules && !account && !network && <Probe />}
   </MemoryRouter>
 );

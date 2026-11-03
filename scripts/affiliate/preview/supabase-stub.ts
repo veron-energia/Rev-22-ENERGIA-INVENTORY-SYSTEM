@@ -28,6 +28,22 @@ const DETAILS = {
   first_name: 'Ada', last_name: 'Preview', phone: '+61255500101', email: 'ada.preview@example.com', login_email: 'ada.preview@example.com',
   request: null as null | Record<string, unknown>,
 };
+// My Network (492): every Tier 1 number as the database now sends it (one referral asked to hide hers: a dash);
+// Tier 2 never has one. The promotion card: ?promo=running shows October's while it runs; by default it is final,
+// and My Network shows no card.
+const row = (name: string, phone: string | null, days: number, extra: Record<string, unknown> = {}) => ({
+  customer_name: name, tier: 'tier1', referral_date: null, joined_at: new Date(Date.now() - days * 86400000).toISOString(),
+  purchases: 1, total_spent: 468, your_commission: 70.2, booking_at: null, booking_state: 'visited', phone, ...extra });
+const NETWORK = {
+  tier1: [row('Bea Preview', '+61255500102', 2), row('Cal Preview', '+61255500103', 9, { purchases: 0, total_spent: 0, your_commission: 0, booking_state: 'none' }),
+          row('Dee Preview', null, 20), row('Eve Preview', '+61255500105', 41)],
+  tier2: [{ ...row('Fay Preview', null, 5), tier: 'tier2', parent_name: 'Bea Preview', phone: undefined, your_commission: 24.57 }],
+};
+const PROGRESS = {
+  campaign: { code: '2026-10', title: 'October referral promotion', starts_on: '2026-10-01', ends_on: '2026-10-31', tiers: [10, 20, 50, 80],
+              status: params.get('promo') === 'running' ? 'provisional' : 'final' },
+  counted: 0, not_yet_visited: 0, referred_in_window: 0, tier_reached: null, next_tier: 10, to_next: 10, reward_tier: null, reward_given_at: null,
+};
 let pending: { changes: Record<string, string>; step: 'current' | 'new' } | null = null;
 const answer = (data: unknown) => ({ data, error: null });
 function detailsStep(body: Record<string, unknown>) {
@@ -52,6 +68,8 @@ export const supabase = {
   rpc: async (fn: string) => {
     if (fn === 'affiliate_portal_me') return answer({ name: 'Ada Preview', email: DETAILS.login_email, referral_code: 'PREVIEW1', status: 'active', joined_at: '2026-10-01T02:00:00Z' });
     if (fn === 'affiliate_portal_details') return answer({ ...DETAILS });
+    if (fn === 'affiliate_portal_network') return answer(NETWORK);
+    if (fn === 'affiliate_portal_campaign_progress') return answer(PROGRESS);
     if (fn !== 'affiliate_rules_info') return { data: null, error: { message: `preview stub: ${fn} is not stubbed` } };
     if (params.get('rules') === 'fail') return { data: null, error: { message: 'Failed to fetch' } };
     return { data: RULES, error: null };

@@ -37,11 +37,11 @@ export const AUTH_EMAIL_COPY = {
   recoverySubmitted:
     'If an account exists for this email, password reset instructions will be sent.',
   notSent:
-    'We could not hand your email to our delivery service just now. Please wait a moment and try again.',
+    'Energia could not send the email just now. Please wait a moment and try again.',
   unavailable:
-    'We could not process that request just now. Please try again shortly.',
+    'That request could not be processed just now. Please try again shortly.',
   network:
-    'We could not reach the server. Check your connection and try again.',
+    'The server could not be reached. Check your connection and try again.',
   unauthorized:
     'Your session has expired. Please use the link again, or sign in and retry.',
 };

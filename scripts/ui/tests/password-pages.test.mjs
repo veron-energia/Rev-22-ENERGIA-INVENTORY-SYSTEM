@@ -99,7 +99,7 @@ for (const [name, path, flow] of [['ForgotPasswordPage', '/forgot-password', 'st
     if (document.querySelector('form')) await d.submit(document.querySelector('form')); else await d.click(send);
     assert.equal(sb.calls.filter(c => c.fn === 'auth-request-recovery')[0].body.flow, flow);
     assert.ok(!d.text().includes('Check your email'), 'not told to check their email');
-    assert.ok([...document.querySelectorAll('[role="alert"]')].some(a => a.textContent.includes('We could not hand your email')));
+    assert.ok([...document.querySelectorAll('[role="alert"]')].some(a => a.textContent.includes('Energia could not send the email just now')));
     const again = [...document.querySelectorAll('button')].find(b => /Send/i.test(b.textContent));
     assert.ok(again && !again.disabled, 'Send is there to try again');
   });

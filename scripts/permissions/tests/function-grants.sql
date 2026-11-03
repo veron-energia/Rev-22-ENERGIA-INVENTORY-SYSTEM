@@ -14,7 +14,10 @@ declare
   v_public text[] := array['survey_link_info','submit_health_survey','active_customer_source_options',
                            'public_affiliate_referral_info','affiliate_referral_signup',
                            -- 484: the app's /r/ page signs up through it, naming the notice it showed
-                           'affiliate_referral_signup_with_notice'];
+                           'affiliate_referral_signup_with_notice',
+                           -- 490: the public Rules and regulations page (the affiliate terms) reads the
+                           -- rates, the product names by type and the machines
+                           'affiliate_rules_info'];
   -- Reached only from inside another SECURITY DEFINER function, which runs as
   -- the owner. A staff member calling any of these directly could earn a
   -- commission twice, approve their own transfer, or burn an invoice number.
@@ -289,7 +292,7 @@ declare
                              'cancel_rental','cancel_special_sale','pay_special_with_credit'];
   bad text; n int;
 begin
-  -- 1. Nothing outside the six signed-out endpoints is callable with the anon
+  -- 1. Nothing outside the seven signed-out endpoints is callable with the anon
   --    key, which ships in the browser bundle.
   select string_agg(p.proname, ', ' order by p.proname) into bad
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -300,8 +303,8 @@ begin
   if bad is not null then
     raise exception 'FAIL: callable by anon outside the public allowlist: %', bad; end if;
 
-  -- 2. The six are still reachable, or the public survey and the referral
-  --    landing page stop working for signed-out visitors.
+  -- 2. The seven are still reachable, or the public survey, the referral
+  --    landing page and the Rules page stop working for signed-out visitors.
   select string_agg(x, ', ') into bad from unnest(v_public) x
    where not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                       where n.nspname = 'public' and p.proname = x
@@ -491,5 +494,5 @@ begin
    where n2.nspname = 'public' and p.prokind = 'f'
      and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', p.oid, 'execute');
-  raise notice 'PASS: only the 6 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy, the cal.com bookings or the told-at-sign-up marks', n;
+  raise notice 'PASS: only the 7 signed-out endpoints are callable by anon; % application functions remain callable by staff; the named privileged internals are callable by neither; no two functions share a name and parameter names; the legacy seven-argument create_invoice and record_document_send, three-argument promotion_selections_topup and four-argument search_customers are gone; nothing of the TikTok ads engine is open to a client role, no client role reads a view past row-level security, the legacy affiliate objects are gone, no client role holds the sign-up list, and none holds the sign-up details copy, the cal.com bookings or the told-at-sign-up marks', n;
 end $$;

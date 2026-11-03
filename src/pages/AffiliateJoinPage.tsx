@@ -137,7 +137,7 @@ const AffiliateJoinPage: React.FC = () => {
   if (signInFailed) return (
     <AffiliateAuthShell title="Your account is ready" subtitle="Sign in to continue">
       <p role="alert" style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        Your affiliate account for <b>{f.email}</b> was created, but we could not sign you in just now. Sign in with the
+        Your affiliate account for <b>{f.email}</b> was created, but you could not be signed in just now. Sign in with the
         password you chose to go to your dashboard.
       </p>
       <Link className="btn btn-primary" style={{ width: '100%', textAlign: 'center', marginTop: 16 }} to="/affiliate/login">Sign in</Link>
@@ -150,7 +150,7 @@ const AffiliateJoinPage: React.FC = () => {
     <AffiliateAuthShell title="Next step" subtitle="Check your email, or sign in">
       {notice && <p role="alert" style={{ color: 'var(--warning, #b45309)', fontSize: 13, marginBottom: 12 }}>{notice}</p>}
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        If <b>{f.email}</b> is new to Energia, we have sent it a verification link — open it and you
+        If <b>{f.email}</b> is new to Energia, a verification link has been sent to it — open it and you
         will be brought back to finish setting up your affiliate account.
       </p>
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginTop: 10 }}>
@@ -170,7 +170,7 @@ const AffiliateJoinPage: React.FC = () => {
         </button>
       </div>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, marginTop: 14 }}>
-        {AUTH_EMAIL_COPY.signupExistingHint} Still stuck? Contact Energia and we will help.
+        {AUTH_EMAIL_COPY.signupExistingHint} Still stuck? Contact Energia for help.
       </p>
     </AffiliateAuthShell>
   );
@@ -179,7 +179,7 @@ const AffiliateJoinPage: React.FC = () => {
     <AffiliateAuthShell title="Become an Energia Affiliate" subtitle="Create your affiliate account"
       footer={<>Already have an account? <Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Sign in</Link></>}>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
-        Already an Energia customer? Use this form with the phone number we have for you: your affiliate account is
+        Already an Energia customer? Use this form with the phone number Energia has for you: your affiliate account is
         joined to your customer record, so your purchases, credit, vouchers and therapy stay exactly as they are. You can
         start using your affiliate account straight away.
       </p>

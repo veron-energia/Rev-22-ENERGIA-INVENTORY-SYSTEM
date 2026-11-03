@@ -43,7 +43,7 @@ export interface ChangeAnswer { status: number; body: Record<string, unknown> }
 
 const SIGN_IN_AGAIN = 'Please sign in again and retry.';
 const SESSION_EXPIRED = 'Your session has expired. Please use the link again or sign in.';
-const UNAVAILABLE = 'We could not update your password just now. Please try again shortly.';
+const UNAVAILABLE = 'Your password could not be updated just now. Please try again shortly.';
 
 const answer = (status: number, body: Record<string, unknown>): ChangeAnswer => ({ status, body });
 const unavailable = () => answer(503, { error: 'temporarily_unavailable', message: UNAVAILABLE });

@@ -38,7 +38,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const UNREACHABLE = 'We could not reach the server to load your account. Check your connection and try again.';
+const UNREACHABLE = 'The server could not be reached to load your account. Check your connection and try again.';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<Session | null>(null);

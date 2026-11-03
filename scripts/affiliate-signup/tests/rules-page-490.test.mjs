@@ -13,6 +13,16 @@
 //   P6 The sign-up page's "Energia Affiliate terms" opens this page in a new tab.
 //   P7 The sums: rounding half away from zero to the cent, Tier 2 from the
 //      rounded Tier 1, formatting.
+//   492 (the user, 3 Nov 2026: "more professional"; Energia's name, never
+//   "we", "our" or "us"; Tier 1 phone numbers for every direct referral):
+//   P8 Laid out as terms: the summary's four rates as large figures (Tier 2
+//      as a share of the sale, with its share of Tier 1), the effective date,
+//      the contents, clauses 1 to 13 in order, each point numbered n.1, n.2,
+//      ..., the examples as Appendix A, and the footer.
+//   P9 Print: the button prints; on paper every product list is open, and
+//      afterwards the lists are as they were.
+//   P10 Energia's voice: no "we", "our", "ours" or "us" anywhere on the page,
+//      signed out or signed in; the phone clause says what My Network shows.
 //
 // Every name and email is invented (@example.com).
 // Run: node --test scripts/affiliate-signup/tests/rules-page-490.test.mjs
@@ -95,9 +105,9 @@ test('P1: signed out, the plain page with the live rates, lists, machines and wo
   assert.deepEqual(list('own'), ['Test Corset', 'Test Pillow']);
   assert.deepEqual(list('third_party'), ['Test Water System']);
   assert.deepEqual(list('no_commission'), ['Test Delivery Fee']);
-  assert.match(document.querySelector('[data-list="own"] summary').textContent, /Our own products \(2\)/);
-  assert.deepEqual(list('machines'), ['Test Machine Rental: the third-party rate', 'Test Own Machine: our own rate']);
-  assert.match(d.text(), /Machines bought or rented earn like the machine itself: a third-party machine earns the third-party rate, one of ours our own rate\. This applies to sales from 3 November 2026; earlier sales keep the rate they were made at\./);
+  assert.match(document.querySelector('[data-list="own"] summary').textContent, /Energia's own products \(2\)/);
+  assert.deepEqual(list('machines'), ['Test Machine Rental: the third-party rate', 'Test Own Machine: Energia\'s own rate']);
+  assert.match(d.text(), /Machines bought or rented earn like the machine itself: a third-party machine earns the third-party rate, and one of Energia's own machines earns Energia's own rate\. This applies to sales from 3 November 2026; earlier sales keep the rate they were made at\./);
   assert.match(d.text(), /Items that earn no commission: Test Delivery Fee\./);
 
   assert.match(example('tier1'), /You earn Tier 1: 15% of S\$468\.00 = S\$70\.20\..*Tier 2: 35% of S\$70\.20 = S\$24\.57\./);
@@ -192,4 +202,80 @@ test('P7: the sums round half away from zero to the cent, with Tier 2 from the r
   assert.equal(rules.effectiveTier2(4.5, 35), 1.575);
   assert.equal(rules.longDate('2026-11-03'), '3 November 2026');
   assert.equal(rules.longDate(null), null);
+});
+
+test('P8: laid out as terms: the summary\'s figures, the effective date, numbered clauses, the appendix', async () => {
+  backend();
+  await d.mount(app('/affiliate/rules'));
+  await d.tick(10);
+  const fig = k => document.querySelector(`[data-glance] [data-rate="${k}"]`)?.textContent;
+  assert.deepEqual([fig('tier1_own'), fig('tier1_third'), fig('tier2_own'), fig('tier2_third')], ['15%', '4.5%', '5.25%', '1.575%']);
+  const glance = document.querySelector('[data-glance]').textContent;
+  assert.match(glance, /Tier 1 · your referrals' purchases/);
+  assert.match(glance, /of the amount paid \(35% of the Tier 1 commission\)/);
+  assert.match(glance, /Paid monthly.*Earned when paid.*Refunds reduce it.*Two tiers only/);
+  assert.match(glance, /This summary is for convenience\. The terms below apply\./);
+  assert.equal(document.querySelector('[data-effective]')?.textContent, '3 November 2026');
+  assert.match(document.querySelector('.terms-footer')?.textContent ?? '', /Energia Affiliate terms · Effective 3 November 2026/);
+
+  const clauses = [...document.querySelectorAll('[data-clause]')];
+  assert.deepEqual(clauses.map(c => c.getAttribute('data-clause')), ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13']);
+  assert.deepEqual(clauses.map(c => c.querySelector('h2').textContent), [
+    '1. About these terms', '2. Definitions', '3. Referrals', '4. Commission rates', '5. Energia\'s own and third-party products',
+    '6. How each kind of purchase earns', '7. What earns no commission', '8. When commission is earned', '9. Refunds and cancellations',
+    '10. Your affiliate account', '11. Payouts', '12. Your referrals\' details', '13. Changes to these terms']);
+  for (const c of clauses) {
+    const n = c.getAttribute('data-clause');
+    const nums = [...c.querySelectorAll('.terms-points > li > .terms-num')].map(x => x.textContent);
+    assert.ok(nums.length > 0, `clause ${n} has points`);
+    assert.deepEqual(nums, nums.map((_, i) => `${n}.${i + 1}`), `clause ${n} numbered`);
+  }
+  assert.match(document.querySelector('[data-clause="1"]').textContent, /These terms are between you and Energia\..*please ask Energia staff at any Energia outlet\./);
+  assert.ok(document.querySelector('[data-clause="4"] [data-table="rates"]'), 'the rates table is in clause 4');
+  // The contents link to every clause and the appendix; the old anchors still lead to their parts.
+  const hrefs = [...document.querySelectorAll('.terms-contents a')].map(a => a.getAttribute('href'));
+  assert.deepEqual(hrefs, ['#about', '#definitions', '#referrals', '#earn', '#products', '#kinds', '#nothing', '#when', '#refunds',
+                           '#status', '#payouts', '#details', '#changes', '#examples']);
+  for (const h of hrefs) assert.ok(document.getElementById(h.slice(1)), h);
+  const appendix = document.getElementById('examples');
+  assert.match(appendix.querySelector('h2').textContent, /^Appendix A\. Worked examples$/);
+  assert.equal(appendix.querySelectorAll('[data-example]').length, 10);
+  assert.match(appendix.textContent, /These examples explain the terms above; where they differ, the terms apply\./);
+});
+
+test('P9: Print prints, with every product list open on paper and closed again afterwards', async () => {
+  backend();
+  await d.mount(app('/affiliate/rules'));
+  await d.tick(10);
+  let printed = 0;
+  const print = window.print;
+  window.print = () => { printed += 1; };
+  try {
+    await d.click(document.querySelector('[data-print]'));
+    assert.equal(printed, 1);
+  } finally { window.print = print; }
+  const lists = [...document.querySelectorAll('.terms-doc details')];
+  assert.equal(lists.length, 4);
+  assert.ok(lists.every(l => !l.open), 'closed on screen');
+  lists[0].open = true;
+  window.dispatchEvent(new window.Event('beforeprint'));
+  assert.ok(lists.every(l => l.open), 'all open on paper');
+  window.dispatchEvent(new window.Event('afterprint'));
+  assert.ok(lists[0].open && lists.slice(1).every(l => !l.open), 'as they were');
+  assert.match(document.querySelector('[data-print]').className, /\bterms-noprint\b/);
+});
+
+test('P10: Energia\'s voice, signed out and signed in; the phone clause says what My Network shows', async () => {
+  for (const signedIn of [false, true]) {
+    backend({ signedIn });
+    await d.mount(app('/affiliate/rules'));
+    await d.tick(10);
+    const page = document.querySelector('.terms-doc').textContent;
+    assert.doesNotMatch(page, /\b(we|our|ours|us)\b/i, signedIn ? 'signed in' : 'signed out');
+    assert.match(page, /Energia staff name you as the affiliate on a sale/);
+    assert.match(page, /A discount Energia staff give on the whole invoice/);
+    assert.match(document.querySelector('[data-clause="12"]').textContent,
+      /It shows the phone numbers of your direct referrals \(Tier 1\), unless a referral has asked Energia to hide theirs, and never the phone number of a Tier 2 referral\. No numbers are shown while your affiliate account is suspended, or until Energia has confirmed that your portal login belongs to your customer record\./);
+    assert.doesNotMatch(page, /were told, when they signed up/, 'the old phone rule is gone');
+  }
 });

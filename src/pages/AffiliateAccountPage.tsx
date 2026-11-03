@@ -113,12 +113,12 @@ const AffiliateAccountPage: React.FC = () => {
             <div className="card" data-section="verify-email" style={{ padding: 18, marginBottom: 20 }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Verify your email</h3>
               <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12 }}>
-                We will send a link to <b>{me.email}</b>. Open it to confirm the address is yours. Your portal, referral link,
+                Energia will send a link to <b>{me.email}</b>. Open it to confirm the address is yours. Your portal, referral link,
                 commission and payouts work the same until then.
               </p>
               {verifyFailed && !verifyMsg && (
                 <p role="alert" data-note="verify-failed" style={{ fontSize: 13, marginBottom: 10, color: 'var(--danger)' }}>
-                  We could not verify your email from that link. Send a new one.
+                  Your email could not be verified from that link. Send a new one.
                 </p>
               )}
               {verifyMsg && <p role={verifyMsg.ok ? 'status' : 'alert'} style={{ fontSize: 13, marginBottom: 10, color: verifyMsg.ok ? 'var(--success)' : 'var(--danger)' }}>{verifyMsg.text}</p>}

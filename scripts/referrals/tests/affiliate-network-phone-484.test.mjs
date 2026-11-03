@@ -11,9 +11,10 @@
 //     appear one by one): a "Phone" column right after Booking in the table (1200 px and wider) and a "Phone" line
 //     right after Booking on each Tier 1 card (narrower); the number as the database sends it, in the font of the
 //     staff Downline's phone cell (var(--font-display)), kept whole; a grey "—" (var(--text-muted)) on a row
-//     without one (null, blank, not text, or no key); and the note's sentence (push #2, the Owner, 1 Nov 2026) "A
-//     phone number shows only for a direct referral who registered through your link after being told you would
-//     see it. Use it only to help them with their visit."
+//     without one (null, blank, not text, or no key); and the note's sentence, since 492 (the user, 3 Nov 2026:
+//     the database sends every direct referral's number) "Phone numbers show for your direct referrals only. A
+//     dash means there is no number to show. Use them only to help them with their visit." (484's, of 1 Nov 2026,
+//     said a number showed only for a referral told at sign-up.)
 //   * Loading, or not loaded: no sentence, whatever the answer will hold; it comes with the numbers.
 //   * Tier 2: never a Phone column or line; a number sent there is never shown and never shows Tier 1's column.
 //   * The staff Downline is unchanged.
@@ -165,8 +166,8 @@ const TIER1_HEADS_PHONE = ['Customer', 'Joined', 'Booking', 'Phone', 'Purchases'
 const TIER2_HEADS = ['Customer', 'Referred By', 'Joined', 'Booking', 'Purchases', 'Total Spent', 'Your Commission'];
 const NOTE = "Booking is each person's next appointment at the centre, or their last one; Miss means no visit and no purchase at the "
   + 'centre were recorded that day. Came in means they have come to the centre without a booking.';
-const PHONE_SENTENCE = ' A phone number shows only for a direct referral who registered through your link after being told you would '
-  + 'see it. Use it only to help them with their visit.';
+const PHONE_SENTENCE = ' Phone numbers show for your direct referrals only. A dash means there is no number to show. '
+  + 'Use them only to help them with their visit.';
 
 const tables = () => { const t = document.querySelectorAll('.portal-desktop-only table'); assert.equal(t.length, 2); return t; };
 const heads = table => [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
@@ -352,8 +353,8 @@ test('the source: one phone reader, Tier 1 only, shown only when Tier 1 has a nu
   assert.match(src, /<NetTable rows=\{n\.tier1 \?\? \[\]\} showPhone=\{showPhone\} \/>/);
   assert.match(src, /<NetTable rows=\{n\.tier2 \?\? \[\]\} showParent \/>/);
   assert.match(src, /\{showPhone && <th>Phone<\/th>\}/);
-  assert.match(src, /\{showPhone && ' A phone number shows only for a direct referral who registered through your link after being told you would see it\. Use it only to help them with their visit\.'\}/);
-  assert.doesNotMatch(src, /Phone numbers are shown for your direct referrals only/, 'the old sentence is gone');
+  assert.match(src, /\{showPhone && ' Phone numbers show for your direct referrals only\. A dash means there is no number to show\. Use them only to help them with their visit\.'\}/);
+  assert.doesNotMatch(src, /Phone numbers are shown for your direct referrals only|after being told you would see it/, 'the older sentences are gone');
   assert.equal(src.match(/phoneOf\(/g).length, 2, 'the one reader, used by the cell and by the page');
   assert.match(src, /fontFamily: 'var\(--font-display\)'/);
   assert.match(read('src/components/referrals/DownlineModal.tsx'), /<td style=\{\{ fontFamily: 'var\(--font-display\)' \}\}>\{r\.phone \?\? '—'\}<\/td>/);

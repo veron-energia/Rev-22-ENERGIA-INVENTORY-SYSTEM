@@ -29,8 +29,9 @@
 // 2026): the tab states that past customers are neither counted nor listed
 // and that a QR-link form is dated the day it was sent (the friend table's
 // "First visit (promotion)"); the portal says how many friends referred
-// during the promotion have not visited yet, a count only, hidden at 0,
-// without the figure and after the promotion ends.
+// during the promotion have not visited yet, a count only, hidden at 0 and
+// without the figure; and once the promotion has ended (the user, 3 Nov
+// 2026) My Network shows no promotion card at all.
 //
 // Run: node --test scripts/referrals/tests/promotion-pages.test.mjs
 import { test, after } from 'node:test';
@@ -501,15 +502,15 @@ test('404: the portal\'s not-yet-visited line: singular, hidden at 0, absent wit
   absent(card.querySelector('[data-not-yet-visited]'), 'no line without the figure');
 });
 
-test('after the promotion, the portal gives the reward\'s day in Singapore', async () => {
+test('after the promotion ends, My Network shows no promotion card, also once a reward was given (the user, 3 Nov 2026)', async () => {
   await mount(AffiliateNetworkPage, 'staff', b => {
     Object.assign(b.fx.progress, { counted: 12, tier_reached: 10, next_tier: 20, to_next: 8, reward_tier: 10,
                                    reward_given_at: '2026-10-31T23:30:00+00:00' });
     b.fx.progress.campaign.status = 'final';
   });
-  const card = document.querySelector('[data-promotion="2026-10"]');
-  assert.ok(card && card.textContent.includes('Your tier 10 reward was given on 01/11/2026.'), card?.textContent);
-  // 404: after the end the not-yet-visited line is not shown (the fixture still sends 2).
-  absent(card.querySelector('[data-not-yet-visited]'), 'no not-yet-visited line after the promotion');
-  assert.ok(!card.textContent.includes("haven't visited yet"), card.textContent);
+  assert.deepEqual(globalThis.__renderErrors, []);
+  absent(document.querySelector('[data-promotion]'), 'no card once the promotion is final');
+  assert.ok(!/October referral promotion|friends counted|Rewards are given|reward was given|visited yet/.test(text()), text());
+  assert.ok(text().includes('Tier 1 — Direct Referrals'), 'the rest of My Network is as before');
+  assert.deepEqual(callsOf('affiliate_portal_campaign_progress').map(c => c.args), [undefined], 'it still asks, so a running promotion shows');
 });

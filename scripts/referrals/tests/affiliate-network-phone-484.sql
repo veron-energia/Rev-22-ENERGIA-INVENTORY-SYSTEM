@@ -64,9 +64,17 @@
 -- (@example.invalid; Gmail addresses with made-up local parts); phones are ACMA's fictional range (+61 2 5550 ....),
 -- found free at run time. Every check runs, then the file fails if any did. R8a and R8b need 486 (the merge guard)
 -- in: without it they fail, and nothing else does.
+-- Once 492 is in (every Tier 1 number shown, the user, 3 Nov 2026), this checks 484's rule with My Network put back
+-- to 484's for the run (my-network-as-484.sql, as 492's UNDO does; -v skip_install=1); 492's own checks are in
+-- affiliate-network-phone-492.sql. Once 491 is in, confirm_affiliate_email is the version 484 pinned for the run
+-- (confirm-email-as-484.sql), so running 484's file again (G, U) is not refused; 491's checks are in details-491.sql.
 --   psql -X -v ON_ERROR_STOP=1 [-v skip_install=1] -f scripts/referrals/tests/affiliate-network-phone-484.sql
 \set ON_ERROR_STOP on
 begin;
+-- Where 492 is in, My Network is 484's for this run (rolled back with it).
+\ir my-network-as-484.sql
+-- Where 491 is in, confirm_affiliate_email is the version 484 pinned, for this run (rolled back with it).
+\ir confirm-email-as-484.sql
 create function pg_temp.row_counts() returns jsonb language plpgsql as
 $$declare r record; n bigint; v jsonb := '{}'::jsonb;
 begin

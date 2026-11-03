@@ -49,12 +49,12 @@ test('a timestamp (a reward given) is shown as its Singapore day, not its UTC da
   assert.equal(sgDayOf('2026-11-01T07:30:00+08:00'), '01/11/2026');
   assert.equal(sgDayOf(null), '—');
   assert.equal(sgDayOf('not a date'), '—');
-  // The pages use it for given_at, not the first ten characters.
-  for (const p of ['src/components/referrals/ReferralPromotionPanel.tsx', 'src/pages/AffiliateNetworkPage.tsx']) {
-    const src = read(p);
-    assert.doesNotMatch(src, /given_at\.slice\(0, 10\)/, p);
-    assert.match(src, /sgDayOf\((r\.reward\.given_at|p\.reward_given_at)\)/, p);
-  }
+  // The staff page uses it for given_at, not the first ten characters. My Network shows no promotion once it has
+  // ended (the user, 3 Nov 2026), so it shows no reward day at all.
+  const panel = read('src/components/referrals/ReferralPromotionPanel.tsx');
+  assert.doesNotMatch(panel, /given_at\.slice\(0, 10\)/);
+  assert.match(panel, /sgDayOf\(r\.reward\.given_at\)/);
+  assert.doesNotMatch(read('src/pages/AffiliateNetworkPage.tsx'), /given_at/);
 });
 
 test('the tier reached is the highest at or below the count, as referral_campaign_standing', () => {

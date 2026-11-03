@@ -33,7 +33,7 @@ const AffiliateForgotPasswordPage: React.FC = () => {
   );
 
   return (
-    <AffiliateAuthShell title="Forgot Password" subtitle="We'll email you a reset link"
+    <AffiliateAuthShell title="Forgot Password" subtitle="Energia will email you a reset link"
       footer={<Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Back to login</Link>}>
       <Field label="Email"><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} /></Field>
       {err && <p role="alert" style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{err}</p>}

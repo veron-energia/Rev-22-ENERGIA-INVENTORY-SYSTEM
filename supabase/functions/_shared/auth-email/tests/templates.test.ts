@@ -5,6 +5,7 @@ import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@st
 import {
   SUBJECTS, escapeHtml, headerSafe, formatWhen,
   renderVerifySignup, renderVerifyEmail, renderPasswordRecovery, renderPasswordChanged,
+  renderDetailsCode, renderDetailsChanged,
 } from '../templates.ts';
 import { ACTION_LINK, MAGIC_LINK } from './support.ts';
 
@@ -93,4 +94,24 @@ Deno.test('437: the Account page verification email says what the link does, and
   assertStringIncludes(email.text, 'marks your email as verified');
   assertFalse(email.html.includes('<b>Ada'), 'the name is escaped');
   assertStringIncludes(email.html, '&lt;b&gt;Ada');
+});
+
+Deno.test('492: the emails an affiliate gets speak as Energia, never "we", "our" or "us"', () => {
+  const emails = {
+    verify_signup: renderVerifySignup('Ada', ACTION_LINK), verify_email: renderVerifyEmail('Ada', MAGIC_LINK),
+    password_recovery: renderPasswordRecovery('Ada', ACTION_LINK),
+    password_changed: renderPasswordChanged('Ada', '2026-11-03T04:00:00Z', 'info@example.com'),
+    details_code: renderDetailsCode('482913', 'current'),
+    details_changed: renderDetailsChanged({ phone: '+61255500101' }, '2026-11-03T04:00:00Z', 'info@example.com'),
+  };
+  for (const [name, email] of Object.entries(emails)) {
+    for (const part of [email.html.replace(/<[^>]+>/g, ' '), email.text]) {
+      assertFalse(/\b(we|our|ours|us)\b/i.test(part), `${name}: ${part}`);
+    }
+  }
+  assertStringIncludes(emails.password_recovery.text, 'Energia received a request to reset the password for your account.');
+  for (const name of ['password_changed', 'details_changed'] as const) {
+    assertStringIncludes(emails[name].text, 'If it was not you, please contact Energia straight away at info@example.com.');
+    assertStringIncludes(emails[name].html, 'please contact Energia straight away');
+  }
 });

@@ -213,7 +213,7 @@ export function renderPasswordRecovery(name: string, actionLink: string): Render
     html: shell(
       h('Reset your password') +
       p(escapeHtml(greeting(name))) +
-      p('We received a request to reset the password for your Energia account. Choose a new password using the link below.') +
+      p('Energia received a request to reset the password for your account. Choose a new password using the link below.') +
       button(actionLink, 'Reset My Password') +
       `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
         This link can only be used once and expires after a while. If you did not ask to reset your password, you can ignore this email — your password will not change.
@@ -221,7 +221,7 @@ export function renderPasswordRecovery(name: string, actionLink: string): Render
     ),
     text: [
       greeting(name), '',
-      'We received a request to reset the password for your Energia account.',
+      'Energia received a request to reset the password for your account.',
       'Choose a new password here:', '',
       actionLink, '',
       'This link can only be used once and expires after a while.',
@@ -246,13 +246,13 @@ export function renderPasswordChanged(name: string, whenIso: string, supportEmai
       p(escapeHtml(greeting(name))) +
       p(`The password for your Energia account was changed on <strong>${escapeHtml(when)}</strong>.`) +
       p('If that was you, there is nothing to do.') +
-      p(`If it was not you, please contact us straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
+      p(`If it was not you, please contact Energia straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
     ),
     text: [
       greeting(name), '',
       `The password for your Energia account was changed on ${when}.`, '',
       'If that was you, there is nothing to do.',
-      `If it was not you, please contact us straight away at ${supportEmail}.`, '',
+      `If it was not you, please contact Energia straight away at ${supportEmail}.`, '',
       'Rev 22 Global Energia',
     ].join('\n'),
   };
@@ -307,13 +307,13 @@ export function renderDetailsChanged(
       p(`The details on your Energia Affiliate account were changed on <strong>${escapeHtml(when)}</strong>:`) +
       lines.map(l => p(escapeHtml(headerSafe(l, 300)))).join('') +
       p('If that was you, there is nothing to do.') +
-      p(`If it was not you, please contact us straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
+      p(`If it was not you, please contact Energia straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
     ),
     text: [
       greeting(''), '', `The details on your Energia Affiliate account were changed on ${when}:`,
       ...lines.map(l => headerSafe(l, 300)), '',
       'If that was you, there is nothing to do.',
-      `If it was not you, please contact us straight away at ${supportEmail}.`, '',
+      `If it was not you, please contact Energia straight away at ${supportEmail}.`, '',
       'Rev 22 Global Energia',
     ].join('\n'),
   };

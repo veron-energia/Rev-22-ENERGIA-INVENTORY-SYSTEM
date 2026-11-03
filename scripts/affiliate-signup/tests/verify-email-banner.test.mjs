@@ -157,7 +157,7 @@ test('W1: an unverified email: the Dashboard opens with the warning, and Send as
   const banner = warning();
   assert.ok(banner, 'the warning shows');
   assert.match(banner.textContent, /^Please verify your email/);
-  assert.match(banner.textContent, new RegExp(`We will send a link to ${email.replace('.', '\\.')}\\. Open it to confirm the address is yours\\.`));
+  assert.match(banner.textContent, new RegExp(`Energia will send a link to ${email.replace('.', '\\.')}\\. Open it to confirm the address is yours\\.`));
   const title = document.querySelector('h1');
   assert.equal(title?.textContent, 'Dashboard');
   assert.ok(above(banner, title), 'above the page title');
@@ -224,12 +224,12 @@ test('W4: a send that fails says why, and the warning stays with its button', as
   await d.tick(10);
   const banner = warning();
   await d.click(d.button('Send verification email', banner));
-  assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /We could not hand your email to our delivery service just now/);
+  assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /Energia could not send the email just now/);
   assert.equal(d.button('Send verification email', banner)?.disabled, false);
   // No answer at all (a dead network).
   client.invokeHandlers['auth-resend-verification'] = () => ({ data: null, error: { message: 'Failed to send a request to the Edge Function' } });
   await d.click(d.button('Send verification email', banner));
-  assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /We could not reach the server/);
+  assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /The server could not be reached/);
   assert.equal(client.calls.filter(c => c.fn === 'auth-resend-verification').length, 2);
   assert.ok(warning());
 });

@@ -35,7 +35,7 @@ const AffiliateLoginPage: React.FC = () => {
       const unconfirmed = code === 'email_not_confirmed' || /email not confirmed/i.test(error.message);
       setNotConfirmed(unconfirmed);
       setErr(unconfirmed
-        ? 'Your sign-up is not switched on yet. Open the link we emailed you, or send it again below. Still stuck? Contact Energia.'
+        ? 'Your sign-up is not switched on yet. Open the link Energia emailed you, or send it again below. Still stuck? Contact Energia.'
         : error.message);
       setBusy(false); return;
     }

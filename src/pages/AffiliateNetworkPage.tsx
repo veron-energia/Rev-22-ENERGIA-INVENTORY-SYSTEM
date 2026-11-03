@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import AffiliateLayout from '../components/AffiliateLayout';
 import { portalRpc, usePortalRpc, money, dateStr } from '../lib/affiliatePortal';
 import { DesktopTableCard, MobileCards, MCard, EmptyNote, PortalError } from '../components/AffiliateResponsive';
-import { progressLine, portalNotYetVisitedLine, windowLabel, sgDayOf } from '../lib/referral/campaign.mjs';
+import { progressLine, portalNotYetVisitedLine, windowLabel } from '../lib/referral/campaign.mjs';
 import type { PortalProgress } from '../lib/referral/campaign.mjs';
 import BookingCell from '../components/referrals/BookingCell';
 
@@ -11,18 +11,19 @@ import BookingCell from '../components/referrals/BookingCell';
  *  tier. Counts only; their Tier 1 list is below. 404: a friend counts by
  *  their first visit to the centre, past customers never (the Owner, 8 Oct
  *  2026); while the promotion runs, how many friends they referred during
- *  it have not visited yet (a count, no names; hidden at 0 and after it ends). */
+ *  it have not visited yet (a count, no names; hidden at 0). Shown only
+ *  until the promotion ends (the user, 3 Nov 2026): once it is final, My
+ *  Network shows no card. */
 const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
-  if (!p.campaign) return null;
+  if (!p.campaign || p.campaign.status === 'final') return null;
   const c = p.campaign;
-  const ended = c.status === 'final';
   const reached = new Set((c.tiers ?? []).filter(t => p.tier_reached != null && t <= p.tier_reached));
   const waiting = portalNotYetVisitedLine(p);
   return (
     <div className="card portal-break" data-promotion={c.code} style={{ padding: 16, marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'baseline' }}>
         <h3 style={{ fontSize: 15, fontWeight: 700 }}>{c.title}</h3>
-        <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{windowLabel(c.starts_on, c.ends_on)}{ended ? ' · ended' : ' · so far'}</span>
+        <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{windowLabel(c.starts_on, c.ends_on)} · so far</span>
       </div>
       <div style={{ fontSize: 15, fontWeight: 600, marginTop: 8 }}>{progressLine(p)}</div>
       {waiting && <div data-not-yet-visited style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>{waiting}</div>}
@@ -34,9 +35,7 @@ const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
       <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 10 }}>
         A friend counts when their first visit to the centre is during the promotion, whenever you referred them, as long as you referred them by its last day.
         {' '}Friends who were already paying customers before it started do not count.
-        {ended
-          ? (p.reward_given_at ? ` Your tier ${p.reward_tier} reward was given on ${sgDayOf(p.reward_given_at)}.` : ' Rewards are given now that it has ended, for the highest tier reached.')
-          : ' Rewards are given after it ends, for the highest tier you reach.'}
+        {' '}Rewards are given after it ends, for the highest tier you reach.
       </p>
     </div>
   );
@@ -117,7 +116,8 @@ const AffiliateNetworkPage: React.FC = () => {
   const [promo, setPromo] = useState<PortalProgress | null>(null);
   useEffect(() => { portalRpc<PortalProgress>('affiliate_portal_campaign_progress').then(setPromo).catch(() => setPromo(null)); }, []);
   // 484 (the Owner, 31 Oct 2026): Tier 1's Phone column and card line, and the note's sentence about them, only once
-  // the database sends at least one Tier 1 number; until then the page is as it was.
+  // the database sends at least one Tier 1 number; until then the page is as it was. 492 (3 Nov 2026): the database
+  // sends every direct referral's number (unless they asked to hide it) to an active affiliate whose login is proven.
   const showPhone = (n?.tier1 ?? []).some((r: any) => phoneOf(r) !== null);
 
   return (
@@ -127,7 +127,7 @@ const AffiliateNetworkPage: React.FC = () => {
       <p data-booking-note style={{ color: 'var(--text-muted)', fontSize: 12.5, marginTop: -12, marginBottom: 20 }}>
         Booking is each person&apos;s next appointment at the centre, or their last one; Miss means no visit and no purchase at the centre were recorded that day.
         {' '}Came in means they have come to the centre without a booking.
-        {showPhone && ' A phone number shows only for a direct referral who registered through your link after being told you would see it. Use it only to help them with their visit.'}
+        {showPhone && ' Phone numbers show for your direct referrals only. A dash means there is no number to show. Use them only to help them with their visit.'}
       </p>
       {promo?.campaign && <PromotionCard p={promo} />}
       {err ? <PortalError message={err} onRetry={retry} /> : !n ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (

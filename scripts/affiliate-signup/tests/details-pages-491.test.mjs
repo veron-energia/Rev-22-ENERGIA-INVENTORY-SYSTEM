@@ -109,17 +109,17 @@ test('Q2: code: the current email, then the new one, then changed', async () => 
   ] });
   await d.mount(app()); await d.tick(10);
   await editTo({ email: NEWMAIL });
-  assert.match(card().textContent, /We will email a code to ria-491@example\.com before changing anything, and one to your new email\./);
+  assert.match(card().textContent, /Energia will email a code to ria-491@example\.com before changing anything, and one to your new email\./);
   await d.click(d.button('Save changes', card()));
   const box = document.getElementById('details-code');
   assert.ok(box, 'the code box');
   assert.equal(box.getAttribute('inputmode'), 'numeric');
   assert.equal(box.getAttribute('autocomplete'), 'one-time-code');
-  assert.match(card().textContent, /We sent a 6-digit code to ria-491@example\.com\./);
+  assert.match(card().textContent, /Energia sent a 6-digit code to ria-491@example\.com\./);
   await d.setValue(box, '12a3456');
   assert.equal(box.value, '123456', 'digits only, six at most');
   await d.click(d.button('Confirm', card()));
-  assert.match(card().textContent, /Now enter the 6-digit code we sent to your new email, ria-new-491@example\.com\./);
+  assert.match(card().textContent, /Now enter the 6-digit code Energia sent to your new email, ria-new-491@example\.com\./);
   await d.setValue(document.getElementById('details-code'), '654321');
   await d.click(d.button('Confirm', card()));
   await d.tick(5);
@@ -153,12 +153,12 @@ test('Q4: staff: it waits after the codes, can be cancelled; a rejection shows t
   ] });
   await d.mount(app()); await d.tick(10);
   await editTo({ first: 'Riana' });
-  assert.match(card().textContent, /Then our staff check the change before it is made\./);
+  assert.match(card().textContent, /Then Energia staff check the change before it is made\./);
   await d.click(d.button('Save changes', card()));
   await d.setValue(document.getElementById('details-code'), '222222');
   await d.click(d.button('Confirm', card()));
   await d.tick(5);
-  assert.match(card().textContent, /Your change was sent to our staff, who will check it\./);
+  assert.match(card().textContent, /Your change was sent to Energia staff, who will check it\./);
   assert.ok(card().querySelector('[data-state="waiting"]'));
   await d.click(d.button('Cancel the change', card()));
   await d.tick(5);
@@ -167,7 +167,7 @@ test('Q4: staff: it waits after the codes, can be cancelled; a rejection shows t
 
   backend({ portal: details({ route: 'staff', request: { id: RID, route: 'staff', status: 'rejected', decision_note: 'Please come to the counter with your NRIC' } }) });
   await d.mount(app()); await d.tick(10);
-  assert.match(card().textContent, /Our staff did not approve your last change: Please come to the counter with your NRIC/);
+  assert.match(card().textContent, /Energia staff did not approve your last change: Please come to the counter with your NRIC/);
 });
 
 test('Q5: verify first, and closed: no way to edit, and why', async () => {

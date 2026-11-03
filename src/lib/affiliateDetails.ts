@@ -38,7 +38,7 @@ export interface DetailsStep {
 
 const MESSAGES: Record<string, string> = {
   verify_first: 'Please verify your email first, then you can change your details.',
-  not_allowed: 'Your details cannot be changed here. Please ask our staff.',
+  not_allowed: 'Your details cannot be changed here. Please ask Energia staff.',
   open_request: 'You already have a change in progress. Finish or cancel it first.',
   too_many_requests: 'You have made several changes today. Please try again tomorrow.',
   no_change: 'Nothing has changed.',
@@ -46,21 +46,21 @@ const MESSAGES: Record<string, string> = {
   name_too_long: 'A name can be at most 50 characters.',
   name_characters: 'A name can have letters, spaces, hyphens, apostrophes, full stops, "/" and "@" only.',
   phone_invalid: 'Please enter a valid phone number, with its country code.',
-  phone_in_use: 'This phone number belongs to another Energia customer. Please ask our staff for help.',
+  phone_in_use: 'This phone number belongs to another Energia customer. Please ask Energia staff for help.',
   email_invalid: 'Please enter a valid email address.',
-  email_in_use: 'This email is already used by another Energia account. Please ask our staff for help.',
+  email_in_use: 'This email is already used by another Energia account. Please ask Energia staff for help.',
   wrong_code: 'That code is not right.',
   expired: 'That code has expired. Please start again.',
   too_many_tries: 'Too many wrong codes. Please start again.',
   wait: 'Please wait a minute before asking for another code.',
   too_many_sends: 'No more codes can be sent for this change. Please start again later.',
   no_request: 'This change is no longer open. Please start again.',
-  not_sent: 'We could not send the code just now. Please try again.',
+  not_sent: 'Energia could not send the code just now. Please try again.',
   email_not_changed: 'Your email could not be changed. Nothing was changed.',
   not_saved: 'Your change could not be saved. Nothing was changed. Please try again.',
   note_required: 'Please give a reason for rejecting it.',
   unauthorized: 'Your session has ended. Please sign in again.',
-  unavailable: 'We could not do that just now. Please try again shortly.',
+  unavailable: 'That could not be done just now. Please try again shortly.',
 };
 
 export function detailsMessage(error: string | undefined, extra: { tries_left?: number; seconds?: number } = {}): string {

@@ -108,7 +108,7 @@ const AffiliateVerifyPage: React.FC = () => {
   }, []);
 
   if (state === 'working') return viaLink
-    ? <AffiliateAuthShell title="Verifying your email…" subtitle="Please wait a moment"><p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Checking the link we emailed you…</p></AffiliateAuthShell>
+    ? <AffiliateAuthShell title="Verifying your email…" subtitle="Please wait a moment"><p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Checking the link Energia emailed you…</p></AffiliateAuthShell>
     : <AffiliateAuthShell title="Finishing setup…" subtitle="Please wait a moment"><p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Completing your affiliate account…</p></AffiliateAuthShell>;
 
   if (state === 'link_refused') return (

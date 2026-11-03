@@ -77,9 +77,13 @@
 -- production's stores gets made-up RETAIL-ADELPHI and ADELPHI-VAN stores for the run. Every name and email is
 -- invented (@example.com / @example.invalid; Gmail addresses with made-up local parts); phones are ACMA's
 -- fictional range (+61 2 5550 ....), found free at run time. Every check runs, then the file fails if any did.
+-- Once 492 is in too (every Tier 1 number shown), My Network is 484's for the run (my-network-as-484.sql, as
+-- 492's UNDO puts it back; 492's own checks are in affiliate-network-phone-492.sql).
 --   psql -X -v ON_ERROR_STOP=1 [-v skip_install=1] -f scripts/referrals/tests/downline-booking-480.sql
 \set ON_ERROR_STOP on
 begin;
+-- Where 492 is in, My Network is 484's for this run (rolled back with it).
+\ir my-network-as-484.sql
 create function pg_temp.row_counts() returns jsonb language plpgsql as
 $$declare r record; n bigint; v jsonb := '{}'::jsonb;
 begin

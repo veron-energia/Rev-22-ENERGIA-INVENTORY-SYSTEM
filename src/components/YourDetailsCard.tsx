@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase';
 // their own name, phone and email: at once when their email is not verified
 // and their own sign-up made their record; otherwise with a code emailed to
 // their current address (and one to a new email), and, when the app cannot
-// prove the login is that customer's, after our staff approve it.
+// prove the login is that customer's, after Energia staff approve it.
 
 const label: React.CSSProperties = { display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 };
 const Note: React.FC<{ tone?: 'ok' | 'error' | 'plain'; children: React.ReactNode; role?: string }> = ({ tone = 'plain', children, role }) => (
@@ -78,7 +78,7 @@ const YourDetailsCard: React.FC = () => {
       setStep({ id: r.request_id, purpose: r.purpose, to: r.code_to }); setCode(''); setEditing(false);
       startWait(); return;
     }
-    if (r.next === 'pending_staff') { await done('Thank you. Your change was sent to our staff, who will check it.', false); return; }
+    if (r.next === 'pending_staff') { await done('Thank you. Your change was sent to Energia staff, who will check it.', false); return; }
     if (r.status === 'cancelled') { await done('The change was cancelled. Nothing was changed.', false); return; }
     if (r.status === 'applied') { await done('Your details were changed.', emailChanging); return; }
   };
@@ -104,14 +104,14 @@ const YourDetailsCard: React.FC = () => {
       <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Your details</h3>
       {msg && <Note tone={msg.tone}>{msg.text}</Note>}
       {lastRejected && !msg && !open && (
-        <Note tone="error">Our staff did not approve your last change{lastRejected.decision_note ? `: ${lastRejected.decision_note}` : '.'}</Note>
+        <Note tone="error">Energia staff did not approve your last change{lastRejected.decision_note ? `: ${lastRejected.decision_note}` : '.'}</Note>
       )}
 
       {step ? (
         <div data-state="code">
           <Note>{step.purpose === 'new'
-            ? <>Now enter the 6-digit code we sent to your new email, <b>{step.to}</b>.</>
-            : <>We sent a 6-digit code to <b>{step.to}</b>. Enter it to confirm the change. It works for 10 minutes.</>}</Note>
+            ? <>Now enter the 6-digit code Energia sent to your new email, <b>{step.to}</b>.</>
+            : <>Energia sent a 6-digit code to <b>{step.to}</b>. Enter it to confirm the change. It works for 10 minutes.</>}</Note>
           <label htmlFor="details-code" style={label}>Code</label>
           <input id="details-code" className="input" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             inputMode="numeric" autoComplete="one-time-code" maxLength={6} style={{ maxWidth: 180, letterSpacing: 4, marginBottom: 12 }} />
@@ -124,7 +124,7 @@ const YourDetailsCard: React.FC = () => {
         </div>
       ) : open?.status === 'pending_staff' ? (
         <div data-state="waiting">
-          <Note>Your change is waiting for our staff to check it. We will make it once they approve it.</Note>
+          <Note>Your change is waiting for Energia staff to check it. It will be made once they approve it.</Note>
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => cancel(open.id)} style={{ minHeight: 44 }}>Cancel the change</button>
         </div>
       ) : editing ? (
@@ -139,8 +139,8 @@ const YourDetailsCard: React.FC = () => {
             <PhoneInput value={f.phone} onChange={phone => setF(s => ({ ...s, phone }))} /></div>
           <div style={{ marginBottom: 12 }}><label htmlFor="details-email" style={label}>Email</label>
             <input id="details-email" className="input" type="email" value={f.email} onChange={e => setF(s => ({ ...s, email: e.target.value }))} autoComplete="email" /></div>
-          {route === 'code' && <Note>We will email a code to <b>{d.login_email}</b> before changing anything{f.email.trim().toLowerCase() !== (d.login_email ?? '').toLowerCase() ? ', and one to your new email' : ''}.</Note>}
-          {route === 'staff' && <Note>We will email a code to <b>{d.login_email}</b>. Then our staff check the change before it is made.</Note>}
+          {route === 'code' && <Note>Energia will email a code to <b>{d.login_email}</b> before changing anything{f.email.trim().toLowerCase() !== (d.login_email ?? '').toLowerCase() ? ', and one to your new email' : ''}.</Note>}
+          {route === 'staff' && <Note>Energia will email a code to <b>{d.login_email}</b>. Then Energia staff check the change before it is made.</Note>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" className="btn btn-primary" disabled={busy} onClick={save} style={{ minHeight: 44 }}>{busy ? 'Saving…' : 'Save changes'}</button>
             <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => { setEditing(false); setMsg(null); }} style={{ minHeight: 44 }}>Cancel</button>
@@ -153,7 +153,7 @@ const YourDetailsCard: React.FC = () => {
           <div className="portal-kv"><span className="k">Email</span><span className="v">{d.email || d.login_email || '—'}</span></div>
           <div style={{ marginTop: 12 }}>
             {route === 'verify_first' && <Note>Please verify your email first (see Verify your email). Then you can change your details here.</Note>}
-            {route === 'closed' && <Note>Your details cannot be changed here. Please ask our staff.</Note>}
+            {route === 'closed' && <Note>Your details cannot be changed here. Please ask Energia staff.</Note>}
             {(route === 'free' || route === 'code' || route === 'staff') && (
               <button type="button" className="btn btn-secondary" onClick={startEdit} style={{ minHeight: 44 }}>Change my details</button>
             )}

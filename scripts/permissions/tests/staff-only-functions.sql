@@ -18,7 +18,7 @@
 --      otherwise:
 --        * a SECURITY INVOKER function runs as the caller, under the table
 --          rules, so it can do nothing the login could not do directly;
---        * the six signed-out endpoints and the affiliate portal;
+--        * the seven signed-out endpoints and the affiliate portal;
 --        * functions that answer only about the caller (the policy helpers);
 --        * functions that refuse such a login with their own message, or that
 --          return only rows of the caller's stores or role (the inventory of
@@ -235,13 +235,15 @@ do $$
 declare
   -- Each list names functions by their full signature, so a new overload of a
   -- named function is not named: it must refuse like any new function.
-  -- The six signed-out endpoints (339; function-grants.sql check 2).
+  -- The seven signed-out endpoints (339; function-grants.sql check 2).
   c_public constant text[] := array[
       'active_customer_source_options()', 'affiliate_referral_signup(text,text,text,text,text,text)',
       -- 484: the app's /r/ page signs up through it, naming the notice it showed
       'affiliate_referral_signup_with_notice(text,text,text,text,text,text,text)',
       'public_affiliate_referral_info(text)', 'submit_health_survey(text,jsonb,jsonb,text)',
-      'survey_link_info(text)'];
+      'survey_link_info(text)',
+      -- 490: the public Rules and regulations page reads the rates and product lists
+      'affiliate_rules_info()'];
   -- The affiliate portal: the signed-in affiliate's own figures (each starts
   -- from current_affiliate_customer_id() and refuses anyone else).
   c_affiliate constant text[] := array[
@@ -250,7 +252,9 @@ declare
       'affiliate_portal_payouts()', 'affiliate_portal_purchases()', 'affiliate_portal_referral_info()',
       'complete_affiliate_onboarding(text,text,text,boolean)',
       -- 437: the signed-in affiliate's own email, verified from an emailed link
-      'confirm_affiliate_email()'];
+      'confirm_affiliate_email()',
+      -- 491: the signed-in affiliate's own name, phone and email, and how they may change them
+      'affiliate_portal_details()'];
   -- Answer only about the caller: the policy helpers and their kin. Rules on
   -- tables call several of them, so signed-in logins keep them
   -- (function-grants.sql check 4).
@@ -397,7 +401,11 @@ declare
       'transfer_product_sourcing(uuid,uuid)', 'transfer_receipt_alerts()',
       'transfer_request_sourcing(uuid)', 'transfer_revisions(uuid)', 'user_admin_list()'];
   c_logins constant text[] := array['nostaff', 'affiliate', 'inactive', 'pending', 'cancelled'];
-  r record; v_args text; v_sql text; v_out text; v_login text; v_state text; v_named text[];
+  -- Publish product names on purpose: 490's public Rules page lists every product by commission type, and the
+  -- machines. The leak check reads their answers with the fixture product's name taken out, so any other fixture
+  -- data in them (a customer, a phone, an email, a store) still fails.
+  c_catalogue constant text[] := array['affiliate_rules_info()'];
+  r record; v_args text; v_sql text; v_out text; v_seen text; v_login text; v_state text; v_named text[];
   v_allowed boolean; v_variant int; v_w bigint; v_wrote boolean;
   n_fn int := 0; n_refused int := 0; n_named int := 0; n_invoker int := 0; n_calls int := 0;
 begin
@@ -442,11 +450,12 @@ begin
         v_out := pg_temp.sof_try(v_login, v_sql);
         v_wrote := pg_temp.sof_writes() <> v_w;
         v_state := split_part(v_out, chr(9), 1);
+        v_seen := case when r.sig = any (c_catalogue) then replace(v_out, 'SOFX Product', '') else v_out end;
         n_calls := n_calls + 1;
         if not v_allowed and v_state <> '42501' then
           perform pg_temp.sof_fail(format('1: %s answered %s (not staff) with %s, not 42501 (arguments %s)',
                                           r.sig, v_login, v_state, v_variant));
-        elsif v_state = 'ok' and (case when v_variant = 1 then pg_temp.sof_leaks(v_out) else pg_temp.sof_leaks_data(v_out) end)
+        elsif v_state = 'ok' and (case when v_variant = 1 then pg_temp.sof_leaks(v_seen) else pg_temp.sof_leaks_data(v_seen) end)
               and not (v_login = 'affiliate' and r.sig = any (c_affiliate)) then
           perform pg_temp.sof_fail(format('1: %s returned fixture data to %s (not staff) (arguments %s)',
                                           r.sig, v_login, v_variant));

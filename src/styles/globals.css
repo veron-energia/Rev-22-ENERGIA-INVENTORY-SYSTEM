@@ -379,3 +379,94 @@ tbody tr:hover { background: var(--surface-2); }
   .special-queue-head { display: none; }
   .special-queue-row > button { justify-self: start; }
 }
+
+/* 492: the Rules and regulations page, laid out as terms (the user, 3 Nov 2026):
+   a summary with the rates as large figures, numbered clauses and the worked
+   examples as an appendix. On paper: no portal menu, header bar, warning or
+   Print button, and no figure, point or example cut across two pages. */
+.terms-doc { display: grid; gap: 16px; }
+.terms-hero { padding: 4px 0 2px; }
+.terms-eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary); margin-bottom: 6px; }
+.terms-hero h1 { font-size: 26px; font-weight: 700; line-height: 1.2; }
+.terms-lead { color: var(--text-secondary); font-size: 14.5px; margin-top: 6px; }
+.terms-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); }
+.terms-meta b { color: var(--text); font-weight: 600; }
+.terms-num { color: var(--primary); font-family: var(--font-display); font-weight: 700; font-variant-numeric: tabular-nums; }
+.terms-small { font-size: 12.5px; color: var(--text-muted); line-height: 1.6; }
+
+.terms-glance { padding: 20px; display: grid; gap: 16px; }
+.terms-glance-title { font-size: 17px; font-weight: 700; }
+.terms-tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.terms-tier { border-radius: var(--radius-sm); padding: 16px; }
+.terms-tier-1 { background: var(--primary-light); }
+.terms-tier-2 { background: var(--surface-2); }
+.terms-tier-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; }
+.terms-tier-title b { color: var(--text); }
+.terms-rates { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.terms-figure { font-family: var(--font-display); font-size: 36px; font-weight: 700; line-height: 1.05; color: var(--primary); letter-spacing: -0.02em; }
+.terms-tier-2 .terms-figure { font-size: 30px; color: var(--text); }
+.terms-figure-label { font-size: 13px; font-weight: 600; margin-top: 4px; }
+.terms-figure-note { font-size: 12px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+.terms-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .terms-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .terms-facts { grid-template-columns: minmax(0, 1fr); } }
+.terms-fact { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.terms-fact b { color: var(--text); display: block; }
+.terms-fact svg { flex: 0 0 auto; margin-top: 2px; }
+
+.terms-contents { padding: 16px 20px; }
+.terms-contents h2 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+.terms-contents ol { list-style: none; columns: 2 240px; column-gap: 24px; font-size: 13.5px; }
+.terms-contents li { break-inside: avoid; }
+.terms-contents a { display: inline-flex; min-height: 30px; align-items: center; }
+
+.terms-body { padding: 4px 24px; }
+.terms-clause { padding: 18px 0; border-top: 1px solid var(--border); scroll-margin-top: 80px; }
+.terms-clause:first-child { border-top: none; }
+.terms-clause-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+.terms-points { list-style: none; display: grid; gap: 8px; font-size: 14px; line-height: 1.65; }
+.terms-points > li { display: grid; grid-template-columns: 2.9em minmax(0, 1fr); gap: 6px; }
+.terms-points > li > .terms-num { font-size: 13px; padding-top: 1px; }
+.terms-table { overflow-x: auto; margin: 12px 0 0 calc(2.9em + 6px); }
+.terms-table table { font-size: 13.5px; }
+.terms-lists { margin: 8px 0 0 calc(2.9em + 6px); display: grid; gap: 2px; }
+.terms-names summary { cursor: pointer; font-weight: 600; min-height: 32px; display: flex; align-items: center; }
+.terms-names ul { columns: 2 220px; margin: 6px 0 8px 18px; font-size: 13.5px; }
+.terms-names li { break-inside: avoid; }
+
+.terms-appendix { scroll-margin-top: 80px; display: grid; gap: 10px; margin-top: 4px; }
+.terms-appendix h2 { font-size: 17px; font-weight: 700; }
+.terms-appendix > p { font-size: 14px; }
+.terms-examples { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+.terms-example { padding: 14px; }
+.terms-example h3 { font-size: 14px; font-weight: 700; margin-bottom: 6px; line-height: 1.4; }
+.terms-example ul { margin: 0 0 0 18px; display: grid; gap: 4px; font-size: 13.5px; color: var(--text-secondary); line-height: 1.55; }
+
+.terms-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 14px 0 4px;
+  border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); }
+
+@media (max-width: 640px) {
+  .terms-hero h1 { font-size: 23px; }
+  .terms-glance { padding: 16px; }
+  .terms-body { padding: 2px 16px; }
+  .terms-figure { font-size: 30px; }
+  .terms-tier-2 .terms-figure { font-size: 26px; }
+  .terms-points > li { grid-template-columns: 2.6em minmax(0, 1fr); }
+  .terms-table, .terms-lists { margin-left: 0; }
+}
+
+@media print {
+  body:has(.terms-doc) { background: #fff; }
+  body:has(.terms-doc) .portal-sidebar, body:has(.terms-doc) .portal-mobile-header, body:has(.terms-doc) .portal-mobile-bar,
+  body:has(.terms-doc) .portal-content [data-banner], .terms-noprint { display: none !important; }
+  body:has(.terms-doc) .portal-shell, body:has(.terms-doc) .portal-main { display: block; min-height: 0; background: #fff; }
+  body:has(.terms-doc) .portal-content { max-width: none; padding: 0; }
+  .terms-doc .card { box-shadow: none; }
+  /* Grids split across pages can draw what follows them over their last row: on paper these flow as blocks. */
+  .terms-doc, .terms-appendix, .terms-examples { display: block; }
+  .terms-doc > * + *, .terms-appendix > * + *, .terms-example + .terms-example { margin-top: 12px; }
+  .terms-tier, .terms-fact, .terms-points > li, .terms-example, .terms-table { break-inside: avoid; }
+  .terms-clause-title { break-after: avoid; }
+  .terms-tier { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

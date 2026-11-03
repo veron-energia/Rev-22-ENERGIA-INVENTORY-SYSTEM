@@ -131,7 +131,7 @@ export async function handlePublicRequest<T>(
       action: endpoint.action, request_id: requestId,
       cause: error instanceof RateLimiterUnavailableError ? safeDetail(error.message, 120) : 'unknown',
     });
-    return json({ error: 'temporarily_unavailable', message: 'We could not process that request just now. Please try again shortly.' },
+    return json({ error: 'temporarily_unavailable', message: 'That request could not be processed just now. Please try again shortly.' },
       503, origin, allowed);
   }
 
@@ -169,7 +169,7 @@ async function finish(
   if (result.kind === 'internal_error') {
     await recordOutcome(admin, { requestId, action, outcome: 'failed', recipientHash: emailHash, detail: result.detail });
     logEvent('auth_email.internal_error', { action, request_id: requestId, detail: result.detail });
-    return json({ error: 'temporarily_unavailable', message: 'We could not process that request just now. Please try again shortly.' },
+    return json({ error: 'temporarily_unavailable', message: 'That request could not be processed just now. Please try again shortly.' },
       503, origin, allowed);
   }
 

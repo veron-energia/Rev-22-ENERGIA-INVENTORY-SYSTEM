@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Leaf } from 'lucide-react';
+import { CalendarCheck, Leaf, Printer, RotateCcw, Users, Wallet } from 'lucide-react';
 import AffiliateLayout from '../components/AffiliateLayout';
 import { PortalError } from '../components/AffiliateResponsive';
 import { useAuth } from '../context/AuthContext';
 import { usePortalRpc } from '../lib/affiliatePortal';
-import { effectiveTier2, longDate, pct, rulesExamples, type RulesInfo } from '../lib/affiliateRules';
+import { effectiveTier2, longDate, pct, rulesExamples, type Rates, type RulesInfo } from '../lib/affiliateRules';
 
 // 490 (3 Nov 2026): the Rules and regulations page, which is also the
 // "Energia Affiliate terms" the sign-up page asks people to agree to. It is
@@ -13,205 +13,270 @@ import { effectiveTier2, longDate, pct, rulesExamples, type RulesInfo } from '..
 // plain page with Sign in and Join. The rates, the product lists and the
 // machines are read live (affiliate_rules_info), and every example is worked
 // out from the live rates, rounded as the commission itself is.
+// 492 (the user, 3 Nov 2026): laid out as terms: a summary with the rates as
+// large figures, then numbered clauses, an effective date, the worked
+// examples as an appendix, and a Print button; worded in Energia's name
+// ("Energia", "Energia's"), never "we", "our" or "us". The phone clause says
+// what 492's My Network shows.
 
-/** When these rules were last changed (change it with the wording). */
-const UPDATED = '3 November 2026';
+/** When these terms took effect (change it with the wording). */
+const EFFECTIVE = '3 November 2026';
 
-const H2: React.FC<{ id: string; children: React.ReactNode }> = ({ id, children }) => (
-  <h2 id={id} style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px', scrollMarginTop: 80 }}>{children}</h2>
-);
-
-const Part: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="card portal-break" style={{ padding: 18, marginBottom: 16, lineHeight: 1.6, fontSize: 14 }}>{children}</div>
-);
-
-const List: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <ul style={{ margin: '0 0 0 18px', padding: 0, display: 'grid', gap: 6 }}>{children}</ul>
+/** A clause: its number and title, then its numbered points (n.1, n.2, ...) and anything after them. */
+const Clause: React.FC<{ n: number; id: string; title: string; points: React.ReactNode[]; children?: React.ReactNode }> = ({ n, id, title, points, children }) => (
+  <section id={id} data-clause={n} className="terms-clause">
+    <h2 className="terms-clause-title"><span className="terms-num">{n}.</span> {title}</h2>
+    <ol className="terms-points">
+      {points.map((p, i) => <li key={i}><span className="terms-num">{n}.{i + 1}</span><div>{p}</div></li>)}
+    </ol>
+    {children}
+  </section>
 );
 
 const Names: React.FC<{ title: string; names: string[]; testId: string }> = ({ title, names, testId }) => (
-  <details data-list={testId} style={{ marginTop: 10 }}>
-    <summary style={{ cursor: 'pointer', fontWeight: 600, minHeight: 32 }}>{title} ({names.length})</summary>
+  <details data-list={testId} className="terms-names">
+    <summary>{title} ({names.length})</summary>
     {names.length === 0
       ? <p style={{ color: 'var(--text-muted)', margin: '8px 0 0' }}>None at the moment.</p>
-      : <ul style={{ columns: '2 220px', margin: '8px 0 0 18px', padding: 0 }}>{names.map(n => <li key={n} style={{ breakInside: 'avoid' }}>{n}</li>)}</ul>}
+      : <ul>{names.map(n => <li key={n}>{n}</li>)}</ul>}
   </details>
 );
 
 /** One worked example: a title, the sums, and who gets what. */
 const Example: React.FC<{ id: string; title: string; lines: string[] }> = ({ id, title, lines }) => (
-  <div data-example={id} className="card portal-break" style={{ padding: 14, background: 'var(--surface)' }}>
-    <h3 style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 6 }}>{title}</h3>
-    <ul style={{ margin: '0 0 0 18px', padding: 0, display: 'grid', gap: 4, fontSize: 13.5, color: 'var(--text-secondary)' }}>
-      {lines.map((l, i) => <li key={i}>{l}</li>)}
-    </ul>
+  <div data-example={id} className="card terms-example">
+    <h3>{title}</h3>
+    <ul>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>
   </div>
 );
 
-const TYPE_LABEL = { own: 'our own rate', third_party: 'the third-party rate', no_commission: 'no commission' } as const;
+const TYPE_LABEL = { own: 'Energia\'s own rate', third_party: 'the third-party rate', no_commission: 'no commission' } as const;
+
+/** One tier's two rates as large figures: Energia's own products, then third-party products. */
+const TierRates: React.FC<{ tier: 1 | 2; title: string; own: number; third: number; ownNote: string; thirdNote: string }> = ({ tier, title, own, third, ownNote, thirdNote }) => (
+  <div className={`terms-tier terms-tier-${tier}`} data-tier={tier}>
+    <div className="terms-tier-title"><b>Tier {tier}</b> · {title}</div>
+    <div className="terms-rates">
+      <div><div className="terms-figure" data-rate={`tier${tier}_own`}>{pct(own)}</div><div className="terms-figure-label">Energia's own products</div><div className="terms-figure-note">{ownNote}</div></div>
+      <div><div className="terms-figure" data-rate={`tier${tier}_third`}>{pct(third)}</div><div className="terms-figure-label">Third-party products</div><div className="terms-figure-note">{thirdNote}</div></div>
+    </div>
+  </div>
+);
+
+const FACTS = [
+  { icon: Wallet, title: 'Paid monthly', text: 'Early the following month, by PayNow or bank transfer. No minimum.' },
+  { icon: CalendarCheck, title: 'Earned when paid', text: 'On the day each payment is recorded.' },
+  { icon: RotateCcw, title: 'Refunds reduce it', text: 'A refunded or cancelled purchase reduces or takes back its commission.' },
+  { icon: Users, title: 'Two tiers only', text: 'Your referrals, and the people they refer.' },
+];
+
+const Glance: React.FC<{ r: Rates }> = ({ r }) => (
+  <section id="summary" data-glance className="card terms-glance" aria-labelledby="summary-title">
+    <h2 id="summary-title" className="terms-glance-title">At a glance</h2>
+    <div className="terms-tiers">
+      <TierRates tier={1} title="your referrals' purchases" own={r.tier1_own} third={r.tier1_third}
+        ownNote="of the amount paid" thirdNote="of the amount paid" />
+      <TierRates tier={2} title="purchases by the people your referrals refer" own={effectiveTier2(r.tier1_own, r.tier2_own)}
+        third={effectiveTier2(r.tier1_third, r.tier2_third)}
+        ownNote={`of the amount paid (${pct(r.tier2_own)} of the Tier 1 commission)`}
+        thirdNote={`of the amount paid (${pct(r.tier2_third)} of the Tier 1 commission)`} />
+    </div>
+    <div className="terms-facts">
+      {FACTS.map(({ icon: Icon, title, text }) => (
+        <div key={title} className="terms-fact">
+          <Icon size={18} color="var(--primary)" aria-hidden="true" />
+          <div><b>{title}</b><div>{text}</div></div>
+        </div>
+      ))}
+    </div>
+    <p className="terms-small">This summary is for convenience. The terms below apply.</p>
+  </section>
+);
+
+const CONTENTS: [string, string][] = [
+  ['about', '1. About these terms'], ['definitions', '2. Definitions'], ['referrals', '3. Referrals'],
+  ['earn', '4. Commission rates'], ['products', '5. Energia\'s own and third-party products'],
+  ['kinds', '6. How each kind of purchase earns'], ['nothing', '7. What earns no commission'],
+  ['when', '8. When commission is earned'], ['refunds', '9. Refunds and cancellations'],
+  ['status', '10. Your affiliate account'], ['payouts', '11. Payouts'], ['details', '12. Your referrals\' details'],
+  ['changes', '13. Changes to these terms'], ['examples', 'Appendix A. Worked examples'],
+];
+
+// The product lists sit in collapsed lists on screen; on paper every list is open, and closed again afterwards.
+function useOpenListsForPrint() {
+  useEffect(() => {
+    let opened: HTMLDetailsElement[] = [];
+    const before = () => {
+      opened = [...document.querySelectorAll<HTMLDetailsElement>('.terms-doc details:not([open])')];
+      opened.forEach(d => { d.open = true; });
+    };
+    const after = () => { opened.forEach(d => { d.open = false; }); opened = []; };
+    window.addEventListener('beforeprint', before);
+    window.addEventListener('afterprint', after);
+    return () => { window.removeEventListener('beforeprint', before); window.removeEventListener('afterprint', after); };
+  }, []);
+}
 
 const RulesContent: React.FC = () => {
   const { data, err, retry } = usePortalRpc<RulesInfo>('affiliate_rules_info');
   const r = data?.rates ?? null;
   const from = longDate(data?.machines_from);
+  useOpenListsForPrint();
   return (
-    <>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Rules and regulations</h1>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 6 }}>
-        The Energia Affiliate terms: how referrals and commission work.
-      </p>
-      <p style={{ color: 'var(--text-muted)', fontSize: 12.5, marginBottom: 18 }}>
-        Last updated {UPDATED}. The rates and product lists here are always the ones in use.
-      </p>
+    <div className="terms-doc">
+      <header className="terms-hero">
+        <div className="terms-eyebrow">Energia Affiliate Programme</div>
+        <h1>Rules and regulations</h1>
+        <p className="terms-lead">The Energia Affiliate terms: how referrals and commission work.</p>
+        <div className="terms-meta">
+          <span>Effective <b data-effective>{EFFECTIVE}</b> · The rates and product lists on this page are always the ones in use.</span>
+          <button type="button" className="btn btn-secondary terms-noprint" data-print onClick={() => window.print()} style={{ minHeight: 40 }}>
+            <Printer size={16} aria-hidden="true" /> Print
+          </button>
+        </div>
+      </header>
       {err ? <PortalError message={err} onRetry={retry} /> : !data ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : !r
         ? <p role="alert" style={{ color: 'var(--danger)' }}>The commission rates could not be read. Please try again later.</p> : (
         <>
-          <nav aria-label="On this page" className="card" style={{ padding: 14, marginBottom: 16, fontSize: 13.5 }}>
-            <b>On this page</b>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 6 }}>
-              {[['referrals', 'Referrals'], ['earn', 'What you earn'], ['products', 'Own and third-party'], ['kinds', 'Each kind of purchase'],
-                ['nothing', 'What earns nothing'], ['examples', 'Examples'], ['when', 'When it is earned'], ['refunds', 'Refunds'],
-                ['status', 'Your account'], ['payouts', 'Payouts'], ['details', 'Referrals\' details'], ['changes', 'Changes']]
-                .map(([id, label]) => <a key={id} href={`#${id}`} style={{ minHeight: 28, display: 'inline-flex', alignItems: 'center' }}>{label}</a>)}
-            </div>
+          <Glance r={r} />
+
+          <nav aria-label="Contents" className="card terms-contents">
+            <h2>Contents</h2>
+            <ol>{CONTENTS.map(([id, label]) => <li key={id}><a href={`#${id}`}>{label}</a></li>)}</ol>
           </nav>
 
-          <Part>
-            <H2 id="referrals">How referrals work</H2>
-            <List>
-              <li>Share your referral link or QR code (My Referral QR in your portal). A new customer who signs up through it becomes your referral.</li>
-              <li>Someone who is already an Energia customer keeps the referrer they already have.</li>
-              <li>A customer's referrer does not change once it is set. Only an Owner or Manager at Energia can correct it.</li>
-              <li>You cannot refer yourself. You earn nothing on your own purchases: the person who referred you earns on them, as on any customer's.</li>
-              <li>When our staff name you as the affiliate on a sale, you earn Tier 1 on that sale.</li>
-            </List>
-          </Part>
+          <div className="card terms-body">
+            <Clause n={1} id="about" title="About these terms" points={[
+              'These terms are between you and Energia. They apply to every Energia affiliate account, and they are the Energia Affiliate terms you agree to when you join.',
+              'If anything in them is unclear, please ask Energia staff at any Energia outlet.',
+            ]} />
 
-          <Part>
-            <H2 id="earn">What you earn</H2>
-            <List>
-              <li><b>Tier 1</b>: on purchases by the people you referred.</li>
-              <li><b>Tier 2</b>: on purchases by the people your referrals referred. Tier 2 is a share of the Tier 1 commission on the same purchase.</li>
-              <li>There are only these two tiers.</li>
-            </List>
-            <div style={{ overflowX: 'auto', marginTop: 12 }}>
-              <table className="table" data-table="rates" style={{ width: '100%', fontSize: 13.5 }}>
-                <thead><tr><th></th><th>Our own products</th><th>Third-party products</th></tr></thead>
-                <tbody>
-                  <tr><th scope="row" style={{ whiteSpace: 'nowrap' }}>Tier 1</th><td>{pct(r.tier1_own)} of the amount paid</td><td>{pct(r.tier1_third)} of the amount paid</td></tr>
-                  <tr><th scope="row" style={{ whiteSpace: 'nowrap' }}>Tier 2</th>
-                    <td>{pct(r.tier2_own)} of the Tier 1 commission ({pct(effectiveTier2(r.tier1_own, r.tier2_own))} of the amount paid)</td>
-                    <td>{pct(r.tier2_third)} of the Tier 1 commission ({pct(effectiveTier2(r.tier1_third, r.tier2_third))} of the amount paid)</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </Part>
+            <Clause n={2} id="definitions" title="Definitions" points={[
+              <><b>You</b> and <b>affiliate</b> mean the holder of an Energia affiliate account.</>,
+              <>A <b>referral</b> (Tier 1) is a customer whose referrer is you.</>,
+              <>A <b>Tier 2 referral</b> is a customer whose referrer is one of your referrals.</>,
+              <>The <b>amount paid</b> is what a customer pays for an item after any discount. The part paid with wallet credit is not included (clause 7).</>,
+              <><b>Energia's own products</b> and <b>third-party products</b> are products as Energia sets them (clause 5).</>,
+            ]} />
 
-          <Part>
-            <H2 id="products">Own and third-party products</H2>
-            <p>
-              Each product is set as one of our own products, a third-party product, or a product that earns no commission.
-              That setting decides the rate, not the brand name on the product: some Energia-branded items are third-party.
-            </p>
-            <Names title="Our own products" names={data.products.own} testId="own" />
-            <Names title="Third-party products" names={data.products.third_party} testId="third_party" />
-            <Names title="No commission" names={data.products.no_commission} testId="no_commission" />
-          </Part>
+            <Clause n={3} id="referrals" title="Referrals" points={[
+              'Share your referral link or QR code (My Referral QR in your portal). A new customer who signs up through it becomes your referral.',
+              'Someone who is already an Energia customer keeps the referrer they already have.',
+              'A customer\'s referrer does not change once it is set. Only an Owner or Manager at Energia can correct it.',
+              'You cannot refer yourself. You earn nothing on your own purchases: the person who referred you earns on them, as on any customer\'s.',
+              'When Energia staff name you as the affiliate on a sale, you earn Tier 1 on that sale.',
+            ]} />
 
-          <Part>
-            <H2 id="kinds">How each kind of purchase earns</H2>
-            <List>
-              <li><b>Products</b> earn the rate of their type, above.</li>
-              <li><b>Promotions</b> are split between their own and third-party items, in proportion to the items' normal prices, and each part earns its own rate. Vouchers in a promotion count as ours. A blind box earns our own rate on its price.</li>
-              <li><b>Machines bought or rented</b> earn like the machine itself: a third-party machine earns the third-party rate, one of ours our own rate.{from ? ` This applies to sales from ${from}; earlier sales keep the rate they were made at.` : ''}</li>
-              <li><b>Premium Bundles and Credit Packages</b> earn the third-party rate, once, on the money paid for them. Bonus credit and free vouchers earn nothing, and spending the credit later earns nothing more.</li>
-              <li><b>Therapy packages and sessions</b> earn our own rate on the amount paid. Using the sessions later earns nothing more.</li>
-              <li><b>Vouchers</b> bought (for example a MEOL voucher) earn our own rate on the price paid. Using a voucher later earns nothing more.</li>
-              <li><b>Event tickets and seminar VIP upgrades</b> earn our own rate on the price paid. A free seminar registration earns nothing.</li>
-              <li><b>Discounts</b> lower the amount commission is worked out on. A discount our staff give on the whole invoice is shared across all its items; a discount voucher on the invoice comes off our own products only.</li>
-            </List>
-            {data.machines.length > 0 && (
-              <details data-list="machines" style={{ marginTop: 10 }}>
-                <summary style={{ cursor: 'pointer', fontWeight: 600, minHeight: 32 }}>Machines and what they earn ({data.machines.length})</summary>
-                <ul style={{ margin: '8px 0 0 18px', padding: 0 }}>
-                  {data.machines.map(m => <li key={m.name}>{m.name}: {TYPE_LABEL[m.earns] ?? TYPE_LABEL.own}</li>)}
-                </ul>
-              </details>
-            )}
-          </Part>
+            <Clause n={4} id="earn" title="Commission rates" points={[
+              <><b>Tier 1</b>: on purchases by your referrals.</>,
+              <><b>Tier 2</b>: on purchases by your referrals' referrals. Tier 2 is a share of the Tier 1 commission on the same purchase.</>,
+              'There are only these two tiers. The rates in use are:',
+            ]}>
+              <div className="terms-table">
+                <table className="table" data-table="rates">
+                  <thead><tr><th></th><th>Energia's own products</th><th>Third-party products</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row" style={{ whiteSpace: 'nowrap' }}>Tier 1</th><td>{pct(r.tier1_own)} of the amount paid</td><td>{pct(r.tier1_third)} of the amount paid</td></tr>
+                    <tr><th scope="row" style={{ whiteSpace: 'nowrap' }}>Tier 2</th>
+                      <td>{pct(r.tier2_own)} of the Tier 1 commission ({pct(effectiveTier2(r.tier1_own, r.tier2_own))} of the amount paid)</td>
+                      <td>{pct(r.tier2_third)} of the Tier 1 commission ({pct(effectiveTier2(r.tier1_third, r.tier2_third))} of the amount paid)</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </Clause>
 
-          <Part>
-            <H2 id="nothing">What earns nothing</H2>
-            <List>
-              <li>Items that earn no commission{data.products.no_commission.length > 0 ? `: ${data.products.no_commission.join(', ')}` : ''}.</li>
-              <li>A rental's late fee.</li>
-              <li>Anything given free (FOC).</li>
-              <li>The part of a purchase paid with wallet credit (from a Credit Package, a Premium Bundle, a refund or an exchange).</li>
-              <li>Your own purchases.</li>
-              <li>Orders on Energia's TikTok Shop.</li>
-            </List>
-          </Part>
+            <Clause n={5} id="products" title="Energia's own and third-party products" points={[
+              'Each product is set as one of Energia\'s own products, a third-party product, or a product that earns no commission. That setting decides the rate, not the brand name on the product: some Energia-branded items are third-party.',
+              'The products in each group today:',
+            ]}>
+              <div className="terms-lists">
+                <Names title="Energia's own products" names={data.products.own} testId="own" />
+                <Names title="Third-party products" names={data.products.third_party} testId="third_party" />
+                <Names title="No commission" names={data.products.no_commission} testId="no_commission" />
+              </div>
+            </Clause>
 
-          <Part>
-            <H2 id="examples">Examples</H2>
-            <p style={{ marginBottom: 12 }}>You referred Ann, and Ann referred Ben. With today's rates:</p>
-            <div style={{ display: 'grid', gap: 10 }}>
+            <Clause n={6} id="kinds" title="How each kind of purchase earns" points={[
+              <><b>Products</b> earn the rate of their group (clause 5).</>,
+              <><b>Promotions</b> are split between the items in them that are Energia's own and those that are third-party, in proportion to the items' normal prices, and each part earns its own rate. Vouchers in a promotion count as Energia's own. A blind box earns Energia's own rate on its price.</>,
+              <><b>Machines bought or rented</b> earn like the machine itself: a third-party machine earns the third-party rate, and one of Energia's own machines earns Energia's own rate.{from ? ` This applies to sales from ${from}; earlier sales keep the rate they were made at.` : ''}</>,
+              <><b>Premium Bundles and Credit Packages</b> earn the third-party rate, once, on the money paid for them. Bonus credit and free vouchers earn nothing, and spending the credit later earns nothing more.</>,
+              <><b>Therapy packages and sessions</b> earn Energia's own rate on the amount paid. Using the sessions later earns nothing more.</>,
+              <><b>Vouchers</b> bought (for example a MEOL voucher) earn Energia's own rate on the price paid. Using a voucher later earns nothing more.</>,
+              <><b>Event tickets and seminar VIP upgrades</b> earn Energia's own rate on the price paid. A free seminar registration earns nothing.</>,
+              <><b>Discounts</b> lower the amount commission is worked out on. A discount Energia staff give on the whole invoice is shared across all its items; a discount voucher on the invoice comes off Energia's own products only.</>,
+            ]}>
+              {data.machines.length > 0 && (
+                <div className="terms-lists">
+                  <details data-list="machines" className="terms-names">
+                    <summary>Machines and what they earn ({data.machines.length})</summary>
+                    <ul>{data.machines.map(m => <li key={m.name}>{m.name}: {TYPE_LABEL[m.earns] ?? TYPE_LABEL.own}</li>)}</ul>
+                  </details>
+                </div>
+              )}
+            </Clause>
+
+            <Clause n={7} id="nothing" title="What earns no commission" points={[
+              `Items that earn no commission${data.products.no_commission.length > 0 ? `: ${data.products.no_commission.join(', ')}` : ''}.`,
+              'A rental\'s late fee.',
+              'Anything given free (FOC).',
+              'The part of a purchase paid with wallet credit (from a Credit Package, a Premium Bundle, a refund or an exchange).',
+              'Your own purchases.',
+              'Orders on Energia\'s TikTok Shop.',
+            ]} />
+
+            <Clause n={8} id="when" title="When commission is earned" points={[
+              'When a purchase is paid in full, its commission is earned on the day the last payment is recorded.',
+              'When a customer pays in parts, each payment earns its share on the day it is recorded, and the rest is earned when it is paid in full.',
+              'Commission counts towards the month it is earned in.',
+            ]} />
+
+            <Clause n={9} id="refunds" title="Refunds and cancellations" points={[
+              'If a purchase is refunded, in part or in full, or cancelled, its commission is reduced or taken back.',
+              'If that commission was already paid to you, the difference comes off your next commission. Your Dashboard shows it as "Deduction to be recovered".',
+            ]} />
+
+            <Clause n={10} id="status" title="Your affiliate account" points={[
+              'Commission is paid to active affiliates.',
+              'If your affiliate account is suspended, commission on purchases made while it is suspended is normally shown as Blocked and is not paid, also after the account is active again. Commission you earned before the suspension is still paid.',
+            ]} />
+
+            <Clause n={11} id="payouts" title="Payouts" points={[
+              'Each month\'s commission is paid early the following month by PayNow or bank transfer. There is no minimum.',
+              'PayNow payouts are sent to the mobile number on your account, so keep it up to date.',
+              'Your Payouts page lists every payout made to you.',
+            ]} />
+
+            <Clause n={12} id="details" title="Your referrals' details" points={[
+              'Your portal shows your referrals\' names, their bookings and visits, and what they spend, so you can see what you earn.',
+              'It shows the phone numbers of your direct referrals (Tier 1), unless a referral has asked Energia to hide theirs, and never the phone number of a Tier 2 referral. No numbers are shown while your affiliate account is suspended, or until Energia has confirmed that your portal login belongs to your customer record.',
+              'Use a referral\'s phone number only to help them with their visit to Energia, and never share it.',
+            ]} />
+
+            <Clause n={13} id="changes" title="Changes to these terms" points={[
+              'Energia may change these terms, including the rates. This page always shows the current version, and the rates on it are the ones in use.',
+            ]} />
+          </div>
+
+          <section id="examples" className="terms-appendix" aria-labelledby="examples-title">
+            <h2 id="examples-title"><span className="terms-num">Appendix A.</span> Worked examples</h2>
+            <p>You referred Ann, and Ann referred Ben. With today's rates:</p>
+            <div className="terms-examples">
               {rulesExamples(r).map(e => <Example key={e.id} {...e} />)}
             </div>
-            <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 10 }}>
+            <p className="terms-small">
               Each amount is rounded to the cent, and Tier 2 is worked out from the rounded Tier 1, as your Earnings page shows them.
+              These examples explain the terms above; where they differ, the terms apply.
             </p>
-          </Part>
+          </section>
 
-          <Part>
-            <H2 id="when">When commission is earned</H2>
-            <List>
-              <li>When a purchase is paid in full, its commission is earned on the day the last payment is recorded.</li>
-              <li>When a customer pays in parts, each payment earns its share on the day it is recorded, and the rest is earned when it is paid in full.</li>
-              <li>Commission counts towards the month it is earned in.</li>
-            </List>
-          </Part>
-
-          <Part>
-            <H2 id="refunds">Refunds and cancellations</H2>
-            <List>
-              <li>If a purchase is refunded, in part or in full, or cancelled, its commission is reduced or taken back.</li>
-              <li>If that commission was already paid to you, the difference comes off your next commission. Your Dashboard shows it as "Deduction to be recovered".</li>
-            </List>
-          </Part>
-
-          <Part>
-            <H2 id="status">Your affiliate account</H2>
-            <List>
-              <li>Commission is paid to active affiliates.</li>
-              <li>If your affiliate account is suspended, commission on purchases made while it is suspended is normally shown as Blocked and is not paid, also after the account is active again. Commission you earned before the suspension is still paid.</li>
-            </List>
-          </Part>
-
-          <Part>
-            <H2 id="payouts">Payouts</H2>
-            <List>
-              <li>Each month's commission is paid early the following month by PayNow or bank transfer. There is no minimum.</li>
-              <li>PayNow payouts are sent to the mobile number on your account, so keep it up to date.</li>
-              <li>Your Payouts page lists every payout made to you.</li>
-            </List>
-          </Part>
-
-          <Part>
-            <H2 id="details">Your referrals' details</H2>
-            <List>
-              <li>Your portal shows your referrals' names and what they spend, so you can see what you earn.</li>
-              <li>It shows a direct referral's phone number only if they were told, when they signed up through your link, that you would see it. Use it only to help them with their visit, and never share it.</li>
-            </List>
-          </Part>
-
-          <Part>
-            <H2 id="changes">Changes to these rules</H2>
-            <p>Energia may change these rules, including the rates. This page always shows the current version, and the rates on it are the ones in use. If anything here is unclear, please ask our staff.</p>
-          </Part>
+          <footer className="terms-footer">
+            <span>Energia Affiliate terms · Effective {EFFECTIVE}</span>
+            <span>Questions? Please ask Energia staff at any Energia outlet.</span>
+          </footer>
         </>
       )}
-    </>
+    </div>
   );
 };
 
