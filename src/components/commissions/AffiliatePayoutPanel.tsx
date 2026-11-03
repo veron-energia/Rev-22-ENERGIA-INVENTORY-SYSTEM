@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import SelfPhoneChangeNote from './SelfPhoneChangeNote';
 import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
 import { ExcelExportButton } from '../ExcelExport';
@@ -286,6 +287,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
       <p>Current remaining balance: {money(groups.find(g => g.referrer === form.referrer && g.month === form.month)?.balance || 0)}</p>
       {!form.payout && <p>Can be paid now for this month, all of this affiliate's months counted: up to {money(formCap)}</p>}
       {(refs.get(form.referrer)?.deduction ?? 0) > 0 && <div className="alert alert-warning">This affiliate owes {money(refs.get(form.referrer)!.deduction)} back from commission already paid out and then taken back. It is recovered from their later commission first, so nothing more can be paid yet.</div>}
+      {!form.payout && <SelfPhoneChangeNote customerId={form.referrer} />}
       {form.payout?.allocation_review_reason && <div className="alert alert-warning">{form.payout.allocation_review_reason} You may correct metadata while the amount stays unchanged.</div>}
       {error && <div className="alert alert-danger" role="alert">{error}</div>}
       <fieldset disabled={busy || uncertain} style={{ border: 0, padding: 0, minWidth: 0 }} className="form-grid">

@@ -3,7 +3,8 @@
 // database or a login. Used to diagnose a report of "no sidebar, no hamburger".
 // The email warning above the page (3 Nov 2026) answers from
 // scripts/affiliate/preview/supabase-stub.ts; ?verified=1, ?send=fail and
-// ?send=verified show its other states.
+// ?send=verified show its other states. ?page=rules shows the Rules page
+// (490) in the portal, ?page=rules&signed=0 as the public page.
 //   npx vite --config vite.affiliate-preview.config.mts
 //   http://localhost:5196/?send=fail
 import { defineConfig } from 'vite';

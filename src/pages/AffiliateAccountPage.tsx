@@ -7,6 +7,7 @@ import { PortalError } from '../components/AffiliateResponsive';
 import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
 import { readEmailVerified, sendVerificationEmail } from '../lib/affiliateEmailStatus';
 import { useAuth } from '../context/AuthContext';
+import YourDetailsCard from '../components/YourDetailsCard';
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
   <div className="portal-kv">
@@ -126,6 +127,8 @@ const AffiliateAccountPage: React.FC = () => {
               </button>
             </div>
           )}
+          {/* 491: change name, phone and email */}
+          <YourDetailsCard />
           <div className="card" style={{ padding: 18 }}>
             <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Change Password</h3>
             <div style={{ marginBottom: 12 }}>

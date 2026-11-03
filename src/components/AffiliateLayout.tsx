@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Leaf, LayoutDashboard, Users, TrendingUp, Wallet, QrCode, UserCircle, LogOut, Menu, X } from 'lucide-react';
+import { Leaf, LayoutDashboard, Users, TrendingUp, Wallet, QrCode, UserCircle, ScrollText, LogOut, Menu, X } from 'lucide-react';
 import VerifyEmailBanner from './VerifyEmailBanner';
 
 const NAV = [
@@ -11,6 +11,7 @@ const NAV = [
   { to: '/affiliate/payouts', label: 'Payouts', icon: Wallet },
   { to: '/affiliate/referral', label: 'My Referral QR', icon: QrCode },
   { to: '/affiliate/account', label: 'Account', icon: UserCircle },
+  { to: '/affiliate/rules', label: 'Rules', icon: ScrollText },
 ];
 
 // Standalone portal shell — Energia styling, NO staff/POS navigation.

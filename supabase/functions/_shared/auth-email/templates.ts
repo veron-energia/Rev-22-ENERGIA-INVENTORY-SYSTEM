@@ -5,7 +5,8 @@
 // Every interpolated value goes through `escapeHtml`, and the action link is
 // checked against this project's Auth origin by the caller before it gets here.
 
-export type AuthEmailAction = 'verify_signup' | 'verify_email' | 'password_recovery' | 'password_changed' | 'user_invitation';
+export type AuthEmailAction = 'verify_signup' | 'verify_email' | 'password_recovery' | 'password_changed' | 'user_invitation'
+  | 'details_code' | 'details_changed';
 
 export interface RenderedEmail {
   subject: string;
@@ -19,6 +20,9 @@ export const SUBJECTS: Record<AuthEmailAction, string> = {
   password_recovery: 'Reset Your Energia Password',
   password_changed: 'Your Energia Password Was Changed',
   user_invitation: "You're Invited to Energia",
+  // 491 (3 Nov 2026): an affiliate's own change of name, phone or email.
+  details_code: 'Your Energia Confirmation Code',
+  details_changed: 'Your Energia Details Were Changed',
 };
 
 const BRAND = '#1f7a4d';
@@ -247,6 +251,67 @@ export function renderPasswordChanged(name: string, whenIso: string, supportEmai
     text: [
       greeting(name), '',
       `The password for your Energia account was changed on ${when}.`, '',
+      'If that was you, there is nothing to do.',
+      `If it was not you, please contact us straight away at ${supportEmail}.`, '',
+      'Rev 22 Global Energia',
+    ].join('\n'),
+  };
+}
+
+/**
+ * 491: the 6-digit code an affiliate types in the portal to confirm a change
+ * of their own details. `purpose` 'current' goes to the login's email to
+ * approve the change; 'new' to a new email, to prove it is theirs.
+ */
+export function renderDetailsCode(code: string, purpose: 'current' | 'new'): RenderedEmail {
+  const clean = /^[0-9]{6}$/.test(code) ? code : '';
+  const why = purpose === 'new'
+    ? 'Enter this code in the Energia Affiliate portal to confirm this new email address for your account.'
+    : 'Enter this code in the Energia Affiliate portal to confirm the change to your details.';
+  return {
+    subject: SUBJECTS.details_code,
+    html: shell(
+      h('Your confirmation code') +
+      p(escapeHtml(greeting(''))) +
+      p(escapeHtml(why)) +
+      `<p style="margin:18px 0;text-align:center;font-size:30px;font-weight:700;letter-spacing:6px;color:${INK};">${escapeHtml(clean)}</p>` +
+      p('The code works for 10 minutes. Nothing changes until it is entered.') +
+      `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
+        If you did not ask for this, you can ignore this email. Never share this code with anyone, including Energia staff.
+      </p>`,
+    ),
+    text: [
+      greeting(''), '', why, '', `Your code: ${clean}`, '',
+      'The code works for 10 minutes. Nothing changes until it is entered.',
+      'If you did not ask for this, you can ignore this email. Never share this code with anyone, including Energia staff.', '',
+      'Rev 22 Global Energia',
+    ].join('\n'),
+  };
+}
+
+/** 491: the notice to the OLD email after an affiliate's details changed. */
+export function renderDetailsChanged(
+  changes: { first_name?: string; last_name?: string; phone?: string; email?: string },
+  whenIso: string, supportEmail: string,
+): RenderedEmail {
+  const when = formatWhen(whenIso);
+  const lines: string[] = [];
+  if (changes.first_name || changes.last_name) lines.push(`Name: ${[changes.first_name, changes.last_name].filter(Boolean).join(' ')}`);
+  if (changes.phone) lines.push(`Phone: ${changes.phone}`);
+  if (changes.email) lines.push(`Email: ${changes.email}`);
+  return {
+    subject: SUBJECTS.details_changed,
+    html: shell(
+      h('Your details were changed') +
+      p(escapeHtml(greeting(''))) +
+      p(`The details on your Energia Affiliate account were changed on <strong>${escapeHtml(when)}</strong>:`) +
+      lines.map(l => p(escapeHtml(headerSafe(l, 300)))).join('') +
+      p('If that was you, there is nothing to do.') +
+      p(`If it was not you, please contact us straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
+    ),
+    text: [
+      greeting(''), '', `The details on your Energia Affiliate account were changed on ${when}:`,
+      ...lines.map(l => headerSafe(l, 300)), '',
       'If that was you, there is nothing to do.',
       `If it was not you, please contact us straight away at ${supportEmail}.`, '',
       'Rev 22 Global Energia',

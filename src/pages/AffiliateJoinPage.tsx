@@ -193,7 +193,8 @@ const AffiliateJoinPage: React.FC = () => {
       <Field label="Confirm Password"><PasswordInput className="input" value={f.confirm} onChange={on('confirm')} /></Field>
       <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, color: 'var(--text-secondary)', margin: '4px 0 14px' }}>
         <input type="checkbox" checked={agree} onChange={e => setAgree(e.target.checked)} style={{ marginTop: 2 }} />
-        <span>I agree to the Energia Affiliate terms and privacy statement.</span>
+        {/* 490: the terms are the Rules page, opened in a new tab so the half-filled form stays. */}
+        <span>I agree to the <a href="/affiliate/rules" target="_blank" rel="noopener noreferrer" data-link="terms">Energia Affiliate terms</a> and privacy statement.</span>
       </label>
       {err && <p role="alert" style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{err}</p>}
       {signedInAs && (

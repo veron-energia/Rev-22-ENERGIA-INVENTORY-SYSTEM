@@ -58,6 +58,7 @@ const AffiliateLoginPage = lazyPage(() => import('./pages/AffiliateLoginPage'));
 const AffiliateVerifyPage = lazyPage(() => import('./pages/AffiliateVerifyPage'));
 const AffiliateForgotPasswordPage = lazyPage(() => import('./pages/AffiliateForgotPasswordPage'));
 const AffiliateResetPasswordPage = lazyPage(() => import('./pages/AffiliateResetPasswordPage'));
+const AffiliateRulesPage = lazyPage(() => import('./pages/AffiliateRulesPage'));
 const AffiliateDashboardPage = lazyPage(() => import('./pages/AffiliateDashboardPage'));
 const AffiliateNetworkPage = lazyPage(() => import('./pages/AffiliateNetworkPage'));
 const AffiliateEarningsPage = lazyPage(() => import('./pages/AffiliateEarningsPage'));
@@ -92,6 +93,8 @@ const AppRoutes: React.FC = () => {
       <Route path="/affiliate/verify" element={<AffiliateVerifyPage />} />
       <Route path="/affiliate/forgot-password" element={<AffiliateForgotPasswordPage />} />
       <Route path="/affiliate/reset-password" element={<AffiliateResetPasswordPage />} />
+      {/* 490: the affiliate terms, for anyone; inside the portal when an affiliate is signed in */}
+      <Route path="/affiliate/rules" element={<AffiliateRulesPage />} />
       <Route path="/r/:referralCode" element={<ReferralSignupPage />} />
       {/* Public staff password recovery. The reset page needs no session of its
           own: Supabase turns the emailed link into a recovery session on arrival. */}

@@ -8,6 +8,7 @@ import QRCodeCard, { publicAppUrl } from '../components/QRCodeCard';
 import { RefreshCw, Search, Ban, PlayCircle, Users, QrCode, ShieldCheck, Edit3, XCircle, Trash2, CheckCircle2, Unlink, Gift, PhoneCall } from 'lucide-react';
 import DownlineModal from '../components/referrals/DownlineModal';
 import ReferralPromotionPanel from '../components/referrals/ReferralPromotionPanel';
+import DetailChangeRequestsPanel from '../components/DetailChangeRequestsPanel';
 import { owedSplit } from '../lib/affiliatePayoutPresentation';
 import { canSeeCustomerProfile } from '../lib/customers/customerRoles.mjs';
 
@@ -838,6 +839,9 @@ const AffiliatesPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* 491: an affiliate's own change of details that waits for an Owner or Manager */}
+      {canManage && <DetailChangeRequestsPanel />}
 
       {/* 425: link sign-ups on a customer's phone under another name. They
           count for a referral promotion once checked as a different person. */}

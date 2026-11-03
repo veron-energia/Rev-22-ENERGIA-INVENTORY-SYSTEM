@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import '../../../src/styles/globals.css';
 import AffiliateLayout from '../../../src/components/AffiliateLayout';
+import AffiliateRulesPage from '../../../src/pages/AffiliateRulesPage';
+import AffiliateAccountPage from '../../../src/pages/AffiliateAccountPage';
 
 // The real shell, with the real stylesheet. Resize the window (or emulate a
 // width) and read the badge: it reports which of the two navigations the CSS
@@ -37,12 +39,21 @@ const Probe: React.FC = () => {
   );
 };
 
+// ?page=rules: the Rules page (490) instead, in the portal, or public with
+// ?signed=0.
+const page = new URLSearchParams(window.location.search).get('page');
+const rules = page === 'rules';
+// ?page=account: the Account page with Your details (491); ?route= in the stub.
+const account = page === 'account';
+
 createRoot(document.getElementById('root')!).render(
-  <MemoryRouter initialEntries={['/affiliate/dashboard']}>
-    <AffiliateLayout>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13.5 }}>Your Energia affiliate overview</p>
-    </AffiliateLayout>
-    <Probe />
+  <MemoryRouter initialEntries={[rules ? '/affiliate/rules' : account ? '/affiliate/account' : '/affiliate/dashboard']}>
+    {rules ? <AffiliateRulesPage /> : account ? <AffiliateAccountPage /> : (
+      <AffiliateLayout>
+        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
+        <p style={{ color: 'var(--text-secondary)', fontSize: 13.5 }}>Your Energia affiliate overview</p>
+      </AffiliateLayout>
+    )}
+    {!rules && !account && <Probe />}
   </MemoryRouter>
 );
