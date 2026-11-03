@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Leaf, LayoutDashboard, Users, TrendingUp, Wallet, QrCode, UserCircle, LogOut, Menu, X } from 'lucide-react';
+import VerifyEmailBanner from './VerifyEmailBanner';
 
 const NAV = [
   { to: '/affiliate/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -15,7 +16,9 @@ const NAV = [
 // Standalone portal shell — Energia styling, NO staff/POS navigation.
 // Layout is CSS-driven (.affiliate-* in globals.css): a row on desktop with a
 // sidebar, a stacked column on mobile with a sticky header above the content.
-const AffiliateLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+// Above each page, the warning while the email is not verified (3 Nov 2026);
+// the Account page leaves it out, as it has its own Verify your email.
+const AffiliateLayout: React.FC<{ children: React.ReactNode; verifyEmailBanner?: boolean }> = ({ children, verifyEmailBanner = true }) => {
   const { signOut } = useAuth();
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
@@ -70,7 +73,10 @@ const AffiliateLayout: React.FC<{ children: React.ReactNode }> = ({ children }) 
       </header>
 
       <main className="portal-main">
-        <div className="portal-content">{children}</div>
+        <div className="portal-content">
+          {verifyEmailBanner && <VerifyEmailBanner />}
+          {children}
+        </div>
       </main>
     </div>
   );

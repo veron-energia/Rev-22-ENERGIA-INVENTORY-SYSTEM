@@ -4,8 +4,8 @@ import { PasswordInput } from '../components/PasswordInput';
 import AffiliateLayout from '../components/AffiliateLayout';
 import { usePortalRpc, dateStr } from '../lib/affiliatePortal';
 import { PortalError } from '../components/AffiliateResponsive';
-import { changePassword, resendVerification, AUTH_EMAIL_COPY } from '../lib/authEmail';
-import { supabase } from '../lib/supabase';
+import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
+import { readEmailVerified, sendVerificationEmail } from '../lib/affiliateEmailStatus';
 import { useAuth } from '../context/AuthContext';
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
@@ -35,45 +35,27 @@ const AffiliateAccountPage: React.FC = () => {
   const [pwMsg, setPwMsg] = useState<string | null>(null); const [pwBusy, setPwBusy] = useState(false);
 
   const uid = session?.user?.id ?? null;
-  // Is the email verified now? null: unknown (no 437 on the server, or no
-  // account); throws when the read itself failed.
-  const readVerified = async (id: string): Promise<boolean | null> => {
-    const { data, error } = await supabase.from('affiliate_accounts').select('email_verified_at').eq('auth_user_id', id).maybeSingle();
-    if (error) {
-      // Before 437 the column is not there: say nothing rather than "not verified".
-      if ((error as { code?: string }).code === '42703' || /does not exist/i.test(error.message ?? '')) return null;
-      throw new Error(error.message);
-    }
-    if (!data) return null;
-    return !!(data as { email_verified_at: string | null }).email_verified_at;
-  };
+  // Read through affiliateEmailStatus.ts, so the warning on the other portal
+  // pages goes too once this page has read the email as verified.
   useEffect(() => {
     if (!uid) return;
     let live = true;
-    readVerified(uid).then(
+    readEmailVerified(uid).then(
       v => { if (live) setVerified(v === null ? 'unknown' : v ? 'yes' : 'no'); },
       () => { if (live) setVerified('error'); });
     return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, justVerified, readTick]);
 
-  // The verification email goes through auth-resend-verification, as the
-  // other Auth emails do (Pabbly). Its link signs the affiliate in at
-  // /affiliate/verify, which marks the email verified and comes back here.
+  // The same email as the warning's on the other portal pages: its link signs
+  // the affiliate in at /affiliate/verify, which marks the email verified and
+  // comes back here.
   const sendVerification = async () => {
     if (verifyBusy || !me?.email) return;
     setVerifyBusy(true); setVerifyMsg(null);
-    const result = await resendVerification(me.email);
-    if (!result.ok) { setVerifyBusy(false); setVerifyMsg({ ok: false, text: result.message ?? AUTH_EMAIL_COPY.unavailable }); return; }
-    if (result.kind === 'not_sent') { setVerifyBusy(false); setVerifyMsg({ ok: false, text: result.message ?? AUTH_EMAIL_COPY.notSent }); return; }
-    // The server answers "submitted" whether or not it sent anything (it
-    // tells no one which addresses need it). Verified meanwhile, in another
-    // tab, nothing was sent: read it again and say so.
-    let nowVerified: boolean | null = null;
-    if (uid) { try { nowVerified = await readVerified(uid); } catch { /* keep the answer the server gave */ } }
+    const result = await sendVerificationEmail(uid, me.email);
     setVerifyBusy(false);
-    if (nowVerified) { setVerified('yes'); setVerifyMsg({ ok: true, text: 'Your email is already verified.' }); return; }
-    setVerifyMsg({ ok: true, text: AUTH_EMAIL_COPY.verifyEmailSent });
+    if (result.verified) setVerified('yes');
+    setVerifyMsg({ ok: result.ok, text: result.text });
   };
 
   // Goes through the auth-change-password Edge Function rather than
@@ -96,7 +78,7 @@ const AffiliateAccountPage: React.FC = () => {
   };
 
   return (
-    <AffiliateLayout>
+    <AffiliateLayout verifyEmailBanner={false}>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Account</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your affiliate account details.</p>
       {err ? <PortalError message={err} onRetry={retry} /> : !me ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (
