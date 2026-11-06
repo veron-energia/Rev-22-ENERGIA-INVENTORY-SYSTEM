@@ -56,6 +56,7 @@ import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/credi
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
 import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
+import { isService } from '../lib/stock/stockPages';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -104,6 +105,9 @@ const StatusBadge: React.FC<{ s: InvoiceStatus }> = ({ s }) => {
 };
 
 interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup?: number; kind: 'product' | 'voucher' | 'promotion' | 'therapy' | 'special_product' | 'rental' | 'credit_package' | 'premium_bundle' | 'event_ticket';
+  // Chosen under Service in the Items dropdown, before a service is picked. It
+  // stays a 'product' line: only the dropdown and the list it offers differ.
+  as_service?: boolean;
   // An event ticket (370): the option, the day(s) it covers, and a name for
   // every person — the quantity is the number of people named.
   event_ticket_option_id?: string; event_days?: string[]; attendees?: TicketPerson[];
@@ -771,9 +775,16 @@ const InvoicesPage: React.FC = () => {
     return { ok: false, label: 'missing price', needsOverride: false };
   };
   const storeProducts = useMemo(() =>
-    activeStore ? products.filter(p => productAvail(p.id).ok && stockQty(activeStore, p.id) > 0) : [],
+    activeStore ? products.filter(p => !isService(p) && productAvail(p.id).ok && stockQty(activeStore, p.id) > 0) : [],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeStore, products, prices, storeInv]);
+  // 495 (the user, 6 Nov 2026): a service has its own category in the Items
+  // dropdown. It holds no stock, so a price at the store is all it needs.
+  const storeServices = useMemo(() =>
+    activeStore ? products.filter(p => isService(p) && productAvail(p.id).ok) : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeStore, products, prices]);
+  const isServiceLine = (l: LineDraft) => l.kind === 'product' && (!!l.as_service || isService(products.find(p => p.id === l.product_id)));
 
   const [therapyPrices, setTherapyPrices] = useState<any[]>([]);
   const therapyPrice = (pkgId: string, _member: boolean = effMember): number | null => {
@@ -3966,14 +3977,14 @@ const InvoicesPage: React.FC = () => {
             {!splitMode && (<>
             {effectiveStore && (
               <div>
-                <label>Items <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— products (priced at this store) or sellable vouchers</span></label>
+                <label>Items <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>— products and services (priced at this store) or sellable vouchers</span></label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                   {cLines.map((line, i) => {
                     const price = lineUnit(line);
                     return (
                     <React.Fragment key={i}>
                       <div className="invoice-editor-line" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <select value={line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: e.target.value as LineDraft['kind'], product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
+                        <select value={isServiceLine(line) ? 'service' : line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: (e.target.value === 'service' ? 'product' : e.target.value) as LineDraft['kind'], as_service: e.target.value === 'service', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
                             credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
                             event_ticket_option_id: '', event_days: [],
@@ -3987,6 +3998,7 @@ const InvoicesPage: React.FC = () => {
                             // CREATE-17: today in Singapore, not the UTC day.
                             rental_start_date: singaporeToday(), rental_return_date: '' } : l))} style={{ width: 130 }}>
                           <option value="product">Product</option>
+                          {products.some(isService) && <option value="service">Service</option>}
                           <option value="voucher">Voucher</option>
                           <option value="promotion">Promotion</option>
                           {(therapyPackages.length > 0 || therapyServices.length > 0) && <option value="therapy">Therapy</option>}
@@ -4076,10 +4088,10 @@ const InvoicesPage: React.FC = () => {
                               sublabel: `${o.days.map(d => shortDay(d.day)).join(', ')} · covers ${o.days_count} day${o.days_count === 1 ? '' : 's'}`,
                               search: `${o.event_name} ${o.option_name}`, searchPrices: [o.unit_price] }))} />
                         ) : line.kind === 'product' ? (
-                          <SearchSelect style={{ flex: 1 }} placeholder="Search product name or SKU…"
+                          <SearchSelect style={{ flex: 1 }} placeholder={isServiceLine(line) ? 'Search service name or SKU…' : 'Search product name or SKU…'}
                             value={line.product_id}
                             onChange={v => setCLines(ls => ls.map((l, j) => j === i ? keepAllowedDiscount(withCatalogueItem(l, { product_id: v })) : l))}
-                            options={storeProducts.map(p => { const a = productAvail(p.id); return {
+                            options={(isServiceLine(line) ? storeServices : storeProducts).map(p => { const a = productAvail(p.id); return {
                               value: p.id, label: `${p.name} — ${a.label}${a.needsOverride ? ' *' : ''}`,
                               sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}`, searchPrices: [priceFor(activeStore, p.id)] }; })} />
                         ) : line.kind === 'voucher' ? (
@@ -4505,7 +4517,7 @@ const InvoicesPage: React.FC = () => {
                         const optionItemIds = optionsFor(g.id)
                           .map(optionIdOf)
                           .filter((x): x is string => !!x)
-                          .filter(x => !isProd || stockQty(cStore, x) > 0);
+                          .filter(x => !isProd || isService(products.find(p => p.id === x)) || stockQty(cStore, x) > 0);
                         const pickedIds = Object.entries(line.selections[g.id] ?? {}).filter(([, q]) => (q || 0) > 0).map(([id]) => id);
                         const extraIds = pickedIds.filter(id => !optionItemIds.includes(id));
                         const displayIds = [...optionItemIds, ...extraIds];

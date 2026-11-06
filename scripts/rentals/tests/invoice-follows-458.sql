@@ -242,9 +242,11 @@ select pg_temp.check(not exists (
      where has_function_privilege('anon', 'public.' || f, 'execute') or not has_function_privilege('authenticated', 'public.' || f, 'execute')),
   'G3 correct_invoice, preview_invoice_correction, reopen_invoice and fulfil_special_doc: signed-in staff, never anon');
 -- (494's waiting list, where it is in, is read as 458's: it only leaves out a
--- sale a supplier has been told to send.)
-select pg_temp.check((select replace(string_agg(fn || '=' || md5, ', ' order by fn),
-                                     '=fdaf5aca81c63cc99f8fddcfcf10564c', '=aed7e3b24ff192cbe09935c5e7488881') from pg_temp.fn_md5s()
+-- sale a supplier has been told to send. 495's refund, where it is in, is read as
+-- 458's: it only asks no stock question of a service.)
+select pg_temp.check((select replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+                                     '=fdaf5aca81c63cc99f8fddcfcf10564c', '=aed7e3b24ff192cbe09935c5e7488881'),
+                                     '=3280f4ed6afb93aed7366eaf100c6383', '=804ecd829cfecf713783a09a05d93c7e') from pg_temp.fn_md5s()
                        where fn in ('cancel_invoice_rentals(uuid,text)', 'receive_returned_rental(uuid,uuid,text,text,uuid)',
                                     'invoice_rentals_awaiting_return(uuid)', 'refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)',
                                     'invoice_action_plan(uuid,text,jsonb)', 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)',
@@ -257,7 +259,7 @@ select pg_temp.check((select replace(string_agg(fn || '=' || md5, ', ' order by 
  || 'special_doc_invoice_problem(uuid,uuid)=be2b8ec5a4003a1dca34e17a82f89932, '
  || 'special_docs_awaiting_fulfilment()=aed7e3b24ff192cbe09935c5e7488881, '
  || 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)=1f034561a461bdb46a1e6274e0d04606',
-  'G4 Cancel, the receive step, refund_invoice_recorded, invoice_action_plan, update_invoice_internal, 393''s release check and the waiting list are unchanged (the waiting list: or 494''s)');
+  'G4 Cancel, the receive step, refund_invoice_recorded, invoice_action_plan, update_invoice_internal, 393''s release check and the waiting list are unchanged (the waiting list: or 494''s; the refund: or 495''s)');
 
 -- ═════ C Cancel unchanged ═════
 do $$

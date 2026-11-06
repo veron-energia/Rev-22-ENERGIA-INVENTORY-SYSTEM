@@ -683,7 +683,8 @@ do $$
 declare s text := 'public.refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)';
 begin
   perform pg_temp.t446_check(pg_temp.t446_in()
-    and md5(pg_get_functiondef(s::regprocedure)) = '804ecd829cfecf713783a09a05d93c7e', '10 446 is not installed as tested');
+    -- (495's AFTER where it is in: no stock question for a service)
+    and md5(pg_get_functiondef(s::regprocedure)) in ('804ecd829cfecf713783a09a05d93c7e', '3280f4ed6afb93aed7366eaf100c6383'), '10 446 is not installed as tested');
   if exists (select 1 from t446_fp where k = 'first') then
     perform pg_temp.t446_check((select fp from t446_fp where k = 'second') = (select fp from t446_fp where k = 'first'),
       '10 the second run of 446 changed functions');

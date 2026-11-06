@@ -722,6 +722,85 @@ test('Products: the export is of the tab', () => {
 });
 
 // ── Price List (STOCK-10) ───────────────────────────────────────────────────
+// ── A service holds no stock (495, the user, 6 Nov 2026) ───────────────────
+// Opens the window's first product picker and reads what it offers.
+const offered = async () => {
+  await click(buttons(modal()).find(b => b.textContent.includes('Search product name or SKU')));
+  return [...modal().querySelectorAll('div')].filter(d => d.firstElementChild?.tagName === 'DIV' && /\(FX-\d\)/.test(d.firstElementChild.textContent))
+    .map(d => d.firstElementChild.textContent);
+};
+const noService = (labels, what) => {
+  assert.ok(labels.includes('Fixture Mat (FX-1)'), `${what} still offers a product: ${labels}`);
+  assert.ok(!labels.some(l => l.includes('Fixture Delivery')), `${what} offers no service: ${labels}`);
+};
+
+test('495: Store Stock lists no service, whichever filter; Record Use and Lend offer none', async () => {
+  await mount(P.StoreInventoryPage, 'manager');
+  assert.ok(row('Fixture Mat') && row('Fixture Lamp'));
+  assert.ok(!text().includes('Fixture Delivery'), 'not on the list');
+  await click(button('No stock'));
+  assert.ok(!text().includes('Fixture Delivery'), 'not even as out of stock');
+  await click(button('All'));
+  await click(buttonWith('Record Use'));
+  noService(await offered(), 'Record Use');
+  await click(button('Cancel', modal()));
+  await click(buttonWith('Lend'));
+  noService(await offered(), 'Lend');
+});
+
+test('495: Warehouse Stock lists no service; Stock In, Record Use and Lend offer none', async () => {
+  await mount(P.WarehouseInventoryPage, 'inventory_manager');
+  assert.ok(row('Fixture Mat'));
+  assert.ok(!text().includes('Fixture Delivery'), 'not on the list');
+  await click(buttonWith('Stock In'));
+  noService(await offered(), 'Stock In');
+  await click(button('Cancel', modal()));
+  await click(buttonWith('Record Use'));
+  noService(await offered(), 'Record Use');
+  await click(button('Cancel', modal()));
+  await click(buttonWith('Lend'));
+  noService(await offered(), 'Lend');
+});
+
+test('495: New Adjustment offers no service; a past request for one still names it', async () => {
+  await mount(P.AdjustmentsPage, 'manager', b => {
+    Object.assign(b.fx.approval_requests[0], { related_record_id: 'p-fee' });
+    b.fx.approval_requests[0].payload.product_id = 'p-fee';
+  });
+  assert.ok(row('Fixture Delivery'), 'its past request names it');
+  const f = await openAdjustment();
+  await setValue(f.place, 's-a');
+  noService(await offered(), 'New Adjustment');
+  assert.match(read('src/pages/AdjustmentsPage.tsx'), /select\('id,name,sku,product_type,is_active,deleted_at'\)/, 'the page reads the type it filters by');
+});
+
+test('495: the Service tab says a service holds no stock; Products keeps its words; its form reads for sales alone', async () => {
+  await mount(P.ProductsPage, 'manager');
+  assert.ok(text().includes('Stock levels and low-stock thresholds are set on the Warehouse Stock and Store Stock pages.'), 'Products as before');
+  assert.ok(!text().includes('A service holds no stock'));
+  await click(button('Service'));
+  assert.ok(text().includes('A service holds no stock: it needs only a price on the Price List to go on an invoice.'));
+  assert.ok(!text().includes('Stock levels and low-stock thresholds'), 'nothing about stock levels on Service');
+  await click(button('Add Service'));
+  assert.ok(modal().textContent.includes('Active (available for sales)'));
+  assert.ok(!modal().textContent.includes('inventory &'), 'no inventory there');
+  assert.ok([...typeSelect().options].find(o => o.value === 'no_commission').textContent.includes('holds no stock'), 'the type says so');
+  // Changing the type to Own there reads as a product again.
+  await setValue(typeSelect(), 'own');
+  assert.ok(modal().textContent.includes('Active (available for inventory & sales)'));
+});
+
+test('495: a product that cannot become a service yet shows the server\'s words and stays', async () => {
+  await mount(P.ProductsPage, 'manager');
+  const words = 'Fixture Mat cannot become a service yet: a service holds no stock. Still open: stock (5 at Fixture Store A).';
+  backend.failures.set('save_product', { message: words, code: 'P0001', once: true });
+  await click(row('Fixture Mat').querySelector('button[title="Edit"]'));
+  await setValue(typeSelect(), 'no_commission');
+  await click(button('Save Changes', modal()));
+  assert.ok(modal()?.textContent.includes(words), 'the form stays open and says why');
+  assert.ok(!text().includes('is now on the Service tab'), 'no word of it moving');
+});
+
 test('Price List: a deleted product\'s price is not counted; the three type labels', async () => {
   await mount(P.PriceListPage, 'owner');
   assert.ok(text().includes('1 of 3 products priced'), text());

@@ -226,7 +226,10 @@ insert into t481_md5 values
   ('trg_fulfil_from_warehouse()', '4abf4bf68e4f00658a8da66469e7059e', 'e1d41bce9c53d21ac2ab727042663cfb'),
   ('invoice_goods_status(uuid)', '651039eac932b5d1f51fc75313ed4320', 'ca966a2c6a1949afc98503862263b58d');
 create function pg_temp.t481_at(p_col text) returns boolean language sql as $f$
-  select bool_and(md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = case when p_col = 'before' then m.before else m.after end)
+  select bool_and(md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = case when p_col = 'before' then m.before else m.after end
+                  -- 495's AFTER where it is in: a service asks nothing of the warehouse
+                  or (p_col = 'after' and m.sig = 'trg_fulfil_from_warehouse()'
+                      and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = 'ccc8ee71452ee75773a93fbe298bfe35'))
     from t481_md5 m $f$;
 -- 481 is in: the new function is there, at its AFTER.
 create function pg_temp.t481_in() returns boolean language sql as $f$
@@ -1655,6 +1658,11 @@ declare m record; w record; d text;
 begin
   for m in select * from t481_md5 loop
     d := pg_get_functiondef(to_regprocedure('public.' || m.sig));
+    -- 495's part, where it is in, is not 481's: taken out first.
+    d := replace(d, $w$
+       -- 495 (the user, 6 Nov 2026): a service holds no stock, so it asks nothing
+       -- of the warehouse and the store is given nothing back for it.
+       and not public.product_is_service(ii.product_id)$w$, '');
     for w in select * from t481_wb where sig = m.sig order by n loop
       perform pg_temp.t481_check((length(d) - length(replace(d, w.new, ''))) / length(w.new) = 1,
         'P1 ' || m.sig || ': part ' || w.n || ' is not there once');

@@ -17,9 +17,15 @@
 --   psql "$DB" -v ON_ERROR_STOP=1 -f scripts/promotions/tests/chosen-promotion-takes-stock-483.sql
 \set ON_ERROR_STOP on
 begin;
+-- 495 changed invoice_required_stock, which 483 pins: where 495 is in, 483 is in
+-- long since and is not installed again.
+select to_regprocedure('public.product_is_service(uuid)') is not null as m495_in \gset
+\if :m495_in
+\else
 -- twice: the second run must leave it alone
 \i supabase/483_chosen_promotion_takes_its_stock.sql
 \i supabase/483_chosen_promotion_takes_its_stock.sql
+\endif
 do $$
 declare
   own uuid := gen_random_uuid(); tag text := substr(md5(random()::text), 1, 6);

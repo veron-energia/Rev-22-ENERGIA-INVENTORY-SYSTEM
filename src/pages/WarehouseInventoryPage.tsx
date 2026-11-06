@@ -15,7 +15,7 @@ import TakeBackModal from '../components/stock-loans/TakeBackModal';
 import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
 import { useStockLoans } from '../components/stock-loans/useStockLoans';
 import { StockLoan, mayHaveSaved, newRequestId, saveFailure } from '../lib/stock-loans/stockLoans';
-import { StockInLine, checkStockInForm, stockStatus as statusOf, stockStatusText } from '../lib/stock/stockPages';
+import { StockInLine, checkStockInForm, isService, stockStatus as statusOf, stockStatusText } from '../lib/stock/stockPages';
 
 interface Row {
   product: Product;
@@ -81,7 +81,8 @@ const WarehouseInventoryView: React.FC = () => {
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
     ]);
     setWarehouses((wh as Warehouse[]) ?? []);
-    setProducts((prod as Product[]) ?? []);
+    // A service holds no stock (495), so it is not listed here, in Stock In or in the windows.
+    setProducts(((prod as Product[]) ?? []).filter(p => !isService(p)));
     if (wh && wh.length > 0 && !selectedWh) setSelectedWh(wh[0].id);
   }, [selectedWh]);
 

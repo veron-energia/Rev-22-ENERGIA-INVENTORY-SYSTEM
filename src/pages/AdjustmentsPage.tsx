@@ -10,7 +10,7 @@ import { Modal } from '../components/ui';
 import { Plus, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import {
-  AdjustmentLine, adjustmentPlace, adjustmentSentMessage, checkAdjustmentForm, countableStoreIds, linesSettingToZero,
+  AdjustmentLine, adjustmentPlace, adjustmentSentMessage, checkAdjustmentForm, countableStoreIds, isService, linesSettingToZero,
   zeroConfirmText,
 } from '../lib/stock/stockPages';
 import { mayHaveSaved, newRequestId, saveFailure } from '../lib/stock-loans/stockLoans';
@@ -57,7 +57,7 @@ const AdjustmentsPage: React.FC = () => {
     setLoading(true);
     const [req, prod, st, wh, prof, mine] = await Promise.all([
       supabase.from('approval_requests').select('*').eq('request_type', 'adjustment').order('created_at', { ascending: false }),
-      supabase.from('products').select('id,name,sku,is_active,deleted_at').order('name'),
+      supabase.from('products').select('id,name,sku,product_type,is_active,deleted_at').order('name'),
       supabase.from('stores').select('id,name,is_active,deleted_at').order('name'),
       supabase.from('warehouses').select('id,name,is_active,deleted_at').order('name'),
       supabase.from('profiles').select('id,full_name'),
@@ -119,7 +119,8 @@ const AdjustmentsPage: React.FC = () => {
     });
   }, [requests, search, products, stores, warehouses, profiles]);
 
-  const liveProducts = products.filter(p => p.is_active && !p.deleted_at);
+  // A service holds no stock (495), so it is not offered; its past requests still show its name.
+  const liveProducts = products.filter(p => p.is_active && !p.deleted_at && !isService(p));
   // An Owner or Admin counts any store; anyone else, a Manager too, only the
   // stores they work at, as the server requires.
   const countable = countableStoreIds(profile?.role, myStoreIds, (assignments ?? []).map(a => a.store_id));

@@ -257,7 +257,8 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                -- (481's AFTER where it is in, after 479: less the units a
                -- refund by line paid back since the last reopening)
                ('invoice_stock_to_deduct(uuid)', '6356494ccb8545d46c56b788f8f85f54|5480e6042b4521829ebce1ef14937162'),
-               ('invoice_required_stock(uuid)', 'c91dc1eb4f2b7b465de5fe4a8fb2ca0c'),
+               -- (495's AFTER where it is in: a service owes no stock)
+               ('invoice_required_stock(uuid)', 'c91dc1eb4f2b7b465de5fe4a8fb2ca0c|b14a1511d15457de4787df8d040e415f'),
                ('deduct_invoice_stock(uuid,text)', '32183fe9e7c15ed0b11307c48289831a'),
                ('invoice_discounted_line_value(uuid)', 'ead4a430c3abd1e3f953912867ca4fe6'),
                ('snapshot_therapy_voucher_issue(uuid,boolean)', '12ba32611ad001781862d82b1ae13c8e'),

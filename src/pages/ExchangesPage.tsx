@@ -9,6 +9,7 @@ import { exchangePaymentMethods, bundleLineBlock, componentsExchanged, exchangeP
          itemsCredit, itemPicksProblem, itemsProductType, type ItemPick, exchangeServerWords } from '../lib/exchanges/rules.mjs';
 import { printA5Document, esc as printEsc, type PrintTotal } from '../lib/printDoc';
 import { promotionOnSale } from '../lib/promotions/status.mjs';
+import { isService } from '../lib/stock/stockPages';
 import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProblem,
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { useAuth } from '../context/AuthContext';
@@ -296,7 +297,8 @@ const ExchangesPage: React.FC = () => {
     }
   };
 
-  const productLines = invItems.filter(i => i.line_kind === 'product');
+  // A service holds no stock (495): nothing to bring back, and nothing to give in its place.
+  const productLines = invItems.filter(i => i.line_kind === 'product' && !isService(products.find(p => p.id === i.product_id)));
   const bundleLines = invItems.filter(i => i.line_kind === 'promotion');
   const returnedItems = productLines.filter(i => returnIds.includes(i.id));
   const ticked = returnIds.length + picks.length;
@@ -343,7 +345,7 @@ const ExchangesPage: React.FC = () => {
   const selectedBundleLine = bundleLines.find(b => b.id === bundleLineId) ?? null;
 
   // replacement products must match returned type (own/third)
-  const replCandidates = products.filter(p => returnedType && returnedType !== 'MIXED' ? p.product_type === returnedType : true);
+  const replCandidates = products.filter(p => !isService(p) && (returnedType && returnedType !== 'MIXED' ? p.product_type === returnedType : true));
 
   /** Why the returned items cannot be valued yet, or null. */
   const creditProblem = (): string | null => {

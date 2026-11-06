@@ -119,12 +119,15 @@ function makeFixture() {
       { id: 'p-b', name: 'XM B', sku: 'XMB', product_type: 'own', is_active: true, deleted_at: null },
       { id: 'p-c', name: 'XM C', sku: 'XMC', product_type: 'own', is_active: true, deleted_at: null },
       { id: 'p-t', name: 'XM Third', sku: 'XMT', product_type: 'third_party', is_active: true, deleted_at: null },
+      // a service (495): on an invoice, but nothing to bring back or to give in its place
+      { id: 'p-svc', name: 'XM Visit', sku: 'XMV', product_type: 'no_commission', is_active: true, deleted_at: null },
     ],
     prices: [
       { store_id: 'st-1', product_id: 'p-a', selling_price: 100, is_active: true },
       { store_id: 'st-1', product_id: 'p-b', selling_price: 100, is_active: true },
       { store_id: 'st-1', product_id: 'p-c', selling_price: 120, is_active: true },
       { store_id: 'st-1', product_id: 'p-t', selling_price: 80, is_active: true },
+      { store_id: 'st-1', product_id: 'p-svc', selling_price: 50, is_active: true },
     ],
     inventory: [
       { store_id: 'st-1', product_id: 'p-a', current_qty: 50 },
@@ -164,6 +167,7 @@ function makeFixture() {
         component_exchanged: [{ product_id: 'p-a', qty: 1, exchange_id: 'ex-old' }] },
       // a third-party product
       { id: 'li-t', invoice_id: 'inv-1', line_kind: 'product', product_id: 'p-t', quantity: 1, exchanged_at: null, component_exchanged: null },
+      { id: 'li-svc', invoice_id: 'inv-1', line_kind: 'product', product_id: 'p-svc', quantity: 1, exchanged_at: null, component_exchanged: null },
     ],
     profiles: [
       { id: 'u-own', full_name: 'Owner One', role: 'owner', is_active: true },
@@ -318,6 +322,28 @@ async function readyToConfirm() {
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────
+test('495: a service on the invoice is not offered to return, nor as a replacement', async () => {
+  await openOnInvoice();
+  const box = [...modal().querySelectorAll('label')].filter(l => l.querySelector('input[type="checkbox"]')).map(l => l.textContent);
+  assert.ok(box.some(l => l.includes('XM A')), `a product is offered: ${box}`);
+  assert.ok(!box.some(l => l.includes('XM Visit')), `a service is not: ${box}`);
+  // The replacement list, with its type open (nothing ticked yet) and then with
+  // an own product and a third-party one ticked: a price is not enough.
+  const replacements = async () => {
+    await click([...modal().querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Search product name or SKU')));
+    const offered = [...modal().querySelectorAll('div')].filter(d => d.firstElementChild?.tagName === 'DIV' && d.firstElementChild.textContent.startsWith('XM '))
+      .map(d => d.firstElementChild.textContent);
+    await click([...modal().querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Search product name or SKU')));
+    return offered;
+  };
+  for (const tick of [null, 'XM A ×', 'XM Third ×']) {
+    if (tick) await click([...modal().querySelectorAll('label')].find(l => l.textContent.includes(tick)).querySelector('input'));
+    const offered = await replacements();
+    assert.ok(offered.some(l => l.includes('XM C')), `the list reads (${tick}): ${offered}`);
+    assert.ok(!offered.some(l => l.includes('XM Visit')), `no service as a replacement (${tick}): ${offered}`);
+  }
+});
+
 test('a product exchange with a top-up offers no Wallet method, and keeps the instalment', async () => {
   await openOnInvoice();
   assert.deepEqual(globalThis.__renderErrors, []);

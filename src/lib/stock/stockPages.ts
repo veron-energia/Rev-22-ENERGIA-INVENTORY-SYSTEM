@@ -172,6 +172,13 @@ export function productTypeBadge(t: ProductType | string | null | undefined): st
   return t === 'own' ? 'badge-primary' : t === 'no_commission' ? 'badge-muted' : 'badge-accent';
 }
 
+/** A Service is a product typed No commission (the user, 6 Nov 2026). It holds no
+ *  stock (495): the stock pages leave it out, and the invoice lists it by its price
+ *  alone, under Service. */
+export function isService(p: { product_type?: ProductType | string | null } | null | undefined): boolean {
+  return p?.product_type === 'no_commission';
+}
+
 /** How many of the listed products have a price at the store. A price of a
  *  deleted or switched-off product is not counted. */
 export function pricedCount(productIds: string[], pricedIds: Iterable<string>): number {

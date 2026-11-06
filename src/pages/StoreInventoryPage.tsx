@@ -11,7 +11,7 @@ import TakeBackModal from '../components/stock-loans/TakeBackModal';
 import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
 import { useStockLoans } from '../components/stock-loans/useStockLoans';
 import { StockLoan } from '../lib/stock-loans/stockLoans';
-import { countableStoreIds, stockStatus as statusOf, stockStatusText } from '../lib/stock/stockPages';
+import { countableStoreIds, isService, stockStatus as statusOf, stockStatusText } from '../lib/stock/stockPages';
 
 interface Row { product: Product; inv: StoreInventory | null; }
 
@@ -65,7 +65,8 @@ const StoreInventoryPage: React.FC = () => {
     ]);
     setStoresErr(mine.error ? mine.error.message : null);
     setListed((mine.data as { store_id: string; store_name: string; is_default: boolean }[]) ?? []);
-    const prodRows = (prod as Product[]) ?? [];
+    // A service holds no stock (495), so it is not listed here or in the windows.
+    const prodRows = ((prod as Product[]) ?? []).filter(p => !isService(p));
     setProducts(prodRows);
     setImp(Object.fromEntries(prodRows.map((p2: any) => [p2.id, !!p2.is_important])));
   }, []);

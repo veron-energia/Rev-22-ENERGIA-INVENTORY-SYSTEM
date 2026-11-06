@@ -16,6 +16,7 @@ import {
   Pencil, History, PackageCheck, AlertTriangle, Truck,
 } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
+import { isService } from '../lib/stock/stockPages';
 
 const RESOLUTION_OPTIONS: { value: string; label: string }[] = [
   { value: 'accept_loss', label: 'Accept missing as loss' },
@@ -267,8 +268,10 @@ const TransfersPage: React.FC = () => {
   const selectedStaffDestId = destId || (myStores.length === 1 ? myStores[0].store_id : '');
   const productHasStorePrice = (storeId: string | null | undefined, productId: string | null | undefined) =>
     !storeId || !productId || storePrices === null || storePrices.some(sp => sp.store_id === storeId && sp.product_id === productId);
-  // Every product is listed (452); one with no price at the store is tagged.
+  // Every product is listed (452); one with no price at the store is tagged. A
+  // service holds no stock (495), so it is not.
   const productOptionsForStore = (storeId?: string | null) => products
+    .filter(p => !isService(p))
     .map(p => ({
       value: p.id,
       label: productHasStorePrice(storeId, p.id) ? `${p.name} (${p.sku})` : `${p.name} (${p.sku}) — ${NO_STORE_PRICE}`,
@@ -276,6 +279,7 @@ const TransfersPage: React.FC = () => {
     }));
   const pricesUnreadNote = pricesUnread && <div className="alert alert-warning" role="status" style={{ marginBottom: 0 }}><span>⚠</span><div>{PRICES_UNREAD}</div></div>;
   const productOptionsHeld = (held: { product_id: string; current_qty: number }[]) => products
+    .filter(p => !isService(p))
     .flatMap(p => {
       const h = held.find(x => x.product_id === p.id);
       return h ? [{ value: p.id, label: `${p.name} (${p.sku}) — ${h.current_qty} in store`, search: `${p.name} ${p.sku}` }] : [];

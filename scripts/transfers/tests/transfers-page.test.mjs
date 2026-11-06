@@ -37,6 +37,7 @@
 // Run: node --test scripts/transfers/tests/transfers-page.test.mjs
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
@@ -252,6 +253,19 @@ async function pickProduct(label) {
   await click([...modal().querySelectorAll('div')].find(d => d.firstElementChild?.textContent === label && d.children.length <= 2));
 }
 after(async () => { if (root) await act(async () => root.unmount()); dom.window.close(); });
+
+// ── 495 (the user, 6 Nov 2026): a service holds no stock ─────────────────
+test('New Transfer offers no service; the store-to-warehouse list leaves one out too', async () => {
+  await mount('staff2', fx => { fx.products.push({ id: 'p-svc', name: 'TFX Visit', sku: 'TFX-V', product_type: 'no_commission', is_active: true, deleted_at: null }); });
+  await click(button('New Transfer'));
+  await click([...modal().querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Search product name or SKU')));
+  const offered = [...modal().querySelectorAll('div')].filter(d => d.firstElementChild?.tagName === 'DIV' && /\(TFX-[A-Z]\)/.test(d.firstElementChild.textContent))
+    .map(d => d.firstElementChild.textContent);
+  assert.ok(offered.some(l => l.startsWith('TFX Pillow')), `a product is offered: ${offered}`);
+  assert.ok(!offered.some(l => l.includes('TFX Visit')), `a service is not: ${offered}`);
+  const src = readFileSync(new URL('../../../src/pages/TransfersPage.tsx', import.meta.url), 'utf8');
+  assert.match(src, /productOptionsHeld = [^\n]*\n\s*\.filter\(p => !isService\(p\)\)/, 'what a store holds leaves it out too');
+});
 
 // ── STOCK-1 ────────────────────────────────────────────────────────────────
 test('staff at two stores must choose the store; the choice is sent', async () => {

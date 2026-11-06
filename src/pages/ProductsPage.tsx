@@ -270,8 +270,9 @@ const ProductsPage: React.FC = () => {
       <div className="alert alert-info">
         <span>ℹ️</span>
         <div>
-          {onService && 'Every product typed No commission is listed here, and earns no affiliate commission. '}
-          Stock levels and low-stock thresholds are set on the Warehouse Stock and Store Stock pages.
+          {onService
+            ? 'Every product typed No commission is listed here, and earns no affiliate commission. A service holds no stock: it needs only a price on the Price List to go on an invoice.'
+            : 'Stock levels and low-stock thresholds are set on the Warehouse Stock and Store Stock pages.'}
         </div>
       </div>
       {pageErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{pageErr}</div>
@@ -401,7 +402,7 @@ const ProductsPage: React.FC = () => {
                 <select value={form.product_type} onChange={e => setForm(f => ({ ...f, product_type: e.target.value as ProductType }))}>
                   <option value="own">Own Product</option>
                   <option value="third_party">3rd Party Product</option>
-                  <option value="no_commission">No commission — delivery, services, pass-through</option>
+                  <option value="no_commission">No commission — a service: delivery, fees, repairs (holds no stock)</option>
                 </select>
               </div>
               <div className="form-group"><label>Categories <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(multiple)</span></label>
@@ -443,7 +444,7 @@ const ProductsPage: React.FC = () => {
             <div className="form-group"><label>Description</label><textarea rows={2} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Optional" /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} />
-              <span style={{ fontSize: 13 }}>Active (available for inventory &amp; sales)</span>
+              <span style={{ fontSize: 13 }}>{form.product_type === 'no_commission' ? 'Active (available for sales)' : 'Active (available for inventory & sales)'}</span>
             </label>
           </div>
         </Modal>
