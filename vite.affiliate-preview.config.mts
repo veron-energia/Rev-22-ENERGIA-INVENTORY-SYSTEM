@@ -4,7 +4,9 @@
 // The email warning above the page (3 Nov 2026) answers from
 // scripts/affiliate/preview/supabase-stub.ts; ?verified=1, ?send=fail and
 // ?send=verified show its other states. ?page=rules shows the Rules page
-// (490) in the portal, ?page=rules&signed=0 as the public page.
+// (490) in the portal, ?page=rules&signed=0 as the public page. ?page=login and
+// ?page=join show Sign in and Join with their wellness panel (6 Nov 2026);
+// ?signed=0 is nobody signed in, ?signin=unconfirmed a sign-up not switched on.
 //   npx vite --config vite.affiliate-preview.config.mts
 //   http://localhost:5196/?send=fail
 import { defineConfig } from 'vite';

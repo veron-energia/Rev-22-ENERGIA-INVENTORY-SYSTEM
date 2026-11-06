@@ -1,0 +1,207 @@
+/*
+ * The affiliate Sign in and Join pages (6 Nov 2026): the two-column page and
+ * the animated wellness panel. Only those two pages render these classes, and
+ * every selector starts with .aff-wellness, so nothing reaches the other auth
+ * pages or the staff application (they share one bundle).
+ */
+
+/* ── The page: the form first, the panel under it ───────────────────────── */
+.aff-wellness-page {
+  min-height: 100vh;
+  background: var(--bg);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-content: center;
+  row-gap: 24px;
+  padding: 16px;
+}
+.aff-wellness-form { width: 100%; display: flex; justify-content: center; }
+/* The app gives every input width: 100%, which left the terms box adrift in its row. */
+.aff-wellness-form input[type='checkbox'] { width: auto; flex: none; }
+
+/* ── A balanced two columns on a wide screen, the panel on the left ─────── */
+@media (min-width: 900px) {
+  .aff-wellness-page {
+    grid-template-columns: minmax(0, 620px) minmax(0, 440px);
+    justify-content: center;
+    align-items: center;
+    column-gap: clamp(32px, 5vw, 72px);
+    padding: 24px clamp(24px, 3vw, 48px);
+  }
+  .aff-wellness { grid-column: 1; grid-row: 1; position: sticky; top: 24px; }
+  .aff-wellness-form { grid-column: 2; grid-row: 1; }
+}
+
+/* ── The panel ──────────────────────────────────────────────────────────── */
+.aff-wellness {
+  --aff-wellness-tempo: 1;
+  width: 100%;
+  max-width: 620px;
+  padding: clamp(16px, 2.4vw, 26px);
+  border-radius: 24px;
+  background: linear-gradient(165deg, #ffffff 0%, #f8f7f2 100%);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 32px rgba(20, 60, 58, 0.07);
+}
+.aff-wellness--login { --aff-wellness-tempo: 1.4; }
+
+.aff-wellness-headline {
+  font-size: clamp(23px, 2.5vw, 32px);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-wrap: balance;
+}
+.aff-wellness-accent { color: var(--primary); }
+.aff-wellness-support { margin-top: 6px; font-size: 14.5px; color: var(--text-secondary); }
+
+/* ── The pictures: sizes come from their shapes, so nothing shifts as they draw ── */
+.aff-wellness-art {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.aff-wellness-tile {
+  min-width: 0;
+  border-radius: 16px;
+  background: #fbf9f4;
+  box-shadow: 0 1px 2px rgba(20, 60, 58, 0.05), 0 4px 14px rgba(20, 60, 58, 0.05);
+  overflow: hidden;
+}
+.aff-wellness-tile--recharge { grid-column: 1 / -1; }
+.aff-wellness-stage { position: relative; aspect-ratio: 8 / 5; overflow: hidden; }
+.aff-wellness-tile--recharge .aff-wellness-stage { aspect-ratio: 32 / 15; }
+.aff-wellness--login .aff-wellness-tile:not(.aff-wellness-tile--recharge) .aff-wellness-stage { aspect-ratio: 12 / 5; }
+@media (max-width: 480px) {
+  .aff-wellness--login .aff-wellness-tile:not(.aff-wellness-tile--recharge) .aff-wellness-stage { aspect-ratio: 2 / 1; }
+}
+.aff-wellness-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+}
+.aff-wellness-caption {
+  padding: 7px 10px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  background: #ffffff;
+}
+
+/* ── Under the pictures: the people (Join) and the control ──────────────── */
+.aff-wellness-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+.aff-wellness-people {
+  flex: 0 1 clamp(132px, 34%, 196px);
+  min-width: 0;
+  margin-right: auto;
+  aspect-ratio: 244 / 56;
+  display: block;
+  pointer-events: none;
+}
+.aff-wellness-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.aff-wellness-toggle:hover { background: var(--surface-2); color: var(--text); }
+.aff-wellness-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (pointer: coarse) { .aff-wellness-toggle { min-height: 44px; padding: 0 16px; } }
+
+/* ── The resting picture: what someone who asked for reduced motion sees.
+   Each scaled element is drawn around its own origin (a ring and a ripple at
+   their centres, a bar at its foot), which is where a transform scales from. ── */
+.aff-wellness-ring--1 { transform: scale(0.68); opacity: 0.5; }
+.aff-wellness-ring--2 { transform: scale(0.95); opacity: 0.32; }
+.aff-wellness-ring--3 { transform: scale(1.22); opacity: 0.18; }
+.aff-wellness-glow { opacity: 0.75; }
+.aff-wellness-ripple--1 { transform: scale(0.62); opacity: 0.7; }
+.aff-wellness-ripple--2 { transform: scale(1); opacity: 0.4; }
+.aff-wellness-bubble { opacity: 0.8; }
+
+/* ── Motion: slow, small and only for those who have not asked for less ─── */
+@media (prefers-reduced-motion: no-preference) {
+  .aff-wellness-ring {
+    animation: aff-wellness-ring calc(13s * var(--aff-wellness-tempo)) linear infinite;
+  }
+  .aff-wellness-ring--1 { animation-delay: calc(-8.66s * var(--aff-wellness-tempo)); }
+  .aff-wellness-ring--2 { animation-delay: calc(-4.33s * var(--aff-wellness-tempo)); }
+  .aff-wellness-glow { animation: aff-wellness-glow calc(9s * var(--aff-wellness-tempo)) ease-in-out infinite; }
+  .aff-wellness-breath { animation: aff-wellness-breath calc(7s * var(--aff-wellness-tempo)) ease-in-out infinite; }
+  .aff-wellness-ripple { animation: aff-wellness-ripple calc(7s * var(--aff-wellness-tempo)) ease-out infinite; }
+  .aff-wellness-ripple--2 { animation-delay: calc(-3.5s * var(--aff-wellness-tempo)); }
+  .aff-wellness-bubble { animation: aff-wellness-bubble calc(7s * var(--aff-wellness-tempo)) ease-in-out infinite; }
+  .aff-wellness-bar { animation: aff-wellness-bar calc(9s * var(--aff-wellness-tempo)) ease-in-out infinite; }
+  .aff-wellness-link { animation: aff-wellness-link calc(5s * var(--aff-wellness-tempo)) linear infinite; }
+  .aff-wellness-person { animation: aff-wellness-person calc(6.6s * var(--aff-wellness-tempo)) ease-in-out infinite; }
+
+  /* The pause control, and off-screen. */
+  .aff-wellness[data-paused] .aff-wellness-art *,
+  .aff-wellness[data-paused] .aff-wellness-people *,
+  .aff-wellness[data-offscreen] .aff-wellness-art *,
+  .aff-wellness[data-offscreen] .aff-wellness-people * { animation-play-state: paused; }
+}
+
+/* A still picture has nothing to pause. */
+@media (prefers-reduced-motion: reduce) {
+  .aff-wellness-toggle { display: none; }
+}
+
+@keyframes aff-wellness-ring {
+  from { transform: scale(0.6); opacity: 0; }
+  18% { opacity: 0.5; }
+  to { transform: scale(1.28); opacity: 0; }
+}
+@keyframes aff-wellness-glow {
+  from, to { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+@keyframes aff-wellness-breath {
+  from, to { transform: translateY(0); }
+  50% { transform: translateY(-1.6px); }
+}
+@keyframes aff-wellness-ripple {
+  from { transform: scale(0.45); opacity: 0; }
+  25% { opacity: 0.75; }
+  to { transform: scale(1.2); opacity: 0; }
+}
+@keyframes aff-wellness-bubble {
+  from { transform: translateY(5px); opacity: 0; }
+  30% { opacity: 0.9; }
+  70% { opacity: 0.7; }
+  to { transform: translateY(-8px); opacity: 0; }
+}
+@keyframes aff-wellness-bar {
+  from, to { transform: scaleY(1); }
+  50% { transform: scaleY(0.86); }
+}
+@keyframes aff-wellness-link {
+  to { stroke-dashoffset: -14; }
+}
+@keyframes aff-wellness-person {
+  from, to { transform: translateY(0); }
+  50% { transform: translateY(-1.5px); }
+}

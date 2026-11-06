@@ -71,7 +71,16 @@ function detailsStep(body: Record<string, unknown>) {
 }
 
 export const supabase = {
-  auth: { refreshSession: async () => ({ data: {} }) },
+  auth: {
+    refreshSession: async () => ({ data: {} }),
+    // Sign in (?page=login) answers as for a wrong password; ?signin=unconfirmed: a sign-up not switched on yet.
+    signInWithPassword: async () => {
+      await new Promise(r => setTimeout(r, 800));
+      return params.get('signin') === 'unconfirmed'
+        ? { data: {}, error: { code: 'email_not_confirmed', message: 'Email not confirmed' } }
+        : { data: {}, error: { message: 'Invalid login credentials' } };
+    },
+  },
   rpc: async (fn: string) => {
     if (fn === 'affiliate_portal_me') return answer({ name: 'Ada Preview', email: DETAILS.login_email, referral_code: 'PREVIEW1', status: 'active', joined_at: '2026-10-01T02:00:00Z' });
     if (fn === 'affiliate_portal_details') return answer({ ...DETAILS });

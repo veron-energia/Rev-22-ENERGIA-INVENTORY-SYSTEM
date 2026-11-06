@@ -62,7 +62,7 @@ const AffiliateLoginPage: React.FC = () => {
   };
 
   return (
-    <AffiliateAuthShell title="Affiliate Login" subtitle="Sign in to your Energia Affiliate portal"
+    <AffiliateAuthShell title="Affiliate Login" subtitle="Sign in to your Energia Affiliate portal" wellness="login"
       footer={<>New affiliate? <Link to="/affiliate/join" style={{ color: 'var(--primary)', fontWeight: 600 }}>Create an account</Link></>}>
       {/* An alert, so a screen reader says why the person landed here (Create
           Account brought them, and focus does not follow a page change). One

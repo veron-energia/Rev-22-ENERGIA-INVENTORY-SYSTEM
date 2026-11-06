@@ -49,6 +49,7 @@
     "test:exchanges:page": "node --test scripts/exchanges/tests/*.test.mjs",
     "test:affiliate-signup": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/affiliate-signup/tests/existing-customer-linking.sql -f scripts/affiliate-signup/tests/referral-and-states.sql -f scripts/affiliate-signup/tests/staff-cannot-self-issue.sql -f scripts/affiliate-signup/tests/onboarding-from-metadata.sql -f scripts/affiliate-signup/tests/booking-label.sql -f scripts/affiliate-signup/tests/no-duplicate-customers.sql -f scripts/affiliate-signup/tests/shared-phone-425.sql",
     "test:affiliate-signup:link": "node --test scripts/affiliate-signup/tests/*.test.mjs",
+    "test:affiliate-signup:browser": "node scripts/affiliate-signup/tests/wellness-panel-browser.mjs",
     "test:affiliate-claims": "node --test scripts/affiliate-claims/tests/*.test.mjs",
     "test:affiliate-claims:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/affiliate-claims/tests/staff-claims.sql",
     "test:affiliate-claims:reject:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/affiliate-claims/tests/reject-protects.sql",

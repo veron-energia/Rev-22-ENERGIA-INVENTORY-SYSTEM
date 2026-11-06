@@ -135,7 +135,7 @@ const AffiliateJoinPage: React.FC = () => {
   // 437: the account is made; only signing in failed. Sign in from the login
   // page, which finishes the sign-up the same way.
   if (signInFailed) return (
-    <AffiliateAuthShell title="Your account is ready" subtitle="Sign in to continue">
+    <AffiliateAuthShell title="Your account is ready" subtitle="Sign in to continue" wellness="join">
       <p role="alert" style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         Your affiliate account for <b>{f.email}</b> was created, but you could not be signed in just now. Sign in with the
         password you chose to go to your dashboard.
@@ -147,7 +147,7 @@ const AffiliateJoinPage: React.FC = () => {
   // Only for an older sign-up function, which still emailed a verification
   // link: the screen states both possibilities, as before.
   if (done) return (
-    <AffiliateAuthShell title="Next step" subtitle="Check your email, or sign in">
+    <AffiliateAuthShell title="Next step" subtitle="Check your email, or sign in" wellness="join">
       {notice && <p role="alert" style={{ color: 'var(--warning, #b45309)', fontSize: 13, marginBottom: 12 }}>{notice}</p>}
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         If <b>{f.email}</b> is new to Energia, a verification link has been sent to it — open it and you
@@ -176,7 +176,7 @@ const AffiliateJoinPage: React.FC = () => {
   );
 
   return (
-    <AffiliateAuthShell title="Become an Energia Affiliate" subtitle="Create your affiliate account"
+    <AffiliateAuthShell title="Become an Energia Affiliate" subtitle="Create your affiliate account" wellness="join"
       footer={<>Already have an account? <Link to="/affiliate/login" style={{ color: 'var(--primary)', fontWeight: 600 }}>Sign in</Link></>}>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
         Already an Energia customer? Use this form with the phone number Energia has for you: your affiliate account is

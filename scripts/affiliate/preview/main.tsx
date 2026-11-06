@@ -1,11 +1,13 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import '../../../src/styles/globals.css';
 import AffiliateLayout from '../../../src/components/AffiliateLayout';
 import AffiliateRulesPage from '../../../src/pages/AffiliateRulesPage';
 import AffiliateAccountPage from '../../../src/pages/AffiliateAccountPage';
 import AffiliateNetworkPage from '../../../src/pages/AffiliateNetworkPage';
+import AffiliateLoginPage from '../../../src/pages/AffiliateLoginPage';
+import AffiliateJoinPage from '../../../src/pages/AffiliateJoinPage';
 import DetailChangeRequestsPanel from '../../../src/components/DetailChangeRequestsPanel';
 
 // The real shell, with the real stylesheet. Resize the window (or emulate a
@@ -51,8 +53,19 @@ const account = page === 'account';
 const network = page === 'network';
 // ?page=panel: the staff panel of detail changes (493: one asked for by someone who cannot open their inbox).
 const panel = page === 'panel';
+// ?page=login, ?page=join: Sign in and Join with their wellness panel (6 Nov 2026); their links go between the two.
+// ?signed=0: nobody signed in here. No account can be made: the stub refuses every sign-in and the sign-up function.
+const authPage = page === 'login' || page === 'join';
 
-createRoot(document.getElementById('root')!).render(
+createRoot(document.getElementById('root')!).render(authPage ? (
+  <MemoryRouter initialEntries={[`/affiliate/${page}`]}>
+    <Routes>
+      <Route path="/affiliate/login" element={<AffiliateLoginPage />} />
+      <Route path="/affiliate/join" element={<AffiliateJoinPage />} />
+      <Route path="*" element={<p style={{ padding: 24 }}>Another page of the app: the preview stops here.</p>} />
+    </Routes>
+  </MemoryRouter>
+) : (
   <MemoryRouter initialEntries={[rules ? '/affiliate/rules' : account ? '/affiliate/account' : network ? '/affiliate/network' : '/affiliate/dashboard']}>
     {rules ? <AffiliateRulesPage /> : account ? <AffiliateAccountPage /> : network ? <AffiliateNetworkPage /> : panel ? <div className="portal-content"><DetailChangeRequestsPanel /></div> : (
       <AffiliateLayout>
@@ -62,4 +75,4 @@ createRoot(document.getElementById('root')!).render(
     )}
     {!rules && !account && !network && !panel && <Probe />}
   </MemoryRouter>
-);
+));

@@ -1,10 +1,13 @@
 import React from 'react';
 import { Leaf } from 'lucide-react';
+import AffiliateWellnessPanel, { type WellnessVariant } from './AffiliateWellnessPanel';
 
-// Centered card used by all affiliate auth pages (no staff chrome).
-const AffiliateAuthShell: React.FC<{ title: string; subtitle?: string; children: React.ReactNode; footer?: React.ReactNode }>
-  = ({ title, subtitle, children, footer }) => (
-  <div className="portal-auth" style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+// Centered card used by all affiliate auth pages (no staff chrome). With
+// `wellness` (Sign in and Join alone, 6 Nov 2026) the card has the animated
+// brand panel beside it; every other page is the centered card alone.
+const AffiliateAuthShell: React.FC<{ title: string; subtitle?: string; children: React.ReactNode; footer?: React.ReactNode; wellness?: WellnessVariant }>
+  = ({ title, subtitle, children, footer, wellness }) => {
+  const form = (
     <div style={{ width: '100%', maxWidth: 420 }}>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 18 }}>
         <div style={{ width: 46, height: 46, borderRadius: 13, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}>
@@ -16,8 +19,19 @@ const AffiliateAuthShell: React.FC<{ title: string; subtitle?: string; children:
       <div className="card portal-auth-card">{children}</div>
       {footer && <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13.5, color: 'var(--text-secondary)' }}>{footer}</div>}
     </div>
-  </div>
-);
+  );
+  if (wellness) return (
+    <div className="portal-auth aff-wellness-page">
+      <main className="aff-wellness-form">{form}</main>
+      <AffiliateWellnessPanel variant={wellness} />
+    </div>
+  );
+  return (
+    <div className="portal-auth" style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      {form}
+    </div>
+  );
+};
 
 // The label names its field (ADMIN-AUTH-18): the one element inside gets an
 // id (its own, if it has one) and the label points at it, so a screen reader
