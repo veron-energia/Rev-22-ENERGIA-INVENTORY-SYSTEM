@@ -67,9 +67,14 @@
 -- Disposable database only; everything is rolled back. Needs 440 (and what
 -- it needs) as production has it. Run from the repository root:
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/affiliate-signup/tests/referral-self-442.sql
--- (with -v nomig=1 on a database where 442 is applied, to skip installing it;
--- M's refusals then need 442's BEFORE text, which only the install has, and
--- are skipped with a note).
+-- On a database where 442 is applied (production since 21 Oct 2026, with
+-- 469's version of the function since 24 Oct), the suite sees it and skips
+-- installing it, as -v nomig=1 does (which still forces that); M's refusals
+-- then need 442's BEFORE text, which only the install has, and are skipped
+-- with a note. (Added 3 Nov 2026: before, a run on a copy of production
+-- without -v nomig=1 went on to install 442, whose guard refused 469's
+-- version and stopped the run. Every check holds on 469's version: see
+-- signup469().)
 -- Every name, phone and email below is invented: ACMA fictional mobile
 -- numbers (+61491570600..+61491570729) and @example.com addresses.
 \set ON_ERROR_STOP on
@@ -104,6 +109,13 @@ $$ select md5(string_agg(md5(pg_get_functiondef(p.oid)), '' order by p.oid::regp
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind in ('f', 'p') $$;
 create function pg_temp.md5_now() returns text language sql as
 $$ select md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure)) $$;
+-- 469 (the Owner, 24 Oct 2026; production since that day) is in: the function at 469's AFTER, built on 442's. Its one
+-- change here: when the name finds nobody among the customers with the phone, one of them whose email is the email
+-- typed is on file ("already registered"; 442's 'self_known' with its entry when that is the referrer or matches her
+-- login). Wherever a try below types a phone a customer has, the name finds them first or none of them has the email
+-- typed, so every check holds on it unchanged; phone-and-email-469.sql checks that path.
+create function pg_temp.signup469() returns boolean language sql as
+$$ select pg_temp.md5_now() = '2942e3d4d0e8c76600c3e0ad5e15cc2b' $$;
 -- A login, as the sign-up function makes it (confirmed, marked unverified).
 create function pg_temp.login(key text) returns uuid language plpgsql as
 $$declare u uuid := gen_random_uuid(); begin
@@ -175,12 +187,18 @@ insert into m442 select pg_get_functiondef('public.affiliate_referral_signup(tex
                         (select proacl::text from pg_proc where oid = 'public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure),
                         pg_temp.fp(), (select count(*) from public.referral_signup_events), (select count(*) from public.audit_logs),
                         (select count(*) from auth.users), (select count(*) from public.customers);
+-- 442 is in already (its AFTER, or 469's built on it): run as with -v nomig=1.
+select pg_temp.md5_now() = 'c76573912de0a4ded29e81e5c56c96d3' or pg_temp.signup469() as m442_in \gset
+\if :m442_in
+\set nomig 1
+do $$ begin raise notice 'NOTE  442 is in (affiliate_referral_signup md5 %): its install is skipped, as with -v nomig=1', pg_temp.md5_now(); end $$;
+\endif
 \if :{?nomig}
-select pg_temp.check(pg_temp.md5_now() in ('c76573912de0a4ded29e81e5c56c96d3', '2942e3d4d0e8c76600c3e0ad5e15cc2b'),
-  'M0 442 is installed (nomig; or 469''s, built on it: the same phone and email are on file)');
+select pg_temp.check(pg_temp.md5_now() = 'c76573912de0a4ded29e81e5c56c96d3' or pg_temp.signup469(),
+  'M0 442 is installed (its AFTER; or 469''s, built on it: the same phone and email are on file): ' || pg_temp.md5_now());
 \else
 select pg_temp.check(pg_temp.md5_now() = 'a3deac154f5144cffb34fab871f076c6',
-  'M0 affiliate_referral_signup is 440''s AFTER (this suite installs 442; use -v nomig=1 where it is in)');
+  'M0 affiliate_referral_signup is 440''s AFTER (this suite installs 442 on it; 442''s and 469''s are seen and not installed over): ' || pg_temp.md5_now());
 \ir ../../../supabase/442_referral_self_refusal_vague_and_rate_limited.sql
 do $$ begin insert into tx values ('fp1', pg_temp.fp()); end $$;
 \ir ../../../supabase/442_referral_self_refusal_vague_and_rate_limited.sql

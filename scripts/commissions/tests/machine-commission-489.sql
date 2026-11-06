@@ -4,8 +4,10 @@
 -- third-party; tier 2 35% of tier 1.
 --
 --   M0 Before 489: a third-party machine sold as a special product earns as
---      ours (S$1,000 -> S$150.00 at tier 1).
---   M1 That sale, recalculated after 489 is in (a reconcile, as a refund,
+--      ours (S$1,000 -> S$150.00 at tier 1). Where 489 is in already: with
+--      no cut-off, as its UNDO leaves it.
+--   M1 489's file sets the cut-off at the moment it runs (where 489 was in,
+--      again). That sale, recalculated after 489 is in (a reconcile, as a refund,
 --      cancellation, reopening, correction or payment change runs), still
 --      earns S$150.00: the rule follows the invoice's creation time.
 --   M2 After 489: the same machine sold as a special product earns the
@@ -27,6 +29,12 @@
 -- Run on a copy of production at 481 or later (createdb -T of a template
 -- equal to it; never the template itself):
 --   psql -d <copy> -v ON_ERROR_STOP=1 -f scripts/commissions/tests/machine-commission-489.sql
+-- Where 489 is in already (production since 3 Nov 2026), M0 first takes its
+-- cut-off away, as 489's UNDO does (no cut-off: the rule before 489, through
+-- 489's functions), and 489's file, run next, sets it again at the moment it
+-- runs, as on a copy before 489. (Added 3 Nov 2026: on such a copy M0's sale
+-- fell after production's cut-off and earned the third-party rate; and M1,
+-- whose sale is back-dated a day, would have failed from a day after it.)
 -- Every check runs, then the file fails if any did. Everything is rolled
 -- back. Fixtures are invented (the repository is public).
 \set ON_ERROR_STOP on
@@ -122,13 +130,25 @@ begin
 end $$;
 
 -- ═════ M0 Before 489 ═════
+-- Where 489 is in already, its UNDO for M0 alone: no cut-off. 489's file,
+-- run below, sets it again (it sets an empty one), as on a copy before 489.
+do $$
+declare v timestamptz;
+begin
+  if exists (select 1 from pg_attribute where attrelid = 'public.app_settings'::regclass
+               and attname = 'machine_commission_from' and not attisdropped) then
+    execute 'select machine_commission_from from public.app_settings where id = true' into v;
+    execute 'update public.app_settings set machine_commission_from = null where id = true';
+    raise notice 'NOTE  489 is in (its cut-off %): M0 runs with none, as its UNDO leaves it', coalesce(v::text, 'none');
+  end if;
+end $$;
 do $$
 declare inv uuid;
 begin
   inv := pg_temp.mk(jsonb_build_array(pg_temp.sp('sp_third')));
   insert into fx values ('m0', inv); perform pg_temp.pay(inv);
   perform pg_temp.check(pg_temp.earned(inv) = 'own 1000.00/150.00' and pg_temp.earned(inv, 'tier2') = 'own 150.00/52.50',
-    'M0 before 489 a third-party machine sold as a special product earns as ours (got ' || pg_temp.earned(inv) || ' / ' || pg_temp.earned(inv, 'tier2') || ')');
+    'M0 before 489 (where it is in: with no cut-off, as its UNDO leaves it) a third-party machine sold as a special product earns as ours (got ' || pg_temp.earned(inv) || ' / ' || pg_temp.earned(inv, 'tier2') || ')');
 end $$;
 
 \ir ../../../supabase/489_machines_earn_like_the_machine.sql
@@ -144,6 +164,9 @@ set local session_replication_role = origin;
 do $$
 declare inv uuid := pg_temp.fx('m0');
 begin
+  perform pg_temp.check((select machine_commission_from from public.app_settings where id = true) = now(),
+    'M1 489''s file set the cut-off at the moment it ran (this transaction''s start, when every sale here is made; where 489 was in, again): '
+    || coalesce((select machine_commission_from from public.app_settings where id = true)::text, 'none'));
   perform public.reconcile_invoice_commissions(inv, 'M489 recalculation after the change');
   perform pg_temp.check(pg_temp.earned(inv) = 'own 1000.00/150.00' and pg_temp.earned(inv, 'tier2') = 'own 150.00/52.50',
     'M1 the old sale, recalculated after 489, still earns S$150.00 / S$52.50 (got ' || pg_temp.earned(inv) || ' / ' || pg_temp.earned(inv, 'tier2') || ')');
