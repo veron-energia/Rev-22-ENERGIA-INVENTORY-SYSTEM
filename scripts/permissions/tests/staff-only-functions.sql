@@ -619,7 +619,12 @@ begin
     -- the old wallet payment is the service role's alone (check 1 below)
     ('change rental terms',    'om',     false, false, 'select public.update_pending_rental(gen_random_uuid(), 1, ''day'', 1, null, null, null)::text'),
     ('special product form',   'om',     false, false, 'select public.upsert_special_product_from_product(null, gen_random_uuid(), 0, 1, 0, 0, 0, 0, '''', true)::text'),
-    ('physical return',        'all',    false, false, 'select public.resolve_tiktok_physical_return(gen_random_uuid(), false, null, null)::text'),
+    -- 494: the Consignment tick and telling a supplier to send a sale, Owners
+    -- and Managers (no such product or sale in the fixture, so each answers its
+    -- own refusal, never 42501, to those who may)
+    ('consignment tick',       'om',     false, false, 'select public.set_special_product_consignment(gen_random_uuid(), true)::text'),
+    ('release to a supplier',  'om',     false, false, 'select public.release_special_sale_to_supplier(gen_random_uuid(), gen_random_uuid(), null)::text'),
+    ('physical return',       'all',    false, false, 'select public.resolve_tiktok_physical_return(gen_random_uuid(), false, null, null)::text'),
     -- Commissions (414): Mark as settled and its Void, Owners and Managers (no
     -- deduction and no settlement in the fixture, so each answers its own
     -- refusal, never 42501, to those who may)

@@ -774,6 +774,9 @@ export interface SpecialProduct {
   id: string; name: string; sku: string; description: string | null;
   sale_price: number; rate_day: number; rate_week: number; rate_month: number; rate_year: number;
   late_fee_per_day: number; is_active: boolean; deleted_at: string | null; created_at: string;
+  product_id?: string | null;
+  // 494: a supplier can send it directly to the customer.
+  is_consignment?: boolean;
 }
 export interface SpecialProductStock {
   id: string; special_product_id: string; warehouse_id: string; current_qty: number; updated_at: string;
@@ -784,6 +787,10 @@ export interface SpecialSale {
   payment_method_id: string | null; payment_reference: string | null; notes: string | null;
   status: string; stock_returned: boolean | null; sold_by: string | null;
   created_at: string; cancelled_at: string | null;
+  source_store_id?: string | null; invoice_id?: string | null;
+  // 494: released to a supplier, who sends it directly (warehouse and store
+  // stay empty), and where the person who released it said it goes.
+  supplier_id?: string | null; deliver_to?: string | null;
 }
 export interface Rental {
   id: string; rental_no: string; special_product_id: string; warehouse_id: string; customer_id: string;

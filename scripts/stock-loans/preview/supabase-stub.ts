@@ -130,7 +130,92 @@ const lendForms = new Map<string, unknown>();
 const returnForms = new Map<string, unknown>();
 const where = (type: string) => type === 'warehouse' ? 'this warehouse' : 'this store';
 
+// The Special page (?page=special, 494): products a supplier can send, with
+// stock and without, one with no supplier linked yet, an ordinary one, and what
+// waits for a warehouse. A release is kept here, as a loan is.
+const SPECIAL = { description: null, sale_price: 0, rate_day: 0, rate_week: 0, rate_month: 0, rate_year: 0, late_fee_per_day: 0,
+  is_active: true, deleted_at: null, is_consignment: false };
+const special_products: any[] = [
+  { ...SPECIAL, id: 'sp-mat', product_id: 'p-mat', name: 'Fixture Mat', sku: 'FX-MAT', sale_price: 120, rate_day: 10 },
+  { ...SPECIAL, id: 'sp-cup', product_id: 'p-cup', name: 'Fixture Cup', sku: 'FX-CUP', sale_price: 900, is_consignment: true },
+  { ...SPECIAL, id: 'sp-lamp', product_id: 'p-lamp', name: 'Fixture Lamp', sku: 'FX-LAMP', sale_price: 450, rate_day: 15, is_consignment: true },
+  { ...SPECIAL, id: 'sp-kit', product_id: 'p-kit', name: 'Fixture Demo Kit', sku: 'FX-KIT', sale_price: 300, is_consignment: true },
+];
+const suppliers = [
+  { id: 'sup-1', name: 'Fixture Medical Supplies', phone: '+61255500111', is_active: true, deleted_at: null },
+  { id: 'sup-2', name: 'Fixture Imports', phone: null, is_active: true, deleted_at: null },
+];
+const product_suppliers = [
+  { product_id: 'p-cup', supplier_id: 'sup-1' }, { product_id: 'p-cup', supplier_id: 'sup-2' }, { product_id: 'p-lamp', supplier_id: 'sup-1' },
+];
+const special_invoices = [
+  { id: 'inv-1', invoice_no: 'INV-2026-0101', status: 'paid' }, { id: 'inv-2', invoice_no: 'INV-2026-0102', status: 'refunded' },
+];
+const SALE = { store_id: 'st-a', invoice_id: 'inv-1', quantity: 1, warehouse_id: null, source_store_id: null, supplier_id: null, deliver_to: null,
+  notes: null, payment_method_id: null, created_at: `${today}T02:00:00Z` };
+const special_sales: any[] = [
+  { ...SALE, id: 's-1', sale_no: 'SPS-2026-0101', special_product_id: 'sp-cup', customer_id: 'c-jane', status: 'pending', unit_price: 900, total_amount: 900 },
+  { ...SALE, id: 's-2', sale_no: 'SPS-2026-0102', special_product_id: 'sp-lamp', customer_id: 'c-rex', status: 'pending', unit_price: 450, total_amount: 450 },
+  { ...SALE, id: 's-3', sale_no: 'SPS-2026-0103', special_product_id: 'sp-kit', customer_id: 'c-jane', status: 'pending', unit_price: 300, total_amount: 300 },
+  { ...SALE, id: 's-4', sale_no: 'SPS-2026-0104', special_product_id: 'sp-mat', customer_id: 'c-rex', status: 'pending', unit_price: 120, total_amount: 120 },
+  { ...SALE, id: 's-5', sale_no: 'SPS-2026-0100', special_product_id: 'sp-cup', customer_id: 'c-rex', status: 'completed', unit_price: 900, total_amount: 900,
+    invoice_id: 'inv-2', supplier_id: 'sup-2', deliver_to: '12 Example Road', created_at: `${addDays(-3)}T02:00:00Z` },
+  { ...SALE, id: 's-6', sale_no: 'SPS-2026-0099', special_product_id: 'sp-mat', customer_id: 'c-jane', status: 'completed', unit_price: 120, total_amount: 120,
+    warehouse_id: 'wh-1', created_at: `${addDays(-5)}T02:00:00Z` },
+];
+const rentals: any[] = [
+  { id: 'r-1', rental_no: 'RNT-2026-0101', special_product_id: 'sp-lamp', customer_id: 'c-jane', store_id: 'st-a', invoice_id: 'inv-1', status: 'awaiting_fulfilment',
+    warehouse_id: null, source_store_id: null, quantity: 1, rate_type: 'day', rate_amount: 15, periods: 3, rental_fee: 45, start_date: addDays(1),
+    expected_return_date: addDays(4), late_fee_per_day: 0, late_fee_total: 0, late_days: 0, notes: null, stock_returned: null, created_at: `${today}T02:00:00Z` },
+];
+const specialDoc = (kind: string, id: string, no: string, d: any, extra: object) => ({
+  doc_kind: kind, doc_id: id, doc_no: no, invoice_no: special_invoices.find(i => i.id === d.invoice_id)?.invoice_no ?? null,
+  special_product_id: d.special_product_id, product_name: special_products.find(p => p.id === d.special_product_id)?.name,
+  customer_name: CUSTOMERS.find(c => c.id === d.customer_id)?.full_name, store_name: name(STORES, d.store_id), quantity: d.quantity,
+  rate_type: null, periods: null, start_date: null, expected_return_date: null, rental_fee: null, created_at: d.created_at, ...extra });
+
 const RPC: Record<string, (a: any) => { data: any; error: any }> = {
+  special_docs_awaiting_fulfilment: () => ok([
+    ...special_sales.filter(s => s.status === 'pending').map(s => specialDoc('special_sale', s.id, s.sale_no, s, {})),
+    ...rentals.filter(r => r.status === 'awaiting_fulfilment').map(r => specialDoc('rental', r.id, r.rental_no, r, { rate_type: r.rate_type,
+      periods: r.periods, start_date: r.start_date, expected_return_date: r.expected_return_date, rental_fee: r.rental_fee }))]),
+  special_product_availability: a => {
+    const productId = special_products.find(p => p.id === a.p_special_product_id)?.product_id;
+    const at = (location_type: string, warehouse_id: string, warehouse_name: string, on_hand: number) =>
+      ({ location_type, warehouse_id, warehouse_name, on_hand, reserved: 0, available: on_hand });
+    return ok([...WAREHOUSES.map(w => at('warehouse', w.id, w.name, have('warehouse', w.id, productId))),
+               ...STORES.map(s => at('store', s.id, s.name, have('store', s.id, productId)))].filter(o => o.on_hand > 0));
+  },
+  fulfil_special_doc: a => {
+    const row = a.p_doc_kind === 'rental' ? rentals.find(r => r.id === a.p_doc_id) : special_sales.find(s => s.id === a.p_doc_id);
+    const productId = special_products.find(p => p.id === row?.special_product_id)?.product_id;
+    if (!row) return fail('That item is not waiting for a warehouse any more.');
+    if (have(a.p_location_type, a.p_warehouse_id, productId) < row.quantity) return fail(`Not enough stock at ${where(a.p_location_type)}.`);
+    adjust(a.p_location_type, a.p_warehouse_id, productId, -row.quantity);
+    Object.assign(row, a.p_location_type === 'store' ? { source_store_id: a.p_warehouse_id } : { warehouse_id: a.p_warehouse_id },
+      { status: a.p_doc_kind === 'rental' ? 'active' : 'completed' });
+    return ok({ success: true });
+  },
+  release_special_sale_to_supplier: a => {
+    const sale = special_sales.find(s => s.id === a.p_sale_id && s.status === 'pending');
+    if (!sale) return fail('That sale is not waiting for a warehouse any more.');
+    Object.assign(sale, { status: 'completed', supplier_id: a.p_supplier_id, deliver_to: a.p_deliver_to });
+    return ok({ success: true });
+  },
+  set_special_product_consignment: a => { special_products.find(p => p.id === a.p_id).is_consignment = a.p_on; return ok(null); },
+  products_available_as_special: () => ok(PRODUCTS.filter(p => !special_products.some(s => s.product_id === p.id))
+    .map(p => ({ product_id: p.id, name: p.name, sku: p.sku,
+                 total_stock: warehouse_inventory.filter(w => w.product_id === p.id).reduce((n, w) => n + w.current_qty, 0) }))),
+  upsert_special_product_from_product: a => {
+    const fields = { sale_price: a.p_sale_price, rate_day: a.p_rate_day, rate_week: a.p_rate_week, rate_month: a.p_rate_month, rate_year: a.p_rate_year,
+      late_fee_per_day: a.p_late_fee_per_day, description: a.p_description || null, is_active: a.p_is_active };
+    const row = special_products.find(p => p.id === a.p_id);
+    if (row) { Object.assign(row, fields); return ok(row.id); }
+    const product = PRODUCTS.find(p => p.id === a.p_product_id);
+    const added = { ...SPECIAL, ...fields, id: `sp-new-${special_products.length}`, product_id: product.id, name: product.name, sku: product.sku };
+    special_products.push(added);
+    return ok(added.id);
+  },
   // The Products page: a save is kept here, as a loan is.
   save_product: a => {
     const row = PRODUCTS.find(p => p.id === a.p_id);
@@ -223,6 +308,7 @@ const RPC: Record<string, (a: any) => { data: any; error: any }> = {
 
 const TABLES: Record<string, any[]> = {
   stores: STORES, warehouses: WAREHOUSES, products: PRODUCTS, customers: CUSTOMERS, store_inventory, warehouse_inventory,
+  special_products, special_sales, rentals, suppliers, product_suppliers, invoices: special_invoices,
 };
 function table(nameOf: string) {
   let rows = [...(TABLES[nameOf] ?? [])];
@@ -250,3 +336,4 @@ export const supabase = {
     return RPC[fn] ? RPC[fn](args ?? {}) : { data: null, error: null };
   },
 } as any;
+export const fetchCustomersByIds = async (ids: (string | null | undefined)[]) => CUSTOMERS.filter(c => ids.includes(c.id));

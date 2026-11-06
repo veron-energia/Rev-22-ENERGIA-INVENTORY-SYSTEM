@@ -205,11 +205,13 @@ $$ select count(*)::int from rentals where invoice_id = p_inv and status::text i
 -- (464's correct_invoice and 463's preview_invoice_correction, where they are
 -- in, are read as 458's: they build on it. So is 475's reopen_invoice, which
 -- changes only its sessions step: a session still waiting from an earlier
--- reopening is not queued again.)
-select pg_temp.check((select replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- reopening is not queued again. So is 494's fulfil_special_doc, which only
+-- leaves alone a sale a supplier has been told to send.)
+select pg_temp.check((select replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
                                      '=04d647e13e9424a9375942e5812e91a2', '=af9451fa15c2cf790edd70f799bae336'),
                                      '=f26752231c100461e11caddc03c98a33', '=3047239c7418179e84927f6f00e7f2eb'),
-                                     '=30066e137b9b75b5789a050c14debc04', '=0ff61e4ead121c198ea7f90a7fc78274') from pg_temp.fn_md5s()
+                                     '=30066e137b9b75b5789a050c14debc04', '=0ff61e4ead121c198ea7f90a7fc78274'),
+                                     '=e2fd9fca6842b5193ec7020445a45189', '=9c3072e11013e8943b28d8a46854edc4') from pg_temp.fn_md5s()
                        where fn in ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'preview_invoice_correction(uuid,jsonb)',
                                     'settle_waiting_special_docs_on_refund(uuid,jsonb,text)', 'create_special_docs_for_invoice(uuid)',
                                     'reopen_invoice(uuid,text,uuid)', 'fulfil_special_doc(text,uuid,uuid,text)',
@@ -226,7 +228,7 @@ select pg_temp.check((select replace(replace(replace(string_agg(fn || '=' || md5
  || 'rentals_follow_refund(uuid,jsonb,text)=0426b050207ccb4fe0a991b3cafc9769, '
  || 'reopen_invoice(uuid,text,uuid)=0ff61e4ead121c198ea7f90a7fc78274, '
  || 'settle_waiting_special_docs_on_refund(uuid,jsonb,text)=edfd1f1beb7ab3b6739096a618cd6a96',
-  'G1 the six patched and four new functions have 458''s AFTER md5s (correct_invoice: or 464''s; preview_invoice_correction: or 463''s; reopen_invoice: or 475''s)');
+  'G1 the six patched and four new functions have 458''s AFTER md5s (correct_invoice: or 464''s; preview_invoice_correction: or 463''s; reopen_invoice: or 475''s; fulfil_special_doc: or 494''s)');
 select pg_temp.check(not exists (
     select 1 from unnest(array['invoice_rental_correction_check(uuid,jsonb,uuid,uuid)', 'invoice_rentals_follow_lines(uuid,jsonb,text)',
                                'rental_end_on_refund(uuid,integer,text)', 'rentals_follow_refund(uuid,jsonb,text)',
@@ -239,7 +241,10 @@ select pg_temp.check(not exists (
                                'reopen_invoice(uuid,text,uuid)', 'fulfil_special_doc(text,uuid,uuid,text)']) f
      where has_function_privilege('anon', 'public.' || f, 'execute') or not has_function_privilege('authenticated', 'public.' || f, 'execute')),
   'G3 correct_invoice, preview_invoice_correction, reopen_invoice and fulfil_special_doc: signed-in staff, never anon');
-select pg_temp.check((select string_agg(fn || '=' || md5, ', ' order by fn) from pg_temp.fn_md5s()
+-- (494's waiting list, where it is in, is read as 458's: it only leaves out a
+-- sale a supplier has been told to send.)
+select pg_temp.check((select replace(string_agg(fn || '=' || md5, ', ' order by fn),
+                                     '=fdaf5aca81c63cc99f8fddcfcf10564c', '=aed7e3b24ff192cbe09935c5e7488881') from pg_temp.fn_md5s()
                        where fn in ('cancel_invoice_rentals(uuid,text)', 'receive_returned_rental(uuid,uuid,text,text,uuid)',
                                     'invoice_rentals_awaiting_return(uuid)', 'refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)',
                                     'invoice_action_plan(uuid,text,jsonb)', 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)',
@@ -252,7 +257,7 @@ select pg_temp.check((select string_agg(fn || '=' || md5, ', ' order by fn) from
  || 'special_doc_invoice_problem(uuid,uuid)=be2b8ec5a4003a1dca34e17a82f89932, '
  || 'special_docs_awaiting_fulfilment()=aed7e3b24ff192cbe09935c5e7488881, '
  || 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)=1f034561a461bdb46a1e6274e0d04606',
-  'G4 Cancel, the receive step, refund_invoice_recorded, invoice_action_plan, update_invoice_internal, 393''s release check and the waiting list are unchanged');
+  'G4 Cancel, the receive step, refund_invoice_recorded, invoice_action_plan, update_invoice_internal, 393''s release check and the waiting list are unchanged (the waiting list: or 494''s)');
 
 -- ═════ C Cancel unchanged ═════
 do $$

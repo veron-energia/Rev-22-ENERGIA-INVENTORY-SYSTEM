@@ -20,8 +20,9 @@ import {
 import { type TermsForm, type SoldLine, initialTerms, withTermsChange, termsProblem, termsChanged, termsRpcArgs,
   termsFee, SOLD_LINE_COLUMNS } from '../lib/special/rentalTerms';
 import { docStore, docInvoiceIds, invoiceLine, waitingButton, toReceive } from '../lib/special/specialDocs';
+import { type ProductSupplierRow, type SupplierRow, suppliersOf, supplierChoice, supplierIdOfChoice, supplierOptionLabel, invoiceTakenBack } from '../lib/special/consignment';
 import { Modal, NoAccess } from '../components/ui';
-import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, Printer, MessageCircle, Mail } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, Printer, MessageCircle, Mail, Truck } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { SearchSelect } from '../components/SearchSelect';
 
@@ -38,6 +39,7 @@ const blank = (p?: SpecialProduct) => ({
   sale_price: p?.sale_price ?? 0, rate_day: p?.rate_day ?? 0, rate_week: p?.rate_week ?? 0,
   rate_month: p?.rate_month ?? 0, rate_year: p?.rate_year ?? 0,
   late_fee_per_day: p?.late_fee_per_day ?? 0, is_active: p?.is_active ?? true,
+  is_consignment: p?.is_consignment ?? false,
 });
 
 const SpecialPage: React.FC = () => {
@@ -46,7 +48,14 @@ const SpecialPage: React.FC = () => {
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
   const hasAccess = isOwnerOrManager(profile?.role);
-  const [tab, setTab] = useState<'catalog' | 'sales' | 'rentals'>('catalog');
+  // Consignment (494): the same table as Catalog, for the products a supplier
+  // can send directly. Each product is on one of the two.
+  const [tab, setTab] = useState<'catalog' | 'consignment' | 'sales' | 'rentals'>('catalog');
+  const onConsignment = tab === 'consignment';
+  const catalogueTab = tab === 'catalog' || onConsignment;
+  // The tick can take a product off this tab: say where it went.
+  const [movedNote, setMovedNote] = useState<string | null>(null);
+  const openTab = (next: typeof tab) => { setTab(next); setMovedNote(null); };
 
 
   const [rows, setRows] = useState<SpecialProduct[]>([]);
@@ -58,6 +67,11 @@ const SpecialPage: React.FC = () => {
   // Which total was clicked: the product and whether warehouses or stores.
   const [breakdown, setBreakdown] = useState<{ product: any; kind: 'warehouse' | 'store' } | null>(null);
   const [sales, setSales] = useState<SpecialSale[]>([]);
+  // 494: the suppliers linked to each product on the Products page, and what
+  // each product costs, for the sales list's Excel.
+  const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
+  const [productSuppliers, setProductSuppliers] = useState<ProductSupplierRow[]>([]);
+  const [productCosts, setProductCosts] = useState<Record<string, number>>({});
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -114,7 +128,7 @@ const SpecialPage: React.FC = () => {
   const load = useCallback(async (): Promise<any[] | null> => {
     setLoading(true);
     const waiting = loadAwaiting();
-    const [sp, st, si, sa, re, wh, pm, sto, prof, spa, every] = await Promise.all([
+    const [sp, st, si, sa, re, wh, pm, sto, prof, spa, every, sup, psu, cos] = await Promise.all([
       supabase.from('special_products').select('*').is('deleted_at', null).order('name'),
       supabase.from('warehouse_inventory').select('warehouse_id,product_id,current_qty'),
       supabase.from('store_inventory').select('store_id,product_id,current_qty'),
@@ -131,6 +145,9 @@ const SpecialPage: React.FC = () => {
       supabase.from('profiles').select('id,full_name').is('deleted_at', null),
       supabase.from('special_products').select('id,name,product_id'),
       supabase.from('stores').select('*').order('name'),
+      supabase.from('suppliers').select('id,name,phone,is_active,deleted_at').order('name'),
+      supabase.from('product_suppliers').select('product_id,supplier_id'),
+      supabase.from('products').select('id,default_cost_price'),
     ]);
     const spRows = (sp.data as SpecialProduct[]) ?? [];
     setRows(spRows);
@@ -156,6 +173,9 @@ const SpecialPage: React.FC = () => {
         current_qty: w.current_qty,
       })) as SpecialProductStock[]);
     setSales((sa.data as SpecialSale[]) ?? []);
+    setSuppliers((sup.data as SupplierRow[]) ?? []);
+    setProductSuppliers((psu.data as ProductSupplierRow[]) ?? []);
+    setProductCosts(Object.fromEntries(((cos.data as any[]) ?? []).map(p => [p.id, Number(p.default_cost_price ?? 0)])));
     setRentals((re.data as Rental[]) ?? []);
     setWarehouses((wh.data as Warehouse[]) ?? []);
     // Exactly the customers these sales and rentals name, with the columns the
@@ -192,7 +212,11 @@ const SpecialPage: React.FC = () => {
   const isOverdue = (r: Rental) => (r.status === 'paid' || r.status === 'active') && todayStr() > r.expected_return_date;
   const storeNameOf = (id: string | null | undefined) => id ? (allStores.find((s2: any) => s2.id === id)?.name ?? null) : null;
   // Where a rental went out from: the store it was released from, else its warehouse.
-  const releasedFrom = (r: Rental) => r.source_store_id ? (storeNameOf(r.source_store_id) ?? '—') : whName(r.warehouse_id);
+  const releasedFrom = (r: Pick<Rental, 'source_store_id' | 'warehouse_id'>) => r.source_store_id ? (storeNameOf(r.source_store_id) ?? '—') : whName(r.warehouse_id);
+  const supplierName = (id: string | null | undefined) => id ? (suppliers.find(s => s.id === id)?.name ?? '—') : '';
+  const productOf = (spId: string) => rows.find((p: any) => p.id === spId);
+  const listedProducts = rows.filter(p => !!p.is_consignment === onConsignment);
+  const suppliersOfProduct = (p: SpecialProduct | undefined) => suppliersOf(p?.product_id, productSuppliers, suppliers);
   const lateInvoiceNo = (r: Rental) => r.late_fee_invoice_id ? (docInvoices[r.late_fee_invoice_id]?.invoice_no ?? null) : null;
   /** The invoice that sold a sale or rental, as its receipt names it. */
   const soldOnInvoiceNo = (row: any) => row?.invoice_id ? (docInvoices[row.invoice_id]?.invoice_no ?? null) : null;
@@ -204,6 +228,8 @@ const SpecialPage: React.FC = () => {
   // The customer copy as a real A5 PDF, matching the printed receipt.
   const [sendBusy, setSendBusy] = useState<string | null>(null);
   const [fulfilWh, setFulfilWh] = useState<Record<string, string>>({});
+  // 494: where the supplier is to send it, typed when a supplier is chosen.
+  const [deliverTo, setDeliverTo] = useState<Record<string, string>>({});
   const [fulfilBusy, setFulfilBusy] = useState<string | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
 
@@ -272,14 +298,21 @@ const SpecialPage: React.FC = () => {
     // The dropdown value is "type:id", since a warehouse and a store could
     // otherwise be indistinguishable by id alone.
     const [locType, locId] = String(wh).includes(':') ? String(wh).split(':') : ['warehouse', String(wh)];
-    const { error } = await supabase.rpc('fulfil_special_doc', {
-      p_doc_kind: row.doc_kind, p_doc_id: row.doc_id, p_warehouse_id: locId,
-      p_location_type: locType,
-    });
+    const supplierId = supplierIdOfChoice(wh);
+    const { error } = supplierId
+      ? await supabase.rpc('release_special_sale_to_supplier', {
+          p_sale_id: row.doc_id, p_supplier_id: supplierId,
+          p_deliver_to: (deliverTo[row.doc_id] ?? '').trim() || null,
+        })
+      : await supabase.rpc('fulfil_special_doc', {
+          p_doc_kind: row.doc_kind, p_doc_id: row.doc_id, p_warehouse_id: locId,
+          p_location_type: locType,
+        });
     setFulfilBusy(null);
     if (error) { setErr(error.message); return; }
     // Clear the choice so a stale warehouse cannot linger against a doc id.
     setFulfilWh(w => { const n = { ...w }; delete n[row.doc_id]; return n; });
+    setDeliverTo(d => { const n = { ...d }; delete n[row.doc_id]; return n; });
     const left = await load();
     // Nothing left to release: close rather than leaving an empty dialog open.
     if (left && left.length === 0) setQueueOpen(false);
@@ -513,7 +546,7 @@ const SpecialPage: React.FC = () => {
   useEffect(() => { void loadAvailableProducts(); }, []);
   const [err, setErr] = useState<string | null>(null);
 
-  const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
+  const openAdd = () => { setForm({ ...blank(), is_consignment: onConsignment }); setEditId(null); setErr(null); setModalOpen(true); };
   const openEdit = (p: SpecialProduct) => { setForm(blank(p)); setEditId(p.id); setErr(null); setModalOpen(true); };
   const handleSave = async () => {
     if (!editId && !form.product_id) { setErr('Choose the warehouse product this is.'); return; }
@@ -524,7 +557,7 @@ const SpecialPage: React.FC = () => {
     setSaving(true); setErr(null);
     // Through the RPC: it derives the name and SKU from the product and applies
     // the same rules the database enforces.
-    const { error } = await supabase.rpc('upsert_special_product_from_product', {
+    const { data: savedId, error } = await supabase.rpc('upsert_special_product_from_product', {
       p_id: editId, p_product_id: form.product_id || null,
       p_sale_price: form.sale_price || 0,
       p_rate_day: form.rate_day || 0, p_rate_week: form.rate_week || 0,
@@ -534,8 +567,17 @@ const SpecialPage: React.FC = () => {
       // would keep the old one.
       p_description: (form.description ?? '').trim(), p_is_active: form.is_active,
     });
+    if (error) { setSaving(false); setErr(error.message); return; }
+    // 494: the tick is its own call, so the form's call above is as it was.
+    const wasConsignment = !!(editId && rows.find(r => r.id === editId)?.is_consignment);
+    if (form.is_consignment !== wasConsignment) {
+      const { error: tickError } = await supabase.rpc('set_special_product_consignment',
+        { p_id: editId ?? savedId, p_on: form.is_consignment });
+      if (tickError) { setSaving(false); setErr(tickError.message); load(); return; }
+    }
     setSaving(false);
-    if (error) { setErr(error.message); return; }
+    setMovedNote(form.is_consignment === onConsignment ? null
+      : `Saved. It is now on the ${form.is_consignment ? 'Consignment' : 'Catalog'} tab.`);
     setModalOpen(false); loadAvailableProducts(); load();
   };
   const handleDelete = async (p: SpecialProduct) => {
@@ -655,12 +697,12 @@ const SpecialPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Special Products & Rentals</h2><p>Warehouse-only special products — sold directly or rented (fee upfront, late fee at return). No commission applies.</p></div>
+        <div><h2>Special Products & Rentals</h2><p>Special products: sold directly or rented (fee upfront, late fee at return).</p></div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <ExcelExportButton
-            rows={tab === 'sales' ? sales : tab === 'rentals' ? rentals : rows}
+            rows={tab === 'sales' ? sales : tab === 'rentals' ? rentals : listedProducts}
             filename={`special-${tab}`} sheetName="Special"
-            dateOf={tab === 'catalog' ? undefined : ((r: any) => r.created_at)}
+            dateOf={catalogueTab ? undefined : ((r: any) => r.created_at)}
             dateLabel={tab === 'rentals' ? 'Rental date' : 'Sale date'}
             columns={tab === 'sales' ? [
               { header: 'Sale No', value: (x: any) => x.sale_no },
@@ -671,6 +713,11 @@ const SpecialPage: React.FC = () => {
               { header: 'Qty', value: (x: any) => Number(x.quantity ?? 0) },
               { header: 'Total', value: (x: any) => Number(x.total_amount ?? 0) },
               { header: 'Status', value: (x: any) => x.status },
+              // 494: filtered by Supplier, this is the list of what each one sent.
+              { header: 'Supplier', value: (x: any) => supplierName(x.supplier_id) },
+              { header: 'Deliver to', value: (x: any) => x.deliver_to ?? '' },
+              { header: 'Product cost now', value: (x: any) => { const pid = productOf(x.special_product_id)?.product_id; return pid ? (productCosts[pid] ?? 0) : 0; } },
+              { header: 'Invoice status', value: (x: any) => x.invoice_id ? (docInvoices[x.invoice_id]?.status ?? '') : '' },
             ] : tab === 'rentals' ? [
               { header: 'Rental No', value: (x: any) => x.rental_no },
               { header: 'Invoice', value: (x: any) => soldOnInvoiceNo(x) ?? '' },
@@ -686,6 +733,7 @@ const SpecialPage: React.FC = () => {
             ] : [
               { header: 'Product', value: (p: any) => p.name },
               { header: 'SKU', value: (p: any) => p.sku ?? '' },
+              ...(onConsignment ? [{ header: 'Suppliers', value: (p: any) => suppliersOfProduct(p).map(s => s.name).join(', ') }] : []),
               { header: 'Sale price', value: (p: any) => Number(p.sale_price ?? 0) },
               { header: 'Day rate', value: (p: any) => Number(p.rate_day ?? 0) },
               { header: 'Late fee/day', value: (p: any) => Number(p.late_fee_per_day ?? 0) },
@@ -695,9 +743,10 @@ const SpecialPage: React.FC = () => {
       {/* The tabs, the waiting list and the action wrap onto more rows on a
           phone rather than running off the screen (426, SALES-EXTRAS-15). */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button className={`btn btn-sm ${tab === 'catalog' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('catalog')}><KeyRound size={14} /> Catalog</button>
-        <button className={`btn btn-sm ${tab === 'sales' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('sales')}><ShoppingBag size={14} /> Sales</button>
-        <button className={`btn btn-sm ${tab === 'rentals' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('rentals')}><CalendarClock size={14} /> Rentals</button>
+        <button className={`btn btn-sm ${tab === 'catalog' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('catalog')}><KeyRound size={14} /> Catalog</button>
+        <button className={`btn btn-sm ${onConsignment ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('consignment')}><Truck size={14} /> Consignment</button>
+        <button className={`btn btn-sm ${tab === 'sales' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('sales')}><ShoppingBag size={14} /> Sales</button>
+        <button className={`btn btn-sm ${tab === 'rentals' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('rentals')}><CalendarClock size={14} /> Rentals</button>
       {/* ---- Waiting for a warehouse: a button, with the detail in a dialog ---- */}
       {/* Always shown, so its colour carries the state: white when there is
           nothing to do, amber when something is waiting, red when the list
@@ -727,7 +776,7 @@ const SpecialPage: React.FC = () => {
       })()}
 
         <div style={{ flex: 1 }} />
-        {tab === 'catalog' && <button className="btn btn-primary btn-sm" onClick={openAdd}><Plus size={14} /> Add Special Product</button>}
+        {catalogueTab && <button className="btn btn-primary btn-sm" onClick={openAdd}><Plus size={14} /> {onConsignment ? 'Add Consignment Product' : 'Add Special Product'}</button>}
         {(tab === 'sales' || tab === 'rentals') && (
           <span style={{ fontSize: 12.5, color: 'var(--text-muted)', flex: '1 1 240px' }}>
             Sales and rentals are now raised on the <strong>Invoices</strong> page, so the customer
@@ -752,17 +801,23 @@ const SpecialPage: React.FC = () => {
       {tab === 'rentals' && recvDone && !recvFor && (
         <div className="alert alert-success" role="status"><span>✓</span><div>{recvDone}</div></div>
       )}
+      {movedNote && <div className="alert alert-success" role="status"><span>✓</span><div>{movedNote}</div></div>}
 
       <div className="card"><div className="table-wrap">
         {loading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>
-        : tab === 'catalog' ? (
-          rows.length === 0 ? <div className="empty-state"><KeyRound size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No special products yet</p></div>
+        : catalogueTab ? (
+          listedProducts.length === 0 ? <div className="empty-state">{onConsignment ? <Truck size={32} style={{ opacity: 0.3 }} /> : <KeyRound size={32} style={{ opacity: 0.3 }} />}<p style={{ fontWeight: 600, marginTop: 8 }}>{onConsignment ? 'No consignment products yet' : 'No special products yet'}</p></div>
           : <table>
-              <thead><tr><th>Name</th><th>SKU</th><th style={{ textAlign: 'right' }}>Sale</th><th style={{ textAlign: 'right' }}>Day</th><th style={{ textAlign: 'right' }}>Week</th><th style={{ textAlign: 'right' }}>Month</th><th style={{ textAlign: 'right' }}>Year</th><th style={{ textAlign: 'right' }}>Late/day</th><th style={{ textAlign: 'right' }} title="Total held across all warehouses">In warehouses</th><th style={{ textAlign: 'right' }} title="Total held across all stores">In stores</th><th></th></tr></thead>
-              <tbody>{rows.map(p => (
+              <thead><tr><th>Name</th><th>SKU</th>{onConsignment && <th>Suppliers</th>}<th style={{ textAlign: 'right' }}>Sale</th><th style={{ textAlign: 'right' }}>Day</th><th style={{ textAlign: 'right' }}>Week</th><th style={{ textAlign: 'right' }}>Month</th><th style={{ textAlign: 'right' }}>Year</th><th style={{ textAlign: 'right' }}>Late/day</th><th style={{ textAlign: 'right' }} title="Total held across all warehouses">In warehouses</th><th style={{ textAlign: 'right' }} title="Total held across all stores">In stores</th><th></th></tr></thead>
+              <tbody>{listedProducts.map(p => (
                 <tr key={p.id}>
                   <td><strong>{p.name}</strong>{!p.is_active && <span className="badge badge-muted" style={{ marginLeft: 6 }}>Inactive</span>}</td>
                   <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{p.sku}</td>
+                  {onConsignment && (() => {
+                    const linked = suppliersOfProduct(p);
+                    return <td style={{ fontSize: 12.5 }}>{linked.length ? linked.map(s => s.name).join(', ')
+                      : <span style={{ color: 'var(--warning)' }}>None yet: link one on the Products page</span>}</td>;
+                  })()}
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{money(p.sale_price)}</td>
                   <td style={{ textAlign: 'right', fontSize: 12.5 }}>{money(p.rate_day)}</td>
                   <td style={{ textAlign: 'right', fontSize: 12.5 }}>{money(p.rate_week)}</td>
@@ -803,17 +858,23 @@ const SpecialPage: React.FC = () => {
         ) : tab === 'sales' ? (
           sales.length === 0 ? <div className="empty-state"><ShoppingBag size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No special sales yet</p></div>
           : <table>
-              <thead><tr><th>Sale</th><th>Product</th><th>Warehouse</th><th>Customer</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Total</th><th>Method</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Sale</th><th>Product</th><th>From</th><th>Customer</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Total</th><th>Method</th><th>Status</th><th></th></tr></thead>
               <tbody>{sales.map(s => (
                 <tr key={s.id}>
                   <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{s.sale_no}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(s.created_at).toLocaleDateString()}</div></td>
                   <td><strong>{spName(s.special_product_id)}</strong></td>
-                  <td style={{ fontSize: 12.5 }}>{whName(s.warehouse_id)}</td>
+                  <td style={{ fontSize: 12.5 }}>
+                    {s.supplier_id ? `Supplier: ${supplierName(s.supplier_id)}` : releasedFrom(s)}
+                    {s.deliver_to && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Deliver to: {s.deliver_to}</div>}
+                  </td>
                   <td style={{ fontSize: 12.5 }}>{cuName(s.customer_id)}</td>
                   <td style={{ textAlign: 'right' }}>{s.quantity}</td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(s.total_amount))}</td>
                   <td style={{ fontSize: 12 }}>{pmName(s.payment_method_id)}</td>
-                  <td>{(() => { const b = specialSaleBadge(s); return <span className={`badge badge-${b.tone}`}>{b.label}</span>; })()}</td>
+                  <td>{(() => { const b = specialSaleBadge(s); return <span className={`badge badge-${b.tone}`}>{b.label}</span>; })()}
+                    {s.supplier_id && s.invoice_id && invoiceTakenBack(docInvoices[s.invoice_id]?.status) && (
+                      <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 2 }}>{invoiceTakenBack(docInvoices[s.invoice_id]?.status)}</div>)}
+                  </td>
                   <td><div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => printReceipt('sale', s)} title="Print this sale"><Printer size={13} /> Print</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('whatsapp', 'sale', s)}
@@ -941,7 +1002,7 @@ const SpecialPage: React.FC = () => {
             {availFailed && <div className="alert alert-warning" style={{ marginBottom: 0 }}><span>⚠</span><div>Could not load where each item can come from. Press Refresh before releasing.</div></div>}
             <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
               These are paid for and no stock has moved. Choosing a warehouse is what takes the
-              goods out of it.
+              goods out of it. Choosing a supplier takes no stock: the supplier sends it directly.
             </div>
             {awaitingFailed ? null : awaiting.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
@@ -960,6 +1021,13 @@ const SpecialPage: React.FC = () => {
             const chosen = opts.find((o: any) => `${o.location_type}:${o.warehouse_id}` === fulfilWh[row.doc_id]);
             const canCover = opts.filter((o: any) => o.available >= row.quantity);
             const isRental = row.doc_kind === 'rental';
+            // 494: a supplier can only be chosen for the sale of a consignment product.
+            const product = productOf(row.special_product_id);
+            const consignmentSale = !isRental && !!product?.is_consignment;
+            const canSupply = consignmentSale ? suppliersOfProduct(product) : [];
+            const chosenSupplierId = supplierIdOfChoice(fulfilWh[row.doc_id]);
+            const chosenSupplier = canSupply.find(s => s.id === chosenSupplierId);
+            const buyer = customers.find((c: any) => c.id === sales.find(s => s.id === row.doc_id)?.customer_id);
             return (
               <div key={row.doc_id} className="special-queue-grid special-queue-row">
                 {/* WHAT — the thing itself, read first */}
@@ -1001,7 +1069,8 @@ const SpecialPage: React.FC = () => {
                     <select value={fulfilWh[row.doc_id] ?? ''} style={{ width: '100%' }}
                       onChange={e => setFulfilWh(w => ({ ...w, [row.doc_id]: e.target.value }))}>
                       <option value="">
-                        {opts.length === 0 ? 'Nowhere holds this'
+                        {canSupply.length > 0 ? 'Choose a location or supplier…'
+                          : opts.length === 0 ? 'Nowhere holds this'
                           : canCover.length === 0 ? `Nowhere has ${row.quantity} free`
                           : `Choose from ${canCover.length} location${canCover.length === 1 ? '' : 's'}…`}
                       </option>
@@ -1017,13 +1086,34 @@ const SpecialPage: React.FC = () => {
                           {o.available < row.quantity ? ' (not enough)' : ''}
                         </option>
                       ))}
+                      {canSupply.length > 0 && (
+                        <optgroup label="Supplier sends it directly">
+                          {canSupply.map(s => <option key={s.id} value={supplierChoice(s.id)}>{supplierOptionLabel(s)}</option>)}
+                        </optgroup>
+                      )}
                     </select>
+                    {chosenSupplier && (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          {chosenSupplier.phone ? `Supplier's phone: ${chosenSupplier.phone}. ` : ''}
+                          {buyer?.phone ? `Customer's phone: ${buyer.phone}. ` : ''}No stock moves.
+                        </div>
+                        <input value={deliverTo[row.doc_id] ?? ''} maxLength={500} placeholder="Deliver to (optional)"
+                          aria-label={`Deliver to, for ${row.doc_no}`} style={{ width: '100%' }}
+                          onChange={e => { const v = e.target.value; setDeliverTo(d => ({ ...d, [row.doc_id]: v })); }} />
+                      </div>
+                    )}
+                    {consignmentSale && canSupply.length === 0 && (
+                      <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 3 }}>
+                        No supplier is linked to this product yet. Link one on the Products page.
+                      </div>
+                    )}
                     {chosen && chosen.reserved > 0 && (
                       <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 3 }}>
                         {chosen.on_hand} on hand, {chosen.reserved} held by pending transfers
                       </div>
                     )}
-                    {opts.length > 0 && canCover.length === 0 && (
+                    {opts.length > 0 && canCover.length === 0 && canSupply.length === 0 && (
                       <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 3 }}>
                         Add stock, or approve/reject the transfers holding it.
                       </div>
@@ -1128,7 +1218,7 @@ const SpecialPage: React.FC = () => {
       )}
 
       {modalOpen && (
-        <Modal title={editId ? 'Edit Special Product' : 'Add Special Product'} wide onClose={() => setModalOpen(false)}
+        <Modal title={`${editId ? 'Edit' : 'Add'} ${onConsignment ? 'Consignment' : 'Special'} Product`} wide onClose={() => setModalOpen(false)}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
@@ -1177,6 +1267,12 @@ const SpecialPage: React.FC = () => {
             <div className="form-group"><label>Description</label><textarea rows={2} value={form.description} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, description: v })); }} placeholder="Optional" /></div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} style={{ width: 'auto' }} /><span style={{ fontSize: 13 }}>Active</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={form.is_consignment} onChange={e => setForm(f => ({ ...f, is_consignment: e.target.checked }))} style={{ width: 'auto', marginTop: 2 }} />
+              <span style={{ fontSize: 13 }}>Consignment: a supplier can send it directly to the customer
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>Its suppliers come from this product on the Products page. Sales only; rentals still come from your stock.</span>
+              </span>
             </label>
           </div>
         </Modal>

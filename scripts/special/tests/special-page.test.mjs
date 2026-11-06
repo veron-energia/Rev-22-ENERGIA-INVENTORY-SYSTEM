@@ -24,6 +24,11 @@
 //   W2-B03-RENTAL-BUTTON (the owner, 10 Oct 2026): a rental cancelled while
 //                    still with the customer shows "Receive returned item",
 //                    which records it with 417's receive_returned_rental.
+//   494              Consignment: a ticked product is on its own tab; its sale
+//                    can go to a supplier linked on the Products page, with a
+//                    note of where to deliver; a rental and any other product
+//                    are offered none; the Sales tab and its Excel name the
+//                    supplier, and say when the invoice was taken back.
 //
 // JSDOM, with the database, sendDoc and printing stubbed; invented data only.
 // Run: node --test scripts/special/tests/special-page.test.mjs
@@ -57,7 +62,7 @@ const dir = await mkdtemp(join(tmpdir(), 'energia-special-page-'));
 const read = p => readFile(new URL(`../../../${p}`, import.meta.url), 'utf8');
 
 const ICONS = ['Plus', 'Pencil', 'Trash2', 'RefreshCw', 'Boxes', 'KeyRound', 'ShoppingBag', 'CalendarClock', 'Clock',
-               'Printer', 'MessageCircle', 'Mail', 'Lock'];
+               'Printer', 'MessageCircle', 'Mail', 'Lock', 'Truck'];
 const STUBS = {
   sb: `export const supabase = new Proxy({}, { get: (_t, p) => globalThis.__SB__[p] });
        export const fetchCustomersByIds = async ids => globalThis.__DB__.customers.filter(c => ids.includes(c.id));`,
@@ -74,8 +79,8 @@ const STUBS = {
   print: `export const esc = s => String(s ?? '');
     export const money = n => 'S$' + Number(n ?? 0).toFixed(2);
     export function printA5Document(o) { globalThis.__PRINTS__.push(o); return true; }`,
-  excel: 'export const ExcelExportButton = () => null;',
-  search: 'export const SearchSelect = () => null; export const CustomerSearchSelect = () => null;',
+  excel: 'export const ExcelExportButton = p => { globalThis.__EXCEL__ = p; return null; };',
+  search: 'export const SearchSelect = p => { globalThis.__PICK__ = p.onChange; return null; }; export const CustomerSearchSelect = () => null;',
   lucide: `import React from 'react';
     const Icon = () => React.createElement('span', { 'aria-hidden': 'true' });
     export const ${ICONS.map(n => `${n} = Icon`).join(', ')};`,
@@ -496,5 +501,302 @@ test('the old windows and their server calls are gone; the layout wraps on a pho
     await ui.click([...row.querySelectorAll('button')].find(b => b.textContent.includes('Print')));
     assert.ok(globalThis.__PRINTS__[0].headerLines.includes('Invoice INV-2026-9901'), 'a sale receipt names its invoice too');
     assert.equal(globalThis.__PRINTS__[0].branding.name, 'Fixture Main Store');
+  } finally { ui.close(); }
+});
+
+// ── 494: Consignment ─────────────────────────────────────────────────────
+const CONSIGNED = { id: 'sp-2', product_id: 'p-2', name: 'Fixture Infrared Bed', sku: 'FX-B', description: null, sale_price: 900,
+  rate_day: 40, rate_week: 0, rate_month: 0, rate_year: 0, late_fee_per_day: 0, is_active: true, is_consignment: true };
+const UNLINKED = { ...CONSIGNED, id: 'sp-3', product_id: 'p-3', name: 'Fixture Unlinked Chair', sku: 'FX-C' };
+const SUPPLIERS = [
+  { id: 'sup-b', name: 'Fixture Supplier B', phone: '+61255500101', is_active: true, deleted_at: null },
+  { id: 'sup-a', name: 'Fixture Supplier A', phone: null, is_active: true, deleted_at: null },
+  { id: 'sup-off', name: 'Fixture Supplier Off', phone: null, is_active: false, deleted_at: null },
+  { id: 'sup-gone', name: 'Fixture Supplier Gone', phone: null, is_active: true, deleted_at: '2026-10-01T02:00:00Z' },
+  { id: 'sup-other', name: 'Fixture Supplier Other', phone: null, is_active: true, deleted_at: null },
+];
+const LINKS = [
+  { product_id: 'p-2', supplier_id: 'sup-b' }, { product_id: 'p-2', supplier_id: 'sup-a' },
+  { product_id: 'p-2', supplier_id: 'sup-off' }, { product_id: 'p-2', supplier_id: 'sup-gone' },
+  { product_id: 'p-1', supplier_id: 'sup-other' },
+];
+const BUYER = { id: 'c-2', full_name: 'Fixture Buyer', phone: '+61255500102', email: 'buyer@example.invalid' };
+const SALE = over => ({ id: 's-9', sale_no: 'SPS-2026-9909', special_product_id: 'sp-2', customer_id: 'c-2', store_id: 'st-a',
+  invoice_id: 'inv-1', status: 'pending', quantity: 1, unit_price: 900, total_amount: 900, warehouse_id: null, source_store_id: null,
+  supplier_id: null, deliver_to: null, created_at: '2026-10-17T02:00:00Z', ...over });
+const SALE_WAITING = { doc_kind: 'special_sale', doc_id: 's-9', doc_no: 'SPS-2026-9909', invoice_no: 'INV-2026-9901', special_product_id: 'sp-2',
+  product_name: 'Fixture Infrared Bed', customer_name: 'Fixture Buyer', store_name: 'Fixture Main Store', quantity: 1, created_at: '2026-10-17T02:00:00Z' };
+const STOCK_AT_WH = { location_type: 'warehouse', warehouse_id: 'wh-1', warehouse_name: 'Fixture Warehouse', on_hand: 3, reserved: 0, available: 3 };
+function consignmentDb(over = {}) {
+  const base = db();
+  return db({ special_products: [...base.special_products, CONSIGNED, UNLINKED], suppliers: SUPPLIERS, product_suppliers: LINKS,
+    products: [{ id: 'p-1', default_cost_price: 300 }, { id: 'p-2', default_cost_price: 450 }],
+    customers: [...base.customers, BUYER], special_sales: [SALE()], ...over });
+}
+const openWaiting = ui => ui.click([...ui.node.querySelectorAll('button')].find(b => /Waiting for a warehouse/.test(b.textContent)));
+const queueRow = (ui, docNo) => [...ui.node.querySelectorAll('.special-queue-row')].find(r => r.textContent.includes(docNo));
+const supplierOptions = row => [...(row.querySelector('optgroup')?.querySelectorAll('option') ?? [])].map(o => o.textContent);
+const waitingRpc = (list, extra = () => undefined) => (n, a) => {
+  if (n === 'special_docs_awaiting_fulfilment') return { data: list(), error: null };
+  return extra(n, a);
+};
+const tableNames = ui => [...ui.node.querySelectorAll('tbody tr')].map(tr => tr.querySelector('strong')?.textContent);
+// As the browser sends them: the page reads the dropdown's value inside its state
+// update, by when a simulated event has been put back to the old value.
+const choose = async (el, value) => {
+  assert.ok(el, 'the dropdown exists');
+  el.value = value;
+  await act(async () => { el.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
+};
+
+test('Consignment: a ticked product is on the Consignment tab only, with its suppliers; the Catalog keeps the rest', async () => {
+  const ui = await mount({ data: consignmentDb() });
+  try {
+    assert.deepEqual(tableNames(ui), ['Fixture Machine'], 'the Catalog has the unticked product alone');
+    assert.match(ui.text(), /Special products: sold directly or rented \(fee upfront, late fee at return\)\./);
+    assert.doesNotMatch(ui.text(), /Warehouse-only|No commission applies/, 'a supplier can send it, and it earns as its product does (489)');
+    assert.ok(ui.button('Add Special Product'));
+    assert.equal(ui.button('Add Consignment Product'), undefined);
+    assert.ok(![...ui.node.querySelectorAll('thead th')].some(th => th.textContent === 'Suppliers'), 'no Suppliers column on the Catalog');
+    await ui.tab('Consignment');
+    assert.deepEqual(tableNames(ui), ['Fixture Infrared Bed', 'Fixture Unlinked Chair']);
+    assert.ok(ui.button('Add Consignment Product'));
+    assert.equal(ui.button('Add Special Product'), undefined);
+    const [linked, none] = ui.node.querySelectorAll('tbody tr');
+    assert.match(linked.textContent, /Fixture Supplier A, Fixture Supplier B/, 'its active suppliers, by name');
+    assert.doesNotMatch(linked.textContent, /Supplier (Off|Gone|Other)/, 'not one closed, deleted or of another product');
+    assert.match(none.textContent, /None yet: link one on the Products page/);
+  } finally { ui.close(); }
+  // With nothing ticked, the tab says so and the Catalog is as it was.
+  const empty = await mount();
+  try {
+    assert.deepEqual(tableNames(empty), ['Fixture Machine'], 'a product with no tick at all stays on the Catalog');
+    await empty.tab('Consignment');
+    assert.match(empty.text(), /No consignment products yet/);
+  } finally { empty.close(); }
+});
+
+test('Waiting list: the sale of a consignment product offers its suppliers; a rental and any other product offer none', async () => {
+  const list = [SALE_WAITING,
+    { ...SALE_WAITING, doc_id: 's-8', doc_no: 'SPS-2026-9908', special_product_id: 'sp-1', product_name: 'Fixture Machine' },
+    { ...WAITING, doc_id: 'r-8', doc_no: 'RNT-2026-9908', special_product_id: 'sp-2', product_name: 'Fixture Infrared Bed' }];
+  const ui = await mount({ data: consignmentDb(), rpc: waitingRpc(() => list) });
+  try {
+    await openWaiting(ui);
+    assert.match(ui.text(), /Choosing a supplier takes no stock: the supplier sends it directly\./);
+    const sale = queueRow(ui, 'SPS-2026-9909');
+    assert.equal(sale.querySelector('optgroup').label, 'Supplier sends it directly');
+    assert.deepEqual(supplierOptions(sale), ['🚚 Fixture Supplier A', '🚚 Fixture Supplier B — +61255500101'],
+      'by name, with the phone to call, and none that is closed, deleted or of another product');
+    assert.equal(sale.querySelector('select option').textContent, 'Choose a location or supplier…');
+    assert.deepEqual(supplierOptions(queueRow(ui, 'SPS-2026-9908')), [], 'a product not ticked: no supplier, though one is linked');
+    assert.deepEqual(supplierOptions(queueRow(ui, 'RNT-2026-9908')), [], 'a rental of a ticked product: no supplier');
+    assert.doesNotMatch(queueRow(ui, 'RNT-2026-9908').textContent, /No supplier is linked/);
+    assert.doesNotMatch(queueRow(ui, 'SPS-2026-9908').textContent, /No supplier is linked/);
+  } finally { ui.close(); }
+});
+
+test('Release to a supplier: the note is trimmed, no stock call is made, the choice goes and the list reloads', async () => {
+  let list = [SALE_WAITING];
+  const ui = await mount({ data: consignmentDb(), rpc: waitingRpc(() => list, n => {
+    if (n === 'release_special_sale_to_supplier') { list = []; return { data: { success: true }, error: null }; }
+    return undefined;
+  }) });
+  try {
+    await openWaiting(ui);
+    const row = () => queueRow(ui, 'SPS-2026-9909');
+    const release = () => [...row().querySelectorAll('button')].find(b => b.textContent === 'Release');
+    assert.equal(release().disabled, true, 'nothing chosen yet');
+    assert.equal(row().querySelector('input[aria-label^="Deliver to"]'), null, 'no note until a supplier is chosen');
+    await choose(row().querySelector('select'), 'supplier:sup-b');
+    assert.equal(release().disabled, false, 'a supplier needs no stock on hand');
+    assert.match(row().textContent, /Supplier's phone: \+61255500101\. Customer's phone: \+61255500102\. No stock moves\./,
+      'the dropdown can cut the supplier\'s phone off, so it is said in full');
+    const note = row().querySelector('input[aria-label="Deliver to, for SPS-2026-9909"]');
+    assert.equal(note.maxLength, 500);
+    await ui.set(note, '  12 Example Road, Sydney  ');
+    const waits = ui.count('rpc:special_docs_awaiting_fulfilment');
+    await ui.click(release());
+    assert.deepEqual(ui.rpcCalls.find(([n]) => n === 'release_special_sale_to_supplier')[1],
+      { p_sale_id: 's-9', p_supplier_id: 'sup-b', p_deliver_to: '12 Example Road, Sydney' });
+    assert.equal(ui.count('rpc:fulfil_special_doc'), 0, 'the stock call is not made');
+    assert.ok(ui.count('rpc:special_docs_awaiting_fulfilment') > waits, 'the list reloads');
+    assert.equal(ui.dialog('Waiting for a warehouse'), undefined, 'nothing left: the window closes');
+  } finally { ui.close(); }
+});
+
+test('Release to a supplier: no note sends null; a refusal stays on the list in the window; a warehouse goes as before', async () => {
+  let reply = { data: null, error: { message: 'Fixture Supplier A is not linked to this product on the Products page.' } };
+  const ui = await mount({ data: consignmentDb(), rpc: waitingRpc(() => [SALE_WAITING], n => {
+    if (n === 'release_special_sale_to_supplier') return reply;
+    if (n === 'special_product_availability') return { data: [STOCK_AT_WH], error: null };
+    if (n === 'fulfil_special_doc') return { data: { success: true }, error: null };
+    return undefined;
+  }) });
+  try {
+    await openWaiting(ui);
+    const row = () => queueRow(ui, 'SPS-2026-9909');
+    const release = () => [...row().querySelectorAll('button')].find(b => b.textContent === 'Release');
+    await choose(row().querySelector('select'), 'supplier:sup-a');
+    assert.doesNotMatch(row().textContent, /Supplier's phone/, 'a supplier with no phone on file: not said');
+    await ui.set(row().querySelector('input[aria-label^="Deliver to"]'), '   ');
+    await ui.click(release());
+    assert.deepEqual(ui.rpcCalls.find(([n]) => n === 'release_special_sale_to_supplier')[1],
+      { p_sale_id: 's-9', p_supplier_id: 'sup-a', p_deliver_to: null }, 'a blank note is no note');
+    assert.match(ui.dialog('Waiting for a warehouse').textContent, /is not linked to this product on the Products page/);
+    assert.equal(row().querySelector('select').value, 'supplier:sup-a', 'still chosen, to try again');
+    // The same sale from a warehouse: fulfil_special_doc, as any sale.
+    await choose(row().querySelector('select'), 'warehouse:wh-1');
+    assert.equal(row().querySelector('input[aria-label^="Deliver to"]'), null, 'the note goes with the supplier');
+    await ui.click(release());
+    assert.deepEqual(ui.rpcCalls.find(([n]) => n === 'fulfil_special_doc')[1],
+      { p_doc_kind: 'special_sale', p_doc_id: 's-9', p_warehouse_id: 'wh-1', p_location_type: 'warehouse' });
+    assert.equal(ui.rpcCalls.filter(([n]) => n === 'release_special_sale_to_supplier').length, 1, 'no second supplier call');
+  } finally { ui.close(); }
+});
+
+test('Waiting list: a consignment sale with no supplier linked says where to link one, and needs stock as any sale', async () => {
+  const waiting = { ...SALE_WAITING, doc_id: 's-7', doc_no: 'SPS-2026-9907', special_product_id: 'sp-3', product_name: 'Fixture Unlinked Chair' };
+  const ui = await mount({ data: consignmentDb(), rpc: waitingRpc(() => [waiting]) });
+  try {
+    await openWaiting(ui);
+    const row = queueRow(ui, 'SPS-2026-9907');
+    assert.match(row.textContent, /No supplier is linked to this product yet\. Link one on the Products page\./);
+    assert.deepEqual(supplierOptions(row), []);
+    assert.equal(row.querySelector('select option').textContent, 'Nowhere holds this');
+    assert.equal([...row.querySelectorAll('button')].find(b => b.textContent === 'Release').disabled, true);
+  } finally { ui.close(); }
+});
+
+test('Waiting list: short of stock, a sale a supplier can send is not told to add stock; any other sale still is', async () => {
+  const short = { ...STOCK_AT_WH, on_hand: 1, reserved: 1, available: 0 };
+  const list = [SALE_WAITING, { ...SALE_WAITING, doc_id: 's-8', doc_no: 'SPS-2026-9908', special_product_id: 'sp-1', product_name: 'Fixture Machine' }];
+  const ui = await mount({ data: consignmentDb(), rpc: waitingRpc(() => list,
+    n => (n === 'special_product_availability' ? { data: [short], error: null } : undefined)) });
+  try {
+    await openWaiting(ui);
+    const consigned = () => queueRow(ui, 'SPS-2026-9909');
+    assert.doesNotMatch(consigned().textContent, /Add stock/);
+    assert.match(queueRow(ui, 'SPS-2026-9908').textContent, /Add stock, or approve\/reject the transfers holding it\./);
+    // The short location is still not enough, supplier or no supplier.
+    await choose(consigned().querySelector('select'), 'warehouse:wh-1');
+    assert.equal([...consigned().querySelectorAll('button')].find(b => b.textContent === 'Release').disabled, true);
+  } finally { ui.close(); }
+});
+
+test('Sales tab: From names the supplier, or where it left; the note and a taken-back invoice show on supplier sales alone', async () => {
+  const sales = [
+    SALE({ id: 's-1', sale_no: 'SPS-2026-9901', status: 'completed', supplier_id: 'sup-a', deliver_to: '12 Example Road', invoice_id: 'inv-r' }),
+    SALE({ id: 's-2', sale_no: 'SPS-2026-9902', status: 'completed', supplier_id: 'sup-b', invoice_id: 'inv-c' }),
+    SALE({ id: 's-3', sale_no: 'SPS-2026-9903', status: 'completed', supplier_id: 'sup-b', invoice_id: 'inv-p' }),
+    SALE({ id: 's-4', sale_no: 'SPS-2026-9904', status: 'completed', warehouse_id: 'wh-1', invoice_id: 'inv-r' }),
+    SALE({ id: 's-5', sale_no: 'SPS-2026-9905', status: 'completed', source_store_id: 'st-b', invoice_id: 'inv-p' }),
+  ];
+  const invoices = [{ id: 'inv-r', invoice_no: 'INV-2026-9911', status: 'refunded' }, { id: 'inv-c', invoice_no: 'INV-2026-9912', status: 'cancelled' },
+                    { id: 'inv-p', invoice_no: 'INV-2026-9913', status: 'paid' }];
+  const ui = await mount({ data: consignmentDb({ special_sales: sales, invoices }) });
+  try {
+    await ui.tab('Sales');
+    const row = no => [...ui.node.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(no));
+    const fromHeader = [...ui.node.querySelectorAll('thead th')].findIndex(th => th.textContent === 'From');
+    assert.ok(fromHeader >= 0, 'the column is From: not every sale leaves a warehouse');
+    const from = no => row(no).querySelectorAll('td')[fromHeader].textContent;
+    assert.equal(from('SPS-2026-9901'), 'Supplier: Fixture Supplier ADeliver to: 12 Example Road');
+    assert.equal(from('SPS-2026-9902'), 'Supplier: Fixture Supplier B');
+    assert.equal(from('SPS-2026-9904'), 'Fixture Warehouse');
+    assert.equal(from('SPS-2026-9905'), 'Fixture Roadshow Van', 'released from a store: the store');
+    assert.match(row('SPS-2026-9901').textContent, /ReleasedInvoice refunded/);
+    assert.match(row('SPS-2026-9902').textContent, /ReleasedInvoice cancelled/);
+    assert.doesNotMatch(row('SPS-2026-9903').textContent, /Invoice (refunded|cancelled)/, 'a paid invoice: nothing to say');
+    assert.doesNotMatch(row('SPS-2026-9904').textContent, /Invoice (refunded|cancelled)/, 'from a warehouse: as it always read');
+    // A receipt names no supplier: the customer's paper is as it was.
+    await ui.click([...row('SPS-2026-9901').querySelectorAll('button')].find(b => b.textContent.includes('Print')));
+    assert.doesNotMatch(JSON.stringify(globalThis.__PRINTS__[0]), /Supplier|Example Road/);
+  } finally { ui.close(); }
+});
+
+test("Excel: the Sales tab's columns give the list per supplier; the Consignment tab's its products and suppliers", async () => {
+  const sale = SALE({ status: 'completed', supplier_id: 'sup-a', deliver_to: '12 Example Road', invoice_id: 'inv-2' });
+  const ui = await mount({ data: consignmentDb({ special_sales: [sale] }) });
+  const cell = (r, header) => globalThis.__EXCEL__.columns.find(c => c.header === header)?.value(r);
+  try {
+    assert.deepEqual(globalThis.__EXCEL__.rows.map(p => p.name), ['Fixture Machine'], 'the Catalog: what the tab lists');
+    assert.equal(cell(CONSIGNED, 'Suppliers'), undefined, 'no Suppliers column on the Catalog');
+    await ui.tab('Consignment');
+    assert.deepEqual(globalThis.__EXCEL__.rows.map(p => p.name), ['Fixture Infrared Bed', 'Fixture Unlinked Chair']);
+    assert.equal(cell(CONSIGNED, 'Suppliers'), 'Fixture Supplier A, Fixture Supplier B');
+    await ui.tab('Sales');
+    assert.equal(cell(sale, 'Supplier'), 'Fixture Supplier A');
+    assert.equal(cell(sale, 'Deliver to'), '12 Example Road');
+    assert.equal(cell(sale, 'Product cost now'), 450);
+    assert.equal(cell(sale, 'Invoice status'), 'cancelled');
+    const plain = SALE({ status: 'completed', warehouse_id: 'wh-1', special_product_id: 'sp-3', invoice_id: null });
+    assert.equal(cell(plain, 'Supplier'), '');
+    assert.equal(cell(plain, 'Deliver to'), '');
+    assert.equal(cell(plain, 'Product cost now'), 0, 'a product with no cost on file');
+    assert.equal(cell(plain, 'Invoice status'), '');
+  } finally { ui.close(); }
+});
+
+test('The form: the Consignment tick is sent after the save, only when it changed, and says where the product went', async () => {
+  const replies = { upsert_special_product_from_product: () => ({ data: 'sp-new', error: null }),
+                    set_special_product_consignment: () => ({ data: null, error: null }) };
+  const ui = await mount({ data: consignmentDb(), rpc: (n, a) => replies[n]?.(a) });
+  const inTable = name => [...ui.node.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(name));
+  const edit = name => ui.click([...inTable(name).querySelectorAll('button')].find(b => b.className.includes('btn-icon') && !b.className.includes('btn-danger')));
+  const tick = dlg => [...dlg.querySelectorAll('label')].find(l => l.textContent.startsWith('Consignment:')).querySelector('input');
+  const save = dlg => ui.click([...dlg.querySelectorAll('button')].find(b => b.textContent === 'Save'));
+  const tickCalls = () => ui.rpcCalls.filter(([n]) => n === 'set_special_product_consignment').map(([, a]) => a);
+  const setTick = async (el, on) => { if (el.checked !== on) await act(async () => { el.click(); }); assert.equal(el.checked, on); };
+  try {
+    // Saved with the tick as it was: no call, no note.
+    await edit('Fixture Machine');
+    let dlg = ui.dialog('Edit Special Product');
+    assert.equal(tick(dlg).checked, false);
+    await save(dlg);
+    assert.deepEqual(tickCalls(), [], 'not changed: not sent');
+    assert.doesNotMatch(ui.text(), /It is now on the/);
+    // Ticked on the Catalog: sent after the save, and it says where it went.
+    await edit('Fixture Machine');
+    dlg = ui.dialog('Edit Special Product');
+    await setTick(tick(dlg), true);
+    await save(dlg);
+    assert.deepEqual(tickCalls(), [{ p_id: 'sp-1', p_on: true }]);
+    const order = ui.rpcCalls.map(([n]) => n);
+    assert.ok(order.lastIndexOf('upsert_special_product_from_product') < order.lastIndexOf('set_special_product_consignment'), 'after the save');
+    assert.match(ui.text(), /Saved\. It is now on the Consignment tab\./);
+    // Unticked on the Consignment tab; opening a tab clears the note first.
+    await ui.tab('Consignment');
+    assert.doesNotMatch(ui.text(), /It is now on the/);
+    await edit('Fixture Infrared Bed');
+    dlg = ui.dialog('Edit Consignment Product');
+    assert.equal(tick(dlg).checked, true);
+    await setTick(tick(dlg), false);
+    await save(dlg);
+    assert.deepEqual(tickCalls()[1], { p_id: 'sp-2', p_on: false });
+    assert.match(ui.text(), /Saved\. It is now on the Catalog tab\./);
+    // A new product on the Consignment tab starts ticked, and uses the id the save gave back.
+    await ui.click(ui.button('Add Consignment Product'));
+    dlg = ui.dialog('Add Consignment Product');
+    assert.equal(tick(dlg).checked, true, 'added here, it starts ticked');
+    await act(async () => { globalThis.__PICK__('p-9'); });
+    const price = fieldIn(dlg, 'Sale Price (S$)');
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(price, '900');
+    await act(async () => { price.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+    await save(dlg);
+    assert.deepEqual(tickCalls()[2], { p_id: 'sp-new', p_on: true });
+    assert.doesNotMatch(ui.text(), /It is now on the/, 'it is on this tab');
+    // A save that is refused sends no tick; a tick that is refused keeps the form open.
+    await edit('Fixture Infrared Bed');
+    dlg = ui.dialog('Edit Consignment Product');
+    await setTick(tick(dlg), false);
+    replies.upsert_special_product_from_product = () => ({ data: null, error: { message: 'Set a sale price first.' } });
+    await save(dlg);
+    assert.equal(tickCalls().length, 3, 'a refused save sends no tick');
+    assert.match(ui.dialog('Edit Consignment Product').textContent, /Set a sale price first\./);
+    replies.upsert_special_product_from_product = () => ({ data: 'sp-2', error: null });
+    replies.set_special_product_consignment = () => ({ data: null, error: { message: 'That special product does not exist.' } });
+    await save(ui.dialog('Edit Consignment Product'));
+    assert.match(ui.dialog('Edit Consignment Product').textContent, /That special product does not exist\./, 'still open, with the reason');
   } finally { ui.close(); }
 });
