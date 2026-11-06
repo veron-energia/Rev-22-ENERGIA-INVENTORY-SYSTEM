@@ -26,6 +26,14 @@ const emailNow = (c: Change) => {
   if (!login) return record;
   return record && record.toLowerCase() !== login.toLowerCase() ? `${login} (customer record: ${record})` : login;
 };
+// An approval that could not be made, or a request already over: the request has
+// left the list, and the person deciding is told why (the affiliate's own wording
+// says "your email" and "start again").
+const OVER: Record<string, string> = {
+  email_not_changed: 'The email could not be changed, so nothing was changed: another login may have just taken that address. The affiliate can ask again.',
+  not_saved: 'The change could not be saved, so nothing was changed. The affiliate can ask again.',
+  no_request: 'This request is no longer open: the affiliate may have cancelled it, or someone else decided it.',
+};
 const missing = (e: { code?: string; message?: string } | null) =>
   !!e && (e.code === 'PGRST202' || /does not exist|could not find the function/i.test(e.message ?? ''));
 
@@ -49,13 +57,21 @@ const DetailChangeRequestsPanel: React.FC = () => {
     setBusy(c.id); setMsg(null);
     const r = await detailsStep({ action: 'decide', request_id: c.id, approve, note: note || null });
     setBusy(null);
-    if (!r.ok) { setMsg({ id: c.id, ok: false, text: r.message ?? '' }); return; }
+    if (!r.ok) {
+      const over = OVER[r.error ?? ''];
+      setMsg({ id: c.id, ok: false, text: over ?? r.message ?? '' });
+      if (over) await load();
+      return;
+    }
     setMsg({ id: c.id, ok: true, text: approve ? 'Approved: the change was made.' : 'Rejected: nothing was changed.' });
     await load();
   };
 
   if (err) return <div className="card" data-error="detail-changes" style={{ padding: 12, marginBottom: 12, borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13.5 }}>The detail changes to check could not be loaded: {err}</div>;
-  if (rows.length === 0) return msg ? <p role="status" style={{ fontSize: 13.5, color: msg.ok ? 'var(--success)' : 'var(--danger)', marginBottom: 12 }}>{msg.text}</p> : null;
+  // What came of a request no longer listed; one still listed says it on its row.
+  const left = msg && !rows.some(c => c.id === msg.id) ? msg : null;
+  const leftNote = left && <p role={left.ok ? 'status' : 'alert'} style={{ fontSize: 13.5, color: left.ok ? 'var(--success)' : 'var(--danger)', marginBottom: 12 }}>{left.text}</p>;
+  if (rows.length === 0) return leftNote;
   return (
     <div className="card" data-panel="detail-changes" style={{ padding: 16, marginBottom: 16 }}>
       <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -64,6 +80,7 @@ const DetailChangeRequestsPanel: React.FC = () => {
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>
         These affiliates confirmed the change with a code, but the app cannot be sure it is them. Check with the person (for example at the counter) before approving.
       </p>
+      {leftNote}
       {rows.map(c => (
         <div key={c.id} data-change={c.id} style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 12, fontSize: 13.5 }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>{c.customer_name ?? 'Customer'} <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>· asked {new Date(c.created_at).toLocaleDateString('en-GB')}</span></div>

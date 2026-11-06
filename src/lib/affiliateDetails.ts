@@ -83,6 +83,8 @@ export async function detailsStep(body: Record<string, unknown>): Promise<Detail
   if (error || payload.error) {
     const code = typeof payload.error === 'string' ? payload.error : 'unavailable';
     return { ok: false, error: code, field: payload.field as string | undefined,
+      purpose: payload.purpose as DetailsStep['purpose'], code_to: payload.code_to as string | undefined,
+      request_id: payload.request_id as string | undefined,
       message: detailsMessage(code, { tries_left: payload.tries_left as number | undefined, seconds: payload.seconds as number | undefined }) };
   }
   return { ok: true, next: payload.next as DetailsStep['next'], status: payload.status as DetailsStep['status'],

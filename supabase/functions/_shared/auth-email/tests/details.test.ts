@@ -167,6 +167,7 @@ Deno.test('D6: refusals keep their meaning; a code the delivery service did not 
   const a = await handleDetailsRequest('good', { action: 'resend', request_id: RID }, t.deps);
   assertEquals(a.status, 502);
   assertEquals(a.body.error, 'not_sent');
+  assertEquals(a.body, { error: 'not_sent', request_id: RID, purpose: 'current', code_to: OLD }, 'where the code was for: the request stays open at that step');
   const down = world();
   assertEquals((await handleDetailsRequest('good', { action: 'cancel', request_id: RID }, down.deps)).status, 503, 'the database not answering');
 });

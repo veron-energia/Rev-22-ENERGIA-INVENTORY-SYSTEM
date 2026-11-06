@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PhoneInput from './PhoneInput';
 import { usePortalRpc } from '../lib/affiliatePortal';
 import { detailsMessage, detailsStep, type DetailsChanges, type PortalDetails } from '../lib/affiliateDetails';
@@ -15,6 +15,8 @@ import { supabase } from '../lib/supabase';
 // that address could not be chosen: "Nothing has changed".
 // 493 (6 Nov 2026): someone who cannot open their current email (also before
 // verifying it) asks with a code to the new email, and Energia staff approve.
+// Found on a real local stack, 6 Nov 2026: a code box left on screen after a
+// reload between the codes, and a dead end when a code could not be sent.
 
 const label: React.CSSProperties = { display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 };
 const linkButton: React.CSSProperties = { background: 'none', border: 0, padding: 0, color: 'var(--primary)', fontWeight: 600, fontSize: 13.5, minHeight: 32, cursor: 'pointer', textAlign: 'left', overflowWrap: 'anywhere' };
@@ -35,13 +37,16 @@ const YourDetailsCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) =>
   const [msg, setMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [code, setCode] = useState('');
   const [step, setStep] = useState<{ id: string; purpose: 'current' | 'new'; to: string } | null>(null);
+  const [notSent, setNotSent] = useState(false);
   const [resendAt, setResendAt] = useState(0);
   const [now, setNow] = useState(Date.now());
+  // A request whose code step is over here: the last read can still say it waits for a code.
+  const stepOver = useRef<string | null>(null);
 
   // An open request from an earlier visit: back at its code, or waiting.
   const open = d?.request && ['awaiting_code', 'pending_staff'].includes(d.request.status) ? d.request : null;
   useEffect(() => {
-    if (open?.status === 'awaiting_code' && open.code_for && open.code_to && !step) {
+    if (open?.status === 'awaiting_code' && open.code_for && open.code_to && !step && open.id !== stepOver.current) {
       setStep({ id: open.id, purpose: open.code_for, to: open.code_to });
     }
   }, [open, step]);
@@ -70,9 +75,10 @@ const YourDetailsCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) =>
   };
   // A minute before another code may be asked for (the server keeps it too).
   const startWait = () => { const t0 = Date.now(); setNow(t0); setResendAt(t0 + 60_000); };
+  const endStep = () => { stepOver.current = step?.id ?? stepOver.current; setStep(null); setCode(''); setNotSent(false); };
   // After any step: refresh, and the session when the login's email may have changed.
   const done = async (text: string, emailChanged: boolean) => {
-    setStep(null); setCode(''); setEditing(false); setLostInbox(false); setMsg({ tone: 'ok', text });
+    endStep(); setEditing(false); setLostInbox(false); setMsg({ tone: 'ok', text });
     if (emailChanged) await supabase.auth.refreshSession().catch(() => undefined);
     retry();
     onChanged?.();
@@ -82,9 +88,18 @@ const YourDetailsCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) =>
     const r = await detailsStep(body);
     setBusy(false);
     if (!r.ok) {
-      if (['expired', 'too_many_tries', 'no_request'].includes(r.error ?? '')) { setStep(null); setCode(''); retry(); }
+      // These cannot be finished any more.
+      if (['expired', 'too_many_tries', 'no_request', 'email_not_changed', 'not_saved'].includes(r.error ?? '')) { endStep(); retry(); }
+      // The request stays open without its code: the code box has Send a new code and Cancel.
+      if (r.error === 'not_sent' && r.request_id && r.purpose && r.code_to) {
+        setStep({ id: r.request_id, purpose: r.purpose, to: r.code_to }); setCode(''); setEditing(false); setNotSent(true);
+        startWait(); return;
+      }
+      // One is open already, from another device say: show it, so it can be finished or cancelled.
+      if (r.error === 'open_request' || r.error === 'not_sent') retry();
       setMsg({ tone: 'error', text: r.message ?? '' }); return;
     }
+    setNotSent(false);
     if (r.next === 'code' && r.request_id && r.purpose && r.code_to) {
       setStep({ id: r.request_id, purpose: r.purpose, to: r.code_to }); setCode(''); setEditing(false);
       startWait(); return;
@@ -113,21 +128,25 @@ const YourDetailsCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) =>
 
   const route = d.route;
   const wait = Math.max(0, Math.ceil((resendAt - now) / 1000));
-  const lastRejected = d.request?.status === 'rejected' ? d.request : null;
+  // How the last change ended, while nothing newer is on the card.
+  const last = !msg && !open && !step ? d.request : null;
 
   return (
     <div className="card portal-break" data-section="your-details" data-route={route} style={{ padding: 18, marginBottom: 20 }}>
       <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Your details</h3>
       {msg && <Note tone={msg.tone}>{msg.text}</Note>}
-      {lastRejected && !msg && !open && (
-        <Note tone="error">Energia staff did not approve your last change{lastRejected.decision_note ? `: ${lastRejected.decision_note}` : '.'}</Note>
+      {last?.status === 'rejected' && (
+        <Note tone="error">Energia staff did not approve your last change{last.decision_note ? `: ${last.decision_note}` : '.'}</Note>
       )}
+      {last?.status === 'failed' && <Note tone="error">Energia could not make your last change, so nothing was changed. Please try again.</Note>}
 
       {step ? (
         <div data-state="code">
-          <Note>{step.purpose === 'new'
-            ? <>Now enter the 6-digit code Energia sent to your new email, <b>{step.to}</b>.</>
-            : <>Energia sent a 6-digit code to <b>{step.to}</b>. Enter it to confirm the change. It works for 10 minutes.</>}</Note>
+          {notSent
+            ? <Note tone="error">Energia could not send the code to <b>{step.to}</b> just now. Please try again with Send a new code.</Note>
+            : <Note>{step.purpose === 'new'
+                ? <>Now enter the 6-digit code Energia sent to your new email, <b>{step.to}</b>.</>
+                : <>Energia sent a 6-digit code to <b>{step.to}</b>. Enter it to confirm the change. It works for 10 minutes.</>}</Note>}
           <label htmlFor="details-code" style={label}>Code</label>
           <input id="details-code" className="input" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             inputMode="numeric" autoComplete="one-time-code" maxLength={6} style={{ maxWidth: 180, letterSpacing: 4, marginBottom: 12 }} />

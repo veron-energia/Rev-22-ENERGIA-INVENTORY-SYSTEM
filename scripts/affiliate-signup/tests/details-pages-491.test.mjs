@@ -22,6 +22,15 @@
 //      and says which email to sign in with; a new email is needed; it can be undone.
 //   Q11 Unverified on an existing record: only this way; free and closed: not offered.
 //   Q12 The staff panel says so, and shows the login's email and the record's.
+//   Found on a real local stack (the user, 6 Nov 2026: "test for me locally"):
+//   Q13 Back at a change from an earlier visit (a reload, the phone's mail app): when
+//      it ends, the code box goes.
+//   Q14 A code that could not be sent: the code box with Send a new code and Cancel,
+//      for the address the code was for; never a dead end.
+//   Q15 One already open: it is shown, so it can be finished or cancelled.
+//   Q16 A change that could not be made ends the code step; the next visit says so.
+//   Q17 The staff panel: an approval that could not be made says why to the person
+//      deciding, and the request leaves the list; what was decided is always said.
 // Every name, phone and email is invented.
 // Run: node --test scripts/affiliate-signup/tests/details-pages-491.test.mjs
 import { test, after } from 'node:test';
@@ -352,4 +361,222 @@ test('Q12: the staff panel says the inbox is lost, and shows the login\'s email 
   assert.match(row(RID).textContent, /Emailsam@example\.com \(customer record: sam-record@example\.com\)sam-new@example\.com \(code confirmed\)/);
   assert.equal(row(usual.id).querySelector('[data-note="lost-inbox"]'), null, 'not for a request made the usual way');
   assert.match(row(usual.id).textContent, /Emailsue@example\.comsue-new@example\.com/);
+});
+
+const OPEN = (over = {}) => ({ id: RID, route: 'code', status: 'awaiting_code', code_for: 'new', code_to: NEWMAIL, new_email: NEWMAIL, ...over });
+const CLOSED = status => OPEN({ status, code_for: null, code_to: null });
+const codeBox = () => document.getElementById('details-code');
+const resendButton = () => [...card().querySelectorAll('button')].find(b => b.textContent.startsWith('Send a new code'));
+
+test('Q13: back at a change from an earlier visit: when it ends, the code box goes', async () => {
+  // Changed with the last code.
+  backend({ portal: details({ request: OPEN() }), steps: [
+    (body, s) => { s.portal = { ...s.portal, email: NEWMAIL, login_email: NEWMAIL, request: CLOSED('applied') }; return { request_id: RID, status: 'applied', changes: { email: NEWMAIL } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  assert.match(card().textContent, /Now enter the 6-digit code Energia sent to your new email/, 'back at its code');
+  await d.setValue(codeBox(), '654321');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(10);
+  assert.equal(codeBox() === null, true, 'no code box once the change is made');
+  assert.ok(card().querySelector('[data-state="show"]'));
+  assert.match(card().textContent, /Your details were changed\./);
+  assert.match(card().textContent, /ria-new-491@example\.com/);
+
+  // Cancelled.
+  backend({ portal: details({ request: OPEN({ code_for: 'current', code_to: LOGIN }) }), steps: [
+    (body, s) => { s.portal = { ...s.portal, request: CLOSED('cancelled') }; return { request_id: RID, status: 'cancelled' }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await d.click(d.button('Cancel', card()));
+  await d.tick(10);
+  assert.equal(codeBox() === null, true, 'no code box once it is cancelled');
+  assert.match(card().textContent, /The change was cancelled\. Nothing was changed\./);
+
+  // On to staff.
+  backend({ portal: details({ route: 'staff', request: OPEN({ route: 'staff' }) }), steps: [
+    (body, s) => { s.portal = { ...s.portal, request: CLOSED('pending_staff') }; return { request_id: RID, next: 'pending_staff' }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await d.setValue(codeBox(), '654321');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(10);
+  assert.equal(codeBox() === null, true);
+  assert.ok(card().querySelector('[data-state="waiting"]'), 'it says it waits for staff');
+
+  // Too many wrong codes.
+  backend({ portal: details({ request: OPEN() }), steps: [
+    (body, s) => { s.portal = { ...s.portal, request: CLOSED('expired') }; return { error: 'too_many_tries', status: 429, body: { error: 'too_many_tries' } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await d.setValue(codeBox(), '000000');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(10);
+  assert.equal(codeBox() === null, true, 'that code step is over');
+  assert.match(card().textContent, /Too many wrong codes\. Please start again\./);
+});
+
+test('Q14: a code that could not be sent: the code box with Send a new code and Cancel', async () => {
+  const notSent = (purpose, to) => ({ error: 'not_sent', status: 502, body: { error: 'not_sent', request_id: RID, purpose, code_to: to } });
+  // The first code.
+  const { client } = backend({ steps: [
+    notSent('current', LOGIN),
+    { request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.tick(5);
+  assert.ok(codeBox(), 'the code box: a late email still works');
+  assert.match(card().querySelector('[role="alert"]')?.textContent ?? '', /Energia could not send the code to ria-491@example\.com just now\. Please try again with Send a new code\./);
+  assert.doesNotMatch(card().textContent, /Energia sent a 6-digit code/, 'it does not say it was sent');
+  assert.ok(d.button('Cancel', card()), 'and it can be cancelled');
+  assert.equal(resendButton().disabled, true, 'the server\'s minute');
+  assert.match(resendButton().textContent, /Send a new code \(\d+s\)/);
+  // A minute later, a new code goes.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  try {
+    await new Promise(r => setTimeout(r, 1100)); await d.tick(5);
+    assert.equal(resendButton().disabled, false, 'after the minute');
+    await d.click(resendButton());
+    await d.tick(5);
+  } finally { Date.now = realNow; }
+  assert.deepEqual(sent(client).map(b => b.action), ['start', 'resend']);
+  assert.match(card().textContent, /Energia sent a 6-digit code to ria-491@example\.com\./, 'sent now');
+  assert.equal(card().querySelector('[role="alert"]') === null, true);
+
+  // The code to the new email, after the first was right: the step moves on.
+  const second = backend({ steps: [
+    { request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN },
+    notSent('new', NEWMAIL),
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.setValue(codeBox(), '123456');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(5);
+  assert.match(card().querySelector('[role="alert"]')?.textContent ?? '', /could not send the code to ria-new-491@example\.com/);
+  assert.equal(codeBox().value, '', 'the first code is gone from the box');
+  assert.equal(sent(second.client).length, 2);
+});
+
+test('Q15: one already open: it is shown, so it can be finished or cancelled', async () => {
+  backend({ steps: [
+    (body, s) => { s.portal = { ...s.portal, request: OPEN({ code_for: 'current', code_to: LOGIN }) }; return { error: 'open_request', status: 409, body: { error: 'open_request' } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.tick(10);
+  assert.match(card().textContent, /You already have a change in progress\. Finish or cancel it first\./);
+  assert.ok(codeBox(), 'its code box');
+  assert.ok(d.button('Cancel', card()), 'its Cancel');
+
+  backend({ steps: [
+    (body, s) => { s.portal = { ...s.portal, request: CLOSED('pending_staff') }; return { error: 'open_request', status: 409, body: { error: 'open_request' } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.tick(10);
+  assert.ok(card().querySelector('[data-state="waiting"]'), 'waiting for staff, with its Cancel the change');
+});
+
+test('Q16: a change that could not be made ends the code step; the next visit says so', async () => {
+  backend({ portal: details({ request: OPEN() }), steps: [
+    (body, s) => { s.portal = { ...s.portal, request: CLOSED('failed') }; return { error: 'email_not_changed', status: 409, body: { error: 'email_not_changed', request_id: RID } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  await d.setValue(codeBox(), '654321');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(10);
+  assert.equal(codeBox() === null, true, 'it cannot be finished any more');
+  assert.match(card().textContent, /Your email could not be changed\. Nothing was changed\./);
+
+  // Told by nobody else: an approval that failed, or a change that stopped half way.
+  backend({ portal: details({ request: CLOSED('failed') }), steps: [{ request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN }] });
+  await d.mount(app()); await d.tick(10);
+  assert.match(card().textContent, /Energia could not make your last change, so nothing was changed\. Please try again\./);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.tick(5);
+  assert.doesNotMatch(card().textContent, /could not make your last change/, 'not above the next one\'s code box');
+
+  // The same for a rejection's note.
+  backend({ portal: details({ request: { id: RID, route: 'staff', status: 'rejected', decision_note: 'Please come to the counter' } }), steps: [{ request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN }] });
+  await d.mount(app()); await d.tick(10);
+  assert.match(card().textContent, /Energia staff did not approve your last change: Please come to the counter/);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.tick(5);
+  assert.doesNotMatch(card().textContent, /did not approve your last change/, 'not above the next one\'s code box');
+});
+
+test('Q17: the staff panel: an approval that could not be made says why, and the request leaves the list', async () => {
+  const base = { created_at: '2026-11-06T02:00:00Z', customer_id: 'cust-9', customer_name: 'Sam Test', signed_up_with: null, new_email_proven: true, current_inbox_lost: true };
+  const first = { ...base, id: RID, old: { first_name: 'Sam', last_name: 'Test', phone: null, email: 'sam@example.com', login_email: 'sam@example.com' }, new: { email: 'sam-new@example.com' } };
+  const OTHER = '00000000-0000-4000-8000-0000000004b2';
+  const other = { ...first, id: OTHER, customer_name: 'Sue Test', new: { email: 'sue-new@example.com' } };
+  const row = id => document.querySelector(`[data-change="${id}"]`);
+  const panel = () => document.querySelector('[data-panel="detail-changes"]');
+  const refuse = (error) => ({ data: null, error: { context: new Response(JSON.stringify({ error, request_id: RID }), { status: 409 }) } });
+
+  for (const [error, said] of [
+    ['email_not_changed', /The email could not be changed, so nothing was changed: another login may have just taken that address\. The affiliate can ask again\./],
+    ['not_saved', /The change could not be saved, so nothing was changed\. The affiliate can ask again\./],
+    ['no_request', /This request is no longer open: the affiliate may have cancelled it, or someone else decided it\./],
+  ]) {
+    let list = [first, other];
+    globalThis.__supabase = fakeSupabase({
+      rpc: { affiliate_detail_change_requests: () => list },
+      invoke: { 'affiliate-details': () => { list = [other]; return refuse(error); } },
+    });
+    await d.mount(h(mod.DetailChangeRequestsPanel)); await d.tick(5);
+    await d.click(d.button('Approve', row(RID)));
+    await d.tick(5);
+    assert.equal(row(RID) === null, true, error + ': it left the list');
+    assert.ok(row(OTHER), 'the other one stays');
+    assert.match(panel().textContent, said);
+    assert.doesNotMatch(panel().textContent, /Your email|Please start again/, 'the affiliate\'s wording is not for the person deciding');
+    assert.ok(panel().querySelector('[role="alert"]'), 'said as a failure');
+  }
+
+  // The last one failing: the panel goes, what happened stays.
+  let list = [first];
+  globalThis.__supabase = fakeSupabase({
+    rpc: { affiliate_detail_change_requests: () => list },
+    invoke: { 'affiliate-details': () => { list = []; return refuse('email_not_changed'); } },
+  });
+  await d.mount(h(mod.DetailChangeRequestsPanel)); await d.tick(5);
+  await d.click(d.button('Approve', row(RID)));
+  await d.tick(5);
+  assert.equal(panel() === null, true);
+  const left = [...document.querySelectorAll('[role="alert"]')].map(n => n.textContent).join(' ');
+  assert.match(left, /The email could not be changed/);
+
+  // A refusal that leaves it open stays on its row.
+  list = [first, other];
+  globalThis.__supabase = fakeSupabase({
+    rpc: { affiliate_detail_change_requests: () => list },
+    invoke: { 'affiliate-details': () => ({ data: null, error: { context: new Response(JSON.stringify({ error: 'unavailable' }), { status: 503 }) } }) },
+  });
+  await d.mount(h(mod.DetailChangeRequestsPanel)); await d.tick(5);
+  await d.click(d.button('Approve', row(RID)));
+  await d.tick(5);
+  assert.ok(row(RID), 'still there');
+  assert.match(row(RID).textContent, /That could not be done just now/);
+
+  // An approval with another one left: it is said.
+  list = [first, other];
+  globalThis.__supabase = fakeSupabase({
+    rpc: { affiliate_detail_change_requests: () => list },
+    invoke: { 'affiliate-details': () => { list = [other]; return { data: { request_id: RID, status: 'applied' }, error: null }; } },
+  });
+  await d.mount(h(mod.DetailChangeRequestsPanel)); await d.tick(5);
+  await d.click(d.button('Approve', row(RID)));
+  await d.tick(5);
+  assert.equal(row(RID) === null, true);
+  assert.match(panel().textContent, /Approved: the change was made\./);
 });

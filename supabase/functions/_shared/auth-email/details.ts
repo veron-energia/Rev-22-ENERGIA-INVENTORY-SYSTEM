@@ -118,7 +118,8 @@ async function next(deps: DetailsDeps, answer: Record<string, unknown>, staffDec
     if (!send?.to || !send.code || (send.purpose !== 'current' && send.purpose !== 'new')) return { status: 503, body: { error: 'unavailable' } };
     const sent = await deps.sendCode(send.to, send.code, send.purpose);
     deps.log('affiliate_details.code_sent', { purpose: send.purpose, accepted: sent });
-    if (!sent) return { status: 502, body: { error: 'not_sent', request_id: requestId } };
+    // The request stays open at this step, whether it is the first send or not.
+    if (!sent) return { status: 502, body: { error: 'not_sent', request_id: requestId, purpose: send.purpose, code_to: send.to } };
     return { status: 200, body: { request_id: requestId, next: 'code', purpose: send.purpose, code_to: send.to } };
   }
   if (answer.next === 'pending_staff') return { status: 200, body: { request_id: requestId, next: 'pending_staff' } };
