@@ -1,6 +1,7 @@
 // Renders the Store and Warehouse stock pages and a customer's loans against
 // an in-memory stub (scripts/stock-loans/preview), so Record Use, Lend, the On
-// loan list and Take back can be pressed without a database or a login.
+// loan list and Take back can be pressed without a database or a login. It also
+// shows the Products page (?page=products: its Products and Service tabs).
 // ?role=staff|manager|admin|owner picks who is signed in (default owner).
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';

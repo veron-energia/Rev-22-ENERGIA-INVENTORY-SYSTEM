@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Product, ProductType, Brand, Category, Supplier } from '../types';
 import { Modal } from '../components/ui';
-import { Plus, Pencil, Trash2, Search, Package, RefreshCw, Star, Tag, Boxes, Truck, RotateCcw } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Package, RefreshCw, Star, Tag, Boxes, Truck, RotateCcw, Wrench } from 'lucide-react';
 import DropdownManager from '../components/DropdownManager';
 import { canConfigureCatalogue, canEditProducts } from '../lib/permissions/products';
 import { productTypeBadge, productTypeLabel } from '../lib/stock/stockPages';
@@ -29,6 +29,12 @@ const blank = (p?: Product): FormState => ({
   brand_id: p?.brand_id ?? '', categoryIds: [], supplierIds: [],
 });
 
+const tabStyle = (on: boolean): React.CSSProperties => ({
+  padding: '8px 16px', background: 'none', border: 'none',
+  borderBottom: on ? '2px solid var(--primary)' : '2px solid transparent',
+  color: on ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: on ? 700 : 500, cursor: 'pointer',
+});
+
 const ProductsPage: React.FC = () => {
   const { profile } = useAuth();
   // Add, edit, delete and restore products: an Owner, Manager or Inventory
@@ -42,12 +48,16 @@ const ProductsPage: React.FC = () => {
   const [prodCats, setProdCats] = useState<{ product_id: string; category_id: string }[]>([]);
   const [prodSups, setProdSups] = useState<{ product_id: string; supplier_id: string }[]>([]);
   const [importantFilter, setImportantFilter] = useState<'all' | 'only' | 'first'>('all');
-  const [tab, setTab] = useState<'products' | 'catalog'>('products');
+  // Service (6 Nov 2026): the products typed No commission, on a tab of their
+  // own. A product's type decides its tab; there is nothing else to set.
+  const [tab, setTab] = useState<'products' | 'service' | 'catalog'>('products');
+  const onService = tab === 'service';
+  const noun = onService ? 'service' : 'product';
   const [catalogTab, setCatalogTab] = useState<'brands' | 'categories' | 'suppliers'>('brands');
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | ProductType>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'own' | 'third_party'>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(blank());
@@ -86,7 +96,11 @@ const ProductsPage: React.FC = () => {
     if (error) alert(error.message); else load();
   };
 
-  const openAdd = () => { setForm(blank()); setEditId(null); setErr(null); setModalOpen(true); };
+  const openTab = (next: typeof tab) => { setTab(next); setFlash(null); setPageErr(null); };
+  const openAdd = () => {
+    setForm({ ...blank(), product_type: onService ? 'no_commission' : 'own' });
+    setEditId(null); setErr(null); setModalOpen(true);
+  };
   const openEdit = (p: Product) => {
     const cats = prodCats.filter(x => x.product_id === p.id).map(x => x.category_id);
     const sups = prodSups.filter(x => x.product_id === p.id).map(x => x.supplier_id);
@@ -95,7 +109,7 @@ const ProductsPage: React.FC = () => {
   };
 
   const handleSave = async () => {
-    if (!form.name.trim()) { setErr('Product name is required.'); return; }
+    if (!form.name.trim()) { setErr(`${onService ? 'Service' : 'Product'} name is required.`); return; }
     if (!form.sku.trim()) { setErr('SKU / product code is required.'); return; }
     const cost = form.default_cost_price.trim() || '0';
     if (!/^\d{1,10}(\.\d{1,2})?$/.test(cost)) { setErr('Cost price must be 0 or more, with at most 2 decimal places.'); return; }
@@ -120,6 +134,9 @@ const ProductsPage: React.FC = () => {
     setSaving(false);
     if (error) { setErr(error.message); return; }
     setModalOpen(false);
+    // A change of type can take it off this tab: say where it went.
+    const belongs = form.product_type === 'no_commission' ? 'service' : 'products';
+    setFlash(belongs === tab ? null : `${form.name.trim()} is now on the ${belongs === 'service' ? 'Service' : 'Products'} tab.`);
     load();
   };
 
@@ -168,9 +185,10 @@ const ProductsPage: React.FC = () => {
 
   const filtered = products.filter(p => {
     if (showDeleted ? !p.deleted_at : !!p.deleted_at) return false;
+    if (tab !== 'catalog' && (p.product_type === 'no_commission') !== onService) return false;
     const q = search.trim().toLowerCase();
     const matchSearch = !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
-    const matchType = typeFilter === 'all' || p.product_type === typeFilter;
+    const matchType = onService || typeFilter === 'all' || p.product_type === typeFilter;
     const matchImportant = importantFilter !== 'only' || p.is_important;
     return matchSearch && matchType && matchImportant;
   }).sort((a, b) => {
@@ -197,9 +215,9 @@ const ProductsPage: React.FC = () => {
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
-            rows={filtered} filename="products" sheetName="Products"
+            rows={filtered} filename={onService ? 'services' : 'products'} sheetName={onService ? 'Services' : 'Products'}
             columns={[
-              { header: 'Product', value: (p: any) => p.name },
+              { header: onService ? 'Service' : 'Product', value: (p: any) => p.name },
               { header: 'SKU', value: (p: any) => p.sku },
               { header: 'Type', value: (p: Product) => productTypeLabel(p.product_type) },
               { header: 'Brand', value: (p: Product) => brandName(p) },
@@ -211,21 +229,22 @@ const ProductsPage: React.FC = () => {
               { header: 'Status', value: (p: Product) => p.deleted_at ? 'Deleted' : p.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {tab === 'products' && canManage && (
-            <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Product</button>
+          {tab !== 'catalog' && canManage && (
+            <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> {onService ? 'Add Service' : 'Add Product'}</button>
           )}
         </div>
       </div>
 
-      {/* Top-level tabs: Products vs catalog setup (Owner/Manager only) */}
+      {/* Top-level tabs: Products, Service, and catalog setup (Owner/Manager only) */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
-        <button className={`tab-btn ${tab === 'products' ? 'active' : ''}`} onClick={() => setTab('products')}
-          style={{ padding: '8px 16px', background: 'none', border: 'none', borderBottom: tab === 'products' ? '2px solid var(--primary)' : '2px solid transparent', color: tab === 'products' ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: tab === 'products' ? 700 : 500, cursor: 'pointer' }}>
+        <button className={`tab-btn ${tab === 'products' ? 'active' : ''}`} onClick={() => openTab('products')} style={tabStyle(tab === 'products')}>
           <Package size={15} style={{ verticalAlign: 'middle', marginRight: 6 }} />Products
         </button>
+        <button className={`tab-btn ${onService ? 'active' : ''}`} onClick={() => openTab('service')} style={tabStyle(onService)}>
+          <Wrench size={15} style={{ verticalAlign: 'middle', marginRight: 6 }} />Service
+        </button>
         {canConfig && (
-          <button className={`tab-btn ${tab === 'catalog' ? 'active' : ''}`} onClick={() => setTab('catalog')}
-            style={{ padding: '8px 16px', background: 'none', border: 'none', borderBottom: tab === 'catalog' ? '2px solid var(--primary)' : '2px solid transparent', color: tab === 'catalog' ? 'var(--primary)' : 'var(--text-secondary)', fontWeight: tab === 'catalog' ? 700 : 500, cursor: 'pointer' }}>
+          <button className={`tab-btn ${tab === 'catalog' ? 'active' : ''}`} onClick={() => openTab('catalog')} style={tabStyle(tab === 'catalog')}>
             <Tag size={15} style={{ verticalAlign: 'middle', marginRight: 6 }} />Brands, Categories &amp; Suppliers
           </button>
         )}
@@ -246,11 +265,14 @@ const ProductsPage: React.FC = () => {
         </div>
       )}
 
-      {tab === 'products' && (
+      {tab !== 'catalog' && (
       <>
       <div className="alert alert-info">
         <span>ℹ️</span>
-        <div>Stock levels and low-stock thresholds are set on the Warehouse Stock and Store Stock pages.</div>
+        <div>
+          {onService && 'Every product typed No commission is listed here, and earns no affiliate commission. '}
+          Stock levels and low-stock thresholds are set on the Warehouse Stock and Store Stock pages.
+        </div>
       </div>
       {pageErr && <div className="alert alert-danger" role="alert"><span>⚠</span><div>{pageErr}</div>
         <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setPageErr(null)}>Close</button></div>}
@@ -262,13 +284,15 @@ const ProductsPage: React.FC = () => {
           <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or SKU…" style={{ paddingLeft: 34 }} />
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['all', 'own', 'third_party', 'no_commission'] as const).map(t => (
-            <button key={t} className={`btn btn-sm ${typeFilter === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTypeFilter(t)}>
-              {t === 'all' ? 'All' : productTypeLabel(t)}
-            </button>
-          ))}
-        </div>
+        {!onService && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['all', 'own', 'third_party'] as const).map(t => (
+              <button key={t} className={`btn btn-sm ${typeFilter === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTypeFilter(t)}>
+                {t === 'all' ? 'All' : productTypeLabel(t)}
+              </button>
+            ))}
+          </div>
+        )}
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
           <input type="checkbox" checked={showDeleted} onChange={e => { setShowDeleted(e.target.checked); setFlash(null); }} style={{ width: 'auto' }} />
           Show deleted
@@ -284,18 +308,18 @@ const ProductsPage: React.FC = () => {
       <div className="card">
         <div className="table-wrap">
           {loading ? (
-            <div className="empty-state"><RefreshCw size={26} className="spin" style={{ opacity: 0.4 }} /><p style={{ marginTop: 10 }}>Loading products…</p></div>
+            <div className="empty-state"><RefreshCw size={26} className="spin" style={{ opacity: 0.4 }} /><p style={{ marginTop: 10 }}>Loading {noun}s…</p></div>
           ) : filtered.length === 0 ? (
             <div className="empty-state">
               <Package size={36} style={{ opacity: 0.3, marginBottom: 10 }} />
-              <p style={{ fontWeight: 600 }}>{showDeleted ? 'No deleted products' : 'No products found'}</p>
-              {!showDeleted && <p style={{ fontSize: 13 }}>{canManage ? 'Add your first product to get started.' : 'No products have been added yet.'}</p>}
+              <p style={{ fontWeight: 600 }}>{showDeleted ? `No deleted ${noun}s` : `No ${noun}s found`}</p>
+              {!showDeleted && <p style={{ fontSize: 13 }}>{canManage ? `Add your first ${noun} to get started.` : `No ${noun}s have been added yet.`}</p>}
             </div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th onClick={() => toggleSort('name')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by product name">Product{sortArrow('name')}</th>
+                  <th onClick={() => toggleSort('name')} style={{ cursor: 'pointer', userSelect: 'none' }} title={`Sort by ${noun} name`}>{onService ? 'Service' : 'Product'}{sortArrow('name')}</th>
                   <th onClick={() => toggleSort('sku')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by SKU">SKU{sortArrow('sku')}</th>
                   <th>Type</th><th>Category</th>
                   <th>UoM</th>
@@ -355,21 +379,21 @@ const ProductsPage: React.FC = () => {
       {/* Add / Edit modal */}
       {modalOpen && (
         <Modal
-          title={editId ? 'Edit Product' : 'Add Product'}
+          title={`${editId ? 'Edit' : 'Add'} ${onService ? 'Service' : 'Product'}`}
           maxWidth={540}
           onClose={() => setModalOpen(false)}
           footer={
             <>
               <button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : editId ? 'Save Changes' : 'Add Product'}</button>
+              <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : editId ? 'Save Changes' : onService ? 'Add Service' : 'Add Product'}</button>
             </>
           }
         >
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
             <div className="form-grid-2">
-              <div className="form-group"><label>Product Name *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Energia Corset 3.0" autoFocus /></div>
-              <div className="form-group"><label>SKU / Code *</label><input value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="e.g. EN-CORSET-3" /></div>
+              <div className="form-group"><label>{onService ? 'Service Name *' : 'Product Name *'}</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder={onService ? 'e.g. House Call' : 'e.g. Energia Corset 3.0'} autoFocus /></div>
+              <div className="form-group"><label>SKU / Code *</label><input value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder={onService ? 'e.g. SV-001' : 'e.g. EN-CORSET-3'} /></div>
             </div>
             <div className="form-grid-2">
               <div className="form-group">

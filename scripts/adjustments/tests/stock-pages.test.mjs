@@ -23,7 +23,7 @@
 //   * Store Stock lists the person's stores only, a Manager's too;
 //   * products: Owner, Manager and Inventory Manager edit through save_product;
 //     an Admin looks; delete and restore go through the server and show its
-//     refusal; "Show deleted"; the No commission filter; the export's brand;
+//     refusal; "Show deleted"; the Service tab; the export's brand;
 //   * Price List counts only listed products;
 //   * Stores and Warehouses delete and restore through the server, and show
 //     the server's refusal to switch off a place that holds stock (on Stores,
@@ -590,7 +590,7 @@ test('Products: an Admin looks; an Inventory Manager adds and edits through save
     'no direct product writes left');
 });
 
-test('Products: Delete shows the server\'s refusal; Show deleted lists Restore; No commission filter', async () => {
+test('Products: Delete shows the server\'s refusal; Show deleted lists Restore', async () => {
   await mount(P.ProductsPage, 'manager');
   assert.ok(!row('Fixture Gone'), 'deleted products are hidden');
   backend.failures.set('soft_delete_product', { message: 'Fixture Mat cannot be deleted yet. Still open: stock (5 at Fixture Store A).', once: true });
@@ -602,7 +602,123 @@ test('Products: Delete shows the server\'s refusal; Show deleted lists Restore; 
   await click(buttonWith('Restore', row('Fixture Gone')));
   assert.deepEqual(callsOf('restore_product').map(c => c.args), [{ p_product_id: 'p-gone' }]);
   assert.ok(text().includes('Fixture Gone is back'));
-  assert.ok(buttonWith('No commission'), 'a No commission filter');
+});
+
+// ── The Service tab (6 Nov 2026): the products typed No commission ─────────
+const typeSelect = () => [...modal().querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'no_commission'));
+const showDeletedBox = () => [...document.querySelectorAll('input[type="checkbox"]')].find(i => i.parentElement.textContent.includes('Show deleted'));
+const searchBox = () => document.querySelector('input[placeholder="Search name or SKU…"]');
+// A save that changes the row, as the server's does.
+const savesForReal = b => {
+  b.handlers.save_product = a => {
+    Object.assign(b.fx.products.find(p => p.id === a.p_id), a.p_fields);
+    return { success: true, product_id: a.p_id, created: false };
+  };
+};
+
+test('Products: Service holds the No commission products, the Products tab the rest; the words stay', async () => {
+  await mount(P.ProductsPage, 'manager');
+  assert.ok(row('Fixture Mat') && row('Fixture Lamp'), 'Own and 3rd Party are on Products');
+  assert.ok(!row('Fixture Delivery'), 'No commission is not');
+  assert.ok(button('Own') && button('3rd Party') && !buttonWith('No commission'), 'its type filter no longer offers No commission');
+  await click(button('Service'));
+  assert.ok(row('Fixture Delivery').textContent.includes('No commission'), 'the type still says No commission');
+  assert.ok(!row('Fixture Mat') && !row('Fixture Lamp'), 'Own and 3rd Party are not on Service');
+  assert.ok(!button('Own') && !button('3rd Party'), 'one type here: no type filter');
+  assert.ok(text().includes('Every product typed No commission is listed here, and earns no affiliate commission.'));
+  await click(button('Products'));
+  assert.ok(row('Fixture Mat') && !row('Fixture Delivery'), 'and back');
+});
+
+test('Products: a type filter chosen on Products does not hide anything on Service', async () => {
+  await mount(P.ProductsPage, 'manager');
+  await click(button('3rd Party'));
+  assert.ok(row('Fixture Lamp') && !row('Fixture Mat'));
+  await click(button('Service'));
+  assert.ok(row('Fixture Delivery'));
+});
+
+test('Products: Add Service starts as No commission, Add Product as Own', async () => {
+  await mount(P.ProductsPage, 'manager');
+  await click(button('Add Product'));
+  assert.equal(typeSelect().value, 'own');
+  assert.ok(modal().textContent.includes('Product Name *'));
+  await click(button('Cancel', modal()));
+  await click(button('Service'));
+  assert.ok(!button('Add Product'), 'the tab has its own button');
+  await click(button('Add Service'));
+  assert.equal(typeSelect().value, 'no_commission');
+  assert.ok(modal().textContent.includes('Service Name *'));
+  await click(button('Add Service', modal()));
+  assert.ok(modal().textContent.includes('Service name is required.'));
+  await setValue(modal().querySelector('input[placeholder="e.g. House Call"]'), 'Fixture Repair');
+  await setValue(modal().querySelector('input[placeholder="e.g. SV-001"]'), 'FX-R');
+  await click(button('Add Service', modal()));
+  const [save] = callsOf('save_product');
+  assert.equal(save.args.p_id, null);
+  assert.equal(save.args.p_fields.product_type, 'no_commission');
+  assert.equal(save.args.p_fields.name, 'Fixture Repair');
+  assert.equal(modal(), null, 'the form closes');
+  assert.ok(!text().includes('is now on the'), 'it stays on this tab: nothing to say');
+});
+
+test('Products: changing a type moves it to the other tab, and says so', async () => {
+  await mount(P.ProductsPage, 'manager', savesForReal);
+  await click(button('Service'));
+  await click(row('Fixture Delivery').querySelector('button[title="Edit"]'));
+  assert.ok(modal().textContent.includes('Edit Service'));
+  await setValue(typeSelect(), 'own');
+  await click(button('Save Changes', modal()));
+  assert.ok(text().includes('Fixture Delivery is now on the Products tab.'));
+  assert.ok(!row('Fixture Delivery'), 'it has left Service');
+  await click(button('Products'));
+  assert.ok(row('Fixture Delivery'), 'it is on Products');
+  assert.ok(!text().includes('is now on the'), 'the note goes with the tab');
+  await click(row('Fixture Lamp').querySelector('button[title="Edit"]'));
+  await setValue(typeSelect(), 'no_commission');
+  await click(button('Save Changes', modal()));
+  assert.ok(text().includes('Fixture Lamp is now on the Service tab.'));
+  assert.ok(!row('Fixture Lamp'));
+  await click(button('Service'));
+  assert.ok(row('Fixture Lamp'));
+});
+
+test('Products: Show deleted and the search keep to the tab', async () => {
+  await mount(P.ProductsPage, 'manager', b => {
+    b.fx.products.push({ id: 'p-old', name: 'Fixture Old Fee', sku: 'FX-8', product_type: 'no_commission', brand_id: null, brand: null, uom: 'pcs', default_cost_price: 0,
+      is_active: false, deleted_at: '2026-09-14T05:00:00Z', is_important: false, category: null, supplier_name: null, created_at: '2026-09-01T00:00:00Z' });
+  });
+  await setValue(searchBox(), 'Fixture Delivery');
+  assert.ok(text().includes('No products found'), 'a service is not found on Products');
+  await click(button('Service'));
+  assert.ok(row('Fixture Delivery'), 'it is on Service');
+  await setValue(searchBox(), 'Fixture Mat');
+  assert.ok(text().includes('No services found'), 'nor a product on Service');
+  await setValue(searchBox(), '');
+  await tick_box(showDeletedBox());
+  assert.ok(row('Fixture Old Fee') && !row('Fixture Gone') && !row('Fixture Delivery'), 'deleted services alone');
+  assert.ok(buttonWith('Restore', row('Fixture Old Fee')));
+  await click(button('Products'));
+  assert.ok(row('Fixture Gone') && !row('Fixture Old Fee'), 'deleted products alone');
+});
+
+test('Products: who may do what on Service is as on Products', async () => {
+  await mount(P.ProductsPage, 'admin');
+  await click(button('Service'));
+  assert.ok(row('Fixture Delivery'), 'an Admin looks');
+  assert.ok(!button('Add Service') && !document.querySelector('button[title="Edit"]') && !document.querySelector('button[title="Delete"]'), 'and changes nothing');
+  await mount(P.ProductsPage, 'inventory_manager');
+  await click(button('Service'));
+  assert.ok(button('Add Service') && row('Fixture Delivery').querySelector('button[title="Edit"]'), 'an Inventory Manager adds and edits');
+  assert.ok(!buttonWith('Brands, Categories'), 'catalogue setup stays with Owners and Managers');
+  await mount(P.ProductsPage, 'manager');
+  await click(buttonWith('Brands, Categories'));
+  assert.ok(!button('Add Service') && !button('Add Product'), 'no Add on catalogue setup');
+});
+
+test('Products: the export is of the tab', () => {
+  const src = read('src/pages/ProductsPage.tsx');
+  assert.ok(src.includes("rows={filtered} filename={onService ? 'services' : 'products'} sheetName={onService ? 'Services' : 'Products'}"));
 });
 
 // ── Price List (STOCK-10) ───────────────────────────────────────────────────

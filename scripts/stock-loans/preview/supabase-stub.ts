@@ -32,11 +32,14 @@ const STORES = [
   { id: 'st-b', name: 'Fixture Store B', code: 'FXB', is_active: true, deleted_at: null },
 ];
 const WAREHOUSES = [{ id: 'wh-1', name: 'Fixture Warehouse', code: 'FXW', is_active: true, deleted_at: null }];
-const PRODUCTS = [
-  { id: 'p-mat', name: 'Fixture Mat', sku: 'FX-MAT', is_active: true, deleted_at: null, is_important: true },
-  { id: 'p-lamp', name: 'Fixture Lamp', sku: 'FX-LAMP', is_active: true, deleted_at: null, is_important: false },
-  { id: 'p-kit', name: 'Fixture Demo Kit', sku: 'FX-KIT', is_active: true, deleted_at: null, is_important: false },
-  { id: 'p-cup', name: 'Fixture Cup', sku: 'FX-CUP', is_active: true, deleted_at: null, is_important: false },
+const PRODUCTS: any[] = [
+  { id: 'p-mat', name: 'Fixture Mat', sku: 'FX-MAT', product_type: 'own', uom: 'pcs', default_cost_price: 40, is_active: true, deleted_at: null, is_important: true },
+  { id: 'p-lamp', name: 'Fixture Lamp', sku: 'FX-LAMP', product_type: 'third_party', uom: 'pcs', default_cost_price: 15, is_active: true, deleted_at: null, is_important: false },
+  { id: 'p-kit', name: 'Fixture Demo Kit', sku: 'FX-KIT', product_type: 'own', uom: 'pcs', default_cost_price: 0, is_active: true, deleted_at: null, is_important: false },
+  { id: 'p-cup', name: 'Fixture Cup', sku: 'FX-CUP', product_type: 'own', uom: 'pcs', default_cost_price: 3, is_active: true, deleted_at: null, is_important: false },
+  // For the Products page's Service tab.
+  { id: 'p-call', name: 'Fixture House Call', sku: 'FX-CALL', product_type: 'no_commission', uom: 'pcs', default_cost_price: 0, is_active: true, deleted_at: null, is_important: false },
+  { id: 'p-fee', name: 'Fixture Delivery Charge', sku: 'FX-FEE', product_type: 'no_commission', uom: 'pcs', default_cost_price: 0, is_active: true, deleted_at: null, is_important: false },
 ];
 const CUSTOMERS = [
   { id: 'c-jane', full_name: 'Jane Tan', phone: '+6591390401', email: 'jane@sig.invalid', notes: null, deleted_at: null },
@@ -128,6 +131,13 @@ const returnForms = new Map<string, unknown>();
 const where = (type: string) => type === 'warehouse' ? 'this warehouse' : 'this store';
 
 const RPC: Record<string, (a: any) => { data: any; error: any }> = {
+  // The Products page: a save is kept here, as a loan is.
+  save_product: a => {
+    const row = PRODUCTS.find(p => p.id === a.p_id);
+    if (row) Object.assign(row, a.p_fields);
+    else PRODUCTS.unshift({ id: `p-new-${PRODUCTS.length}`, deleted_at: null, is_important: false, ...a.p_fields });
+    return ok({ success: true });
+  },
   set_product_important: () => ok(null),
   set_low_stock_threshold: () => ok(null),
   stock_loans_at: a => {
