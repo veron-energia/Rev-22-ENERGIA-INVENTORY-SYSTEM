@@ -289,7 +289,7 @@ export function renderDetailsCode(code: string, purpose: 'current' | 'new'): Ren
   };
 }
 
-/** 491: the notice to the OLD email after an affiliate's details changed. */
+/** 491: the notice to the OLD email after an affiliate's details changed; 493: to the new one too, after a staff decision. */
 export function renderDetailsChanged(
   changes: { first_name?: string; last_name?: string; phone?: string; email?: string },
   whenIso: string, supportEmail: string,
@@ -306,12 +306,14 @@ export function renderDetailsChanged(
       p(escapeHtml(greeting(''))) +
       p(`The details on your Energia Affiliate account were changed on <strong>${escapeHtml(when)}</strong>:`) +
       lines.map(l => p(escapeHtml(headerSafe(l, 300)))).join('') +
+      (changes.email ? p('From now on, sign in with your new email.') : '') +
       p('If that was you, there is nothing to do.') +
       p(`If it was not you, please contact Energia straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
     ),
     text: [
       greeting(''), '', `The details on your Energia Affiliate account were changed on ${when}:`,
       ...lines.map(l => headerSafe(l, 300)), '',
+      ...(changes.email ? ['From now on, sign in with your new email.', ''] : []),
       'If that was you, there is nothing to do.',
       `If it was not you, please contact Energia straight away at ${supportEmail}.`, '',
       'Rev 22 Global Energia',

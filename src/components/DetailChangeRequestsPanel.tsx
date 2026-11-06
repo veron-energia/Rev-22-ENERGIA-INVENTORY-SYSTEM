@@ -5,9 +5,10 @@ import { detailsStep } from '../lib/affiliateDetails';
 
 // 491 (3 Nov 2026): an affiliate's own change of name, phone or email that
 // waits for an Owner or Manager: the login is verified, but the app cannot
-// prove it belongs to the customer record it is joined to. Approve makes the
-// change; Reject (with a reason the affiliate sees) changes nothing. Shown
-// only when something waits.
+// prove it belongs to the customer record it is joined to. 493 (6 Nov 2026):
+// or they cannot open their current email, so only the new one was confirmed.
+// Approve makes the change; Reject (with a reason the affiliate sees) changes
+// nothing. Shown only when something waits.
 
 interface Change {
   id: string; created_at: string; customer_id: string; customer_name: string | null;
@@ -15,9 +16,16 @@ interface Change {
   new: { first_name?: string; last_name?: string; phone?: string; email?: string };
   signed_up_with: { name: string | null; phone: string | null; email: string | null } | null;
   new_email_proven: boolean;
+  current_inbox_lost?: boolean;
 }
 
 const FIELDS: [keyof Change['new'], string][] = [['first_name', 'First name'], ['last_name', 'Last name'], ['phone', 'Phone'], ['email', 'Email']];
+// The email that changes is the login's; say so when the record holds another.
+const emailNow = (c: Change) => {
+  const { login_email: login, email: record } = c.old;
+  if (!login) return record;
+  return record && record.toLowerCase() !== login.toLowerCase() ? `${login} (customer record: ${record})` : login;
+};
 const missing = (e: { code?: string; message?: string } | null) =>
   !!e && (e.code === 'PGRST202' || /does not exist|could not find the function/i.test(e.message ?? ''));
 
@@ -54,17 +62,22 @@ const DetailChangeRequestsPanel: React.FC = () => {
         <UserCog size={16} /> Detail changes to check ({rows.length})
       </h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>
-        These affiliates confirmed the change with a code to their email, but the app cannot prove the login belongs to the customer record. Check with the person (for example at the counter) before approving.
+        These affiliates confirmed the change with a code, but the app cannot be sure it is them. Check with the person (for example at the counter) before approving.
       </p>
       {rows.map(c => (
         <div key={c.id} data-change={c.id} style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 12, fontSize: 13.5 }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>{c.customer_name ?? 'Customer'} <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>· asked {new Date(c.created_at).toLocaleDateString('en-GB')}</span></div>
+          {c.current_inbox_lost && (
+            <div data-note="lost-inbox" className="alert alert-warning" style={{ marginBottom: 8, lineHeight: 1.5 }}>
+              <span>They say they cannot open their current email{c.old.login_email ? <> (<b>{c.old.login_email}</b>)</> : null}, so only the new email was confirmed. Please check who this is before approving: anyone with their password could ask for this.</span>
+            </div>
+          )}
           <table className="table" style={{ width: '100%', fontSize: 13, marginBottom: 8 }}>
             <thead><tr><th></th><th>Now</th><th>Asked for</th></tr></thead>
             <tbody>
               {FIELDS.filter(([k]) => c.new[k] !== undefined).map(([k, name]) => (
                 <tr key={k}><th scope="row" style={{ whiteSpace: 'nowrap' }}>{name}</th>
-                  <td>{(k === 'email' ? (c.old.email ?? c.old.login_email) : c.old[k]) || '—'}</td>
+                  <td>{(k === 'email' ? emailNow(c) : c.old[k]) || '—'}</td>
                   <td><b>{c.new[k]}</b>{k === 'email' && c.new_email_proven ? ' (code confirmed)' : ''}</td></tr>
               ))}
             </tbody>

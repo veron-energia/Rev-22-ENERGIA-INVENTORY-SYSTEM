@@ -127,8 +127,8 @@ const AffiliateAccountPage: React.FC = () => {
               </button>
             </div>
           )}
-          {/* 491: change name, phone and email */}
-          <YourDetailsCard />
+          {/* 491: change name, phone and email; the top box above reads them again after a change */}
+          <YourDetailsCard onChanged={() => { retry(); setReadTick(t => t + 1); }} />
           <div className="card" style={{ padding: 18 }}>
             <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Change Password</h3>
             <div style={{ marginBottom: 12 }}>

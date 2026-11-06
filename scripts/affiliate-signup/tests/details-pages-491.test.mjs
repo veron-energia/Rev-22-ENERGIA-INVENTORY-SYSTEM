@@ -12,6 +12,16 @@
 //   Q6 The staff panel: old -> asked for, the sign-up details; a rejection
 //      needs a note; an approval is sent as decide.
 //   Q7 The payout window's note when the affiliate changed their phone.
+//   The user, 6 Nov 2026 ("changing the email did not change the verified email":
+//   the box held the record's address, not the login's):
+//   Q8 A record with another address: the card and the form show the login's email,
+//      the verified one; the record's address is a real change, with both codes.
+//   Q9 After a change the top box reads the email and the name again.
+//   493 (the same day): someone who cannot open their current email:
+//   Q10 "I can't open ...": the code goes to the new email, then it waits for staff,
+//      and says which email to sign in with; a new email is needed; it can be undone.
+//   Q11 Unverified on an existing record: only this way; free and closed: not offered.
+//   Q12 The staff panel says so, and shows the login's email and the record's.
 // Every name, phone and email is invented.
 // Run: node --test scripts/affiliate-signup/tests/details-pages-491.test.mjs
 import { test, after } from 'node:test';
@@ -55,7 +65,7 @@ function backend({ portal = details(), steps = [] } = {}) {
     tables: { profiles: [], affiliate_accounts: [{ id: 'acct-1', auth_user_id: UID, customer_id: 'cust-1', affiliate_id: 'aff-1', status: 'claimed',
       email_verified_at: portal.verified ? '2026-11-01T02:00:00Z' : null }] },
     rpc: {
-      affiliate_portal_me: () => ({ customer_id: 'cust-1', name: 'Ria Test', email: LOGIN, referral_code: 'T491RIA', status: 'active', joined_at: '2026-10-01T02:00:00Z' }),
+      affiliate_portal_me: () => ({ customer_id: 'cust-1', name: 'Ria Test', email: state.portal.login_email ?? LOGIN, referral_code: 'T491RIA', status: 'active', joined_at: '2026-10-01T02:00:00Z' }),
       affiliate_portal_details: () => state.portal,
     },
     invoke: {
@@ -209,4 +219,137 @@ test('Q7: the payout window says when the affiliate changed their phone', async 
   globalThis.__supabase = fakeSupabase({ rpc: { affiliate_self_phone_change: () => null } });
   await d.mount(h(mod.SelfPhoneChangeNote, { customerId: 'cust-8' })); await d.tick(5);
   assert.equal(document.querySelector('[data-note="self-phone-change"]'), null);
+});
+
+const RECORD = 'ria-record-491@example.com';
+const lostLink = () => card().querySelector('[data-action="lost-inbox"]');
+const emailBox = () => document.getElementById('details-email');
+
+test('Q8: a record with another address: the login\'s email shows, and the record\'s address is a real change', async () => {
+  const { client } = backend({ portal: details({ email: RECORD }), steps: [
+    { request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN },
+    { request_id: RID, next: 'code', purpose: 'new', code_to: RECORD },
+    (body, s) => { s.portal = { ...s.portal, email: RECORD, login_email: RECORD }; return { request_id: RID, status: 'applied', changes: { email: RECORD } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  assert.match(card().textContent, /ria-491@example\.com/, 'the card shows the login\'s email');
+  assert.doesNotMatch(card().textContent, /ria-record-491/, 'not the record\'s');
+  await d.click(d.button('Change my details', card()));
+  assert.equal(emailBox().value, LOGIN, 'the box holds the verified email');
+  assert.doesNotMatch(card().textContent, /one to your new email/, 'no new email has been typed');
+  await d.click(d.button('Save changes', card()));
+  assert.match(card().querySelector('[role="alert"]')?.textContent ?? '', /Nothing has changed\./);
+  assert.equal(sent(client).length, 0);
+  await d.setValue(emailBox(), RECORD);
+  assert.match(card().textContent, /Energia will email a code to ria-491@example\.com before changing anything, and one to your new email\./);
+  await d.click(d.button('Save changes', card()));
+  assert.deepEqual(sent(client)[0], { action: 'start', changes: { email: RECORD } });
+  assert.match(card().textContent, /Energia sent a 6-digit code to ria-491@example\.com\./);
+  await d.setValue(document.getElementById('details-code'), '123456');
+  await d.click(d.button('Confirm', card()));
+  assert.match(card().textContent, /Now enter the 6-digit code Energia sent to your new email, ria-record-491@example\.com\./);
+  await d.setValue(document.getElementById('details-code'), '654321');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(5);
+  assert.match(card().textContent, /Your details were changed\./);
+});
+
+test('Q9: after a change the top box reads the email and the name again, and says verified', async () => {
+  const { client } = backend({ steps: [
+    { request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN },
+    { request_id: RID, next: 'code', purpose: 'new', code_to: NEWMAIL },
+    (body, s) => { s.portal = { ...s.portal, email: NEWMAIL, login_email: NEWMAIL }; return { request_id: RID, status: 'applied', changes: { email: NEWMAIL } }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  const top = () => document.querySelector('[data-email-verified]')?.parentElement;
+  assert.match(top().textContent, /ria-491@example\.com/);
+  const reads = () => client.calls.filter(c => c.rpc === 'affiliate_portal_me').length;
+  const before = reads();
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.setValue(document.getElementById('details-code'), '123456');
+  await d.click(d.button('Confirm', card()));
+  await d.setValue(document.getElementById('details-code'), '654321');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(10);
+  assert.ok(reads() > before, 'read again');
+  assert.match(top().textContent, /ria-new-491@example\.com/);
+  assert.equal(document.querySelector('[data-email-verified]').getAttribute('data-email-verified'), 'yes');
+  assert.match(card().textContent, /Your details were changed\./, 'and the card keeps its message');
+});
+
+test('Q10: "I can\'t open ...": a code to the new email, then it waits for staff', async () => {
+  const { client } = backend({ steps: [
+    { request_id: RID, next: 'code', purpose: 'new', code_to: NEWMAIL },
+    (body, s) => { s.portal = { ...s.portal, request: { id: RID, route: 'staff', status: 'pending_staff', new_email: NEWMAIL } }; return { request_id: RID, next: 'pending_staff' }; },
+  ] });
+  await d.mount(app()); await d.tick(10);
+  assert.equal(lostLink(), null, 'not offered until the form is open');
+  await d.click(d.button('Change my details', card()));
+  assert.equal(lostLink().textContent, "I can't open ria-491@example.com");
+  await d.click(lostLink());
+  assert.match(card().textContent, /Energia will email a code to your new email\. Then Energia staff check the change before it is made/);
+  assert.doesNotMatch(card().textContent, /Energia will email a code to ria-491/, 'not to the inbox they cannot open');
+  await d.click(d.button('Save changes', card()));
+  assert.match(card().querySelector('[role="alert"]')?.textContent ?? '', /Please enter your new email\./);
+  assert.equal(sent(client).length, 0, 'nothing sent without a new email');
+  await d.setValue(emailBox(), NEWMAIL);
+  await d.click(d.button('Save changes', card()));
+  assert.deepEqual(sent(client)[0], { action: 'start', changes: { email: NEWMAIL }, lost_inbox: true });
+  assert.match(card().textContent, /Now enter the 6-digit code Energia sent to your new email, ria-new-491@example\.com\./);
+  await d.setValue(document.getElementById('details-code'), '123456');
+  await d.click(d.button('Confirm', card()));
+  await d.tick(5);
+  assert.match(card().textContent, /Your change was sent to Energia staff, who will check it\./);
+  assert.ok(card().querySelector('[data-state="waiting"]'));
+  assert.match(card().textContent, /After that, sign in with ria-new-491@example\.com\./);
+
+  // Changing their mind in the form: the usual way again.
+  const again = backend({ steps: [{ request_id: RID, next: 'code', purpose: 'current', code_to: LOGIN }] });
+  await d.mount(app()); await d.tick(10);
+  await d.click(d.button('Change my details', card()));
+  await d.click(lostLink());
+  assert.equal(lostLink().textContent, 'I can open it after all');
+  await d.click(lostLink());
+  await d.setValue(emailBox(), NEWMAIL);
+  assert.match(card().textContent, /Energia will email a code to ria-491@example\.com/);
+  await d.click(d.button('Save changes', card()));
+  assert.deepEqual(sent(again.client)[0], { action: 'start', changes: { email: NEWMAIL } });
+});
+
+test('Q11: unverified on an existing record: only this way; free and closed: not offered', async () => {
+  const { client } = backend({ portal: details({ route: 'verify_first', verified: false }), steps: [{ request_id: RID, next: 'code', purpose: 'new', code_to: NEWMAIL }] });
+  await d.mount(app()); await d.tick(10);
+  assert.match(card().textContent, /Please verify your email first/);
+  assert.equal(d.button('Change my details', card()), undefined);
+  assert.equal(lostLink().textContent, "I can't open ria-491@example.com");
+  await d.click(lostLink());
+  assert.equal(lostLink(), null, 'they cannot go back to a route they do not have');
+  assert.match(card().textContent, /Energia will email a code to your new email\./);
+  await d.setValue(emailBox(), NEWMAIL);
+  await d.click(d.button('Save changes', card()));
+  assert.deepEqual(sent(client)[0], { action: 'start', changes: { email: NEWMAIL }, lost_inbox: true });
+
+  backend({ portal: details({ route: 'free', verified: false }) });
+  await d.mount(app()); await d.tick(10);
+  await d.click(d.button('Change my details', card()));
+  assert.equal(lostLink(), null, 'free: their email changes at once');
+
+  backend({ portal: details({ route: 'closed' }) });
+  await d.mount(app()); await d.tick(10);
+  assert.equal(lostLink(), null, 'closed');
+});
+
+test('Q12: the staff panel says the inbox is lost, and shows the login\'s email and the record\'s', async () => {
+  const base = { created_at: '2026-11-06T02:00:00Z', customer_id: 'cust-9', customer_name: 'Sam Test', signed_up_with: null, new_email_proven: true };
+  const lost = { ...base, id: RID, current_inbox_lost: true, old: { first_name: 'Sam', last_name: 'Test', phone: null, email: 'sam-record@example.com', login_email: 'sam@example.com' }, new: { email: 'sam-new@example.com' } };
+  const usual = { ...base, id: '00000000-0000-4000-8000-0000000004b2', current_inbox_lost: false, old: { first_name: 'Sue', last_name: 'Test', phone: null, email: 'sue@example.com', login_email: 'sue@example.com' }, new: { email: 'sue-new@example.com' } };
+  globalThis.__supabase = fakeSupabase({ rpc: { affiliate_detail_change_requests: () => [lost, usual] } });
+  await d.mount(h(mod.DetailChangeRequestsPanel)); await d.tick(5);
+  const row = id => document.querySelector(`[data-change="${id}"]`);
+  const note = row(RID).querySelector('[data-note="lost-inbox"]');
+  assert.match(note?.textContent ?? '', /They say they cannot open their current email \(sam@example\.com\), so only the new email was confirmed\. Please check who this is before approving/);
+  assert.match(row(RID).textContent, /Emailsam@example\.com \(customer record: sam-record@example\.com\)sam-new@example\.com \(code confirmed\)/);
+  assert.equal(row(usual.id).querySelector('[data-note="lost-inbox"]'), null, 'not for a request made the usual way');
+  assert.match(row(usual.id).textContent, /Emailsue@example\.comsue-new@example\.com/);
 });

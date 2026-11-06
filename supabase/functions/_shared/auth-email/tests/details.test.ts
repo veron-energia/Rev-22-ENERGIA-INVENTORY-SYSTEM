@@ -12,6 +12,10 @@
 //      wrong_code with tries left, 429 wait); a code the delivery service did
 //      not take says not_sent.
 //   D7 decide: approve applies, reject only records.
+//   D8 (493) start with lost_inbox: the new database function, and the code goes
+//      where it says (the new address); anything but true is the usual start.
+//   D9 (493) a staff decision that changes the login's email tells the old and the
+//      new address; one made with codes, or changing no email, tells the old alone.
 // Every name and address is made up.
 
 import { assert, assertEquals } from 'jsr:@std/assert@1';
@@ -186,6 +190,65 @@ Deno.test('D7: an Owner\'s approval applies the change; a rejection only records
   assertEquals(a.status, 403);
 });
 
+Deno.test('D8: start with lost_inbox goes to its own function, and the code to the new address alone', async () => {
+  let t = world({ answers: { affiliate_detail_change_start_lost_inbox: { request_id: RID, route: 'staff', next: 'code', send: { to: NEW, code: '112233', purpose: 'new' } } } });
+  const a = await handleDetailsRequest('good', { action: 'start', lost_inbox: true, changes: { email: NEW, junk: 'x' } }, t.deps);
+  assertEquals(a.status, 200);
+  assertEquals(a.body, { request_id: RID, next: 'code', purpose: 'new', code_to: NEW });
+  assertEquals(t.calls, [{ fn: 'affiliate_detail_change_start_lost_inbox', args: { p_uid: UID, p_new: { email: NEW } } }]);
+  assertEquals(t.emails, [{ kind: 'code:new', to: NEW, body: '112233' }]);
+  assert(!JSON.stringify(a.body).includes('112233'), 'never in the answer');
+
+  for (const flag of [false, 'true', 1, null, undefined]) {
+    t = world({ answers: { affiliate_detail_change_start: { request_id: RID, route: 'code', next: 'code', send: { to: OLD, code: '445566', purpose: 'current' } } } });
+    await handleDetailsRequest('good', { action: 'start', lost_inbox: flag, changes: { email: NEW } }, t.deps);
+    assertEquals(t.calls.map(c => c.fn), ['affiliate_detail_change_start'], String(flag));
+  }
+
+  t = world({ answers: { affiliate_detail_change_start_lost_inbox: { error: 'new_email_required', field: 'email' } } });
+  const refused = await handleDetailsRequest('good', { action: 'start', lost_inbox: true, changes: { first_name: 'Ada' } }, t.deps);
+  assertEquals(refused.status, 400);
+  assertEquals(refused.body.error, 'new_email_required');
+  assertEquals(t.emails, []);
+});
+
+Deno.test('D9: a staff decision that changes the login\'s email tells the old and the new address', async () => {
+  let t = world({ answers: {
+    affiliate_detail_change_decide: { request_id: RID, next: 'apply', apply: plan(NEW) },
+    affiliate_detail_change_finish: applied({ email: NEW }),
+  } });
+  let a = await handleDetailsRequest('good', { action: 'decide', request_id: RID, approve: true }, t.deps);
+  assertEquals(a.body.status, 'applied');
+  assertEquals(t.logins, [NEW]);
+  assertEquals(t.emails.map(e => [e.kind, e.to]), [['changed', OLD], ['changed', NEW]]);
+
+  // A staff decision that changes no email: the old address alone.
+  t = world({ answers: {
+    affiliate_detail_change_decide: { request_id: RID, next: 'apply', apply: plan() },
+    affiliate_detail_change_finish: applied({ phone: '+61255500103' }),
+  } });
+  await handleDetailsRequest('good', { action: 'decide', request_id: RID, approve: true }, t.deps);
+  assertEquals(t.emails.map(e => [e.kind, e.to]), [['changed', OLD]]);
+
+  // Made with codes: the affiliate is there; the old address alone.
+  t = world({ answers: {
+    affiliate_detail_change_verify: { request_id: RID, next: 'apply', apply: plan(NEW) },
+    affiliate_detail_change_finish: applied({ email: NEW }),
+  } });
+  a = await handleDetailsRequest('good', { action: 'verify', request_id: RID, code: '123456' }, t.deps);
+  assertEquals(a.body.status, 'applied');
+  assertEquals(t.emails.map(e => [e.kind, e.to]), [['changed', OLD]]);
+
+  // Refused by Supabase Auth: nobody is told anything changed.
+  t = world({ loginOk: false, answers: {
+    affiliate_detail_change_decide: { request_id: RID, next: 'apply', apply: plan(NEW) },
+    affiliate_detail_change_finish: { request_id: RID, status: 'failed' },
+  } });
+  a = await handleDetailsRequest('good', { action: 'decide', request_id: RID, approve: true }, t.deps);
+  assertEquals(a.status, 409);
+  assertEquals(t.emails, []);
+});
+
 Deno.test('the two emails: the code shows only six digits; the notice lists what changed', () => {
   const code = renderDetailsCode('482913', 'new');
   assertEquals(code.subject, SUBJECTS.details_code);
@@ -196,4 +259,8 @@ Deno.test('the two emails: the code shows only six digits; the notice lists what
   assertEquals(notice.subject, 'Your Energia Details Were Changed');
   for (const s of ['Name: Ada Test', 'Phone: +61255500101', `Email: ${NEW}`, '2026-11-03 04:00 UTC', 'info@example.com']) assert(notice.text.includes(s), s);
   assert(!renderDetailsChanged({ first_name: '<script>' }, '2026-11-03T04:00:00Z', 'info@example.com').html.includes('<script>'));
+  // 493: a new email says which one to sign in with; no new email, no such line.
+  assert(notice.text.includes('From now on, sign in with your new email.') && notice.html.includes('From now on, sign in with your new email.'));
+  const noEmail = renderDetailsChanged({ phone: '+61255500101' }, '2026-11-03T04:00:00Z', 'info@example.com');
+  assert(!noEmail.text.includes('sign in with') && !noEmail.html.includes('sign in with'));
 });

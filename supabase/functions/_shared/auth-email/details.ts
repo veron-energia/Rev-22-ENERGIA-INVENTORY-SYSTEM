@@ -7,6 +7,7 @@
 //
 //   start  -> free:  apply now
 //          -> code:  email a code to the login's current address
+//          -> (493, lost_inbox) email a code to the new address; staff decide
 //   verify -> next code (a new email proves itself) | pending_staff | apply
 //   resend -> another code for the same step
 //   cancel
@@ -17,7 +18,8 @@
 // changes the record and the account. If finish fails, the login's email is
 // put back first (while the request is still 'applying', so the trigger on
 // auth.users knows it as the portal's own) and the request is marked failed.
-// The old address is told what changed.
+// The old address is told what changed; after a staff decision the new one
+// too (493): the affiliate is not there to see it, and signs in with it now.
 //
 // Codes come from the database once, go into the email and nowhere else: they
 // are never in a response, a log line or an outcome row.
@@ -35,7 +37,7 @@ export interface DetailsDeps {
   setLoginEmail(userId: string, email: string): Promise<{ ok: boolean; error?: string }>;
   /** Email a code; true when the delivery service accepted it. */
   sendCode(to: string, code: string, purpose: 'current' | 'new'): Promise<boolean>;
-  /** Tell the old address what changed; best effort. */
+  /** Tell an address what changed; best effort. */
   sendChanged(to: string, changes: Record<string, string>): Promise<boolean>;
   log(event: string, fields: Record<string, string | number | boolean | null>): void;
 }
@@ -49,7 +51,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // The database's refusals, and the HTTP status each goes back with.
 const STATUS_FOR: Record<string, number> = {
   invalid_request: 400, name_required: 400, name_too_long: 400, name_characters: 400, phone_invalid: 400,
-  email_invalid: 400, no_change: 400, wrong_code: 400, expired: 410, too_many_tries: 429, too_many_sends: 429,
+  email_invalid: 400, new_email_required: 400, no_change: 400, wrong_code: 400, expired: 410, too_many_tries: 429, too_many_sends: 429,
   wait: 429, too_many_requests: 429, phone_in_use: 409, email_in_use: 409, open_request: 409, verify_first: 403,
   not_allowed: 403, no_request: 404, note_required: 400, not_applying: 409, unavailable: 503,
 };
@@ -71,7 +73,9 @@ export async function handleDetailsRequest(token: string | null, body: Record<st
     const raw = (body.changes && typeof body.changes === 'object') ? body.changes as Record<string, unknown> : {};
     const changes: Record<string, string> = {};
     for (const k of CHANGE_KEYS) if (typeof raw[k] === 'string') changes[k] = raw[k] as string;
-    const answer = await call(deps, 'affiliate_detail_change_start', { p_uid: user.id, p_new: changes });
+    // 493: they cannot open their current email: the code goes to the new one, and staff decide.
+    const fn = body.lost_inbox === true ? 'affiliate_detail_change_start_lost_inbox' : 'affiliate_detail_change_start';
+    const answer = await call(deps, fn, { p_uid: user.id, p_new: changes });
     return next(deps, answer);
   }
   if (action === 'verify') {
@@ -91,7 +95,7 @@ export async function handleDetailsRequest(token: string | null, body: Record<st
     p_note: typeof body.note === 'string' ? body.note : null,
   });
   if (answer.status === 'rejected') return { status: 200, body: { request_id: requestId, status: 'rejected' } };
-  return next(deps, answer);
+  return next(deps, answer, true);
 }
 
 /** A database function's answer as an object; a failed call is 'unavailable'. */
@@ -105,7 +109,7 @@ async function call(deps: DetailsDeps, fn: string, args: Record<string, unknown>
 }
 
 /** What follows an answer: a refusal, a code to email, a wait for staff, or the change itself. */
-async function next(deps: DetailsDeps, answer: Record<string, unknown>): Promise<DetailsAnswer> {
+async function next(deps: DetailsDeps, answer: Record<string, unknown>, staffDecided = false): Promise<DetailsAnswer> {
   if (answer.error === 'unavailable') return { status: 503, body: { error: 'unavailable' } };
   if (answer.error) return refuse(answer);
   const requestId = answer.request_id;
@@ -118,11 +122,11 @@ async function next(deps: DetailsDeps, answer: Record<string, unknown>): Promise
     return { status: 200, body: { request_id: requestId, next: 'code', purpose: send.purpose, code_to: send.to } };
   }
   if (answer.next === 'pending_staff') return { status: 200, body: { request_id: requestId, next: 'pending_staff' } };
-  if (answer.next === 'apply') return apply(deps, answer.apply as Record<string, unknown>);
+  if (answer.next === 'apply') return apply(deps, answer.apply as Record<string, unknown>, staffDecided);
   return { status: 503, body: { error: 'unavailable' } };
 }
 
-async function apply(deps: DetailsDeps, plan: Record<string, unknown> | undefined): Promise<DetailsAnswer> {
+async function apply(deps: DetailsDeps, plan: Record<string, unknown> | undefined, staffDecided: boolean): Promise<DetailsAnswer> {
   const id = typeof plan?.request_id === 'string' ? plan.request_id : null;
   const userId = typeof plan?.auth_user_id === 'string' ? plan.auth_user_id : null;
   if (!id || !userId) return { status: 503, body: { error: 'unavailable' } };
@@ -152,6 +156,10 @@ async function apply(deps: DetailsDeps, plan: Record<string, unknown> | undefine
   if (notifyTo) {
     const told = await deps.sendChanged(notifyTo, changes);
     deps.log('affiliate_details.changed_notice', { accepted: told });
+  }
+  if (staffDecided && newLogin) {
+    const told = await deps.sendChanged(newLogin, changes);
+    deps.log('affiliate_details.changed_notice_new_email', { accepted: told });
   }
   return { status: 200, body: { request_id: id, status: 'applied', changes } };
 }

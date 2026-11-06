@@ -6,6 +6,7 @@ import AffiliateLayout from '../../../src/components/AffiliateLayout';
 import AffiliateRulesPage from '../../../src/pages/AffiliateRulesPage';
 import AffiliateAccountPage from '../../../src/pages/AffiliateAccountPage';
 import AffiliateNetworkPage from '../../../src/pages/AffiliateNetworkPage';
+import DetailChangeRequestsPanel from '../../../src/components/DetailChangeRequestsPanel';
 
 // The real shell, with the real stylesheet. Resize the window (or emulate a
 // width) and read the badge: it reports which of the two navigations the CSS
@@ -48,15 +49,17 @@ const rules = page === 'rules';
 const account = page === 'account';
 // ?page=network: My Network (492: every Tier 1 number; no card once the promotion is final, ?promo=running shows it)
 const network = page === 'network';
+// ?page=panel: the staff panel of detail changes (493: one asked for by someone who cannot open their inbox).
+const panel = page === 'panel';
 
 createRoot(document.getElementById('root')!).render(
   <MemoryRouter initialEntries={[rules ? '/affiliate/rules' : account ? '/affiliate/account' : network ? '/affiliate/network' : '/affiliate/dashboard']}>
-    {rules ? <AffiliateRulesPage /> : account ? <AffiliateAccountPage /> : network ? <AffiliateNetworkPage /> : (
+    {rules ? <AffiliateRulesPage /> : account ? <AffiliateAccountPage /> : network ? <AffiliateNetworkPage /> : panel ? <div className="portal-content"><DetailChangeRequestsPanel /></div> : (
       <AffiliateLayout>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Dashboard</h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13.5 }}>Your Energia affiliate overview</p>
       </AffiliateLayout>
     )}
-    {!rules && !account && !network && <Probe />}
+    {!rules && !account && !network && !panel && <Probe />}
   </MemoryRouter>
 );

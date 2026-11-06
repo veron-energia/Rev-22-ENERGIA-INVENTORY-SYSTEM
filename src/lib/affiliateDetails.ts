@@ -48,6 +48,7 @@ const MESSAGES: Record<string, string> = {
   phone_invalid: 'Please enter a valid phone number, with its country code.',
   phone_in_use: 'This phone number belongs to another Energia customer. Please ask Energia staff for help.',
   email_invalid: 'Please enter a valid email address.',
+  new_email_required: 'Please enter your new email.',
   email_in_use: 'This email is already used by another Energia account. Please ask Energia staff for help.',
   wrong_code: 'That code is not right.',
   expired: 'That code has expired. Please start again.',

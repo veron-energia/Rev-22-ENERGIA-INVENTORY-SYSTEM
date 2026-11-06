@@ -22,10 +22,12 @@ const RULES = {
 
 // The Account page (491): ?route=free|code|staff|verify_first is what the
 // login may do; the details flow answers as the server does (any 6 digits
-// are right, 000000 is wrong).
+// are right, 000000 is wrong). ?diff=1: the record holds another address than
+// the login's (the case of 6 Nov 2026). 493: "I can't open ..." sends the code to
+// the new email, and the change waits for staff.
 const DETAILS = {
   route: params.get('route') ?? 'code', verified: params.get('route') !== 'free' && params.get('route') !== 'verify_first',
-  first_name: 'Ada', last_name: 'Preview', phone: '+61255500101', email: 'ada.preview@example.com', login_email: 'ada.preview@example.com',
+  first_name: 'Ada', last_name: 'Preview', phone: '+61255500101', email: params.get('diff') === '1' ? 'ada.record@example.com' : 'ada.preview@example.com', login_email: 'ada.preview@example.com',
   request: null as null | Record<string, unknown>,
 };
 // My Network (492): every Tier 1 number as the database now sends it (one referral asked to hide hers: a dash);
@@ -44,11 +46,15 @@ const PROGRESS = {
               status: params.get('promo') === 'running' ? 'provisional' : 'final' },
   counted: 0, not_yet_visited: 0, referred_in_window: 0, tier_reached: null, next_tier: 10, to_next: 10, reward_tier: null, reward_given_at: null,
 };
-let pending: { changes: Record<string, string>; step: 'current' | 'new' } | null = null;
+let pending: { changes: Record<string, string>; step: 'current' | 'new'; lost?: boolean } | null = null;
 const answer = (data: unknown) => ({ data, error: null });
 function detailsStep(body: Record<string, unknown>) {
   if (body.action === 'start') {
     const changes = (body.changes ?? {}) as Record<string, string>;
+    if (body.lost_inbox === true) {
+      pending = { changes, step: 'new', lost: true };
+      return answer({ request_id: '00000000-0000-4000-8000-0000000000bb', next: 'code', purpose: 'new', code_to: changes.email });
+    }
     if (DETAILS.route === 'free') { Object.assign(DETAILS, changes); return answer({ status: 'applied', changes }); }
     pending = { changes, step: 'current' };
     return answer({ request_id: '00000000-0000-4000-8000-0000000000bb', next: 'code', purpose: 'current', code_to: DETAILS.login_email });
@@ -56,7 +62,8 @@ function detailsStep(body: Record<string, unknown>) {
   if (body.action === 'verify') {
     if (body.code === '000000') return { data: null, error: { context: new Response(JSON.stringify({ error: 'wrong_code', tries_left: 4 }), { status: 400 }) } };
     if (pending?.step === 'current' && pending.changes.email) { pending.step = 'new'; return answer({ request_id: '00000000-0000-4000-8000-0000000000bb', next: 'code', purpose: 'new', code_to: pending.changes.email }); }
-    if (DETAILS.route === 'staff') { DETAILS.request = { id: '00000000-0000-4000-8000-0000000000bb', route: 'staff', status: 'pending_staff' }; return answer({ next: 'pending_staff' }); }
+    if (DETAILS.route === 'staff' || pending?.lost) { DETAILS.request = { id: '00000000-0000-4000-8000-0000000000bb', route: 'staff', status: 'pending_staff', new_email: pending?.changes.email ?? null }; return answer({ next: 'pending_staff' }); }
+    if (pending?.changes.email) DETAILS.login_email = pending.changes.email;
     Object.assign(DETAILS, pending?.changes ?? {}); pending = null; return answer({ status: 'applied' });
   }
   if (body.action === 'resend') return answer({ request_id: '00000000-0000-4000-8000-0000000000bb', next: 'code', purpose: pending?.step ?? 'current', code_to: DETAILS.login_email });
@@ -69,6 +76,14 @@ export const supabase = {
     if (fn === 'affiliate_portal_me') return answer({ name: 'Ada Preview', email: DETAILS.login_email, referral_code: 'PREVIEW1', status: 'active', joined_at: '2026-10-01T02:00:00Z' });
     if (fn === 'affiliate_portal_details') return answer({ ...DETAILS });
     if (fn === 'affiliate_portal_network') return answer(NETWORK);
+    if (fn === 'affiliate_detail_change_requests') return answer([
+      { id: '00000000-0000-4000-8000-0000000000c1', created_at: '2026-11-06T02:00:00Z', customer_id: 'c1', customer_name: 'Ada Preview', current_inbox_lost: true, new_email_proven: true,
+        old: { first_name: 'Ada', last_name: 'Preview', phone: '+61255500101', email: 'ada.record@example.com', login_email: 'ada.preview@example.com' },
+        new: { email: 'ada.new@example.com' }, signed_up_with: { name: 'Ada Preview', phone: '+61255500101', email: 'ada.preview@example.com' } },
+      { id: '00000000-0000-4000-8000-0000000000c2', created_at: '2026-11-05T02:00:00Z', customer_id: 'c2', customer_name: 'Bea Preview', current_inbox_lost: false, new_email_proven: false,
+        old: { first_name: 'Bea', last_name: 'Preview', phone: '+61255500102', email: 'bea@example.com', login_email: 'bea@example.com' },
+        new: { phone: '+61255500122' }, signed_up_with: null },
+    ]);
     if (fn === 'affiliate_portal_campaign_progress') return answer(PROGRESS);
     if (fn !== 'affiliate_rules_info') return { data: null, error: { message: `preview stub: ${fn} is not stubbed` } };
     if (params.get('rules') === 'fail') return { data: null, error: { message: 'Failed to fetch' } };
