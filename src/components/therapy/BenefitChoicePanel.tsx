@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useBackdropClose } from '../../hooks/useBackdropClose';
 import './therapy.css';
 
 type Named = { voucher_id?: string; service_id?: string; name: string };
@@ -59,6 +60,7 @@ export const BenefitChoicePanel: React.FC<{
   // One request id per switch: kept when a try fails, so pressing again is
   // the same request; a new one for this window's next switch.
   const requestId = useRef<string>(crypto.randomUUID());
+  const backdrop = useBackdropClose(onClose);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -114,7 +116,7 @@ export const BenefitChoicePanel: React.FC<{
   };
 
   return (
-    <div className="credit-rules-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="credit-rules-backdrop" {...backdrop}>
       <div className="credit-rules" role="dialog" aria-modal="true" aria-labelledby="bc-title">
         <div className="credit-rules-head">
           <h3 id="bc-title">{state ? state.unit_label : 'Benefit'}</h3>

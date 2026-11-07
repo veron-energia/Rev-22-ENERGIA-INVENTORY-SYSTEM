@@ -590,6 +590,51 @@ test('Products: an Admin looks; an Inventory Manager adds and edits through save
     'no direct product writes left');
 });
 
+test('Products: closing the form asks first only once something has changed', async () => {
+  await mount(P.ProductsPage, 'manager');
+  const outside = () => document.querySelector('.modal-overlay');
+  const DISCARD = ['Discard what you have entered? It will not be saved.'];
+
+  await click(buttonWith('Add Product'));
+  await click(outside());
+  assert.equal(confirms.length, 0, 'Add Product untouched: nothing to lose');
+  assert.ok(!modal());
+
+  await click(buttonWith('Add Product'));
+  const name = () => modal().querySelector('input');
+  await setValue(name(), 'A made-up product');
+  confirmAnswer = false;
+  await click(outside());
+  assert.deepEqual(confirms, DISCARD);
+  assert.equal(name().value, 'A made-up product', 'No keeps the form and what was typed');
+  await click(modal().querySelector('button[aria-label="Close"]'));
+  assert.equal(confirms.length, 2, 'the X asks too');
+  await setValue(name(), '');
+  confirms.length = 0;
+  await click(outside());
+  assert.equal(confirms.length, 0, 'put back as it opened');
+  assert.ok(!modal());
+
+  await click(buttonWith('Add Product'));
+  await setValue(name(), 'A made-up product');
+  await click(button('Cancel', modal()));
+  assert.equal(confirms.length, 0, 'Cancel means discard, as on the other forms');
+  assert.ok(!modal());
+
+  // Editing starts from the product, with its categories and suppliers.
+  await click(document.querySelector('button[title="Edit"]'));
+  await click(outside());
+  assert.equal(confirms.length, 0, 'Edit untouched');
+  assert.ok(!modal());
+  await click(document.querySelector('button[title="Edit"]'));
+  await setValue(name(), 'Another made-up name');
+  confirmAnswer = true;
+  await click(outside());
+  assert.deepEqual(confirms, DISCARD);
+  assert.ok(!modal(), 'Yes closes it');
+  assert.equal(callsOf('save_product').length, 0, 'and nothing was saved');
+});
+
 test('Products: Delete shows the server\'s refusal; Show deleted lists Restore', async () => {
   await mount(P.ProductsPage, 'manager');
   assert.ok(!row('Fixture Gone'), 'deleted products are hidden');

@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { QrCode } from 'lucide-react';
 import { paymentQrAmount, type PaymentQrChoice, type PaymentQrImage } from '../../lib/invoices/paymentQr.mjs';
+import { useBackdropClose } from '../../hooks/useBackdropClose';
 
 /**
  * The store's QR for the customer to scan, shown the moment staff pick PayNow,
@@ -26,6 +27,7 @@ export function PaymentQrPopup({ qr, image, amount, reference, onClose, returnFo
   const opener = useRef<Element | null>(null);
   const closeCallback = useRef(onClose); closeCallback.current = onClose;
   const focusTarget = useRef(returnFocusTo); focusTarget.current = returnFocusTo;
+  const backdrop = useBackdropClose(onClose);
   const titleId = useId();
   const [broken, setBroken] = useState(false);
   useEffect(() => { setBroken(false); }, [image.url]);
@@ -56,7 +58,7 @@ export function PaymentQrPopup({ qr, image, amount, reference, onClose, returnFo
 
   const pay = paymentQrAmount(amount);
   return (
-    <div className="invoice-qr-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="invoice-qr-backdrop" {...backdrop}>
       <div className="invoice-qr" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={dialog}>
         <h3 id={titleId}>Scan to pay with {qr.label}</h3>
         {qr.methodName && qr.methodName.toLowerCase() !== qr.label.toLowerCase() &&

@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isOwnerOrManager } from '../types';
-import { Modal } from './ui';
+import { DISCARD_QUESTION, Modal } from './ui';
 import { Download, RefreshCw, FileText, Check } from 'lucide-react';
 import SurveyAttachments from './SurveyAttachments';
 import { plainDate, sgDateTime } from '../lib/survey/links.mjs';
@@ -327,10 +327,17 @@ const SurveyDetailModal: React.FC<{
   const startMode = !sid && !!customer;
   const title = s ? `${s.survey_no} — ${s.full_name}` : startMode ? `New survey — ${customer!.full_name}` : 'Survey';
 
+  // What closing the window would lose, so it asks first: what Edit details
+  // would save, a date of birth begun (it saves nothing until it is whole) and
+  // a review not saved yet. Close stays on screen while editing, so it asks too.
+  const unsaved = review.changed || (editing && (Object.keys(changes).length > 0
+    || (!!(ed.dob_y || ed.dob_m || ed.dob_d) && !ed.date_of_birth)));
+  const closeWindow = () => { if (!unsaved || window.confirm(DISCARD_QUESTION)) onClose(); };
+
   return (
-    <Modal title={title} maxWidth={760} onClose={onClose}
+    <Modal title={title} maxWidth={760} onClose={onClose} confirmClose={unsaved}
       footer={<>
-        <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        <button className="btn btn-secondary" onClick={closeWindow}>Close</button>
         {data?.has_pdf && <button className="btn btn-secondary" onClick={downloadPdf}><Download size={14} /> Signed PDF</button>}
         {/* The boxes show the saved review after a save, and Save Review has
             already added it as a note: Submit as Note waits for a change, so

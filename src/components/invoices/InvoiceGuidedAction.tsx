@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { useBackdropClose } from '../../hooks/useBackdropClose';
 // The popup's own styles. Approvals opens it from a separate page bundle, so it
 // cannot rely on the invoices page having loaded them first.
 import './invoice-controls.css';
@@ -566,9 +567,10 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     }
   };
   closeRef.current = requestClose;
+  const backdrop = useBackdropClose(requestClose);
 
   if (done) return (
-    <div className="invoice-guided-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="invoice-guided-backdrop" {...backdrop}>
       <div className="invoice-guided invoice-guided--done" role="dialog" aria-modal="true" aria-labelledby="ga-done" ref={dialog}>
         <h3 id="ga-done">Done</h3>
         <p>{done}</p>
@@ -632,7 +634,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   );
 
   return (
-    <div className="invoice-guided-backdrop" onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
+    <div className="invoice-guided-backdrop" {...backdrop}>
       <div className="invoice-guided" role="dialog" aria-modal="true" aria-labelledby="ga-title" ref={dialog}>
         <div className="invoice-guided-head">
           <h3 id="ga-title">Refund or cancel{shownPlan?.invoice_no ? ` ${shownPlan.invoice_no}` : ''}</h3>

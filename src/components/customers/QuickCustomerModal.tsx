@@ -5,6 +5,7 @@ import PhoneInput, { isPhoneValid } from '../PhoneInput';
 import { phoneErrorMessage } from '../../lib/customer-phones/normalize.mjs';
 import { canEditCustomers, CUSTOMER_EDIT_REFUSED } from '../../lib/customers/customerRoles.mjs';
 import { useAuth } from '../../context/AuthContext';
+import { useBackdropClose } from '../../hooks/useBackdropClose';
 import './quick-customer.css';
 
 type Candidate = {
@@ -54,6 +55,7 @@ export const QuickCustomerModal: React.FC<{
   // One id per attempt: a retry after a lost response returns the customer the
   // first call made instead of creating a second one.
   const requestId = useRef(crypto.randomUUID());
+  const backdrop = useBackdropClose(onClose);
 
   const on = (k: keyof typeof empty) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -122,8 +124,7 @@ export const QuickCustomerModal: React.FC<{
   };
 
   return (
-    <div className="quick-customer-backdrop"
-         onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="quick-customer-backdrop" {...backdrop}>
       <div className="quick-customer" role="dialog" aria-modal="true" aria-labelledby="qc-title">
         <div className="quick-customer-head">
           <h3 id="qc-title"><UserPlus size={16} aria-hidden="true" /> Add a customer</h3>

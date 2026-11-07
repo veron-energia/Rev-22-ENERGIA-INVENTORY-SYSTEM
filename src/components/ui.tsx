@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useBackdropClose } from '../hooks/useBackdropClose';
 import { UserRole } from '../types';
 import { Lock } from 'lucide-react';
 
@@ -39,6 +40,9 @@ function isTopModal(overlay: HTMLElement | null): boolean {
   return open.length > 0 && open[open.length - 1] === overlay;
 }
 
+/** What a form asks before its work is thrown away. */
+export const DISCARD_QUESTION = 'Discard what you have entered? It will not be saved.';
+
 export const Modal: React.FC<{
   title: string;
   onClose: () => void;
@@ -60,9 +64,10 @@ export const Modal: React.FC<{
   const overlayRef = React.useRef<HTMLDivElement | null>(null);
 
   const requestClose = React.useCallback(() => {
-    if (confirmClose && !window.confirm('Discard what you have entered? It will not be saved.')) return;
+    if (confirmClose && !window.confirm(DISCARD_QUESTION)) return;
     onClose();
   }, [confirmClose, onClose]);
+  const backdrop = useBackdropClose(requestClose);
 
   // Escape closes, through the same confirmation. Only the window on top
   // answers it: every open window listens on the document, so with one window
@@ -87,8 +92,7 @@ export const Modal: React.FC<{
   React.useEffect(() => { panelRef.current?.focus(); }, []);
 
   return (
-  <div className={`modal-overlay${wide ? ' wide' : ''}`} ref={overlayRef} data-modal-overlay=""
-       onClick={e => { if (e.target === e.currentTarget) requestClose(); }}>
+  <div className={`modal-overlay${wide ? ' wide' : ''}`} ref={overlayRef} data-modal-overlay="" {...backdrop}>
     <div className="modal" ref={panelRef} tabIndex={-1}
       role="dialog" aria-modal="true" aria-labelledby={titleId}
       style={wide

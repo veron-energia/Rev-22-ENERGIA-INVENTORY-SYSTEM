@@ -43,8 +43,9 @@ const STUBS = {
   auth: 'export const useAuth = () => ({ profile: { id: "u-1", role: globalThis.__ROLE__ } });',
   types: `export const isOwnerOrManager = r => r === 'owner' || r === 'manager';`,
   ui: `import React from 'react';
-    export const Modal = ({ title, children, footer }) =>
-      React.createElement('div', { role: 'dialog' }, React.createElement('h1', null, title), children,
+    export const DISCARD_QUESTION = 'Discard?';
+    export const Modal = ({ title, children, footer, confirmClose }) =>
+      React.createElement('div', { role: 'dialog', 'data-asks': String(!!confirmClose) }, React.createElement('h1', null, title), children,
                           React.createElement('footer', null, footer));`,
   phone: `import React from 'react';
     export default function PhoneInput(p) {
@@ -172,6 +173,59 @@ test('CUSTOMERS-4: Not answered stays Not answered, and only the answer changed 
     assert.deepEqual(sent[0].args, { p_survey_id: 'hs-1', p_changes: { smokes: true }, p_reason: null });
     assert.equal(ui.calls('update_survey_particulars').length, 0, 'the old function is not called');
   } finally { ui.close(); }
+});
+
+test('closing asks first only once something would be lost', async () => {
+  const db = makeDb({ survey: { ...SURVEY(), date_of_birth: null, occupation: 'Retired' }, customer: { id: 'c-1', date_of_birth: null } });
+  const ui = await mount('owner', { surveyId: 'hs-1' }, db);
+  const asks = () => ui.$('[role="dialog"]').dataset.asks === 'true';
+  const box = label => [...ui.node.querySelectorAll('.form-group')]
+    .find(g => g.querySelector('label')?.textContent === label).querySelector('input');
+  try {
+    assert.equal(asks(), false, 'a window only looked at');
+    await ui.click('[data-edit-details]');
+    assert.equal(asks(), false, 'Edit details opened, nothing changed');
+    await ui.change(box('Occupation'), 'Teacher');
+    assert.equal(asks(), true, 'a changed box');
+    await ui.change(box('Occupation'), 'Retired');
+    assert.equal(asks(), false, 'put back as it was');
+    await ui.change('[aria-label="Day of birth"]', '5');
+    assert.equal(asks(), true, 'a date of birth begun, though it saves nothing yet');
+    await ui.change('[aria-label="Day of birth"]', '');
+    assert.equal(asks(), false);
+    await ui.change(box('Occupation'), 'Teacher');
+    await ui.click([...ui.node.querySelectorAll('button')].find(b => b.textContent === 'Cancel'));
+    assert.equal(asks(), false, 'Cancel threw it away');
+    await ui.change(ui.node.querySelectorAll('textarea')[0], 'A review being typed');
+    assert.equal(asks(), true, 'a review not saved yet');
+  } finally { ui.close(); }
+});
+
+test('the Close button asks as the X does, only when there is something to lose', async () => {
+  const asked = [];
+  let answer = false;
+  dom.window.confirm = q => { asked.push(q); return answer; };
+  let closed = 0;
+  const db = makeDb();
+  const ui = await mount('staff', { surveyId: 'hs-1', onClose() { closed++; } }, db);
+  const closeButton = () => [...ui.node.querySelectorAll('footer button')].find(b => b.textContent === 'Close');
+  try {
+    await ui.click('[data-edit-details]');
+    await ui.change('[data-declaration="smokes"]', 'yes');
+    await ui.click(closeButton());
+    assert.deepEqual(asked, ['Discard?']);
+    assert.equal(closed, 0, 'No keeps the window');
+    assert.equal(ui.$('[data-declaration="smokes"]').value, 'yes', 'and what was changed');
+    answer = true;
+    await ui.click(closeButton());
+    assert.equal(asked.length, 2);
+    assert.equal(closed, 1, 'Yes closes it');
+    await ui.change('[data-declaration="smokes"]', '');
+    await ui.click(closeButton());
+    assert.equal(asked.length, 2, 'nothing to lose, nothing asked');
+    assert.equal(closed, 2);
+    assert.equal(ui.calls('update_survey_particulars_v2').length, 0, 'closing saves nothing');
+  } finally { ui.close(); delete dom.window.confirm; }
 });
 
 test('CUSTOMERS-4: saving with nothing changed sends nothing', async () => {

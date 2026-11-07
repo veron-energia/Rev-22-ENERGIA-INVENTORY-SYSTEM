@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { useBackdropClose } from '../../hooks/useBackdropClose';
 import './therapy.css';
 
 type Eligible = {
@@ -67,6 +68,7 @@ export const VoucherClaimPanel: React.FC<{
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<any | null>(null);
+  const backdrop = useBackdropClose(onClose);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -132,7 +134,7 @@ export const VoucherClaimPanel: React.FC<{
   };
 
   return (
-    <div className="credit-rules-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="credit-rules-backdrop" {...backdrop}>
       <div className="credit-rules" role="dialog" aria-modal="true" aria-labelledby="vc-title">
         <div className="credit-rules-head">
           <h3 id="vc-title">Claim vouchers{state ? ` — ${state.entitlement_no}` : ''}</h3>

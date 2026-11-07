@@ -77,6 +77,7 @@
     "test:quick-customer": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/quick-customer/tests/create-and-match.sql",
     "test:password-ui": "node --test scripts/ui/tests/*.test.mjs",
     "test:instalment-and-phone:browser": "node scripts/ui/tests/instalment-and-phone-browser.mjs",
+    "test:popup-drag:browser": "node scripts/ui/tests/popup-drag-outside-browser.mjs",
     "test:invoice-correction": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoice-correction/tests/affiliate-correction.sql -f scripts/invoice-correction/tests/promotion-voucher-ownership.sql -f scripts/invoice-correction/tests/reassignment-benefits.sql -f scripts/invoice-correction/tests/reassignment-owns-one-purchase.sql -f scripts/invoice-correction/tests/payment-corrections.sql",
     "test:invoice-correction:page": "node --test scripts/invoice-correction/tests/*.test.mjs",
     "test:therapy-choices": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/therapy-choices/tests/choice-packages.sql -f scripts/therapy-choices/tests/choice-at-till.sql -f scripts/therapy-choices/tests/switching-and-refunds.sql -f scripts/therapy-choices/tests/package-services-and-claim.sql",

@@ -61,6 +61,8 @@ const ProductsPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(blank());
+  // The form as it opened: closing it asks first only once it differs.
+  const [formOpened, setFormOpened] = useState<FormState>(form);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Deleted products are hidden, not removed: "Show deleted" lists them with
@@ -97,15 +99,15 @@ const ProductsPage: React.FC = () => {
   };
 
   const openTab = (next: typeof tab) => { setTab(next); setFlash(null); setPageErr(null); };
-  const openAdd = () => {
-    setForm({ ...blank(), product_type: onService ? 'no_commission' : 'own' });
-    setEditId(null); setErr(null); setModalOpen(true);
+  const openForm = (opened: FormState, id: string | null) => {
+    setForm(opened); setFormOpened(opened);
+    setEditId(id); setErr(null); setModalOpen(true);
   };
+  const openAdd = () => openForm({ ...blank(), product_type: onService ? 'no_commission' : 'own' }, null);
   const openEdit = (p: Product) => {
     const cats = prodCats.filter(x => x.product_id === p.id).map(x => x.category_id);
     const sups = prodSups.filter(x => x.product_id === p.id).map(x => x.supplier_id);
-    setForm({ ...blank(p), categoryIds: cats, supplierIds: sups });
-    setEditId(p.id); setErr(null); setModalOpen(true);
+    openForm({ ...blank(p), categoryIds: cats, supplierIds: sups }, p.id);
   };
 
   const handleSave = async () => {
@@ -383,6 +385,7 @@ const ProductsPage: React.FC = () => {
           title={`${editId ? 'Edit' : 'Add'} ${onService ? 'Service' : 'Product'}`}
           maxWidth={540}
           onClose={() => setModalOpen(false)}
+          confirmClose={JSON.stringify(form) !== JSON.stringify(formOpened)}
           footer={
             <>
               <button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button>
