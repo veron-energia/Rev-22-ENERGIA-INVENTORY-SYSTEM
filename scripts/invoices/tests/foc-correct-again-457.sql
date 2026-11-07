@@ -248,7 +248,7 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('lock_settled_invoice(uuid)', 'ccc7016ac73d9a13142980386a5929dc'),
                ('trg_lock_on_settle()', '39c6478cdaec553c2ab8ceaf55058960'),
                ('invoice_before_full_payment(uuid)', '532d7690367fc674737b20420e7fb16c'),
-               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33|13b0925c29bd8ca14d8d8b7bd961fef8'),
+               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33|13b0925c29bd8ca14d8d8b7bd961fef8|23c180873b6545bd83fb20d21708aa9e'),
                ('invoice_revision_retry(uuid,uuid,jsonb)', '5c33c50a8f6870d8a66f74b63b782f24'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855'),
                ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448'),

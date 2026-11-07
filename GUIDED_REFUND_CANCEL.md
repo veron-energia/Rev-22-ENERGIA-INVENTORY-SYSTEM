@@ -279,15 +279,18 @@ The deployment order in this document gains `302` and `303` at the end.
   it: a machine lowered or removed comes off the waiting list, or goes back on
   the shelf it left without a question, and shows as "Cancelled (line
   corrected) · stock back"; a raised quantity or another machine joins the
-  waiting list; the correction summary says which before saving. A sale still
-  waiting also takes the invoice's corrected customer and store (one released,
-  or sent by a supplier, keeps them), and is not released, from a warehouse, a
-  store or a supplier, while its invoice owes money. Still open: a unit
-  confirmed "not returned" can only be put back by a stock adjustment, as a
-  product's can. Rentals are as above (awaiting return, then received). See
+  waiting list; the correction summary says which before saving. Every sale
+  not cancelled, waiting, released or sent by a supplier, also takes the
+  invoice's corrected customer and store and its line's corrected price (the
+  price before any discount); no stock and no money moves, and where it left
+  from stays. A sale waiting is not released, from a warehouse, a store or a
+  supplier, while its invoice owes money. Still open: a unit confirmed "not
+  returned" can only be put back by a stock adjustment, as a product's can.
+  Rentals are as above (awaiting return, then received). See
   `supabase/496_released_special_sale_stock_comes_back.sql`,
-  `supabase/497_correction_follows_special_sales.sql` and
-  `supabase/498_waiting_sale_follows_invoice_and_waits_for_payment.sql`.
+  `supabase/497_correction_follows_special_sales.sql`,
+  `supabase/498_waiting_sale_follows_invoice_and_waits_for_payment.sql` and
+  `supabase/500_special_sales_follow_invoice_customer_store_price.sql`.
 - **Multiple benefit recipients on a bundle** — `transfer_invoice_unused_benefit`
   moves a benefit to another customer and the plan follows the source-linked
   allocation, but the combination *transferred-then-refunded* has no dedicated

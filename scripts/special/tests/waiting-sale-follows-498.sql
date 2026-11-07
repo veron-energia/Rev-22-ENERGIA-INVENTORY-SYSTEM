@@ -197,6 +197,7 @@ end$$;
 -- ═════ A The customer ═════
 do $$
 declare inv uuid; s uuid[]; res jsonb; line uuid; pv jsonb; e jsonb; other uuid; n int;
+  v500 boolean := pg_get_functiondef('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)'::regprocedure) like '%500: and each takes%';  -- 500: a machine out follows too
 begin
   perform pg_temp.as_user('owner');
   perform pg_temp.mkspecial('a1');
@@ -206,13 +207,13 @@ begin
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'a1', 3)), jsonb_build_object('customer_id', pg_temp.fx('buyer2')), 'Wrong customer', gen_random_uuid());
   perform pg_temp.check((select customer_id from public.invoices where id = inv) = pg_temp.fx('buyer2'), 'A0 the invoice has the new customer');
   perform pg_temp.check(pg_temp.cust_of(s[2]) = pg_temp.fx('buyer2') and pg_temp.cust_of(s[3]) = pg_temp.fx('buyer2'), 'A1 both waiting sales follow it, with the lines unchanged');
-  perform pg_temp.check(pg_temp.cust_of(s[1]) = pg_temp.fx('buyer'), 'A2 the released one keeps the customer it went to');
-  perform pg_temp.check(pg_temp.notes_of(s[2]) like '%Follows invoice % as corrected: Wrong customer%' and pg_temp.notes_of(s[1]) not like '%Follows invoice%', 'A3 a note on each that moved, none on the other');
+  perform pg_temp.check(pg_temp.cust_of(s[1]) = case when v500 then pg_temp.fx('buyer2') else pg_temp.fx('buyer') end, 'A2 the released one keeps the customer it went to (until 500, which has it follow too)');
+  perform pg_temp.check(pg_temp.notes_of(s[2]) like '%Follows invoice % as corrected: Wrong customer%' and (v500 or pg_temp.notes_of(s[1]) not like '%Follows invoice%'), 'A3 a note on each that moved, none on the other (until 500)');
   perform pg_temp.check(exists (select 1 from public.audit_logs a where a.action = 'special_sale_follows_invoice' and a.record_id = s[2]
         and a.old_data->>'customer_id' = pg_temp.fx('buyer')::text and a.new_data->>'customer_id' = pg_temp.fx('buyer2')::text),
     'A4 the Audit Log has before and after');
-  perform pg_temp.check(pg_temp.states(res) = 'moved,moved' and pg_temp.said(res) like '%C498 a1 moves to C498 Second Buyer%'
-      and pg_temp.said(res) like pg_temp.sale_no_of(s[2]) || ':%', 'A5 the answer says it, for the page: ' || pg_temp.said(res));
+  perform pg_temp.check(pg_temp.states(res) = case when v500 then 'moved,moved,moved' else 'moved,moved' end and pg_temp.said(res) like '%C498 a1 moves to C498 Second Buyer%'
+      and pg_temp.said(res) like '%' || pg_temp.sale_no_of(s[2]) || ':%', 'A5 the answer says it, for the page: ' || pg_temp.said(res));
   perform pg_temp.check((select d.customer_name from public.special_docs_awaiting_fulfilment() d where d.doc_id = s[2]) = 'C498 Second Buyer', 'A6 the Special page''s waiting list names the new customer');
 
   -- A new correction with nothing new moves nothing.
@@ -240,8 +241,8 @@ begin
   res := pg_temp.correct(inv, jsonb_build_array(pg_temp.keep(line, 'a10', 2)));
   perform pg_temp.check(pg_temp.status_of(s[3]) = 'cancelled', 'A10 lowered: the newest waiting one is cancelled');
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'a10', 2)), jsonb_build_object('customer_id', pg_temp.fx('buyer2')), 'Wrong customer', gen_random_uuid());
-  perform pg_temp.check(pg_temp.cust_of(s[1]) = pg_temp.fx('buyer') and pg_temp.cust_of(s[3]) = pg_temp.fx('buyer') and pg_temp.cust_of(s[2]) = pg_temp.fx('buyer2'),
-    'A11 a sale a supplier sent and a cancelled one stay; the waiting one moves');
+  perform pg_temp.check(pg_temp.cust_of(s[1]) = case when v500 then pg_temp.fx('buyer2') else pg_temp.fx('buyer') end and pg_temp.cust_of(s[3]) = pg_temp.fx('buyer') and pg_temp.cust_of(s[2]) = pg_temp.fx('buyer2'),
+    'A11 a sale a supplier sent (until 500) and a cancelled one stay; the waiting one moves');
 
   -- Corrected in the same save: the new one has the new customer, and is said once.
   perform pg_temp.mkspecial('a12');
@@ -285,7 +286,7 @@ begin
   s := pg_temp.sales(inv); line := pg_temp.line_of(inv, 'a18');
   perform pg_temp.release(s[1], 'store');
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'a18')), jsonb_build_object('customer_id', pg_temp.fx('buyer2')), 'Wrong customer', gen_random_uuid());
-  perform pg_temp.check(pg_temp.cust_of(s[1]) = pg_temp.fx('buyer') and pg_temp.states(res) = '', 'A18 a sale released from a store keeps its customer');
+  perform pg_temp.check(pg_temp.cust_of(s[1]) = case when v500 then pg_temp.fx('buyer2') else pg_temp.fx('buyer') end and pg_temp.states(res) = case when v500 then 'moved' else '' end, 'A18 a sale released from a store keeps its customer (until 500)');
 
   -- A save that changes neither the lines nor the customer or store calls nothing.
   perform pg_temp.mkspecial('a19');
@@ -307,6 +308,7 @@ end $$;
 -- ═════ B The store ═════
 do $$
 declare inv uuid; s uuid[]; res jsonb; line uuid; p uuid; pv jsonb; e jsonb;
+  v500 boolean := pg_get_functiondef('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)'::regprocedure) like '%500: and each takes%';  -- 500: a machine out follows too
 begin
   perform pg_temp.as_user('owner');
   perform pg_temp.mkspecial('b1');
@@ -315,8 +317,8 @@ begin
   perform pg_temp.release(s[1]);
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'b1', 2)), jsonb_build_object('store_id', pg_temp.fx('store2')), 'Wrong store', gen_random_uuid());
   perform pg_temp.check((select store_id from public.invoices where id = inv) = pg_temp.fx('store2') and pg_temp.store_of(s[2]) = pg_temp.fx('store2'), 'B1 a waiting sale follows the invoice to the other store');
-  perform pg_temp.check(pg_temp.store_of(s[1]) = pg_temp.fx('store'), 'B2 the released one keeps the store it was sold at');
-  perform pg_temp.check(pg_temp.states(res) = 'moved' and pg_temp.said(res) like '%C498 b1 moves to C498 Store B%', 'B3 the answer says so: ' || pg_temp.said(res));
+  perform pg_temp.check(pg_temp.store_of(s[1]) = case when v500 then pg_temp.fx('store2') else pg_temp.fx('store') end, 'B2 the released one keeps the store it was sold at (until 500)');
+  perform pg_temp.check(pg_temp.states(res) = case when v500 then 'moved,moved' else 'moved' end and pg_temp.said(res) like '%C498 b1 moves to C498 Store B%', 'B3 the answer says so: ' || pg_temp.said(res));
   perform pg_temp.check((select d.store_name from public.special_docs_awaiting_fulfilment() d where d.doc_id = s[2]) like 'C498 Store B%', 'B4 the waiting list names the new store');
 
   -- Both in one save.

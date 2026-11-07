@@ -166,7 +166,7 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
   'G4 relied on and unchanged: ' || x.fn)
   from (values ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '80c80d386a5241e63b353e35e13ef250'),
                ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '8e674fe0d5e35ed5c2e93d417f14c05a|1f034561a461bdb46a1e6274e0d04606'),
-               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33|13b0925c29bd8ca14d8d8b7bd961fef8'),
+               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33|13b0925c29bd8ca14d8d8b7bd961fef8|23c180873b6545bd83fb20d21708aa9e'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('staff_may_correct_invoice(uuid)', '60cbe4859f1f1f43da02115c019fc4bf'),
                ('can_edit_invoice(uuid)', '22f496c486ee4f0dfd45c68da6240ac2'),

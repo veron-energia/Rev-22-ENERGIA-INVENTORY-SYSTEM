@@ -80,8 +80,8 @@ export const SPECIAL_FOLLOWS_HINT =
   + 'or goes back to where it left if it was already released. Extra machines, or another machine, join the waiting list. '
   + 'The summary shows which before you save.';
 
-/** One entry of correct_invoice's answer 'special' (497; 'moved': 498). */
-export type SpecialFollowed = { sale_no?: string; state: 'waiting_off' | 'back' | 'stays' | 'raised' | 'moved' | string; what: string };
+/** One entry of correct_invoice's answer 'special' (497; 'moved': 498; 'repriced': 500). */
+export type SpecialFollowed = { sale_no?: string; state: 'waiting_off' | 'back' | 'stays' | 'raised' | 'moved' | 'repriced' | string; what: string };
 
 /** After a correction is saved: what it did to the invoice's special sales, or null. */
 export function correctionSpecialNote(special: SpecialFollowed[] | null | undefined): string | null {

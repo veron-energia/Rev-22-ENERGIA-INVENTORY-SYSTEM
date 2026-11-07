@@ -255,6 +255,7 @@ end $$;
 -- ═════ B A line lowered ═════
 do $$
 declare inv uuid; s uuid[]; res jsonb; line uuid; other uuid;
+  v500 boolean := pg_get_functiondef('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)'::regprocedure) like '%500: and each takes%';  -- 500: a sale takes its line's price
 begin
   perform pg_temp.as_user('owner');
   -- Two released, lowered to one: the newest goes back.
@@ -306,8 +307,8 @@ begin
   inv := pg_temp.mk(jsonb_build_array(pg_temp.sale_line('b8', 2))); perform pg_temp.pay(inv);
   s := pg_temp.sales(inv); perform pg_temp.release(s[1]); line := pg_temp.line_of(inv, 'b8');
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'b8', 2) || jsonb_build_object('unit_price', 900)), '{}'::jsonb, 'A better price', gen_random_uuid());
-  perform pg_temp.check(pg_temp.states(res) = '' and pg_temp.status_of(s[1]) = 'completed' and pg_temp.status_of(s[2]) = 'pending' and pg_temp.at_wh('b8') = 9,
-    'B8 a new price and the same quantity: no sale moves, nothing said');
+  perform pg_temp.check(pg_temp.states(res) = case when v500 then 'repriced,repriced' else '' end and pg_temp.status_of(s[1]) = 'completed' and pg_temp.status_of(s[2]) = 'pending' and pg_temp.at_wh('b8') = 9,
+    'B8 a new price and the same quantity: no sale moves; nothing said (500: says the new price)');
 end $$;
 
 -- ═════ C Another machine on the line ═════
@@ -350,6 +351,7 @@ end $$;
 -- ═════ D A raised quantity ═════
 do $$
 declare inv uuid; s uuid[]; res jsonb; line uuid; other uuid; n int;
+  v500 boolean := pg_get_functiondef('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)'::regprocedure) like '%500: and each takes%';  -- 500: a sale takes its line's price
 begin
   perform pg_temp.as_user('owner');
   perform pg_temp.mkspecial('d1');
@@ -373,7 +375,8 @@ begin
   inv := pg_temp.mk(jsonb_build_array(pg_temp.sale_line('d5'))); perform pg_temp.pay(inv);
   line := pg_temp.line_of(inv, 'd5');
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'd5', 2) || jsonb_build_object('unit_price', 500)), '{}'::jsonb, 'Two at the price of one', gen_random_uuid());
-  perform pg_temp.check(pg_temp.said(res) = '1 more C497 d5 joins the waiting list'
+  perform pg_temp.check(case when v500 then pg_temp.said(res) like '1 more C497 d5 joins the waiting list | %: C497 d5 now shows S$500.00, was S$1000.00'
+                             else pg_temp.said(res) = '1 more C497 d5 joins the waiting list' end
       and (select unit_price from public.special_sales where invoice_item_id = line and status = 'pending' order by sale_no desc limit 1) = 500,
     'D5 nothing owing: it does not say so, and the new unit has the line''s price: ' || pg_temp.said(res));
 
