@@ -8,6 +8,7 @@ import {
 } from '../types';
 import { SearchSelect } from '../components/SearchSelect';
 import { Modal, NoAccess } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { PackagePlus, RefreshCw, Warehouse as WarehouseIcon, AlertTriangle, SlidersHorizontal, MinusCircle, HandHelping } from 'lucide-react';
 import RecordUseModal from '../components/stock-loans/RecordUseModal';
 import LendModal from '../components/stock-loans/LendModal';
@@ -62,6 +63,7 @@ const WarehouseInventoryView: React.FC = () => {
   // it was sent.
   const [siFormId, setSiFormId] = useState('');
   const [siLocked, setSiLocked] = useState(false);
+  const stockInChanged = useChangedSinceOpened(stockInOpen, [siForm, siLines]);
 
   // Threshold modal
   const [thresholdRow, setThresholdRow] = useState<Row | null>(null);
@@ -265,7 +267,7 @@ const WarehouseInventoryView: React.FC = () => {
 
       {/* Stock-in modal */}
       {stockInOpen && (
-        <Modal title="Manual Warehouse Stock-In" maxWidth={460} onClose={() => setStockInOpen(false)}
+        <Modal title="Manual Warehouse Stock-In" maxWidth={460} onClose={() => setStockInOpen(false)} confirmClose={stockInChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setStockInOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleStockIn} disabled={siSaving}>{siSaving ? 'Saving…' : siLocked ? 'Add Stock again' : 'Add Stock'}</button></>}>
           <div className="form-grid">
             {siErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{siErr}</div></div>}

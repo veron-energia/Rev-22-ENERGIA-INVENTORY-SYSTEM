@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Product, ProductType, Brand, Category, Supplier } from '../types';
 import { Modal } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { Plus, Pencil, Trash2, Search, Package, RefreshCw, Star, Tag, Boxes, Truck, RotateCcw, Wrench } from 'lucide-react';
 import DropdownManager from '../components/DropdownManager';
 import { canConfigureCatalogue, canEditProducts } from '../lib/permissions/products';
@@ -61,8 +62,7 @@ const ProductsPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(blank());
-  // The form as it opened: closing it asks first only once it differs.
-  const [formOpened, setFormOpened] = useState<FormState>(form);
+  const formChanged = useChangedSinceOpened(modalOpen, form);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Deleted products are hidden, not removed: "Show deleted" lists them with
@@ -99,15 +99,15 @@ const ProductsPage: React.FC = () => {
   };
 
   const openTab = (next: typeof tab) => { setTab(next); setFlash(null); setPageErr(null); };
-  const openForm = (opened: FormState, id: string | null) => {
-    setForm(opened); setFormOpened(opened);
-    setEditId(id); setErr(null); setModalOpen(true);
+  const openAdd = () => {
+    setForm({ ...blank(), product_type: onService ? 'no_commission' : 'own' });
+    setEditId(null); setErr(null); setModalOpen(true);
   };
-  const openAdd = () => openForm({ ...blank(), product_type: onService ? 'no_commission' : 'own' }, null);
   const openEdit = (p: Product) => {
     const cats = prodCats.filter(x => x.product_id === p.id).map(x => x.category_id);
     const sups = prodSups.filter(x => x.product_id === p.id).map(x => x.supplier_id);
-    openForm({ ...blank(p), categoryIds: cats, supplierIds: sups }, p.id);
+    setForm({ ...blank(p), categoryIds: cats, supplierIds: sups });
+    setEditId(p.id); setErr(null); setModalOpen(true);
   };
 
   const handleSave = async () => {
@@ -385,7 +385,7 @@ const ProductsPage: React.FC = () => {
           title={`${editId ? 'Edit' : 'Add'} ${onService ? 'Service' : 'Product'}`}
           maxWidth={540}
           onClose={() => setModalOpen(false)}
-          confirmClose={JSON.stringify(form) !== JSON.stringify(formOpened)}
+          confirmClose={formChanged}
           footer={
             <>
               <button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button>

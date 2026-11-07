@@ -6,6 +6,7 @@ import { Voucher, VoucherKind, VoucherStoreStock, Store, VOUCHER_KIND_LABELS, VO
   VoucherDiscountCategory, BirthdayRule, isOwnerOrManager } from '../types';
 import StorePriceEditor from '../components/StorePriceEditor';
 import { Modal, NoAccess } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { Plus, Pencil, Trash2, Search, Ticket, RefreshCw, Boxes } from 'lucide-react';
 import { dayNumbers, dayText, isPastValidUntil, sgToday, voucherDependents, type VoucherDeleteAnswer } from '../lib/catalogue/pageRules.mjs';
 
@@ -56,6 +57,7 @@ const VouchersPage: React.FC = () => {
   // Ticked for a new voucher only. On an edit it stays unticked unless staff
   // tick it, so saving a name change never touches the store prices.
   const [applyPriceEverywhere, setApplyPriceEverywhere] = useState(false);
+  const formChanged = useChangedSinceOpened(modalOpen, [form, applyPriceEverywhere]);
   const [err, setErr] = useState<string | null>(null);
   const [pageErr, setPageErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -270,7 +272,7 @@ const VouchersPage: React.FC = () => {
       </div>
 
       {modalOpen && (
-        <Modal title={editId ? 'Edit Voucher' : 'Add Voucher'} maxWidth={520} onClose={() => setModalOpen(false)}
+        <Modal title={editId ? 'Edit Voucher' : 'Add Voucher'} maxWidth={520} onClose={() => setModalOpen(false)} confirmClose={formChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

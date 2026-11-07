@@ -4,7 +4,8 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isOwnerOrManager } from '../types';
-import { DISCARD_QUESTION, Modal } from './ui';
+import { Modal } from './ui';
+import { okToDiscard } from '../hooks/useChangedSinceOpened';
 import { Download, RefreshCw, FileText, Check } from 'lucide-react';
 import SurveyAttachments from './SurveyAttachments';
 import { plainDate, sgDateTime } from '../lib/survey/links.mjs';
@@ -332,7 +333,7 @@ const SurveyDetailModal: React.FC<{
   // a review not saved yet. Close stays on screen while editing, so it asks too.
   const unsaved = review.changed || (editing && (Object.keys(changes).length > 0
     || (!!(ed.dob_y || ed.dob_m || ed.dob_d) && !ed.date_of_birth)));
-  const closeWindow = () => { if (!unsaved || window.confirm(DISCARD_QUESTION)) onClose(); };
+  const closeWindow = () => { if (okToDiscard(unsaved)) onClose(); };
 
   return (
     <Modal title={title} maxWidth={760} onClose={onClose} confirmClose={unsaved}

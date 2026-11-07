@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store as StoreT, Profile, UserStoreAssignment, ROLE_LABELS } from '../types';
 import { Modal } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { uploadStoreAsset } from '../lib/storeAssets';
 import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, RotateCcw } from 'lucide-react';
 import { canManagePlaces, storeAssignmentBlock, worksAtEveryStore } from '../lib/permissions/products';
@@ -22,6 +23,7 @@ const StoresPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', whatsapp_phone: '', policy_text: '', is_active: true, email: '', website: '', co_reg_no: '', paynow_uen: '', bank_account: '', gst_enabled: false, gst_rate: 9, company_logo_url: '', store_logo_url: '', qr_paynow_url: '', qr_grabpay_url: '', qr_atome_url: '' });
+  const formChanged = useChangedSinceOpened(modalOpen, form);
   const [saving, setSaving] = useState(false);
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -207,7 +209,7 @@ const StoresPage: React.FC = () => {
 
       {/* Add / Edit modal */}
       {modalOpen && (
-        <Modal title={editId ? 'Edit Store' : 'Add Store'} onClose={() => setModalOpen(false)}
+        <Modal title={editId ? 'Edit Store' : 'Add Store'} onClose={() => setModalOpen(false)} confirmClose={formChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div ref={errRef} className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

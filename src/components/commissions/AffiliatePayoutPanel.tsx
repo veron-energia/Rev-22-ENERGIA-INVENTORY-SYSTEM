@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import SelfPhoneChangeNote from './SelfPhoneChangeNote';
 import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
+import { useChangedSinceOpened } from '../../hooks/useChangedSinceOpened';
 import { ExcelExportButton } from '../ExcelExport';
 import { InvoiceSearchSelect } from '../invoices/InvoiceSearchSelect';
 import { singaporeToday } from '../../lib/invoices/business';
@@ -44,6 +45,9 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
   const [settlements, setSettlements] = useState<Settlement[]>([]);
   const [settleForm, setSettleForm] = useState<SettleForm | null>(null), [voidForm, setVoidForm] = useState<VoidForm | null>(null);
   const [actBusy, setActBusy] = useState(false), [actError, setActError] = useState(''), [actUncertain, setActUncertain] = useState(false);
+  // A failed save renews the request id, which is nothing anyone typed.
+  const formChanged = useChangedSinceOpened(!!form, { ...form, request: '' });
+  const settleChanged = useChangedSinceOpened(!!settleForm, { ...settleForm, request: '' });
   const sequence = useRef(0), saveLock = useRef(false), actLock = useRef(false);
   const pendingKey = `energia-affiliate-payout-pending:${userId}`;
   const settlePendingKey = `energia-affiliate-settlement-pending:${userId}`;
@@ -278,7 +282,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
         {!visibleSettlements.length && <tr><td colSpan={7}>{loading ? 'Loading…' : 'No deductions marked as settled with a date settled in this range.'}</td></tr>}
       </tbody></table></div>
     </div>}
-    {form && <Modal title={form.payout ? 'Edit payout' : 'Record payout'} maxWidth={600} onClose={() => { if (!busy && !uncertain) setForm(null); }} footer={<>
+    {form && <Modal title={form.payout ? 'Edit payout' : 'Record payout'} maxWidth={600} onClose={() => { if (!busy && !uncertain) setForm(null); }} confirmClose={formChanged && !busy && !uncertain} footer={<>
       <button className="btn btn-secondary" disabled={busy || uncertain} onClick={() => setForm(null)}>Cancel</button>
       <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : uncertain ? 'Retry same save' : form.payout ? 'Save correction' : 'Record payout'}</button></>}>
       <p><strong>{name(form.referrer)}</strong> · Commission month {form.month.slice(0, 7)}</p>
@@ -296,7 +300,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
         {field('Payment date (Singapore)', 'date', 'date')}{field('Reference (optional)', 'reference')}{field('Internal notes (not shown to the affiliate)', 'notes')}{form.payout && field('Correction reason (required)', 'reason')}
       </fieldset>
     </Modal>}
-    {settleForm && <Modal title="Mark deduction as settled" maxWidth={560} onClose={() => { if (!actBusy && !actUncertain) setSettleForm(null); }} footer={<>
+    {settleForm && <Modal title="Mark deduction as settled" maxWidth={560} onClose={() => { if (!actBusy && !actUncertain) setSettleForm(null); }} confirmClose={settleChanged && !actBusy && !actUncertain} footer={<>
       <button className="btn btn-secondary" disabled={actBusy || actUncertain} onClick={() => setSettleForm(null)}>Cancel</button>
       <button className="btn btn-primary" disabled={actBusy} onClick={saveSettle}>{actBusy ? 'Saving…' : actUncertain ? 'Retry same save' : 'Mark as settled'}</button></>}>
       <p style={{ margin: '0 0 8px' }}><strong>{name(settleForm.referrer)}</strong> owes {money(settleDeduction)} back from commission already paid out and then taken back.</p>

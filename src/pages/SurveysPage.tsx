@@ -5,6 +5,7 @@ import { esc } from '../lib/printDoc';
 import { useAuth } from '../context/AuthContext';
 import { Store, SurveyLink, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import SurveyDetailModal from '../components/SurveyDetailModal';
 import type { SurveyCustomer, SurveyStoreOption } from '../components/SurveyDetailModal';
 import SourceOptionsModal from '../components/SourceOptionsModal';
@@ -165,6 +166,7 @@ const SurveysPage: React.FC = () => {
   const [addOpen, setAddOpen] = useState(false);
   const emptyLink = { store_id: '', event_name: '', expires_at: '', source_option_id: '' };
   const [nf, setNf] = useState<any>(emptyLink);
+  const linkChanged = useChangedSinceOpened(addOpen, nf);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const create = async () => {
@@ -445,7 +447,7 @@ const SurveysPage: React.FC = () => {
       {sourcesOpen && <SourceOptionsModal onClose={() => { setSourcesOpen(false); void load(); }} />}
 
       {addOpen && (
-        <Modal title="New Customer Form — QR Link" maxWidth={440} onClose={() => setAddOpen(false)}
+        <Modal title="New Customer Form — QR Link" maxWidth={440} onClose={() => setAddOpen(false)} confirmClose={linkChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setAddOpen(false)}>Cancel</button><button className="btn btn-primary" data-create-link onClick={create} disabled={busy}>{busy ? 'Creating…' : 'Create'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" role="alert" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

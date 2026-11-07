@@ -48,6 +48,7 @@ import '../components/invoices/invoice-controls.css';
 import { fetchInvoicePage, fetchAllMatchingInvoices, fetchPaymentMethodNames, withPaymentLabels, type InvoiceListResult } from '../lib/invoices/listPage';
 import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefresh, announcedMatchesShown } from '../lib/invoices/listRefresh';
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
+import { okToDiscard } from '../hooks/useChangedSinceOpened';
 import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates';
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
 import { PRINT_PAGES_SCRIPT } from '../lib/invoices/printPages.mjs';
@@ -3186,6 +3187,10 @@ const InvoicesPage: React.FC = () => {
 
   // The customer copies and Close, the same on every invoice. Email goes from
   // this device's own mail app (Q6), and the button says so.
+  // A payment being entered, so closing the invoice asks first. Its amount starts
+  // at what is owed and follows a background reload, so that alone is not an entry.
+  const payEntered = !!detail && (payLines.length > 1 || payLines.some(l => !!l.payment_method_id));
+  const closeDetail = () => { if (okToDiscard(payEntered)) setDetail(null); };
   const copyButtons = detail ? (<>
     <button className="btn btn-secondary" onClick={startPrint} disabled={!docReady} title={docWaitTitle}><Printer size={14} /> Print</button>
     <button className="btn btn-secondary" onClick={savePdf} disabled={!docReady} title={docWaitTitle ?? 'Download the customer copy as a PDF'}><Download size={14} /> PDF</button>
@@ -3202,7 +3207,7 @@ const InvoicesPage: React.FC = () => {
         ? 'Send from this device’s mail app: the PDF on a phone, a link to it on a computer'
         : 'This customer has no valid email address'}>
       <Mail size={14} /> {sendBusy === 'email' ? 'Preparing…' : 'Email (from this device)'}</button>
-    <button className="btn btn-secondary" onClick={() => setDetail(null)}>Close</button>
+    <button className="btn btn-secondary" onClick={closeDetail}>Close</button>
   </>) : null;
   // A fully FOC invoice is confirmed (asking first, CREATE-19 f); anything else
   // takes a payment. The database refuses FOC to Inventory Managers, so they
@@ -4693,7 +4698,7 @@ const InvoicesPage: React.FC = () => {
 
       {/* Invoice detail + payment modal */}
       {detail && (
-        <Modal title={`Invoice ${detail.invoice_no}`} wide onClose={() => setDetail(null)}
+        <Modal title={`Invoice ${detail.invoice_no}`} wide onClose={() => setDetail(null)} confirmClose={payEntered}
           footer={
             detail.status === 'paid'
               ? <>{copyButtons}

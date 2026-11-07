@@ -43,8 +43,7 @@ const STUBS = {
   auth: 'export const useAuth = () => ({ profile: { id: "u-1", role: globalThis.__ROLE__ } });',
   types: `export const isOwnerOrManager = r => r === 'owner' || r === 'manager';`,
   ui: `import React from 'react';
-    export const DISCARD_QUESTION = 'Discard?';
-    export const Modal = ({ title, children, footer, confirmClose }) =>
+    export const Modal =({ title, children, footer, confirmClose }) =>
       React.createElement('div', { role: 'dialog', 'data-asks': String(!!confirmClose) }, React.createElement('h1', null, title), children,
                           React.createElement('footer', null, footer));`,
   phone: `import React from 'react';
@@ -213,7 +212,7 @@ test('the Close button asks as the X does, only when there is something to lose'
     await ui.click('[data-edit-details]');
     await ui.change('[data-declaration="smokes"]', 'yes');
     await ui.click(closeButton());
-    assert.deepEqual(asked, ['Discard?']);
+    assert.deepEqual(asked, ['Discard what you have entered? It will not be saved.']);
     assert.equal(closed, 0, 'No keeps the window');
     assert.equal(ui.$('[data-declaration="smokes"]').value, 'yes', 'and what was changed');
     answer = true;

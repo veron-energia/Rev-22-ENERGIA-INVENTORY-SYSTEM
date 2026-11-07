@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useBackdropClose } from '../hooks/useBackdropClose';
+import { okToDiscard } from '../hooks/useChangedSinceOpened';
 import { UserRole } from '../types';
 import { Lock } from 'lucide-react';
 
@@ -40,9 +41,6 @@ function isTopModal(overlay: HTMLElement | null): boolean {
   return open.length > 0 && open[open.length - 1] === overlay;
 }
 
-/** What a form asks before its work is thrown away. */
-export const DISCARD_QUESTION = 'Discard what you have entered? It will not be saved.';
-
 export const Modal: React.FC<{
   title: string;
   onClose: () => void;
@@ -64,8 +62,7 @@ export const Modal: React.FC<{
   const overlayRef = React.useRef<HTMLDivElement | null>(null);
 
   const requestClose = React.useCallback(() => {
-    if (confirmClose && !window.confirm(DISCARD_QUESTION)) return;
-    onClose();
+    if (okToDiscard(confirmClose)) onClose();
   }, [confirmClose, onClose]);
   const backdrop = useBackdropClose(requestClose);
 

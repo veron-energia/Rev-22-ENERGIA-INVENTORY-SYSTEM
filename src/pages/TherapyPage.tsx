@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Store, UnlimitedTherapyPackage, PurchasedTherapyEntitlement, isOwnerOrManager } from '../types';
 import { Modal, DateModal, ReasonModal } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { RefreshCw, Plus, Sparkles, Search, CalendarClock, Play, Ban, Archive, Pencil } from 'lucide-react';
 import StorePriceEditor from '../components/StorePriceEditor';
 import { SearchSelect } from '../components/SearchSelect';
@@ -243,6 +244,12 @@ const TherapyPage: React.FC = () => {
   const [ruleForm, setRuleForm] = useState<typeof emptyRule | null>(null);
   const [ruleBusy, setRuleBusy] = useState(false);
   const [ruleErr, setRuleErr] = useState<string | null>(null);
+  const bundleChanged = useChangedSinceOpened(!!bundleForm, bundleForm);
+  const creditPkgChanged = useChangedSinceOpened(!!pkgForm, pkgForm);
+  const ruleChanged = useChangedSinceOpened(!!ruleForm, ruleForm);
+  // A package's voucher and service lists are read after it opens.
+  const therapyPkgChanged = useChangedSinceOpened(!!pkgModal && !pkgListsLoading,
+    [pkgName, pkgSku, pkgMonths, pkgDesc, pkgActive, pkgKind, pkgVoucherQty, pkgVoucherId, pkgVoucherIds, pkgServiceIds]);
   const saveRule = async () => {
     if (!ruleForm) return;
     setRuleBusy(true); setRuleErr(null);
@@ -934,7 +941,7 @@ const TherapyPage: React.FC = () => {
       )}
 
       {bundleForm && (
-        <Modal title={bundleForm.id ? 'Edit Premium Bundle' : 'New Premium Bundle'} maxWidth={560} onClose={() => setBundleForm(null)}
+        <Modal title={bundleForm.id ? 'Edit Premium Bundle' : 'New Premium Bundle'} maxWidth={560} onClose={() => setBundleForm(null)} confirmClose={bundleChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setBundleForm(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveBundle} disabled={bundleBusy}>{bundleBusy ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
@@ -1100,7 +1107,7 @@ const TherapyPage: React.FC = () => {
       )}
 
       {pkgForm && (
-        <Modal title={pkgForm.id ? 'Edit Credit Package' : 'New Credit Package'} maxWidth={540} onClose={() => setPkgForm(null)}
+        <Modal title={pkgForm.id ? 'Edit Credit Package' : 'New Credit Package'} maxWidth={540} onClose={() => setPkgForm(null)} confirmClose={creditPkgChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setPkgForm(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveCreditPkg} disabled={pkgBusy}>{pkgBusy ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
@@ -1419,7 +1426,7 @@ const TherapyPage: React.FC = () => {
       )}
 
       {ruleForm && (
-        <Modal title={ruleForm.id ? 'Edit Qualification Rule' : 'New Qualification Rule'} maxWidth={480} onClose={() => setRuleForm(null)}
+        <Modal title={ruleForm.id ? 'Edit Qualification Rule' : 'New Qualification Rule'} maxWidth={480} onClose={() => setRuleForm(null)} confirmClose={ruleChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setRuleForm(null)}>Cancel</button><button className="btn btn-primary" onClick={saveRule} disabled={ruleBusy}>{ruleBusy ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -1488,7 +1495,7 @@ const TherapyPage: React.FC = () => {
       )}
 
       {pkgModal && (
-        <Modal title={pkgModal === 'new' ? 'New Therapy Package' : 'Edit Package'} maxWidth={440} onClose={() => setPkgModal(null)}
+        <Modal title={pkgModal === 'new' ? 'New Therapy Package' : 'Edit Package'} maxWidth={440} onClose={() => setPkgModal(null)} confirmClose={therapyPkgChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setPkgModal(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={savePkg} disabled={busy === 'pkg' || pkgListsLoading}>
               {pkgListsLoading ? 'Loading…' : 'Save'}</button></>}>

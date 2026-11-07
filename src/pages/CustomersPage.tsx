@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import DeletedCustomersModal from '../components/DeletedCustomersModal';
 import DeleteCustomerModal from '../components/customers/DeleteCustomerModal';
 import { phoneErrorMessage } from '../lib/customer-phones/normalize.mjs';
@@ -172,6 +173,8 @@ const CustomersPage: React.FC = () => {
   const creditBought = useMemo(() => purchasesBySource(credit), [credit]);
   const [creditRows, setCreditRows] = useState<any[]>([]);
   const [creditForm, setCreditForm] = useState<any>(null);
+  const creditChanged = useChangedSinceOpened(!!creditForm, creditForm);
+  const sourceChanged = useChangedSinceOpened(!!srcFor, [srcOptId, srcDetails, srcReason]);
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditErr, setCreditErr] = useState<string | null>(null);
   const [creditStores, setCreditStores] = useState<{ id: string; name: string }[]>([]);
@@ -972,7 +975,7 @@ const CustomersPage: React.FC = () => {
       )}
       {creditForm && (
         <Modal title={creditForm.mode === 'legacy' ? 'Opening credit balance' : 'Adjust credit'} maxWidth={460}
-          onClose={() => setCreditForm(null)}
+          onClose={() => setCreditForm(null)} confirmClose={creditChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setCreditForm(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={submitCredit} disabled={creditBusy}>{creditBusy ? 'Saving…' : 'Confirm'}</button></>}>
           <div className="form-grid">
@@ -1042,7 +1045,7 @@ const CustomersPage: React.FC = () => {
       )}
 
       {srcFor && (
-        <Modal title={`Customer Source — ${srcFor.full_name}`} maxWidth={420} onClose={() => setSrcFor(null)}
+        <Modal title={`Customer Source — ${srcFor.full_name}`} maxWidth={420} onClose={() => setSrcFor(null)} confirmClose={sourceChanged}
           footer={<>
             <button className="btn btn-secondary" onClick={() => setSrcFor(null)}>Cancel</button>
             <button className="btn btn-primary" disabled={srcBusy || !srcOptId} onClick={async () => {

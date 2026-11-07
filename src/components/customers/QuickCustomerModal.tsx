@@ -6,6 +6,7 @@ import { phoneErrorMessage } from '../../lib/customer-phones/normalize.mjs';
 import { canEditCustomers, CUSTOMER_EDIT_REFUSED } from '../../lib/customers/customerRoles.mjs';
 import { useAuth } from '../../context/AuthContext';
 import { useBackdropClose } from '../../hooks/useBackdropClose';
+import { okToDiscard, useChangedSinceOpened } from '../../hooks/useChangedSinceOpened';
 import './quick-customer.css';
 
 type Candidate = {
@@ -55,7 +56,12 @@ export const QuickCustomerModal: React.FC<{
   // One id per attempt: a retry after a lost response returns the customer the
   // first call made instead of creating a second one.
   const requestId = useRef(crypto.randomUUID());
-  const backdrop = useBackdropClose(onClose);
+  const changed = useChangedSinceOpened(true, f);
+  const requestClose = () => { if (okToDiscard(changed)) onClose(); };
+  // Kept in a ref so the key handler, bound once, always sees the current one.
+  const closeRef = useRef(requestClose);
+  closeRef.current = requestClose;
+  const backdrop = useBackdropClose(requestClose);
 
   const on = (k: keyof typeof empty) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -67,11 +73,11 @@ export const QuickCustomerModal: React.FC<{
   // invoice modal's own handler never sees the key.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); onClose(); }
+      if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); closeRef.current(); }
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+  }, []);
 
   const lookFor = useCallback(async (phone: string) => {
     if (!isPhoneValid(phone)) { setCandidates(null); setCapacity(null); return; }
@@ -129,7 +135,7 @@ export const QuickCustomerModal: React.FC<{
         <div className="quick-customer-head">
           <h3 id="qc-title"><UserPlus size={16} aria-hidden="true" /> Add a customer</h3>
           <button type="button" className="quick-customer-close" aria-label="Close without saving"
-            onClick={onClose}>&times;</button>
+            onClick={requestClose}>&times;</button>
         </div>
 
         <div className="quick-customer-body">

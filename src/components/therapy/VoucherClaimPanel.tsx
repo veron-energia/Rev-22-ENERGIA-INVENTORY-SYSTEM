@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useBackdropClose } from '../../hooks/useBackdropClose';
+import { okToDiscard, useChangedSinceOpened } from '../../hooks/useChangedSinceOpened';
 import './therapy.css';
 
 type Eligible = {
@@ -68,7 +69,10 @@ export const VoucherClaimPanel: React.FC<{
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<any | null>(null);
-  const backdrop = useBackdropClose(onClose);
+  // What it shows loads after it opens; a claim leaves nothing to lose.
+  const changed = useChangedSinceOpened(!!state && !done, [wanted, basket, note]);
+  const requestClose = () => { if (okToDiscard(changed)) onClose(); };
+  const backdrop = useBackdropClose(requestClose);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -138,7 +142,7 @@ export const VoucherClaimPanel: React.FC<{
       <div className="credit-rules" role="dialog" aria-modal="true" aria-labelledby="vc-title">
         <div className="credit-rules-head">
           <h3 id="vc-title">Claim vouchers{state ? ` — ${state.entitlement_no}` : ''}</h3>
-          <button type="button" className="credit-rules-close" aria-label="Close" onClick={onClose}>&times;</button>
+          <button type="button" className="credit-rules-close" aria-label="Close" onClick={requestClose}>&times;</button>
         </div>
 
         <div className="credit-rules-body">
@@ -269,7 +273,7 @@ export const VoucherClaimPanel: React.FC<{
         </div>
 
         <div className="credit-rules-foot">
-          <button type="button" className="btn" onClick={onClose}>Close</button>
+          <button type="button" className="btn" onClick={requestClose}>Close</button>
           {canClaim && state && !state.cancelled && !state.blocked_reason && !state.deadline_passed && state.remaining > 0 && (
             step === 'quantity' ? (
               <button type="button" className="btn btn-primary" onClick={goForward}>

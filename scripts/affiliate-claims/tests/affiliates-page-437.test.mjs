@@ -104,7 +104,7 @@ const built = await build({
   loader: { '.css': 'empty' }, logLevel: 'silent',
   define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}' },
   plugins: [{ name: 'stubs', setup(b) {
-    b.onResolve({ filter: /(^|\/)lib\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
+    b.onResolve({ filter: /(^|\/)lib\/supabase$|^\.\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
     b.onResolve({ filter: /(^|\/)context\/AuthContext$/ }, () => ({ path: 'auth', namespace: 'stub' }));
     b.onResolve({ filter: /^qrcode$/ }, () => ({ path: 'qrcode', namespace: 'stub' }));
     b.onLoad({ filter: /^supabase$/, namespace: 'stub' }, () => ({ loader: 'js',

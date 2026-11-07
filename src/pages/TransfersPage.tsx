@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { SearchSelect } from '../components/SearchSelect';
 import { Modal } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import {
   Plus, RefreshCw, ArrowLeftRight, Check, X, Trash2, ChevronDown, ChevronUp,
   Pencil, History, PackageCheck, AlertTriangle, Truck,
@@ -162,6 +163,8 @@ const TransfersPage: React.FC = () => {
   const [rejectReason, setRejectReason] = useState('');
   const [approveErr, setApproveErr] = useState<string | null>(null);
   const [approveBusy, setApproveBusy] = useState(false);
+  // The allocations seed themselves once the sources are read, after it opens.
+  const [reviewReady, setReviewReady] = useState(false);
 
   // Edit
   const [editReq, setEditReq] = useState<TransferRequest | null>(null);
@@ -195,6 +198,12 @@ const TransfersPage: React.FC = () => {
   const [resolveNote, setResolveNote] = useState('');
   const [resolveBusy, setResolveBusy] = useState(false);
   const [resolveErr, setResolveErr] = useState<string | null>(null);
+
+  const createChanged = useChangedSinceOpened(createOpen, [tType, sourceId, destId, lines, note]);
+  const reviewChanged = useChangedSinceOpened(!!approveReq && reviewReady, [reviewLines, alloc, approveNote, rejectReason]);
+  const editChanged = useChangedSinceOpened(!!editReq, [editLines, editNote, editReason, editSourceType, editSourceId, editDestType, editDestId]);
+  const receiveChanged = useChangedSinceOpened(!!receiveReq, [receiveQty, receiveReason, receiveNote]);
+  const resolveChanged = useChangedSinceOpened(!!resolveReq, [resolutions, resolveNote]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -416,7 +425,7 @@ const TransfersPage: React.FC = () => {
 
   const openApprove = async (req: TransferRequest) => {
     setApproveReq(req); setApproveNote(''); setRejectReason(''); setApproveErr(null); setApproveBusy(false);
-    setAlloc({}); setReviewSources({});
+    setAlloc({}); setReviewSources({}); setReviewReady(false);
     const reqLines = linesByReq[req.id] ?? [];
     const drafts: ReviewLineDraft[] = reqLines.map(l => ({
       key: l.id, line_id: l.id,
@@ -429,6 +438,7 @@ const TransfersPage: React.FC = () => {
     }));
     setReviewLines(drafts);
     const { data, error } = await supabase.rpc('transfer_request_sourcing', { p_request_id: req.id });
+    setReviewReady(true);
     if (error) { setApproveErr(error.message); return; }
     const rows = (data as TransferSourcingRow[]) ?? [];
     const grouped: Record<string, TransferSourceOption[]> = {};
@@ -728,7 +738,7 @@ const TransfersPage: React.FC = () => {
         </div>
       </div>
 
-      {createOpen && <Modal title="New Stock Transfer" maxWidth={650} onClose={() => setCreateOpen(false)}
+      {createOpen && <Modal title="New Stock Transfer" maxWidth={650} onClose={() => setCreateOpen(false)} confirmClose={createChanged}
         footer={<><button className="btn btn-secondary" onClick={() => setCreateOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={() => void handleCreate()} disabled={saving}>{saving ? 'Submitting…' : 'Submit Request'}</button></>}>
         <div className="form-grid">
           {createErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{createErr}</div></div>}
@@ -779,7 +789,7 @@ const TransfersPage: React.FC = () => {
         </div>
       </Modal>}
 
-      {approveReq && <Modal title="Review Transfer Request" maxWidth={780} onClose={() => setApproveReq(null)}
+      {approveReq && <Modal title="Review Transfer Request" maxWidth={780} onClose={() => setApproveReq(null)} confirmClose={reviewChanged}
         footer={<><button className="btn btn-danger" onClick={() => void handleReject()} disabled={approveBusy}><X size={15} /> Reject</button><button className="btn btn-primary" onClick={() => void handleApprove()} disabled={approveBusy}><Check size={15} /> Approve & Dispatch</button></>}>
         <div className="form-grid">
           {approveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{approveErr}</div></div>}
@@ -866,7 +876,7 @@ const TransfersPage: React.FC = () => {
         </div>
       </Modal>}
 
-      {editReq && <Modal title={`Edit Transfer — ${transferTypeLabel(editReq)}`} maxWidth={660} onClose={() => setEditReq(null)}
+      {editReq && <Modal title={`Edit Transfer — ${transferTypeLabel(editReq)}`} maxWidth={660} onClose={() => setEditReq(null)} confirmClose={editChanged}
         footer={<><button className="btn btn-secondary" onClick={() => setEditReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveEdit()} disabled={editBusy}>{editBusy ? 'Saving…' : 'Save Changes'}</button></>}>
         <div className="form-grid">
           {editErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{editErr}</div></div>}
@@ -902,7 +912,7 @@ const TransfersPage: React.FC = () => {
         </div>}
       </Modal>}
 
-      {receiveReq && <Modal title="Confirm Receipt" maxWidth={620} onClose={() => setReceiveReq(null)} footer={<><button className="btn btn-secondary" onClick={confirmAllReceived} disabled={receiveBusy} title="Sets every line to the approved quantity. Nothing is saved until Confirm Receipt."><Check size={14} /> Fill approved</button><button className="btn btn-primary" onClick={() => void saveReceive()} disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Confirm Receipt'}</button></>}>
+      {receiveReq && <Modal title="Confirm Receipt" maxWidth={620} onClose={() => setReceiveReq(null)} confirmClose={receiveChanged} footer={<><button className="btn btn-secondary" onClick={confirmAllReceived} disabled={receiveBusy} title="Sets every line to the approved quantity. Nothing is saved until Confirm Receipt."><Check size={14} /> Fill approved</button><button className="btn btn-primary" onClick={() => void saveReceive()} disabled={receiveBusy}>{receiveBusy ? 'Saving…' : 'Confirm Receipt'}</button></>}>
         <div className="form-grid">
           <TransferNoteHistory requestId={receiveReq.id} />
           {receiveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{receiveErr}</div></div>}
@@ -933,7 +943,7 @@ const TransfersPage: React.FC = () => {
         </div>
       </Modal>}
 
-      {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy || sourcesLoading}
+      {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} confirmClose={resolveChanged} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy || sourcesLoading}
           title={sourcesLoading ? 'Loading where each line was sent from…' : undefined}>{resolveBusy ? 'Saving…' : 'Resolve & Complete'}</button></>}>
         <div className="form-grid">
           <TransferNoteHistory requestId={resolveReq.id} />

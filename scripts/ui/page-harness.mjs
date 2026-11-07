@@ -58,9 +58,11 @@ export async function bundle(contents, { stubAuth = false } = {}) {
     loader: { '.css': 'empty' }, logLevel: 'silent',
     define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{"DEV":false,"VITE_SUPABASE_URL":"x","VITE_SUPABASE_ANON_KEY":"x"}' },
     plugins: [{ name: 'stubs', setup(b) {
-      b.onResolve({ filter: /(^|\/)lib\/supabase$|^\.\/supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
+      b.onResolve({ filter: /(^|\/)supabase$/ }, () => ({ path: 'supabase', namespace: 'stub' }));
       b.onLoad({ filter: /^supabase$/, namespace: 'stub' }, () => ({ loader: 'js',
-        contents: 'export const supabase = new Proxy({}, { get: (_, k) => globalThis.__supabase[k] });' }));
+        contents: `export const supabase = new Proxy({}, { get: (_, k) => globalThis.__supabase[k] });
+          export const fetchCustomersByIds = async () => [];
+          export const mergeCustomers = existing => existing;` }));
       if (stubAuth) {
         b.onResolve({ filter: /(^|\/)context\/AuthContext$/ }, () => ({ path: 'auth', namespace: 'stub' }));
         b.onLoad({ filter: /^auth$/, namespace: 'stub' }, () => ({ loader: 'js',

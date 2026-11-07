@@ -22,6 +22,7 @@ import { type TermsForm, type SoldLine, initialTerms, withTermsChange, termsProb
 import { docStore, docInvoiceIds, invoiceLine, waitingButton, toReceive } from '../lib/special/specialDocs';
 import { type ProductSupplierRow, type SupplierRow, suppliersOf, supplierChoice, supplierIdOfChoice, supplierOptionLabel, invoiceTakenBack } from '../lib/special/consignment';
 import { Modal, NoAccess } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, Printer, MessageCircle, Mail, Truck } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { SearchSelect } from '../components/SearchSelect';
@@ -539,6 +540,7 @@ const SpecialPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState(blank());
+  const formChanged = useChangedSinceOpened(modalOpen, form);
   const [saving, setSaving] = useState(false);
   const [availableProducts, setAvailableProducts] = useState<any[]>([]);
   const loadAvailableProducts = () => supabase.rpc('products_available_as_special')
@@ -1218,7 +1220,7 @@ const SpecialPage: React.FC = () => {
       )}
 
       {modalOpen && (
-        <Modal title={`${editId ? 'Edit' : 'Add'} ${onConsignment ? 'Consignment' : 'Special'} Product`} wide onClose={() => setModalOpen(false)}
+        <Modal title={`${editId ? 'Edit' : 'Add'} ${onConsignment ? 'Consignment' : 'Special'} Product`} wide onClose={() => setModalOpen(false)} confirmClose={formChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}

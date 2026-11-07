@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isManagerOrAbove } from '../types';
 import { Modal, RoleGate } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import {
   Plus, Pencil, Archive, Search, RefreshCw, Sparkles, Store as StoreIcon,
   Ticket, Clock, AlertTriangle,
@@ -176,6 +177,7 @@ const TherapyServicesPage: React.FC = () => {
   // 'loading' while an edit's notes are read; 'failed' sends no notes, which
   // keeps the saved ones (423).
   const [notesState, setNotesState] = useState<'loaded' | 'loading' | 'failed'>('loaded');
+  const serviceChanged = useChangedSinceOpened(serviceOpen && notesState !== 'loading', form);
   // The service whose form is open, so a late answer for another is ignored.
   const openFor = useRef<string | null>(null);
 
@@ -710,6 +712,7 @@ const TherapyServicesPage: React.FC = () => {
           title={editing ? `Edit ${editing.name}` : 'Add Therapy Service'}
           maxWidth={560}
           onClose={() => setServiceOpen(false)}
+          confirmClose={serviceChanged}
           footer={<>
             <button className="btn btn-secondary" onClick={() => setServiceOpen(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveService} disabled={saving}>

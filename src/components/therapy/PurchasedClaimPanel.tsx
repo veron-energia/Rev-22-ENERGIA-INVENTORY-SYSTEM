@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
+import { useChangedSinceOpened } from '../../hooks/useChangedSinceOpened';
 import { HolidayCountryField, suggestCountryFromPhone } from './HolidayAdmin';
 import { Covered, coverageText } from './coverage';
 import { CoverageNotice } from './ExpiryExplanation';
@@ -74,6 +75,8 @@ export const PurchasedClaimPanel: React.FC<{
   // One id per attempt: a double click is refused by the server rather than
   // claiming twice. A confirmed overlap is a new attempt.
   const requestRef = useRef<string>(crypto.randomUUID());
+  // Its choice and country are set as it loads; a claim leaves nothing to lose.
+  const changed = useChangedSinceOpened(!!state && !done, [choice, startDate, country, region, basket, note]);
 
   const load = useCallback(async (keepOnError = false) => {
     setLoadError(null);
@@ -187,7 +190,7 @@ export const PurchasedClaimPanel: React.FC<{
   );
 
   return (
-    <Modal title={title} maxWidth={540} onClose={onClose} footer={footer}>
+    <Modal title={title} maxWidth={540} onClose={onClose} confirmClose={changed} footer={footer}>
       {loadError && !state && (
         <div className="alert alert-danger" role="alert">
           <AlertTriangle size={15} aria-hidden="true" />

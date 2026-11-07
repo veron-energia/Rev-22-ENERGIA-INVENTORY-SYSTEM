@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useBackdropClose } from '../../hooks/useBackdropClose';
+import { okToDiscard, useChangedSinceOpened } from '../../hooks/useChangedSinceOpened';
 import './therapy.css';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
@@ -38,7 +39,10 @@ export function CreditSpendingRules({ packageId, packageName, canEdit, onClose }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
-  const backdrop = useBackdropClose(onClose);
+  // The rules load after it opens; a save leaves nothing to lose.
+  const changed = useChangedSinceOpened(!!rules && !saved, [paid, bonus, reason]);
+  const requestClose = () => { if (okToDiscard(changed)) onClose(); };
+  const backdrop = useBackdropClose(requestClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +108,7 @@ export function CreditSpendingRules({ packageId, packageName, canEdit, onClose }
       <div className="credit-rules" role="dialog" aria-modal="true" aria-labelledby="credit-rules-title">
         <div className="credit-rules-head">
           <h3 id="credit-rules-title">Credit spending rules — {packageName}</h3>
-          <button type="button" className="credit-rules-close" aria-label="Close" onClick={onClose}>&times;</button>
+          <button type="button" className="credit-rules-close" aria-label="Close" onClick={requestClose}>&times;</button>
         </div>
 
         {rules && (
@@ -179,7 +183,7 @@ export function CreditSpendingRules({ packageId, packageName, canEdit, onClose }
             </>
           ) : (
             <>
-              <button type="button" className="btn" onClick={onClose}>Close</button>
+              <button type="button" className="btn" onClick={requestClose}>Close</button>
               {canEdit && (
                 <button type="button" className="btn btn-primary" disabled={busy} onClick={review}>
                   {busy ? 'Checking…' : 'Review changes'}

@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Warehouse as WarehouseT, isManagerOrAbove } from '../types';
 import { Modal, NoAccess } from '../components/ui';
+import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { Plus, Pencil, Trash2, Warehouse, RefreshCw, RotateCcw } from 'lucide-react';
 import { canManagePlaces } from '../lib/permissions/products';
 
@@ -21,6 +22,7 @@ const WarehousesPage: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', is_active: true });
+  const formChanged = useChangedSinceOpened(modalOpen, form);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // A deleted warehouse is hidden, not removed: "Show deleted" lists it with
@@ -138,7 +140,7 @@ const WarehousesPage: React.FC = () => {
       </div>
 
       {modalOpen && (
-        <Modal title={editId ? 'Edit Warehouse' : 'Add Warehouse'} onClose={() => setModalOpen(false)}
+        <Modal title={editId ? 'Edit Warehouse' : 'Add Warehouse'} onClose={() => setModalOpen(false)} confirmClose={formChanged}
           footer={<><button className="btn btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></>}>
           <div className="form-grid">
             {err && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{err}</div></div>}
