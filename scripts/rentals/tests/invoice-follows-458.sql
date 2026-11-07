@@ -209,8 +209,11 @@ $$ select count(*)::int from rentals where invoice_id = p_inv and status::text i
 -- leaves alone a sale a supplier has been told to send. So are 496's fulfil_special_doc,
 -- which links the sale to the movement that took its unit out, and its
 -- create_special_docs_for_invoice, where a sale whose stock came back no longer counts.
--- So are 497's correct_invoice and preview_invoice_correction, which add a line's special sales.)
-select pg_temp.check((select replace(replace(replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- So are 497's correct_invoice and preview_invoice_correction, which add a line's special sales,
+-- and 498's correct_invoice and fulfil_special_doc: its sales follow the customer and wait for the payment.)
+select pg_temp.check((select replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+                                     '=cea93a5dd73d429f6437f4c9a8fcaa52', '=af9451fa15c2cf790edd70f799bae336'),
+                                     '=f21b8f6e42e7f17aa8c15b7ab0976935', '=9c3072e11013e8943b28d8a46854edc4'),
                                      '=9aac5395dd18fd8349727d6c8aa0c633', '=af9451fa15c2cf790edd70f799bae336'),
                                      '=13b0925c29bd8ca14d8d8b7bd961fef8', '=3047239c7418179e84927f6f00e7f2eb'),
                                      '=04d647e13e9424a9375942e5812e91a2', '=af9451fa15c2cf790edd70f799bae336'),

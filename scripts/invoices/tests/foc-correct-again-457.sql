@@ -227,11 +227,11 @@ begin
 end $$;
 
 -- ═════ G The md5s, the grants, what 457 relies on ═════
--- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it), or 464's (built on 458), or 497's.
+-- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it), or 464's (built on 458), or 497's, or 498's.
 select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)')
-        in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633')
+        in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633', 'cea93a5dd73d429f6437f4c9a8fcaa52')
     and (select md5 from pg_temp.fn_md5s() where fn = 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)') = '1f034561a461bdb46a1e6274e0d04606',
-  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s or 497''s)');
+  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s or 497''s or 498''s)');
 select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('authenticated', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('service_role', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')

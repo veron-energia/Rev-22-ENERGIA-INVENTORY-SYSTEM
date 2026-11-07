@@ -1127,7 +1127,7 @@ select pg_temp.check(
     and pg_temp.md5_of('special_doc_invoice_problem(uuid,uuid)') = 'be2b8ec5a4003a1dca34e17a82f89932'
     and pg_temp.md5_of('rentals_follow_refund(uuid,jsonb,text)') = '0426b050207ccb4fe0a991b3cafc9769'
     and pg_temp.md5_of('invoice_refunded_stock(uuid)') = 'f12af401547ce01e2b95ec3a5c230bad'
-    and pg_temp.md5_of('release_special_sale_to_supplier(uuid,uuid,text)') = '15b36ba68fd7b70a1361e80f5e5fad4e'
+    and pg_temp.md5_of('release_special_sale_to_supplier(uuid,uuid,text)') in ('15b36ba68fd7b70a1361e80f5e5fad4e', 'aaea37ea6d5b2c00e24738c678028b66')
     and pg_temp.md5_of('special_docs_awaiting_fulfilment()') = 'fdaf5aca81c63cc99f8fddcfcf10564c'
     and pg_temp.md5_of('restore_invoice_stock(uuid,text)') in ('092316c3af22361f80d186e38fe49bf3', 'fe23a3b4e428641b5aed19580614070a')
     and pg_temp.md5_of('invoice_goods_out(uuid)') in ('15ffed0ff0d5d9cc5685af8e834302ae', 'bb002119b3cb779a4b1c8bb79e08ae25'),

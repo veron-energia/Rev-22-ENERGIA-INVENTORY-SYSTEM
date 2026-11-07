@@ -656,6 +656,8 @@ end $$;
 -- ═════ K As before ═════
 do $$
 declare inv uuid; s uuid[]; res jsonb; line uuid; other uuid; r uuid; before jsonb; before_stock bigint; rp uuid;
+  v498 boolean := pg_get_functiondef('public.fulfil_special_doc(text,uuid,uuid,text)'::regprocedure) like '%498 (the user%';  -- 498: a waiting sale follows the customer and waits for the payment
+  t text;
 begin
   perform pg_temp.as_user('owner');
   -- A cancelled invoice: left as it is, whatever is asked, even with a unit still out
@@ -701,20 +703,21 @@ begin
   perform pg_temp.check(pg_temp.at_store('k3p') = 9 and pg_temp.at_wh('k3') = 9 and pg_temp.states(res) = 'back',
     'K5 the machine lowered: one machine back (9), the product''s stock as it was (9)');
 
-  -- Known limits, as before 497: a waiting sale keeps its own customer when the invoice's is corrected,
-  -- and can be released while the invoice owes money (a rental cannot, 458).
+  -- Until 498 (its suite has the rest): a waiting sale kept its own customer when the invoice's was
+  -- corrected, and could be released while the invoice owed money (a rental could not, 458).
   perform pg_temp.mkspecial('k6');
   inv := pg_temp.mk(jsonb_build_array(pg_temp.sale_line('k6'))); perform pg_temp.pay(inv);
   s := pg_temp.sales(inv); line := pg_temp.line_of(inv, 'k6');
   insert into public.customers(full_name, phone) values ('C497 Other Buyer', '+61255509903') returning id into rp;
   res := public.correct_invoice(inv, jsonb_build_array(pg_temp.keep(line, 'k6')), jsonb_build_object('customer_id', rp), 'Wrong customer', gen_random_uuid());
   perform pg_temp.check((select customer_id from public.invoices where id = inv) = rp
-      and (select customer_id from public.special_sales where id = s[1]) = pg_temp.fx('buyer'),
-    'K6 as before: a correction of the invoice''s customer leaves a waiting sale''s own customer');
+      and (select customer_id from public.special_sales where id = s[1]) = case when v498 then rp else pg_temp.fx('buyer') end,
+    'K6 a correction of the invoice''s customer: a waiting sale follows it (498), or kept its own (before it)');
   res := pg_temp.correct(inv, jsonb_build_array(pg_temp.keep(line, 'k6', 2)));
   perform pg_temp.check((select status::text from public.invoices where id = inv) = 'partially_paid', 'K7 raised: the invoice owes money');
-  perform pg_temp.check(pg_temp.err(format('select pg_temp.release(%L)', (select id from public.special_sales where invoice_item_id = line and status = 'pending' order by sale_no desc limit 1))) = 'ok',
-    'K8 as before: a waiting sale can be released while its invoice owes money');
+  t := pg_temp.err(format('select pg_temp.release(%L)', (select id from public.special_sales where invoice_item_id = line and status = 'pending' order by sale_no desc limit 1)));
+  perform pg_temp.check(case when v498 then t like '%cannot be released yet: its invoice %' else t = 'ok' end,
+    'K8 a waiting sale while its invoice owes money: refused (498), or released (before it): ' || t);
 end $$;
 
 -- ═════ N Who ═════

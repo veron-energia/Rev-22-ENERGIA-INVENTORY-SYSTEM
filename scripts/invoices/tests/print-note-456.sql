@@ -149,12 +149,12 @@ select pg_temp.check(
           and c.conname = 'invoices_print_note_length') = 'CHECK (((print_note IS NULL) OR (char_length(print_note) <= 500)))'
     and has_column_privilege('authenticated', 'public.invoices', 'print_note', 'select'),
   'G1 invoices.print_note: text, nullable, no default, at most 500 characters, read like every other column');
--- correct_invoice: 456's AFTER, or 457's or 458's (the next steps of this round, which build on it), or 464's, or 497's.
+-- correct_invoice: 456's AFTER, or 457's or 458's (the next steps of this round, which build on it), or 464's, or 497's, or 498's.
 -- create_invoice_with_details: 456's AFTER, or 463's (after 462: it refuses a removed customer record).
 select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'create_invoice_with_details(uuid,uuid,jsonb,jsonb)') in ('770ee0129b0e9fe909259ad7ea95b8d0', '0ac29c7aa909dd756ec572645ca86448')
     and (select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)')
-        in ('e174a2fde4ad5bb158e6f306b0b944e5', '45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633'),
-  'G2 create_invoice_with_details and correct_invoice have 456''s AFTER md5s (correct_invoice: or 457''s or 458''s or 464''s or 497''s)');
+        in ('e174a2fde4ad5bb158e6f306b0b944e5', '45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633', 'cea93a5dd73d429f6437f4c9a8fcaa52'),
+  'G2 create_invoice_with_details and correct_invoice have 456''s AFTER md5s (correct_invoice: or 457''s or 458''s or 464''s or 497''s or 498''s)');
 select pg_temp.check(not has_function_privilege('anon', 'public.' || f, 'execute')
     and has_function_privilege('authenticated', 'public.' || f, 'execute')
     and has_function_privilege('service_role', 'public.' || f, 'execute'),

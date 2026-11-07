@@ -670,8 +670,13 @@ end $$;
 
 -- ── U. The UNDO ──────────────────────────────────────────────────────
 -- 496 (where it is in) was applied after 495 and patches refund_invoice_recorded on top of
--- it, so it is undone first, as its own UNDO says.
-select to_regprocedure('public.special_release_rows(uuid)') is not null as t495_has496 \gset
+-- it, so it is undone first, as its own UNDO says. 498 (where it is in) patches fulfil_special_doc
+-- on top of 496, so it goes before that.
+select to_regprocedure('public.special_release_rows(uuid)') is not null as t495_has496,
+       pg_get_functiondef('public.fulfil_special_doc(text,uuid,uuid,text)'::regprocedure) like '%498 (the user%' as t495_has498 \gset
+\if :t495_has498
+\ir ../../special/undo-498.sql
+\endif
 \if :t495_has496
 \ir ../../special/undo-496.sql
 \endif
