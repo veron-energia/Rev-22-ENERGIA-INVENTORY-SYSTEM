@@ -275,11 +275,15 @@ The deployment order in this document gains `302` and `303` at the end.
   as back and sellable, damaged or not returned, and a sellable one goes back
   on the shelf it left; a cancellation puts back what nobody settled. The
   answers are in `special_sale_returns`; a unit fully back makes its sale
-  "Cancelled (refunded) · stock back". Still open: a line removed from a paid
-  invoice by a correction leaves a released item alone, and a unit confirmed
-  "not returned" can only be put back by a stock adjustment, as a product's
-  can. Rentals are as above (awaiting return, then received). See
-  `supabase/496_released_special_sale_stock_comes_back.sql`.
+  "Cancelled (refunded) · stock back". A correction takes a line's sales with
+  it: a machine lowered or removed comes off the waiting list, or goes back on
+  the shelf it left without a question, and shows as "Cancelled (line
+  corrected) · stock back"; a raised quantity or another machine joins the
+  waiting list; the correction summary says which before saving. Still open: a
+  unit confirmed "not returned" can only be put back by a stock adjustment, as
+  a product's can. Rentals are as above (awaiting return, then received). See
+  `supabase/496_released_special_sale_stock_comes_back.sql` and
+  `supabase/497_correction_follows_special_sales.sql`.
 - **Multiple benefit recipients on a bundle** — `transfer_invoice_unused_benefit`
   moves a benefit to another customer and the plan follows the source-linked
   allocation, but the combination *transferred-then-refunded* has no dedicated

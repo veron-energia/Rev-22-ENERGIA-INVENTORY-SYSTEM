@@ -24,6 +24,8 @@ const AREA: Record<string, string> = {
   total: 'Total and status', correction: 'The corrected lines',
   // 458: the rentals that change with their lines, customer and store.
   rentals: 'Rentals',
+  // 497: the special sales that follow their corrected lines.
+  special_sales: 'Special sales',
 };
 
 /**

@@ -75,6 +75,16 @@ test('after a correction the page says what it did to the rentals (rule 3)', () 
   assert.match(f.RENTAL_FOLLOWS_HINT, /machine and quantity stay until it is returned/);
   assert.match(f.RENTAL_FOLLOWS_HINT, /machines already refunded stay off it/);
   assert.match(f.RENTAL_FOLLOWS_HINT, /released only once the invoice is paid in full/);
+  // 497: the special sales, the same way.
+  assert.equal(f.correctionSpecialNote(null), null);
+  assert.equal(f.correctionSpecialNote([]), null);
+  assert.equal(f.correctionSpecialNote([{ state: 'back', what: '' }]), null);
+  assert.equal(f.correctionSpecialNote([{ sale_no: 'SPS-2026-9401', state: 'back', what: 'SPS-2026-9401: Machine goes back to Warehouse' }]),
+    'The special sale follows the corrected invoice: SPS-2026-9401: Machine goes back to Warehouse.');
+  assert.match(f.correctionSpecialNote([{ what: 'A' }, { what: 'B' }]), /^The special sales follow the corrected invoice: A; B\.$/);
+  assert.match(f.SPECIAL_FOLLOWS_HINT, /goes back to where it left if it was already released/);
+  assert.match(f.SPECIAL_FOLLOWS_HINT, /join the waiting list/);
+  assert.match(f.SPECIAL_FOLLOWS_HINT, /summary shows which before you save/);
 });
 
 test('a refund speaks of a rental out as Cancel does (rule 1)', () => {
@@ -128,12 +138,15 @@ test('the pages wire them', () => {
   assert.ok(guided.includes("rentalsToReceive(data as AwaitingRental[], p.action, (p.lines ?? []).map(l => l.invoice_item_id))"),
     'the done screen offers the receive step for the rentals on the lines a refund covered (417, unchanged)');
   assert.ok(src('src/components/invoices/CorrectionPreview.tsx').includes("rentals: 'Rentals',"), 'the summary names the rentals area');
+  assert.ok(src('src/components/invoices/CorrectionPreview.tsx').includes("special_sales: 'Special sales',"), 'and the special sales area (497)');
   const page = src('src/pages/InvoicesPage.tsx');
   assert.ok(page.includes('withRentalDueBack(l, withCatalogueItem(l, { rental_rate_type: e.target.value as any }))')
     && page.includes('withRentalDueBack(l, withCatalogueItem(l, { rental_periods:')
     && page.includes('withRentalDueBack(l, { ...l, rental_start_date: e.target.value })'),
     'the invoice form moves "Due back" with the rate, the periods and the start');
   assert.ok(page.includes('{blankDueBackHint(line)}') && page.includes('{RENTAL_FOLLOWS_HINT}'), 'and shows the hints');
+  assert.ok(page.includes('const specialNote = correctionSpecialNote((data as any)?.special);')
+    && page.includes('{SPECIAL_FOLLOWS_HINT}') && page.includes('data-testid="special-follows-hint"'), 'and the special sales say so too (497)');
   assert.ok(page.includes('const rentalNote = correctionRentalNote((data as any)?.rentals);')
     && page.includes("if (rentalNote) setTherapyNote(n => [n, rentalNote].filter(Boolean).join(' '));"),
     'the saved correction says what it did to the rentals, after the therapy and voucher notes');

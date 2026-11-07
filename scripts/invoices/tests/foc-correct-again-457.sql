@@ -227,11 +227,11 @@ begin
 end $$;
 
 -- ═════ G The md5s, the grants, what 457 relies on ═════
--- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it), or 464's (built on 458).
+-- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it), or 464's (built on 458), or 497's.
 select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)')
-        in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2')
+        in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633')
     and (select md5 from pg_temp.fn_md5s() where fn = 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)') = '1f034561a461bdb46a1e6274e0d04606',
-  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s)');
+  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s or 497''s)');
 select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('authenticated', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('service_role', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
@@ -240,7 +240,7 @@ select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(
     and has_function_privilege('service_role', 'public.update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', 'execute'),
   'G2 correct_invoice: signed-in staff and the service role, never anon; update_invoice_internal: the service role''s alone');
 -- preview_invoice_correction: as read, or 458's AFTER (458 changes it and runs after 457),
--- or 463's (after 462); create_invoice_with_details: 456's, or 463's.
+-- or 463's (after 462), or 497's; create_invoice_with_details: 456's, or 463's.
 select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = any (string_to_array(x.ok, '|')),
   'G3 relied on and unchanged: ' || x.fn)
   from (values ('can_edit_invoice(uuid)', '22f496c486ee4f0dfd45c68da6240ac2'),
@@ -248,7 +248,7 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('lock_settled_invoice(uuid)', 'ccc7016ac73d9a13142980386a5929dc'),
                ('trg_lock_on_settle()', '39c6478cdaec553c2ab8ceaf55058960'),
                ('invoice_before_full_payment(uuid)', '532d7690367fc674737b20420e7fb16c'),
-               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33'),
+               ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33|13b0925c29bd8ca14d8d8b7bd961fef8'),
                ('invoice_revision_retry(uuid,uuid,jsonb)', '5c33c50a8f6870d8a66f74b63b782f24'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855'),
                ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448'),

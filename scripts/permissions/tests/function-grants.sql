@@ -270,6 +270,8 @@ declare
                              -- released before 496
                              'special_release_rows','return_released_special_stock',
                              'restore_released_special_stock','link_released_special_movements',
+                             -- 497: a correction's special sales following its lines
+                             'invoice_special_sales_follow_lines',
                              -- 431: the module an audit entry is filed under, the trigger that
                              -- files an entry saved with none, and write_audit_ex, which saves
                              -- any audit entry it is given (service role only, like write_audit)

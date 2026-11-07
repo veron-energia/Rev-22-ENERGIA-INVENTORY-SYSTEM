@@ -222,10 +222,10 @@ begin
 end $$;
 
 -- ═════ G The md5s, the grants, the table, what 464 relies on ═════
-select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)') = '04d647e13e9424a9375942e5812e91a2'
+select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)') in ('04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633')
     and (select md5 from pg_temp.fn_md5s() where fn = 'trg_issue_sold_vouchers_on_paid()') = 'cf0b5610b77edfea2683751d5c25ca1d'
     and (select md5 from pg_temp.fn_md5s() where fn = 'give_raised_voucher_units(uuid,uuid[],boolean,text)') = '84d4c7bbd39a754d61cbe4f778777a33',
-  'G1 correct_invoice, trg_issue_sold_vouchers_on_paid and give_raised_voucher_units have 464''s AFTER md5s');
+  'G1 correct_invoice, trg_issue_sold_vouchers_on_paid and give_raised_voucher_units have 464''s AFTER md5s (correct_invoice: or 497''s, which adds its special sales)');
 select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('authenticated', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('service_role', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')

@@ -74,6 +74,22 @@ export function correctionRentalNote(rentals: RentalFollowed[] | null | undefine
   return `The ${list.length === 1 ? 'rental follows' : 'rentals follow'} the corrected invoice: ${list.map(r => r.what).join('; ')}.`;
 }
 
+/** Under a special sale line of a saved invoice in the correction form (497). */
+export const SPECIAL_FOLLOWS_HINT =
+  'Saving changes this line’s special sales to match. A machine taken off the line comes off the waiting list, '
+  + 'or goes back to where it left if it was already released. Extra machines, or another machine, join the waiting list. '
+  + 'The summary shows which before you save.';
+
+/** One entry of correct_invoice's answer 'special' (497). */
+export type SpecialFollowed = { sale_no?: string; state: 'waiting_off' | 'back' | 'stays' | 'raised' | string; what: string };
+
+/** After a correction is saved: what it did to the invoice's special sales, or null. */
+export function correctionSpecialNote(special: SpecialFollowed[] | null | undefined): string | null {
+  const list = (special ?? []).filter(s => s && typeof s.what === 'string' && s.what);
+  if (!list.length) return null;
+  return `The ${list.length === 1 ? 'special sale follows' : 'special sales follow'} the corrected invoice: ${list.map(s => s.what).join('; ')}.`;
+}
+
 /** What a refund or a cancellation does to a rental out, said in its review. */
 export function rentalOutReviewNote(action: string): string | null {
   if (action === 'cancel') {

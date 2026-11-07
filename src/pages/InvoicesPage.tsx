@@ -39,7 +39,7 @@ import { singaporeToday, invoiceDate, displayInvoiceDate, instalmentText, valida
 import { copyMoneyRows, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml,
   PRINT_NOTE_MAX, printedNote, exchangeNote, noteHtml } from '../lib/invoices/customerCopy';
 import { correctionFingerprint, REVIEW_AGAIN_MESSAGE } from '../lib/invoices/correctionReview';
-import { withRentalDueBack, blankDueBackHint, correctionRentalNote, RENTAL_FOLLOWS_HINT } from '../lib/special/rentalFollows';
+import { withRentalDueBack, blankDueBackHint, correctionRentalNote, RENTAL_FOLLOWS_HINT, correctionSpecialNote, SPECIAL_FOLLOWS_HINT } from '../lib/special/rentalFollows';
 import { InvoiceSearchSelect } from '../components/invoices/InvoiceSearchSelect';
 import { PaymentQrPopup, PaymentQrLineAction } from '../components/invoices/PaymentQrPopup';
 import { paymentQrFor } from '../lib/invoices/paymentQr.mjs';
@@ -1326,6 +1326,9 @@ const InvoicesPage: React.FC = () => {
       // 458: and what the correction did to the invoice's rentals.
       const rentalNote = correctionRentalNote((data as any)?.rentals);
       if (rentalNote) setTherapyNote(n => [n, rentalNote].filter(Boolean).join(' '));
+      // 497: and to its special sales.
+      const specialNote = correctionSpecialNote((data as any)?.special);
+      if (specialNote) setTherapyNote(n => [n, specialNote].filter(Boolean).join(' '));
     }
     noteLocalChangeRef.current([newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[]);
     setCorrectionPreview(null);
@@ -4027,6 +4030,10 @@ const InvoicesPage: React.FC = () => {
                                   search: `${sp.name} ${sp.sku ?? ''}`,
                                   searchPrices: line.kind === 'special_product' ? [sp.sale_price] : ['day','week','month','year'].map(k => Number(sp[`rate_${k}`]) > 0 ? sp[`rate_${k}`] : null),
                                 }))} />
+                            {/* 497: on a settled invoice the special sales follow their corrected line. */}
+                            {line.kind === 'special_product' && editingInvoiceId && editingPaid && line.invoice_item_id && (
+                              <div className="correction-hint" data-testid="special-follows-hint" style={{ marginTop: 6, fontSize: 11 }}>
+                                {SPECIAL_FOLLOWS_HINT}</div>)}
                             {line.kind === 'rental' && line.special_product_id && (
                               <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                                 <div style={{ flex: '0 0 100px' }}>

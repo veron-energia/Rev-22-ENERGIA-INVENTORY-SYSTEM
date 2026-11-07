@@ -890,6 +890,7 @@ end $$;
 -- A correction that removes or lowers a line: a cancellation moves only the units its plan lists.
 do $$
 declare inv uuid; s uuid[]; pline uuid; sline uuid; plan jsonb; res jsonb;
+  v497 boolean := to_regprocedure('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)') is not null;  -- 497: a correction takes the line's sales with it
 begin
   perform pg_temp.as_user('owner');
   perform pg_temp.mkspecial('f17', 'wh');
@@ -900,15 +901,17 @@ begin
   select id into pline from public.invoice_items where invoice_id = inv and line_kind::text = 'product';
   perform public.correct_invoice(inv, jsonb_build_array(jsonb_build_object('invoice_item_id', pline, 'kind', 'product',
             'product_id', pg_temp.fx('p_f17p'), 'quantity', 1)), '{}'::jsonb, 'Machine line removed', gen_random_uuid());
+  -- (497, where it is in: a correction takes the line's sales with it, so the unit goes back with the line.)
   perform pg_temp.check(not exists (select 1 from public.invoice_items where invoice_id = inv and line_kind::text = 'special_product')
-      and pg_temp.status_of(s[1]) = 'completed' and pg_temp.at_wh('f17') = 9,
-    'F17 a correction removes the machine line and leaves the released unit alone (known, as before)');
+      and pg_temp.status_of(s[1]) = case when v497 then 'cancelled' else 'completed' end and pg_temp.at_wh('f17') = case when v497 then 10 else 9 end,
+    'F17 a correction removes the machine line and leaves the released unit alone (known, as before; 497: it goes back with the line)');
   plan := pg_temp.plan(inv, 'cancel');
   perform pg_temp.check(jsonb_array_length(plan->'stock') = 1 and plan->'stock'->0->>'special_sale_id' is null,
     'F18 the cancellation plan lists the product only');
   res := pg_temp.guided(inv, 'cancel');
-  perform pg_temp.check(res->>'status' = 'approved' and pg_temp.at_wh('f17') = 9 and pg_temp.status_of(s[1]) = 'completed' and pg_temp.at_store('f17p') = 10,
-    'F19 and the cancellation moves only that: the product back, the machine as it was (9)');
+  perform pg_temp.check(res->>'status' = 'approved' and pg_temp.at_wh('f17') = case when v497 then 10 else 9 end
+      and pg_temp.status_of(s[1]) = case when v497 then 'cancelled' else 'completed' end and pg_temp.at_store('f17p') = 10,
+    'F19 and the cancellation moves only that: the product back, the machine as it was (9; 497: back already, 10, not 11)');
 
   perform pg_temp.as_user('owner');
   perform pg_temp.mkspecial('f20', 'wh');
@@ -922,8 +925,9 @@ begin
   perform pg_temp.check(jsonb_array_length(plan->'stock') = 1 and plan->'stock'->0->>'sale_no' = pg_temp.sale_no_of(s[1]),
     'F20 a line lowered from two units to one: the cancellation plan lists one unit');
   res := pg_temp.guided(inv, 'cancel');
-  perform pg_temp.check(res->>'status' = 'approved' and pg_temp.at_wh('f20') = 9 and pg_temp.status_of(s[1]) = 'cancelled' and pg_temp.status_of(s[2]) = 'completed',
-    'F21 and the cancellation puts back that one (9 of 10), not both');
+  perform pg_temp.check(res->>'status' = 'approved' and pg_temp.at_wh('f20') = case when v497 then 10 else 9 end and pg_temp.status_of(s[1]) = 'cancelled'
+      and pg_temp.status_of(s[2]) = case when v497 then 'cancelled' else 'completed' end,
+    'F21 and the cancellation puts back that one (9 of 10), not both (497: the other went back with the correction, so 10, once each)');
   -- directly, with no answers at all, the same
   perform pg_temp.as_user('owner');
   perform pg_temp.mkspecial('f22', 'wh');
@@ -933,8 +937,9 @@ begin
   perform public.correct_invoice(inv, jsonb_build_array(jsonb_build_object('invoice_item_id', pg_temp.line_of(inv), 'kind', 'special_product',
             'special_product_id', pg_temp.fx('sp_f22'), 'quantity', 1)), '{}'::jsonb, 'One machine only', gen_random_uuid());
   perform public.cancel_invoice_recorded(inv, 'Check cancellation', gen_random_uuid());
-  perform pg_temp.check(pg_temp.at_wh('f22') = 9 and pg_temp.status_of(s[1]) = 'cancelled' and pg_temp.status_of(s[2]) = 'completed',
-    'F22 cancel_invoice_recorded alone does the same: one unit');
+  perform pg_temp.check(pg_temp.at_wh('f22') = case when v497 then 10 else 9 end and pg_temp.status_of(s[1]) = 'cancelled'
+      and pg_temp.status_of(s[2]) = case when v497 then 'cancelled' else 'completed' end,
+    'F22 cancel_invoice_recorded alone does the same: one unit (497: the other went back with the correction)');
 end $$;
 
 -- The shelf it left: deleted since, or its stock row gone.

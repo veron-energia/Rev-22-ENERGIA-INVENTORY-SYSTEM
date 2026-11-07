@@ -1103,13 +1103,14 @@ insert into t463_md5 values
 -- (470, where it is in, changes the forwarder: after470; 471, where it is
 -- in, changes it again, and 472 again: their AFTERs below; 473 the list:
 -- its AFTER below; 476 the list and the mover again: their AFTERs below;
--- 477 the forwarder again: its AFTER below.)
+-- 477 the forwarder again: its AFTER below; 497 the summary: its AFTER below.)
 create function pg_temp.t463_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then (m.before is null and to_regprocedure('public.' || m.sig) is null)
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when pg_temp.t463_476_in() and m.sig = 'invoice_transferable_benefits(uuid)' then '1546de1f83d970424d26e65941f4dcb8'
+                                = case when m.sig = 'preview_invoice_correction(uuid,jsonb)' and to_regprocedure('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)') is not null then '13b0925c29bd8ca14d8d8b7bd961fef8'
+                                       when pg_temp.t463_476_in() and m.sig = 'invoice_transferable_benefits(uuid)' then '1546de1f83d970424d26e65941f4dcb8'
                                        when pg_temp.t463_476_in() and m.sig = 'move_invoice_benefits_to_customer(uuid,uuid,uuid,text)' then '142dd3252911480bd4a17e7c55b488d3'
                                        when pg_temp.t463_473_in() and m.sig = 'invoice_transferable_benefits(uuid)' then 'a2332a22fe9975667e848de0d1e4480b'
                                        when pg_temp.t463_477_in() and m.sig = 'credit_given_back_follows(uuid)' then 'a0f2f5ece30be439049dca275802237a'

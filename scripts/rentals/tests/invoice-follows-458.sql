@@ -208,8 +208,11 @@ $$ select count(*)::int from rentals where invoice_id = p_inv and status::text i
 -- reopening is not queued again. So is 494's fulfil_special_doc, which only
 -- leaves alone a sale a supplier has been told to send. So are 496's fulfil_special_doc,
 -- which links the sale to the movement that took its unit out, and its
--- create_special_docs_for_invoice, where a sale whose stock came back no longer counts.)
-select pg_temp.check((select replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- create_special_docs_for_invoice, where a sale whose stock came back no longer counts.
+-- So are 497's correct_invoice and preview_invoice_correction, which add a line's special sales.)
+select pg_temp.check((select replace(replace(replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+                                     '=9aac5395dd18fd8349727d6c8aa0c633', '=af9451fa15c2cf790edd70f799bae336'),
+                                     '=13b0925c29bd8ca14d8d8b7bd961fef8', '=3047239c7418179e84927f6f00e7f2eb'),
                                      '=04d647e13e9424a9375942e5812e91a2', '=af9451fa15c2cf790edd70f799bae336'),
                                      '=f26752231c100461e11caddc03c98a33', '=3047239c7418179e84927f6f00e7f2eb'),
                                      '=30066e137b9b75b5789a050c14debc04', '=0ff61e4ead121c198ea7f90a7fc78274'),
