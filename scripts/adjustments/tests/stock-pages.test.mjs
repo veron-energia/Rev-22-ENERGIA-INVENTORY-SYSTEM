@@ -672,7 +672,7 @@ test('Products: the figure is called Price, in the column, the form and the expo
   assert.ok(modal().textContent.includes('Price (S$)'), 'the form says Price');
   assert.ok(!modal().textContent.includes('Cost'), 'the form no longer says Cost');
   assert.equal(document.querySelector('[data-testid="product-price-hint"]').textContent,
-    'Saving sets this price at every store on the Price List (a machine that only rents stays off). A blank price leaves the Price List as it is.');
+    'Saving sets this price at every store on the Price List and as its sale price on the Special page (a machine that only rents stays off). A blank price leaves them as they are.');
   const src = read('src/pages/ProductsPage.tsx');
   assert.ok(src.includes("{ header: 'Price', value: (p: any) => Number(p.default_cost_price ?? 0) }"), 'the Excel export says Price');
   assert.ok(!/header: 'Cost'|Sort by cost|Cost price must/.test(src), 'and no Cost is left on the page');
@@ -685,15 +685,15 @@ test('Products: a Manager sees the same note; an Inventory Manager is told only 
   await mount(P.ProductsPage, 'inventory_manager');
   await click(document.querySelector('button[title="Edit"]'));
   assert.equal(document.querySelector('[data-testid="product-price-hint"]').textContent,
-    'Only an Owner\'s or Manager\'s save puts this price on the Price List.');
+    'Only an Owner\'s or Manager\'s save puts this price on the Price List and the Special page.');
 });
 
 test('Products: a save says so when a store\'s price changed, and only then', async () => {
-  const says = async (pricesSet, price) => {
+  const says = async (pricesSet, price, specialSet = 0) => {
     await mount(P.ProductsPage, 'manager', b => {
       b.handlers.save_product = a => {
         Object.assign(b.fx.products.find(p => p.id === a.p_id), a.p_fields);
-        return { success: true, product_id: a.p_id, created: false, prices_set: pricesSet };
+        return { success: true, product_id: a.p_id, created: false, prices_set: pricesSet, special_price_set: specialSet };
       };
     });
     await click(row('Fixture Mat').querySelector('button[title="Edit"]'));
@@ -704,6 +704,11 @@ test('Products: a save says so when a store\'s price changed, and only then', as
   assert.ok((await says(2, '12.5')).includes('Fixture Mat: S$12.50 is now its price at every store.'), 'both stores changed');
   assert.ok((await says(1, '12.5')).includes('Fixture Mat: S$12.50 is now its price at every store.'), 'one store changed: both now hold it');
   assert.equal(await says(0, '12.5'), '', 'nothing changed: nothing said');
+  // 501: the Special page's sale price.
+  assert.ok((await says(2, '12.5', 1)).includes('Fixture Mat: S$12.50 is now its price at every store and on the Special page.'), 'both');
+  const special = await says(0, '12.5', 1);
+  assert.ok(special.includes('Fixture Mat: S$12.50 is now its price on the Special page.'), 'the sale price alone');
+  assert.ok(!special.includes('every store'), 'and no word of the stores');
 });
 
 test('Products: moved to another tab and priced, a save says both', async () => {

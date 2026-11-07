@@ -753,6 +753,9 @@ test('The form: the Consignment tick is sent after the save, only when it change
     await edit('Fixture Machine');
     let dlg = ui.dialog('Edit Special Product');
     assert.equal(tick(dlg).checked, false);
+    // 501: the sale price says what a save on the Products page does to it.
+    assert.equal(dlg.querySelector('[data-testid="special-sale-price-hint"]').textContent,
+      'Saving the product on the Products page sets this to its price there.');
     await save(dlg);
     assert.deepEqual(tickCalls(), [], 'not changed: not sent');
     assert.doesNotMatch(ui.text(), /It is now on the/);

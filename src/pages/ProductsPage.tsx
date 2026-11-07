@@ -120,7 +120,8 @@ const ProductsPage: React.FC = () => {
     // The product and its category and supplier links are saved together, in
     // one call, or not at all; every refusal comes back to show (save_product,
     // 420). Switching a product off is refused while it still holds stock. An
-    // Owner's or Manager's save also sets the price at every store (499).
+    // Owner's or Manager's save also sets the price at every store (499) and
+    // its sale price on the Special page (501).
     const { data: saved, error } = await supabase.rpc('save_product', {
       p_id: editId,
       p_fields: {
@@ -140,9 +141,12 @@ const ProductsPage: React.FC = () => {
     // A change of type can take it off this tab: say where it went.
     const belongs = form.product_type === 'no_commission' ? 'service' : 'products';
     const moved = belongs === tab ? null : `${form.name.trim()} is now on the ${belongs === 'service' ? 'Service' : 'Products'} tab.`;
-    // 499: said only when a store's price changed.
-    const priced = Number((saved as any)?.prices_set ?? 0) > 0
-      ? `${form.name.trim()}: S$${Number(cost).toFixed(2)} is now its price at every store.` : null;
+    // 499, 501: said only when a store's price or the sale price changed.
+    const atStores = Number((saved as any)?.prices_set ?? 0) > 0;
+    const onSpecial = Number((saved as any)?.special_price_set ?? 0) > 0;
+    const priced = atStores || onSpecial
+      ? `${form.name.trim()}: S$${Number(cost).toFixed(2)} is now its price ${atStores && onSpecial ? 'at every store and on the Special page' : atStores ? 'at every store' : 'on the Special page'}.`
+      : null;
     setFlash([moved, priced].filter(Boolean).join(' ') || null);
     load();
   };
@@ -439,8 +443,8 @@ const ProductsPage: React.FC = () => {
               <div className="form-group"><label>Price (S$)</label><input type="text" inputMode="decimal" value={form.default_cost_price} onChange={e => setForm(f => ({ ...f, default_cost_price: e.target.value }))} placeholder="0.00" />
                 <div data-testid="product-price-hint" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
                   {isOwnerOrManager(profile?.role)
-                    ? 'Saving sets this price at every store on the Price List (a machine that only rents stays off). A blank price leaves the Price List as it is.'
-                    : 'Only an Owner\'s or Manager\'s save puts this price on the Price List.'}
+                    ? 'Saving sets this price at every store on the Price List and as its sale price on the Special page (a machine that only rents stays off). A blank price leaves them as they are.'
+                    : 'Only an Owner\'s or Manager\'s save puts this price on the Price List and the Special page.'}
                 </div>
               </div>
             </div>

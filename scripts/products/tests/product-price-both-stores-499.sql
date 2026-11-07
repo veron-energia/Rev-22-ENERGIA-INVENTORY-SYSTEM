@@ -288,7 +288,10 @@ begin
   insert into public.special_products (name, sku, sale_price, product_id) values ('T499 Machine', 'T499-MACH', 999, q);
   r := pg_temp.save(own, q, jsonb_build_object('default_cost_price', '994'));
   perform pg_temp.ok((r->>'prices_set')::int = n and pg_temp.price(a, q) = 994 and pg_temp.price(b, q) = 994, 'F7 a machine that sells follows the Product page');
-  perform pg_temp.ok((select sale_price from public.special_products where product_id = q) = 999, 'F8 and its Special page price is left');
+  -- 501 sets the sale price too; both worlds, so this suite still runs where 501 is in.
+  perform pg_temp.ok((select sale_price from public.special_products where product_id = q)
+      = case when pg_temp.md5_of('save_product(uuid,jsonb,uuid[],uuid[])') = '151ad4be5fe4742573ef6ec1b2cbe78a' then 999 else 994 end,
+    'F8 and its Special page price is left (with 501 it follows)');
 
   -- ── G Who ──
   x := pg_temp.audits(p);
@@ -386,7 +389,7 @@ begin
   perform pg_temp.ok(pg_temp.acl_of('save_product(uuid,jsonb,uuid[],uuid[])') = (select a from before_install), 'N1 save_product''s grants are unchanged');
   perform pg_temp.ok(pg_temp.acl_of('set_product_prices(uuid,uuid,numeric,numeric,text)') = (select b from before_install), 'N2 set_product_prices'' grants are unchanged');
   perform pg_temp.ok(not has_function_privilege('anon', 'public.save_product(uuid,jsonb,uuid[],uuid[])', 'execute'), 'N3 not open to anon');
-  perform pg_temp.ok(pg_temp.md5_of('save_product(uuid,jsonb,uuid[],uuid[])') = '151ad4be5fe4742573ef6ec1b2cbe78a', 'N4 save_product is the tested text');
+  perform pg_temp.ok(pg_temp.md5_of('save_product(uuid,jsonb,uuid[],uuid[])') in ('151ad4be5fe4742573ef6ec1b2cbe78a', '2b16ba59e2024b024317a642fa50b62b'), 'N4 save_product is the tested text, or 501''s');
 end $n$;
 \if :{?skip_install}
 \else
@@ -400,6 +403,11 @@ select pg_temp.ok(not exists (select 1 from before_md5 b where b.sig <> 'save_pr
 do $u$
 declare own uuid := pg_temp.id('own'); r jsonb; p uuid; t text; e text;
 begin
+  -- Where 501 is in, its UNDO comes first (special-price-follows-501.sql tests it).
+  if pg_temp.md5_of('save_product(uuid,jsonb,uuid[],uuid[])') = '2b16ba59e2024b024317a642fa50b62b' then
+    raise notice 'NOTE  U1-U6 are skipped: 501 is in';
+    return;
+  end if;
   -- It refuses anything but 499's version.
   execute replace(pg_get_functiondef('public.save_product(uuid,jsonb,uuid[],uuid[])'::regprocedure), '-- 420: the Products page''s Add and Edit', '-- changed since: the Products page''s Add and Edit');
   begin

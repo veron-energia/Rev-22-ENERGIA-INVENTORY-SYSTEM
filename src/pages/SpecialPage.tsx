@@ -1252,7 +1252,9 @@ const SpecialPage: React.FC = () => {
               </div>
             </div>
             <div className="form-grid-2">
-              <div className="form-group"><label>Sale Price (S$)</label><input type="number" min={0} step={0.01} value={form.sale_price || ''} onChange={e => setForm(f => ({ ...f, sale_price: +e.target.value }))} /></div>
+              <div className="form-group"><label>Sale Price (S$)</label><input type="number" min={0} step={0.01} value={form.sale_price || ''} onChange={e => setForm(f => ({ ...f, sale_price: +e.target.value }))} />
+                <div data-testid="special-sale-price-hint" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>Saving the product on the Products page sets this to its price there.</div>
+              </div>
               <div className="form-group"><label>Late Fee / day (S$)</label><input type="number" min={0} step={0.01} value={form.late_fee_per_day || ''} onChange={e => setForm(f => ({ ...f, late_fee_per_day: +e.target.value }))} /></div>
             </div>
             <div>
