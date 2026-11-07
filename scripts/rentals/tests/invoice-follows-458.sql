@@ -206,12 +206,16 @@ $$ select count(*)::int from rentals where invoice_id = p_inv and status::text i
 -- in, are read as 458's: they build on it. So is 475's reopen_invoice, which
 -- changes only its sessions step: a session still waiting from an earlier
 -- reopening is not queued again. So is 494's fulfil_special_doc, which only
--- leaves alone a sale a supplier has been told to send.)
-select pg_temp.check((select replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- leaves alone a sale a supplier has been told to send. So are 496's fulfil_special_doc,
+-- which links the sale to the movement that took its unit out, and its
+-- create_special_docs_for_invoice, where a sale whose stock came back no longer counts.)
+select pg_temp.check((select replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
                                      '=04d647e13e9424a9375942e5812e91a2', '=af9451fa15c2cf790edd70f799bae336'),
                                      '=f26752231c100461e11caddc03c98a33', '=3047239c7418179e84927f6f00e7f2eb'),
                                      '=30066e137b9b75b5789a050c14debc04', '=0ff61e4ead121c198ea7f90a7fc78274'),
-                                     '=e2fd9fca6842b5193ec7020445a45189', '=9c3072e11013e8943b28d8a46854edc4') from pg_temp.fn_md5s()
+                                     '=e2fd9fca6842b5193ec7020445a45189', '=9c3072e11013e8943b28d8a46854edc4'),
+                                     '=9b4520efc9d06b04360bacc2c035215b', '=9c3072e11013e8943b28d8a46854edc4'),
+                                     '=540b98385d9632abcc5fe35c23c00bb5', '=429f4ac315cb5d0557c2005807bad115') from pg_temp.fn_md5s()
                        where fn in ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'preview_invoice_correction(uuid,jsonb)',
                                     'settle_waiting_special_docs_on_refund(uuid,jsonb,text)', 'create_special_docs_for_invoice(uuid)',
                                     'reopen_invoice(uuid,text,uuid)', 'fulfil_special_doc(text,uuid,uuid,text)',
@@ -243,10 +247,14 @@ select pg_temp.check(not exists (
   'G3 correct_invoice, preview_invoice_correction, reopen_invoice and fulfil_special_doc: signed-in staff, never anon');
 -- (494's waiting list, where it is in, is read as 458's: it only leaves out a
 -- sale a supplier has been told to send. 495's refund, where it is in, is read as
--- 458's: it only asks no stock question of a service.)
-select pg_temp.check((select replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- 458's: it only asks no stock question of a service. 496's refund and plan, where it is
+-- in, are read as 458's too: they only ask about, and return, a released special sale's unit.)
+select pg_temp.check((select replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
                                      '=fdaf5aca81c63cc99f8fddcfcf10564c', '=aed7e3b24ff192cbe09935c5e7488881'),
-                                     '=3280f4ed6afb93aed7366eaf100c6383', '=804ecd829cfecf713783a09a05d93c7e') from pg_temp.fn_md5s()
+                                     '=3280f4ed6afb93aed7366eaf100c6383', '=804ecd829cfecf713783a09a05d93c7e'),
+                                     '=49f6880e4e6395b1468f32e4126472eb', '=804ecd829cfecf713783a09a05d93c7e'),
+                                     '=3fb10ac55903b9346c4898d988b808ce', '=804ecd829cfecf713783a09a05d93c7e'),
+                                     '=d8bf5ea6c92c49be3b53547e6f407278', '=383d618edb28c3c9a360242d038a022c') from pg_temp.fn_md5s()
                        where fn in ('cancel_invoice_rentals(uuid,text)', 'receive_returned_rental(uuid,uuid,text,text,uuid)',
                                     'invoice_rentals_awaiting_return(uuid)', 'refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)',
                                     'invoice_action_plan(uuid,text,jsonb)', 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)',

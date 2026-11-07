@@ -1119,7 +1119,9 @@ create function pg_temp.t479_at(p_col text) returns boolean language sql as $f$
 -- The refund options are not changed by 479 (the Owner, 29 Oct 2026: what
 -- the guided plans offer stays as it is): as 438, 448 and 477 pinned them.
 create function pg_temp.t479_options_kept() returns boolean language sql as $f$
-  select md5(pg_get_functiondef('public.invoice_refund_options(uuid)'::regprocedure)) = '689a71c246260d2c10ec44dd94eb7139' $f$;
+  -- (496's AFTER where it is in: the options also list the units released for a special sale)
+  select md5(pg_get_functiondef('public.invoice_refund_options(uuid)'::regprocedure))
+         in ('689a71c246260d2c10ec44dd94eb7139', '0a9276f8b967b24a040e486287182072') $f$;
 -- Their texts as the suite starts (for a partial install, 9).
 create temp table t479_defs(sig text primary key, def text);
 insert into t479_defs select m.sig, pg_get_functiondef(to_regprocedure('public.' || m.sig)) from t479_md5 m;

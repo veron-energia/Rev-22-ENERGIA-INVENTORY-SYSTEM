@@ -769,7 +769,8 @@ begin
   perform pg_temp.t448_check(pg_temp.t448_in(), '10 448 is not installed');
   perform pg_temp.t448_check(md5(pg_get_functiondef(h::regprocedure)) = 'd35d7c8ae7187985ea64f8a5c38a7d79'
     and md5(pg_get_functiondef(uv::regprocedure)) = '055a3b07b1c15ffb1ac19039fa6cb650'
-    and md5(pg_get_functiondef(pl::regprocedure)) = '383d618edb28c3c9a360242d038a022c', '10 448 is not installed as tested');
+    -- (496's AFTER where it is in: the plan also lists the units released for a special sale)
+    and md5(pg_get_functiondef(pl::regprocedure)) in ('383d618edb28c3c9a360242d038a022c', 'd8bf5ea6c92c49be3b53547e6f407278'), '10 448 is not installed as tested');
   if exists (select 1 from t448_fp where k = 'first') then
     perform pg_temp.t448_check((select fp from t448_fp where k = 'second') = (select fp from t448_fp where k = 'first'),
       '10 the second run of 448 changed functions');

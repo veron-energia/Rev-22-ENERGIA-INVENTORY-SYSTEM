@@ -250,7 +250,9 @@ select pg_temp.check(
 select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = any (string_to_array(x.md5, '|')), 'G4 relied on and unchanged: ' || x.fn)
   from (values ('issue_sold_vouchers_for_invoice(uuid)', '0dbb4bc74411b6d4f0535f661a8c09ee'),
                ('issue_promotion_vouchers_for_invoice(uuid)', 'e47e5f623b1fa3f6eafe83086f0c9776'),
-               ('cancel_invoice_recorded(uuid,text,uuid)', 'de52d9dbaef8ab15163bef35cb9d733d'),
+               -- (496's AFTER where it is in: a cancellation also puts back the units released for
+               -- its special sales)
+               ('cancel_invoice_recorded(uuid,text,uuid)', 'de52d9dbaef8ab15163bef35cb9d733d|5490e4b48dfdab63b6dc5a0aa78d4bc7'),
                ('apply_reopened_invoice_vouchers()', '28d3b7a69b91ddebcdb200559d96a0ef|6684840544d1ad8a28e2415934300054'),
                ('invoice_own_voucher_ids(uuid)', '9340840f1ce4e031ec3613198688ba2e|ee0202627b9500dcbad103d3ade2401f'),
                ('invoice_voucher_stock_unrecorded(uuid,boolean)', '91c8f0fa69ef6337f323b7ac467a8c2b'),

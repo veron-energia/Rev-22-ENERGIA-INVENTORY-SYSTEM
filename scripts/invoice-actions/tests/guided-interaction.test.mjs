@@ -864,6 +864,57 @@ check('with it, the approval carries the reason for the override',
   JSON.stringify(vipSent) === JSON.stringify([{ code: 'vip_voucher_used_later', reason: 'The SAVE72 on INV-LATER was a separate offer' }]),
   JSON.stringify(vipSent));
 
+// ---------------------------------------------------------------------
+// 496: a special sale already released from a warehouse is asked about as a product is.
+// The database lists its unit among the plan's stock, with the warehouse it left in
+// store_name; the dialog needs no change, and this is the half the SQL suite cannot
+// reach: what the approver sees, and what the approval sends.
+// ---------------------------------------------------------------------
+calls.length = 0;
+const releasedUnit = { movement_id: 'S1', product_name: 'Power Recharge', store_id: null, store_name: 'Main Warehouse',
+  outstanding: 1, proposed_sellable: 1, damaged_quantity: 0, not_returned_quantity: 0,
+  special_sale_id: 'SS1', sale_no: 'SPS-2026-0004', location_type: 'warehouse', location_id: 'wh-1' };
+planNow = () => basePlan({ refund_amount: 1000,
+  lines: [{ invoice_item_id: 'L9', name: 'Power Recharge', line_kind: 'special_product', quantity: 1, selected_quantity: 1, amount: 1000 }],
+  stock: [releasedUnit], sources: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 1000 }],
+  summary: ['Refund S$1000.00.', 'Return 1 x Power Recharge to Main Warehouse, once the condition is confirmed.'],
+  effects: { money_returned: { total: 1000, destinations: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 1000 }] },
+             benefits: [], stock_returned: [releasedUnit], overrides: [] } });
+stub.resolveResult = { status: 'approved', refund_recorded: true, refunded_amount: 1000, refund: { refunded_amount: 1000 },
+  cancellation: null, goods_returned: 0, refund_still_due: 0 };
+const confirmButton = () => Array.from(document.querySelectorAll('button')).find(b => /^Confirm S\$[\d,]+(\.\d\d)? refund/.test(b.textContent.trim()));
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Machine came back');
+await click(byText('button', 'Continue'));
+check('the approver is asked to confirm the goods, the warehouse the unit left named',
+  text().includes('Confirm the goods') && /Power Recharge\s*→ Main Warehouse, 1 outstanding/.test(text()));
+check('the review says where the unit goes', text().includes('1 × Power Recharge → Main Warehouse'));
+{
+  const boxes = Array.from(document.querySelectorAll('.invoice-guided-stock-row input'));
+  check('it is proposed as good, with damaged and not returned at none',
+    boxes.length === 3 && boxes.map(b => b.value).join(',') === '1,0,0' && boxes.every(b => Number(b.max) === 1));
+}
+await click(confirmButton());
+check('approving sends the answer for the unit by its movement',
+  JSON.stringify(calls.filter(c => c.name === 'resolve_invoice_action_v2').at(-1)?.args.p_stock)
+    === '[{"movement_id":"S1","sellable_quantity":1,"damaged_quantity":0,"not_returned_quantity":0}]');
+// The approver says it came back damaged.
+calls.length = 0;
+await render({ canApprove: true });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Machine came back broken');
+await click(byText('button', 'Continue'));
+{
+  const boxes = Array.from(document.querySelectorAll('.invoice-guided-stock-row input'));
+  await type(boxes[0], '0');
+  await type(Array.from(document.querySelectorAll('.invoice-guided-stock-row input'))[1], '1');
+}
+await click(confirmButton());
+check('a damaged answer is sent as damaged, and none as good',
+  JSON.stringify(calls.filter(c => c.name === 'resolve_invoice_action_v2').at(-1)?.args.p_stock)
+    === '[{"movement_id":"S1","sellable_quantity":0,"damaged_quantity":1,"not_returned_quantity":0}]');
+
 console.log(failures === 0
   ? '\nPASS: the guided flow steps, validates, submits what was chosen, refuses a changed plan until it is confirmed by its own hash, reports only what the server actually did, and offers nothing on a blocked invoice'
   : `\nFAILED: ${failures} check(s)`);

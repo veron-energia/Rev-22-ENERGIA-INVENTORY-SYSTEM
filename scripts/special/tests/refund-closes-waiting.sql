@@ -37,13 +37,23 @@ begin
 end $f$;
 
 -- Records a refund of the given lines from the payment that still holds most.
-create function pg_temp.t393_refund(p_inv uuid, p_lines jsonb) returns jsonb language sql as $f$
+create function pg_temp.t393_refund(p_inv uuid, p_lines jsonb, p_stock jsonb default '[]') returns jsonb language sql as $f$
   select public.refund_invoice_recorded(p_inv, p_lines,
     jsonb_build_array(jsonb_build_object(
       'payment_id', (select id from public.invoice_payments where invoice_id = p_inv
                       order by public.invoice_payment_remaining(id) desc limit 1),
       'amount', (select sum((e->>'amount')::numeric) from jsonb_array_elements(p_lines) e))),
-    '[]', 'Fixture refund', gen_random_uuid())
+    p_stock, 'Fixture refund', gen_random_uuid())
+$f$;
+
+-- From 496 a refund of a machine already released from a warehouse or a store asks what became of it:
+-- this is the answer "not returned", which leaves the machine released as it was. Before 496 (no release
+-- movement is recorded on the sale) nothing is asked, so it is empty.
+create function pg_temp.t393_kept(p_doc uuid) returns jsonb language sql as $f$
+  select coalesce((select jsonb_build_array(jsonb_build_object('movement_id', to_jsonb(s)->>'release_movement_id',
+                    'sellable_quantity', 0, 'damaged_quantity', 0, 'not_returned_quantity', 1))
+                     from public.special_sales s where s.id = p_doc and to_jsonb(s)->>'release_movement_id' is not null),
+                  '[]'::jsonb)
 $f$;
 
 -- An invoice line, machines before rentals (invoice lines carry no order of
@@ -144,7 +154,7 @@ begin
   d := pg_temp.t393_doc(pg_temp.t393_line(inv, 1));
   perform public.fulfil_special_doc('special_sale', d, wh, 'warehouse');
   perform pg_temp.t393_refund(inv, jsonb_build_array(
-    jsonb_build_object('invoice_item_id', pg_temp.t393_line(inv, 1), 'amount', 300)));
+    jsonb_build_object('invoice_item_id', pg_temp.t393_line(inv, 1), 'amount', 300)), pg_temp.t393_kept(d));
   insert into t393 values ('bf_released_sale', d);
 
   if pg_temp.t393_status((select id from t393 where k = 'bf_released_sale')) <> 'completed' then
@@ -442,7 +452,11 @@ begin
     raise exception 'FAIL 3h: reopening a cancelled, paid invoice did not bring its machine back'; end if;
   raise notice 'PASS 3h: a refunded invoice reopened and paid again raises its machine and rental afresh, once; one reopened straight to paid raises them on reopening';
 
-  -- 3i. Released items are never touched.
+  -- 3i. Released items are never touched by 393.
+  -- (496 then made a refund or a cancellation of an invoice whose machine was already released from a
+  -- warehouse or a store ask what became of it, and a cancellation put it back, as for a product:
+  -- scripts/special/tests/released-return-496.sql tests that. Here a refund answers "not returned",
+  -- which leaves the machine released, and a cancellation, with 496 in, takes it back and closes its sale.)
   inv := pg_temp.t393_paid(jsonb_build_array(machine, machine));
   x := pg_temp.t393_line(inv, 1); y := pg_temp.t393_line(inv, 2);
   dx := pg_temp.t393_doc(x); dy := pg_temp.t393_doc(y);
@@ -450,7 +464,7 @@ begin
   perform pg_temp.t393_refund(inv, jsonb_build_array(
     jsonb_build_object('invoice_item_id', x, 'amount', 300,
       'waiting', jsonb_build_array(jsonb_build_object('doc_id', dx, 'still_taking', false))),
-    jsonb_build_object('invoice_item_id', y, 'amount', 300)));
+    jsonb_build_object('invoice_item_id', y, 'amount', 300)), pg_temp.t393_kept(dx));
   if pg_temp.t393_status(dx) <> 'completed' then
     raise exception 'FAIL 3i: a refund touched a released machine'; end if;
   if pg_temp.t393_status(dy) <> 'cancelled' then
@@ -459,11 +473,11 @@ begin
   dx := pg_temp.t393_doc(pg_temp.t393_line(inv, 1));
   perform public.fulfil_special_doc('special_sale', dx, wh, 'warehouse');
   perform public.cancel_invoice_recorded(inv, 'Cancelled after release', gen_random_uuid());
-  if pg_temp.t393_status(dx) <> 'completed' then
-    raise exception 'FAIL 3i: a cancellation touched a released machine'; end if;
+  if pg_temp.t393_status(dx) <> (case when to_regclass('public.special_sale_returns') is not null then 'cancelled' else 'completed' end) then
+    raise exception 'FAIL 3i: a cancellation left a released machine as %', pg_temp.t393_status(dx); end if;
   if public.special_doc_invoice_problem(null, null) is not null then
     raise exception 'FAIL 3i: an item with no invoice has a problem'; end if;
-  raise notice 'PASS 3i: released machines stay released through a refund (even answered "not taking") and a cancellation';
+  raise notice 'PASS 3i: 393 leaves released machines alone: through a refund (even answered "not taking") and, before 496, a cancellation';
 
   -- 3j. A rental released, then cancelled with its invoice while still out,
   -- is the line's for good: reopening the invoice straight to paid raises no

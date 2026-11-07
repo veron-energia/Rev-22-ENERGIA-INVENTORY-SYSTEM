@@ -265,11 +265,21 @@ The deployment order in this document gains `302` and `303` at the end.
 
 - **Browser testing against a real backend** — blocked by the environment above;
   steps given.
-- **Special-product *sale* returns (not rentals)** reuse the ordinary product
-  path (outstanding deductions, condition, damaged/not-returned tracked
-  separately). The dedicated warehouse destination selector is wired for
-  rentals; a special product sold outright returns to the store it left, which
-  is the existing behaviour and is covered by `rental-lifecycle.sql`.
+- **Special-product *sale* returns (not rentals)** — corrected 6 Nov 2026 (496).
+  What this section used to say, that they reuse the ordinary product path and
+  return to the store they left, was never true of a sale already released from
+  a warehouse or a store: its stock movement carries no invoice id, so no refund
+  or cancellation asked about it or returned it (and the return code only ever
+  put stock back into a store). Since 496 each released unit is offered with
+  the products' stock (the shelf it left, a warehouse or a store, named), asked
+  as back and sellable, damaged or not returned, and a sellable one goes back
+  on the shelf it left; a cancellation puts back what nobody settled. The
+  answers are in `special_sale_returns`; a unit fully back makes its sale
+  "Cancelled (refunded) · stock back". Still open: a line removed from a paid
+  invoice by a correction leaves a released item alone, and a unit confirmed
+  "not returned" can only be put back by a stock adjustment, as a product's
+  can. Rentals are as above (awaiting return, then received). See
+  `supabase/496_released_special_sale_stock_comes_back.sql`.
 - **Multiple benefit recipients on a bundle** — `transfer_invoice_unused_benefit`
   moves a benefit to another customer and the plan follows the source-linked
   allocation, but the combination *transferred-then-refunded* has no dedicated

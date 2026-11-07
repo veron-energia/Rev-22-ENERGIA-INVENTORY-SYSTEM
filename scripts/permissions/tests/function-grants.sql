@@ -265,6 +265,11 @@ declare
                              'stock_retire_blockers','trg_stock_place_retire',
                              -- 495: what a service is, and the triggers that keep stock off one
                              'product_is_service','trg_service_holds_no_stock','trg_product_becomes_service',
+                             -- 496: the units released for an invoice's special sales, what a refund or
+                             -- a cancellation settles for each, and finding the movement of a sale
+                             -- released before 496
+                             'special_release_rows','return_released_special_stock',
+                             'restore_released_special_stock','link_released_special_movements',
                              -- 431: the module an audit entry is filed under, the trigger that
                              -- files an entry saved with none, and write_audit_ex, which saves
                              -- any audit entry it is given (service role only, like write_audit)

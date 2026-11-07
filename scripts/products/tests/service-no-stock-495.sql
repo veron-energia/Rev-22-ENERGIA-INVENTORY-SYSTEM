@@ -669,6 +669,12 @@ begin
 end $$;
 
 -- ── U. The UNDO ──────────────────────────────────────────────────────
+-- 496 (where it is in) was applied after 495 and patches refund_invoice_recorded on top of
+-- it, so it is undone first, as its own UNDO says.
+select to_regprocedure('public.special_release_rows(uuid)') is not null as t495_has496 \gset
+\if :t495_has496
+\ir ../../special/undo-496.sql
+\endif
 do $$
 declare e text; fp0 text;
 begin
