@@ -573,7 +573,7 @@ test('Products: an Admin looks; an Inventory Manager adds and edits through save
   const cost = [...modal().querySelectorAll('input')].find(i => i.placeholder === '0.00');
   await setValue(cost, '12.345');
   await click(button('Save Changes'));
-  assert.ok(modal().textContent.includes('Cost price must be 0 or more, with at most 2 decimal places.'));
+  assert.ok(modal().textContent.includes('Price must be 0 or more, with at most 2 decimal places.'));
   await setValue(cost, '12.5');
   backend.failures.set('save_product', { message: 'That SKU already exists (Fixture Lamp). Use a unique product code.', once: true });
   await click(button('Save Changes'));
@@ -660,6 +660,72 @@ const savesForReal = b => {
     return { success: true, product_id: a.p_id, created: false };
   };
 };
+
+// 499 (the user, 7 Nov 2026): the Product page's figure is called Price, and an
+// Owner's or Manager's save sets it at every store.
+test('Products: the figure is called Price, in the column, the form and the export; the note says what saving does', async () => {
+  await mount(P.ProductsPage, 'owner');
+  const heads = [...document.querySelectorAll('th')].map(th => th.textContent);
+  assert.ok(heads.some(h => h.startsWith('Price')), 'the column says Price');
+  assert.ok(!heads.some(h => h.startsWith('Cost')), 'not Cost');
+  await click(document.querySelector('button[title="Edit"]'));
+  assert.ok(modal().textContent.includes('Price (S$)'), 'the form says Price');
+  assert.ok(!modal().textContent.includes('Cost'), 'the form no longer says Cost');
+  assert.equal(document.querySelector('[data-testid="product-price-hint"]').textContent,
+    'Saving sets this price at every store on the Price List (a machine that only rents stays off). A blank price leaves the Price List as it is.');
+  const src = read('src/pages/ProductsPage.tsx');
+  assert.ok(src.includes("{ header: 'Price', value: (p: any) => Number(p.default_cost_price ?? 0) }"), 'the Excel export says Price');
+  assert.ok(!/header: 'Cost'|Sort by cost|Cost price must/.test(src), 'and no Cost is left on the page');
+});
+
+test('Products: a Manager sees the same note; an Inventory Manager is told only an Owner or Manager puts it on the Price List', async () => {
+  await mount(P.ProductsPage, 'manager');
+  await click(document.querySelector('button[title="Edit"]'));
+  assert.ok(document.querySelector('[data-testid="product-price-hint"]').textContent.startsWith('Saving sets this price at every store'));
+  await mount(P.ProductsPage, 'inventory_manager');
+  await click(document.querySelector('button[title="Edit"]'));
+  assert.equal(document.querySelector('[data-testid="product-price-hint"]').textContent,
+    'Only an Owner\'s or Manager\'s save puts this price on the Price List.');
+});
+
+test('Products: a save says so when a store\'s price changed, and only then', async () => {
+  const says = async (pricesSet, price) => {
+    await mount(P.ProductsPage, 'manager', b => {
+      b.handlers.save_product = a => {
+        Object.assign(b.fx.products.find(p => p.id === a.p_id), a.p_fields);
+        return { success: true, product_id: a.p_id, created: false, prices_set: pricesSet };
+      };
+    });
+    await click(row('Fixture Mat').querySelector('button[title="Edit"]'));
+    await setValue([...modal().querySelectorAll('input')].find(i => i.placeholder === '0.00'), price);
+    await click(button('Save Changes'));
+    return document.querySelector('[role="status"]')?.textContent ?? '';
+  };
+  assert.ok((await says(2, '12.5')).includes('Fixture Mat: S$12.50 is now its price at every store.'), 'both stores changed');
+  assert.ok((await says(1, '12.5')).includes('Fixture Mat: S$12.50 is now its price at every store.'), 'one store changed: both now hold it');
+  assert.equal(await says(0, '12.5'), '', 'nothing changed: nothing said');
+});
+
+test('Products: moved to another tab and priced, a save says both', async () => {
+  await mount(P.ProductsPage, 'manager', b => {
+    b.handlers.save_product = a => {
+      Object.assign(b.fx.products.find(p => p.id === a.p_id), a.p_fields);
+      return { success: true, product_id: a.p_id, created: false, prices_set: 2 };
+    };
+  });
+  await click(row('Fixture Mat').querySelector('button[title="Edit"]'));
+  const type = [...modal().querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'no_commission'));
+  await setValue(type, 'no_commission');
+  await setValue([...modal().querySelectorAll('input')].find(i => i.placeholder === '0.00'), '30');
+  await click(button('Save Changes'));
+  const said = document.querySelector('[role="status"]').textContent;
+  assert.ok(said.includes('Fixture Mat is now on the Service tab.') && said.includes('Fixture Mat: S$30.00 is now its price at every store.'), said);
+});
+
+test('Price List: it says a save on the Products page sets every store again', async () => {
+  await mount(P.PriceListPage, 'owner');
+  assert.ok(text().includes('Saving a product on the Products page sets its price at every store again.'));
+});
 
 test('Products: Service holds the No commission products, the Products tab the rest; the words stay', async () => {
   await mount(P.ProductsPage, 'manager');

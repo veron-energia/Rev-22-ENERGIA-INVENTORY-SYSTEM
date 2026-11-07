@@ -172,9 +172,9 @@ begin
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(null, %L)::text$q$, jsonb_build_object('name', 'Dup', 'sku', 'PRDX-9'))),
     'P0001:That SKU belongs to a deleted product (PRDX Deleted). Tick "Show deleted" and restore it instead.', 'a deleted product''s SKU');
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(%L, %L)::text$q$, v_new, jsonb_build_object('default_cost_price', '1.234'))),
-    'P0001:Cost price must be 0 or more, with at most 2 decimal places.', 'a cost with three decimals');
+    'P0001:%rice must be 0 or more, with at most 2 decimal places.', 'a cost with three decimals');
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(%L, %L)::text$q$, v_new, jsonb_build_object('default_cost_price', '-1'))),
-    'P0001:Cost price must be 0 or more%', 'a negative cost');
+    'P0001:%rice must be 0 or more%', 'a negative cost');
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(%L, %L)::text$q$, v_new, jsonb_build_object('brand_id', gen_random_uuid()))),
     'P0001:Choose a brand from the list.', 'a brand that does not exist');
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(%L, %L, %L)::text$q$, v_new, '{}'::jsonb, array[gen_random_uuid()])),

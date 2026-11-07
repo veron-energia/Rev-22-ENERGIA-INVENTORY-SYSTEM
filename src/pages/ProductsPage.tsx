@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
-import { Product, ProductType, Brand, Category, Supplier } from '../types';
+import { Product, ProductType, Brand, Category, Supplier, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
 import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { Plus, Pencil, Trash2, Search, Package, RefreshCw, Star, Tag, Boxes, Truck, RotateCcw, Wrench } from 'lucide-react';
@@ -114,13 +114,14 @@ const ProductsPage: React.FC = () => {
     if (!form.name.trim()) { setErr(`${onService ? 'Service' : 'Product'} name is required.`); return; }
     if (!form.sku.trim()) { setErr('SKU / product code is required.'); return; }
     const cost = form.default_cost_price.trim() || '0';
-    if (!/^\d{1,10}(\.\d{1,2})?$/.test(cost)) { setErr('Cost price must be 0 or more, with at most 2 decimal places.'); return; }
+    if (!/^\d{1,10}(\.\d{1,2})?$/.test(cost)) { setErr('Price must be 0 or more, with at most 2 decimal places.'); return; }
     setSaving(true); setErr(null);
 
     // The product and its category and supplier links are saved together, in
     // one call, or not at all; every refusal comes back to show (save_product,
-    // 420). Switching a product off is refused while it still holds stock.
-    const { error } = await supabase.rpc('save_product', {
+    // 420). Switching a product off is refused while it still holds stock. An
+    // Owner's or Manager's save also sets the price at every store (499).
+    const { data: saved, error } = await supabase.rpc('save_product', {
       p_id: editId,
       p_fields: {
         name: form.name.trim(), sku: form.sku.trim(), product_type: form.product_type,
@@ -138,7 +139,11 @@ const ProductsPage: React.FC = () => {
     setModalOpen(false);
     // A change of type can take it off this tab: say where it went.
     const belongs = form.product_type === 'no_commission' ? 'service' : 'products';
-    setFlash(belongs === tab ? null : `${form.name.trim()} is now on the ${belongs === 'service' ? 'Service' : 'Products'} tab.`);
+    const moved = belongs === tab ? null : `${form.name.trim()} is now on the ${belongs === 'service' ? 'Service' : 'Products'} tab.`;
+    // 499: said only when a store's price changed.
+    const priced = Number((saved as any)?.prices_set ?? 0) > 0
+      ? `${form.name.trim()}: S$${Number(cost).toFixed(2)} is now its price at every store.` : null;
+    setFlash([moved, priced].filter(Boolean).join(' ') || null);
     load();
   };
 
@@ -226,7 +231,7 @@ const ProductsPage: React.FC = () => {
               { header: 'Categories', value: (p: Product) => (catNames(p.id).length ? catNames(p.id) : (p.category ? [p.category] : [])).join(', ') },
               { header: 'Suppliers', value: (p: Product) => (supNames(p.id).length ? supNames(p.id) : (p.supplier_name ? [p.supplier_name] : [])).join(', ') },
               { header: 'UoM', value: (p: any) => p.uom ?? '' },
-              { header: 'Cost', value: (p: any) => Number(p.default_cost_price ?? 0) },
+              { header: 'Price', value: (p: any) => Number(p.default_cost_price ?? 0) },
               { header: 'Important', value: (p: any) => p.is_important ? 'Yes' : 'No' },
               { header: 'Status', value: (p: Product) => p.deleted_at ? 'Deleted' : p.is_active ? 'Active' : 'Inactive' },
             ]} />
@@ -326,7 +331,7 @@ const ProductsPage: React.FC = () => {
                   <th onClick={() => toggleSort('sku')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by SKU">SKU{sortArrow('sku')}</th>
                   <th>Type</th><th>Category</th>
                   <th>UoM</th>
-                  <th onClick={() => toggleSort('cost')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by cost">Cost{sortArrow('cost')}</th>
+                  <th onClick={() => toggleSort('cost')} style={{ cursor: 'pointer', userSelect: 'none' }} title="Sort by price">Price{sortArrow('cost')}</th>
                   <th>Status</th>
                   {canManage && <th></th>}
                 </tr>
@@ -431,7 +436,13 @@ const ProductsPage: React.FC = () => {
             </div>
             <div className="form-grid-2">
               <div className="form-group"><label>Barcode</label><input value={form.barcode} onChange={e => setForm(f => ({ ...f, barcode: e.target.value }))} placeholder="Optional" /></div>
-              <div className="form-group"><label>Default Cost Price (S$)</label><input type="text" inputMode="decimal" value={form.default_cost_price} onChange={e => setForm(f => ({ ...f, default_cost_price: e.target.value }))} placeholder="0.00" /></div>
+              <div className="form-group"><label>Price (S$)</label><input type="text" inputMode="decimal" value={form.default_cost_price} onChange={e => setForm(f => ({ ...f, default_cost_price: e.target.value }))} placeholder="0.00" />
+                <div data-testid="product-price-hint" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
+                  {isOwnerOrManager(profile?.role)
+                    ? 'Saving sets this price at every store on the Price List (a machine that only rents stays off). A blank price leaves the Price List as it is.'
+                    : 'Only an Owner\'s or Manager\'s save puts this price on the Price List.'}
+                </div>
+              </div>
             </div>
             <div className="form-group"><label>Suppliers <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(multiple)</span></label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

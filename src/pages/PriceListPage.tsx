@@ -91,7 +91,7 @@ const PriceListPage: React.FC = () => {
   return (
     <div>
       <div className="page-header">
-        <div><h2>Store Price List</h2><p>Set each product's selling price per store. A product cannot be sold at a store until it has a price there (it can be transferred in before).</p></div>
+        <div><h2>Store Price List</h2><p>Set each product's selling price per store. A product cannot be sold at a store until it has a price there (it can be transferred in before). Saving a product on the Products page sets its price at every store again.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <ExcelExportButton
             rows={filtered} filename="store-prices" sheetName="Store Prices"
