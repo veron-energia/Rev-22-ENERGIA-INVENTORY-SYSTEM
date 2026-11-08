@@ -24,7 +24,9 @@
 //   W2-B03-RENTAL-BUTTON (the owner, 10 Oct 2026): a rental cancelled while
 //                    still with the customer shows "Receive returned item",
 //                    which records it with 417's receive_returned_rental.
-//   494              Consignment: a ticked product is on its own tab; its sale
+//   494              Consignment: a ticked product is on its own page (a tab
+//                    here until the user, 8 Nov 2026, made it the Consignment
+//                    page: this page with view 'consignment'); its sale
 //                    can go to a supplier linked on the Products page, with a
 //                    note of where to deliver; a rental and any other product
 //                    are offered none; the Sales tab and its Excel name the
@@ -166,8 +168,9 @@ function makeSupabase(rpcReply) {
   return { calls, rpcArgs: [], sb: { from, rpc } };
 }
 
-async function mount({ data = db(), rpc = () => undefined, send = {} } = {}) {
-  globalThis.__ROLE__ = 'owner';
+// view 'consignment' is the Consignment page (pages/ConsignmentPage).
+async function mount({ data = db(), rpc = () => undefined, send = {}, view, role = 'owner' } = {}) {
+  globalThis.__ROLE__ = role;
   globalThis.__DB__ = data;
   globalThis.__PRINTS__ = [];
   const rpcCalls = [];
@@ -180,7 +183,7 @@ async function mount({ data = db(), rpc = () => undefined, send = {} } = {}) {
   const node = document.createElement('div');
   document.body.appendChild(node);
   const root = createRoot(node);
-  await act(async () => { root.render(React.createElement(SpecialPage)); });
+  await act(async () => { root.render(React.createElement(SpecialPage, view ? { view } : null)); });
   const settle = () => act(async () => { await new Promise(r => setTimeout(r, 10)); });
   await settle();
   const buttons = () => [...node.querySelectorAll('button')];
@@ -549,7 +552,10 @@ const choose = async (el, value) => {
   await act(async () => { el.dispatchEvent(new dom.window.Event('change', { bubbles: true })); });
 };
 
-test('Consignment: a ticked product is on the Consignment tab only, with its suppliers; the Catalog keeps the rest', async () => {
+const TABS = ['Catalog', 'Sales', 'Rentals', 'Consignment'];
+const hasWaitingButton = ui => [...ui.node.querySelectorAll('button')].some(b => /waiting for a warehouse/i.test(b.textContent));
+
+test('Consignment: a ticked product is on the Consignment page only, with its suppliers; the Catalog keeps the rest', async () => {
   const ui = await mount({ data: consignmentDb() });
   try {
     assert.deepEqual(tableNames(ui), ['Fixture Machine'], 'the Catalog has the unticked product alone');
@@ -558,22 +564,41 @@ test('Consignment: a ticked product is on the Consignment tab only, with its sup
     assert.ok(ui.button('Add Special Product'));
     assert.equal(ui.button('Add Consignment Product'), undefined);
     assert.ok(![...ui.node.querySelectorAll('thead th')].some(th => th.textContent === 'Suppliers'), 'no Suppliers column on the Catalog');
-    await ui.tab('Consignment');
-    assert.deepEqual(tableNames(ui), ['Fixture Infrared Bed', 'Fixture Unlinked Chair']);
-    assert.ok(ui.button('Add Consignment Product'));
-    assert.equal(ui.button('Add Special Product'), undefined);
-    const [linked, none] = ui.node.querySelectorAll('tbody tr');
+    assert.deepEqual(TABS.map(t => !!ui.button(t)), [true, true, true, false], 'Consignment is a page of its own, not a tab here');
+    assert.ok(hasWaitingButton(ui));
+  } finally { ui.close(); }
+  const page = await mount({ data: consignmentDb(), view: 'consignment' });
+  try {
+    assert.equal(page.node.querySelector('h2').textContent, 'Consignment Products');
+    assert.match(page.text(), /Products a supplier can send directly to the customer\. Their sales are on Special & Rentals, where you choose the supplier once a sale is paid\./);
+    assert.equal(page.node.querySelector('.page-header a').getAttribute('href'), '/special');
+    assert.deepEqual(tableNames(page), ['Fixture Infrared Bed', 'Fixture Unlinked Chair']);
+    assert.ok(page.button('Add Consignment Product'));
+    assert.equal(page.button('Add Special Product'), undefined);
+    assert.deepEqual(TABS.map(t => !!page.button(t)), [false, false, false, false], 'no tabs');
+    assert.equal(hasWaitingButton(page), false, 'the waiting list stays on Special & Rentals');
+    assert.deepEqual([...page.node.querySelectorAll('thead th')].map(th => th.textContent),
+      ['Name', 'SKU', 'Suppliers', 'Sale', 'Day', 'Week', 'Month', 'Year', 'Late/day', 'In warehouses', 'In stores', ''],
+      'the columns the tab had, rental rates included (the user, 8 Nov 2026)');
+    const [linked, none] = page.node.querySelectorAll('tbody tr');
     assert.match(linked.textContent, /Fixture Supplier A, Fixture Supplier B/, 'its active suppliers, by name');
     assert.doesNotMatch(linked.textContent, /Supplier (Off|Gone|Other)/, 'not one closed, deleted or of another product');
     assert.match(none.textContent, /None yet: link one on the Products page/);
-  } finally { ui.close(); }
-  // With nothing ticked, the tab says so and the Catalog is as it was.
+  } finally { page.close(); }
+  const staff = await mount({ data: consignmentDb(), view: 'consignment', role: 'staff' });
+  try {
+    assert.match(staff.text(), /Only Owners and Managers can manage consignment products\./, 'as on Special & Rentals');
+    assert.equal(staff.node.querySelector('table'), null);
+  } finally { staff.close(); }
+  // With nothing ticked, the page says so and the Catalog is as it was.
   const empty = await mount();
   try {
     assert.deepEqual(tableNames(empty), ['Fixture Machine'], 'a product with no tick at all stays on the Catalog');
-    await empty.tab('Consignment');
-    assert.match(empty.text(), /No consignment products yet/);
   } finally { empty.close(); }
+  const none = await mount({ view: 'consignment' });
+  try {
+    assert.match(none.text(), /No consignment products yet/);
+  } finally { none.close(); }
 });
 
 test('Waiting list: the sale of a consignment product offers its suppliers; a rental and any other product offer none', async () => {
@@ -715,17 +740,23 @@ test('Sales tab: From names the supplier, or where it left; the note and a taken
   } finally { ui.close(); }
 });
 
-test("Excel: the Sales tab's columns give the list per supplier; the Consignment tab's its products and suppliers", async () => {
+test("Excel: the Sales tab's columns give the list per supplier; the Consignment page's its products and suppliers", async () => {
   const sale = SALE({ status: 'completed', supplier_id: 'sup-a', deliver_to: '12 Example Road', invoice_id: 'inv-2' });
-  const ui = await mount({ data: consignmentDb({ special_sales: [sale] }) });
   const cell = (r, header) => globalThis.__EXCEL__.columns.find(c => c.header === header)?.value(r);
+  const page = await mount({ data: consignmentDb({ special_sales: [sale] }), view: 'consignment' });
+  try {
+    assert.deepEqual(globalThis.__EXCEL__.rows.map(p => p.name), ['Fixture Infrared Bed', 'Fixture Unlinked Chair']);
+    assert.equal(cell(CONSIGNED, 'Suppliers'), 'Fixture Supplier A, Fixture Supplier B');
+    assert.deepEqual([globalThis.__EXCEL__.filename, globalThis.__EXCEL__.sheetName], ['consignment-products', 'Consignment']);
+    assert.equal(globalThis.__EXCEL__.dateOf, undefined, 'a list of products: no date filter');
+  } finally { page.close(); }
+  const ui = await mount({ data: consignmentDb({ special_sales: [sale] }) });
   try {
     assert.deepEqual(globalThis.__EXCEL__.rows.map(p => p.name), ['Fixture Machine'], 'the Catalog: what the tab lists');
     assert.equal(cell(CONSIGNED, 'Suppliers'), undefined, 'no Suppliers column on the Catalog');
-    await ui.tab('Consignment');
-    assert.deepEqual(globalThis.__EXCEL__.rows.map(p => p.name), ['Fixture Infrared Bed', 'Fixture Unlinked Chair']);
-    assert.equal(cell(CONSIGNED, 'Suppliers'), 'Fixture Supplier A, Fixture Supplier B');
+    assert.deepEqual([globalThis.__EXCEL__.filename, globalThis.__EXCEL__.sheetName], ['special-catalog', 'Special']);
     await ui.tab('Sales');
+    assert.equal(globalThis.__EXCEL__.filename, 'special-sales');
     assert.equal(cell(sale, 'Supplier'), 'Fixture Supplier A');
     assert.equal(cell(sale, 'Deliver to'), '12 Example Road');
     assert.equal(cell(sale, 'Product cost now'), 450);
@@ -741,65 +772,69 @@ test("Excel: the Sales tab's columns give the list per supplier; the Consignment
 test('The form: the Consignment tick is sent after the save, only when it changed, and says where the product went', async () => {
   const replies = { upsert_special_product_from_product: () => ({ data: 'sp-new', error: null }),
                     set_special_product_consignment: () => ({ data: null, error: null }) };
-  const ui = await mount({ data: consignmentDb(), rpc: (n, a) => replies[n]?.(a) });
-  const inTable = name => [...ui.node.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(name));
-  const edit = name => ui.click([...inTable(name).querySelectorAll('button')].find(b => b.className.includes('btn-icon') && !b.className.includes('btn-danger')));
+  const inTable = (ui, name) => [...ui.node.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(name));
+  const edit = (ui, name) => ui.click([...inTable(ui, name).querySelectorAll('button')].find(b => b.className.includes('btn-icon') && !b.className.includes('btn-danger')));
   const tick = dlg => [...dlg.querySelectorAll('label')].find(l => l.textContent.startsWith('Consignment:')).querySelector('input');
-  const save = dlg => ui.click([...dlg.querySelectorAll('button')].find(b => b.textContent === 'Save'));
-  const tickCalls = () => ui.rpcCalls.filter(([n]) => n === 'set_special_product_consignment').map(([, a]) => a);
+  const save = (ui, dlg) => ui.click([...dlg.querySelectorAll('button')].find(b => b.textContent === 'Save'));
+  const tickCalls = ui => ui.rpcCalls.filter(([n]) => n === 'set_special_product_consignment').map(([, a]) => a);
   const setTick = async (el, on) => { if (el.checked !== on) await act(async () => { el.click(); }); assert.equal(el.checked, on); };
+  const ui = await mount({ data: consignmentDb(), rpc: (n, a) => replies[n]?.(a) });
   try {
     // Saved with the tick as it was: no call, no note.
-    await edit('Fixture Machine');
+    await edit(ui, 'Fixture Machine');
     let dlg = ui.dialog('Edit Special Product');
     assert.equal(tick(dlg).checked, false);
     // 501: the sale price says what a save on the Products page does to it.
     assert.equal(dlg.querySelector('[data-testid="special-sale-price-hint"]').textContent,
       'Saving the product on the Products page sets this to its price there.');
-    await save(dlg);
-    assert.deepEqual(tickCalls(), [], 'not changed: not sent');
+    await save(ui, dlg);
+    assert.deepEqual(tickCalls(ui), [], 'not changed: not sent');
     assert.doesNotMatch(ui.text(), /It is now on the/);
     // Ticked on the Catalog: sent after the save, and it says where it went.
-    await edit('Fixture Machine');
+    await edit(ui, 'Fixture Machine');
     dlg = ui.dialog('Edit Special Product');
     await setTick(tick(dlg), true);
-    await save(dlg);
-    assert.deepEqual(tickCalls(), [{ p_id: 'sp-1', p_on: true }]);
+    await save(ui, dlg);
+    assert.deepEqual(tickCalls(ui), [{ p_id: 'sp-1', p_on: true }]);
     const order = ui.rpcCalls.map(([n]) => n);
     assert.ok(order.lastIndexOf('upsert_special_product_from_product') < order.lastIndexOf('set_special_product_consignment'), 'after the save');
-    assert.match(ui.text(), /Saved\. It is now on the Consignment tab\./);
-    // Unticked on the Consignment tab; opening a tab clears the note first.
-    await ui.tab('Consignment');
+    assert.match(ui.text(), /Saved\. It is now on the Consignment page\./);
+    // Opening a tab clears the note.
+    await ui.tab('Sales');
     assert.doesNotMatch(ui.text(), /It is now on the/);
-    await edit('Fixture Infrared Bed');
-    dlg = ui.dialog('Edit Consignment Product');
+  } finally { ui.close(); }
+  const page = await mount({ data: consignmentDb(), rpc: (n, a) => replies[n]?.(a), view: 'consignment' });
+  try {
+    // Unticked on the Consignment page: it says where it went.
+    await edit(page, 'Fixture Infrared Bed');
+    let dlg = page.dialog('Edit Consignment Product');
     assert.equal(tick(dlg).checked, true);
     await setTick(tick(dlg), false);
-    await save(dlg);
-    assert.deepEqual(tickCalls()[1], { p_id: 'sp-2', p_on: false });
-    assert.match(ui.text(), /Saved\. It is now on the Catalog tab\./);
-    // A new product on the Consignment tab starts ticked, and uses the id the save gave back.
-    await ui.click(ui.button('Add Consignment Product'));
-    dlg = ui.dialog('Add Consignment Product');
+    await save(page, dlg);
+    assert.deepEqual(tickCalls(page), [{ p_id: 'sp-2', p_on: false }]);
+    assert.match(page.text(), /Saved\. It is now on the Special & Rentals page\./);
+    // A new product added here starts ticked, and uses the id the save gave back.
+    await page.click(page.button('Add Consignment Product'));
+    dlg = page.dialog('Add Consignment Product');
     assert.equal(tick(dlg).checked, true, 'added here, it starts ticked');
     await act(async () => { globalThis.__PICK__('p-9'); });
     const price = fieldIn(dlg, 'Sale Price (S$)');
     Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(price, '900');
     await act(async () => { price.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
-    await save(dlg);
-    assert.deepEqual(tickCalls()[2], { p_id: 'sp-new', p_on: true });
-    assert.doesNotMatch(ui.text(), /It is now on the/, 'it is on this tab');
+    await save(page, dlg);
+    assert.deepEqual(tickCalls(page)[1], { p_id: 'sp-new', p_on: true });
+    assert.doesNotMatch(page.text(), /It is now on the/, 'it is on this page');
     // A save that is refused sends no tick; a tick that is refused keeps the form open.
-    await edit('Fixture Infrared Bed');
-    dlg = ui.dialog('Edit Consignment Product');
+    await edit(page, 'Fixture Infrared Bed');
+    dlg = page.dialog('Edit Consignment Product');
     await setTick(tick(dlg), false);
     replies.upsert_special_product_from_product = () => ({ data: null, error: { message: 'Set a sale price first.' } });
-    await save(dlg);
-    assert.equal(tickCalls().length, 3, 'a refused save sends no tick');
-    assert.match(ui.dialog('Edit Consignment Product').textContent, /Set a sale price first\./);
+    await save(page, dlg);
+    assert.equal(tickCalls(page).length, 2, 'a refused save sends no tick');
+    assert.match(page.dialog('Edit Consignment Product').textContent, /Set a sale price first\./);
     replies.upsert_special_product_from_product = () => ({ data: 'sp-2', error: null });
     replies.set_special_product_consignment = () => ({ data: null, error: { message: 'That special product does not exist.' } });
-    await save(ui.dialog('Edit Consignment Product'));
-    assert.match(ui.dialog('Edit Consignment Product').textContent, /That special product does not exist\./, 'still open, with the reason');
-  } finally { ui.close(); }
+    await save(page, page.dialog('Edit Consignment Product'));
+    assert.match(page.dialog('Edit Consignment Product').textContent, /That special product does not exist\./, 'still open, with the reason');
+  } finally { page.close(); }
 });

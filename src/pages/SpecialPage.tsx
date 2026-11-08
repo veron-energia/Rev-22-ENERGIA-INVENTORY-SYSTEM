@@ -43,18 +43,26 @@ const blank = (p?: SpecialProduct) => ({
   is_consignment: p?.is_consignment ?? false,
 });
 
-const SpecialPage: React.FC = () => {
+/**
+ * 'consignment' is the Consignment page (pages/ConsignmentPage): this page's
+ * catalogue for the products a supplier can send directly, with no tabs and no
+ * waiting list. It was a tab here (494) until the user made it a page of its
+ * own, 8 Nov 2026; their sales still wait and are listed here.
+ */
+type SpecialView = 'special' | 'consignment';
+
+const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => {
   const { profile } = useAuth();
   // Access is checked AFTER the hooks below. Returning early here would call
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
   const hasAccess = isOwnerOrManager(profile?.role);
   // Consignment (494): the same table as Catalog, for the products a supplier
-  // can send directly. Each product is on one of the two.
-  const [tab, setTab] = useState<'catalog' | 'consignment' | 'sales' | 'rentals'>('catalog');
-  const onConsignment = tab === 'consignment';
+  // can send directly. Each product is on one of the two pages.
+  const [tab, setTab] = useState<'catalog' | 'sales' | 'rentals'>('catalog');
+  const onConsignment = view === 'consignment';
   const catalogueTab = tab === 'catalog' || onConsignment;
-  // The tick can take a product off this tab: say where it went.
+  // The tick can take a product off this page: say where it went.
   const [movedNote, setMovedNote] = useState<string | null>(null);
   const openTab = (next: typeof tab) => { setTab(next); setMovedNote(null); };
 
@@ -579,7 +587,7 @@ const SpecialPage: React.FC = () => {
     }
     setSaving(false);
     setMovedNote(form.is_consignment === onConsignment ? null
-      : `Saved. It is now on the ${form.is_consignment ? 'Consignment' : 'Catalog'} tab.`);
+      : `Saved. It is now on the ${form.is_consignment ? 'Consignment' : 'Special & Rentals'} page.`);
     setModalOpen(false); loadAvailableProducts(); load();
   };
   const handleDelete = async (p: SpecialProduct) => {
@@ -693,17 +701,21 @@ const SpecialPage: React.FC = () => {
   };
 
 
-  if (!hasAccess) return <NoAccess message="Only Owners and Managers can manage special products and rentals." />;
+  if (!hasAccess) return <NoAccess message={onConsignment ? 'Only Owners and Managers can manage consignment products.'
+    : 'Only Owners and Managers can manage special products and rentals.'} />;
 
 
   return (
     <div>
       <div className="page-header">
-        <div><h2>Special Products & Rentals</h2><p>Special products: sold directly or rented (fee upfront, late fee at return).</p></div>
+        {onConsignment
+          ? <div><h2>Consignment Products</h2><p>Products a supplier can send directly to the customer. Their sales are
+              on <Link to="/special">Special & Rentals</Link>, where you choose the supplier once a sale is paid.</p></div>
+          : <div><h2>Special Products & Rentals</h2><p>Special products: sold directly or rented (fee upfront, late fee at return).</p></div>}
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <ExcelExportButton
             rows={tab === 'sales' ? sales : tab === 'rentals' ? rentals : listedProducts}
-            filename={`special-${tab}`} sheetName="Special"
+            filename={onConsignment ? 'consignment-products' : `special-${tab}`} sheetName={onConsignment ? 'Consignment' : 'Special'}
             dateOf={catalogueTab ? undefined : ((r: any) => r.created_at)}
             dateLabel={tab === 'rentals' ? 'Rental date' : 'Sale date'}
             columns={tab === 'sales' ? [
@@ -743,10 +755,11 @@ const SpecialPage: React.FC = () => {
       </div>
 
       {/* The tabs, the waiting list and the action wrap onto more rows on a
-          phone rather than running off the screen (426, SALES-EXTRAS-15). */}
+          phone rather than running off the screen (426, SALES-EXTRAS-15). The
+          Consignment page has its Add button alone. */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        {!onConsignment && <>
         <button className={`btn btn-sm ${tab === 'catalog' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('catalog')}><KeyRound size={14} /> Catalog</button>
-        <button className={`btn btn-sm ${onConsignment ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('consignment')}><Truck size={14} /> Consignment</button>
         <button className={`btn btn-sm ${tab === 'sales' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('sales')}><ShoppingBag size={14} /> Sales</button>
         <button className={`btn btn-sm ${tab === 'rentals' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => openTab('rentals')}><CalendarClock size={14} /> Rentals</button>
       {/* ---- Waiting for a warehouse: a button, with the detail in a dialog ---- */}
@@ -776,6 +789,7 @@ const SpecialPage: React.FC = () => {
         )}
       </button>);
       })()}
+        </>}
 
         <div style={{ flex: 1 }} />
         {catalogueTab && <button className="btn btn-primary btn-sm" onClick={openAdd}><Plus size={14} /> {onConsignment ? 'Add Consignment Product' : 'Add Special Product'}</button>}

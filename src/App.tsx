@@ -39,6 +39,7 @@ const CommissionsPage = lazyPage(() => import('./pages/CommissionsPage'));
 const VouchersPage = lazyPage(() => import('./pages/VouchersPage'));
 const PromotionsPage = lazyPage(() => import('./pages/PromotionsPage'));
 const SpecialPage = lazyPage(() => import('./pages/SpecialPage'));
+const ConsignmentPage = lazyPage(() => import('./pages/ConsignmentPage'));
 const EventsPage = lazyPage(() => import('./pages/EventsPage'));
 const NotFoundPage = lazyPage(() => import('./pages/NotFoundPage'));
 const ExchangesPage = lazyPage(() => import('./pages/ExchangesPage'));
@@ -126,6 +127,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/vouchers" element={<Protected><VouchersPage /></Protected>} />
       <Route path="/promotions" element={<Protected><PromotionsPage /></Protected>} />
       <Route path="/special" element={<Protected><SpecialPage /></Protected>} />
+      <Route path="/consignment" element={<Protected><ConsignmentPage /></Protected>} />
       <Route path="/events" element={<Protected><EventsPage /></Protected>} />
       <Route path="/exchanges" element={<Protected><ExchangesPage /></Protected>} />
       <Route path="/therapy" element={<Protected><TherapyPage /></Protected>} />

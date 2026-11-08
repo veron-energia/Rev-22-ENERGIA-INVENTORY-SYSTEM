@@ -3,8 +3,9 @@
 // waiting-list button wrap inside the screen, the waiting list is one column
 // with its Release button on screen, and the Return and Receive windows fit.
 // At 1280 px the waiting list keeps its three columns.
-// Consignment (494), at both widths: the tab, a sale released to a supplier with
-// a note of where to deliver, the Sales tab naming them, and the form's tick.
+// Consignment (494), at both widths: a sale released to a supplier with a note
+// of where to deliver, the Sales tab naming them, and the Consignment page (a
+// tab here until the user, 8 Nov 2026, made it a page) with its form's tick.
 //
 // The database is a stand-in (invented data only); the page is the real one,
 // with the real stylesheet. Screenshots go to .invoice-test/browser/special-*.png.
@@ -91,7 +92,7 @@ export const supabase = {
 export const fetchCustomersByIds = async () => T.customers;
 `;
 const built = await build({
-  stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {BrowserRouter} from 'react-router-dom';import SpecialPage from './src/pages/SpecialPage';createRoot(document.getElementById('root')).render(<BrowserRouter><div className="app-main"><SpecialPage/></div></BrowserRouter>);`, resolveDir: process.cwd(), loader: 'tsx' },
+  stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {BrowserRouter} from 'react-router-dom';import SpecialPage from './src/pages/SpecialPage';import ConsignmentPage from './src/pages/ConsignmentPage';createRoot(document.getElementById('root')).render(<BrowserRouter><div className="app-main">{location.pathname === '/consignment' ? <ConsignmentPage/> : <SpecialPage/>}</div></BrowserRouter>);`, resolveDir: process.cwd(), loader: 'tsx' },
   bundle: true, define: { 'import.meta.env': '{}' }, format: 'iife', write: false, logLevel: 'silent',
   plugins: [{ name: 'fixtures', setup(b) {
     b.onResolve({ filter: /(?:^|\/)supabase$/ }, () => ({ path: 'db', namespace: 'fixture' }));
@@ -109,17 +110,20 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 let checks = 0;
 const ok = (label, condition, detail = '') => { assert.ok(condition, `${label}${detail ? ` — ${detail}` : ''}`); checks++; console.log(`  ok  ${label}`); };
 
-async function open(width) {
+// '/' is Special & Rentals, '/consignment' the Consignment page.
+async function open(width, path = '/') {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.setViewportSize({ width, height: 800 });
   page.setDefaultTimeout(8000);
   const errors = []; page.on('pageerror', e => errors.push(e.message));
-  await page.route('**/*', route => route.request().url() === 'https://special.test/' ? route.fulfill({ contentType: 'text/html', body: HTML }) : route.abort());
-  await page.goto('https://special.test/');
+  const url = `https://special.test${path}`;
+  await page.route('**/*', route => route.request().url() === url ? route.fulfill({ contentType: 'text/html', body: HTML }) : route.abort());
+  await page.goto(url);
   await page.addStyleTag({ content: css });
   await page.addScriptTag({ content: bundle });
-  await page.getByRole('button', { name: /Waiting for a warehouse/ }).waitFor();
+  await (path === '/consignment' ? page.getByRole('button', { name: 'Add Consignment Product' })
+    : page.getByRole('button', { name: /Waiting for a warehouse/ })).waitFor();
   return { page, errors, context };
 }
 const noSideScroll = page => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
@@ -186,72 +190,78 @@ try {
     ok('1280 px: no page errors', errors.length === 0, errors.join(' | '));
     await context.close();
   }
-  // ── Consignment (494), at both widths ───────────────────────────────────
+  // ── Consignment (494), at both widths: Special & Rentals, then its page ──
   for (const width of [375, 1280]) {
     const tag = `${width} px`;
-    const { page, errors, context } = await open(width);
-    const consignmentTab = page.getByRole('button', { name: 'Consignment', exact: true });
-    ok(`${tag}: the Consignment tab is on screen`, (await rightEdge(consignmentTab)) <= width);
-    ok(`${tag}: a ticked product is not on the Catalog`, (await page.locator('tbody tr', { hasText: 'Fixture Infrared Therapy Bed' }).count()) === 0);
-    await consignmentTab.click();
-    const product = page.locator('tbody tr', { hasText: 'Fixture Infrared Therapy Bed' });
-    await product.waitFor();
-    ok(`${tag}: the Consignment tab lists it alone`, (await page.locator('tbody tr').count()) === 1);
-    ok(`${tag}: and names its suppliers`, /Fixture Imports, Fixture Medical Supplies Pte Ltd/.test(await product.textContent()));
-    ok(`${tag}: the tab does not scroll the page sideways`, await noSideScroll(page));
-    ok(`${tag}: the Consignment tab shows as chosen`, /btn-primary/.test(await consignmentTab.getAttribute('class')));
-    await page.waitForTimeout(300); // The tab's colour has finished changing, for the picture.
-    await page.screenshot({ path: `.invoice-test/browser/special-${width}-consignment.png`, fullPage: true });
+    {
+      const { page, errors, context } = await open(width);
+      ok(`${tag}: Special & Rentals has no Consignment tab`, (await page.getByRole('button', { name: 'Consignment', exact: true }).count()) === 0);
+      ok(`${tag}: a ticked product is not on the Catalog`, (await page.locator('tbody tr', { hasText: 'Fixture Infrared Therapy Bed' }).count()) === 0);
 
-    await page.getByRole('button', { name: /Waiting for a warehouse/ }).click();
-    const dlg = page.getByRole('dialog', { name: 'Waiting for a warehouse' });
-    await dlg.waitFor();
-    const row = page.locator('.special-queue-row', { hasText: 'SPS-2026-9913' });
-    const choice = row.locator('select');
-    ok(`${tag}: the suppliers are offered under their own heading`,
-      (await choice.locator('optgroup[label="Supplier sends it directly"] option').allTextContents()).join(' | ')
-        === '🚚 Fixture Imports | 🚚 Fixture Medical Supplies Pte Ltd — +61255500111');
-    const rentalRow = page.locator('.special-queue-row', { hasText: 'RNT-2026-9911' });
-    ok(`${tag}: a rental is offered none`, (await rentalRow.locator('optgroup').count()) === 0);
-    await choice.evaluate(el => { el.size = 5; });
-    await page.screenshot({ path: `.invoice-test/browser/special-${width}-supplier-list.png` });
-    await choice.evaluate(el => { el.size = 0; });
-    const release = row.getByRole('button', { name: 'Release' });
-    ok(`${tag}: Release waits for a choice`, await release.isDisabled());
-    await choice.selectOption('supplier:sup-1');
-    const note = row.getByRole('textbox', { name: 'Deliver to, for SPS-2026-9913' });
-    await note.fill('  12 Example Road, #03-45  ');
-    ok(`${tag}: the choice shows both phones in full`, await row.getByText("Supplier's phone: +61255500111. Customer's phone: +61255500112. No stock moves.").isVisible());
-    const modalRight = await page.locator('.modal').evaluate(el => el.getBoundingClientRect().right);
-    ok(`${tag}: the note is inside the window`, (await rightEdge(note)) <= Math.min(width, modalRight));
-    ok(`${tag}: Release is on screen, with no stock anywhere`, (await rightEdge(release)) <= Math.min(width, modalRight) && await release.isEnabled());
-    ok(`${tag}: no waiting-list row runs past its edge`, await page.locator('.special-queue-row').evaluateAll(rows => rows.every(r => r.scrollWidth <= r.clientWidth + 1)));
-    await row.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `.invoice-test/browser/special-${width}-supplier.png` });
-    await release.click();
-    await row.waitFor({ state: 'detached' });
-    assert.deepEqual(await page.evaluate(() => window.__RELEASED__), { p_sale_id: 's-9', p_supplier_id: 'sup-1', p_deliver_to: '12 Example Road, #03-45' });
-    ok(`${tag}: released to the supplier, with the note trimmed`, true);
-    await dlg.getByRole('button', { name: 'Close', exact: true }).last().click();
+      await page.getByRole('button', { name: /Waiting for a warehouse/ }).click();
+      const dlg = page.getByRole('dialog', { name: 'Waiting for a warehouse' });
+      await dlg.waitFor();
+      const row = page.locator('.special-queue-row', { hasText: 'SPS-2026-9913' });
+      const choice = row.locator('select');
+      ok(`${tag}: the suppliers are offered under their own heading`,
+        (await choice.locator('optgroup[label="Supplier sends it directly"] option').allTextContents()).join(' | ')
+          === '🚚 Fixture Imports | 🚚 Fixture Medical Supplies Pte Ltd — +61255500111');
+      const rentalRow = page.locator('.special-queue-row', { hasText: 'RNT-2026-9911' });
+      ok(`${tag}: a rental is offered none`, (await rentalRow.locator('optgroup').count()) === 0);
+      await choice.evaluate(el => { el.size = 5; });
+      await page.screenshot({ path: `.invoice-test/browser/special-${width}-supplier-list.png` });
+      await choice.evaluate(el => { el.size = 0; });
+      const release = row.getByRole('button', { name: 'Release' });
+      ok(`${tag}: Release waits for a choice`, await release.isDisabled());
+      await choice.selectOption('supplier:sup-1');
+      const note = row.getByRole('textbox', { name: 'Deliver to, for SPS-2026-9913' });
+      await note.fill('  12 Example Road, #03-45  ');
+      ok(`${tag}: the choice shows both phones in full`, await row.getByText("Supplier's phone: +61255500111. Customer's phone: +61255500112. No stock moves.").isVisible());
+      const modalRight = await page.locator('.modal').evaluate(el => el.getBoundingClientRect().right);
+      ok(`${tag}: the note is inside the window`, (await rightEdge(note)) <= Math.min(width, modalRight));
+      ok(`${tag}: Release is on screen, with no stock anywhere`, (await rightEdge(release)) <= Math.min(width, modalRight) && await release.isEnabled());
+      ok(`${tag}: no waiting-list row runs past its edge`, await page.locator('.special-queue-row').evaluateAll(rows => rows.every(r => r.scrollWidth <= r.clientWidth + 1)));
+      await row.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `.invoice-test/browser/special-${width}-supplier.png` });
+      await release.click();
+      await row.waitFor({ state: 'detached' });
+      assert.deepEqual(await page.evaluate(() => window.__RELEASED__), { p_sale_id: 's-9', p_supplier_id: 'sup-1', p_deliver_to: '12 Example Road, #03-45' });
+      ok(`${tag}: released to the supplier, with the note trimmed`, true);
+      await dlg.getByRole('button', { name: 'Close', exact: true }).last().click();
 
-    await page.getByRole('button', { name: 'Sales', exact: true }).click();
-    const sent = page.locator('tbody tr', { hasText: 'SPS-2026-9913' });
-    await sent.waitFor();
-    ok(`${tag}: the Sales tab names the supplier and the note`, /Supplier: Fixture Medical Supplies Pte Ltd\s*Deliver to: 12 Example Road, #03-45/.test(await sent.textContent()));
-    ok(`${tag}: a supplier sale whose invoice was refunded says so`, /Invoice refunded/.test(await page.locator('tbody tr', { hasText: 'SPS-2026-9914' }).textContent()));
-    ok(`${tag}: the Sales tab does not scroll the page sideways`, await noSideScroll(page));
-    await page.waitForTimeout(300);
-    await page.screenshot({ path: `.invoice-test/browser/special-${width}-sales.png`, fullPage: true });
+      await page.getByRole('button', { name: 'Sales', exact: true }).click();
+      const sent = page.locator('tbody tr', { hasText: 'SPS-2026-9913' });
+      await sent.waitFor();
+      ok(`${tag}: the Sales tab names the supplier and the note`, /Supplier: Fixture Medical Supplies Pte Ltd\s*Deliver to: 12 Example Road, #03-45/.test(await sent.textContent()));
+      ok(`${tag}: a supplier sale whose invoice was refunded says so`, /Invoice refunded/.test(await page.locator('tbody tr', { hasText: 'SPS-2026-9914' }).textContent()));
+      ok(`${tag}: the Sales tab does not scroll the page sideways`, await noSideScroll(page));
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `.invoice-test/browser/special-${width}-sales.png`, fullPage: true });
+      ok(`${tag}: no page errors on Special & Rentals`, errors.length === 0, errors.join(' | '));
+      await context.close();
+    }
+    {
+      const { page, errors, context } = await open(width, '/consignment');
+      ok(`${tag}: the Consignment page has its own heading`, (await page.getByRole('heading', { level: 2 }).textContent()) === 'Consignment Products');
+      const product = page.locator('tbody tr', { hasText: 'Fixture Infrared Therapy Bed' });
+      await product.waitFor();
+      ok(`${tag}: the Consignment page lists it alone`, (await page.locator('tbody tr').count()) === 1);
+      ok(`${tag}: and names its suppliers`, /Fixture Imports, Fixture Medical Supplies Pte Ltd/.test(await product.textContent()));
+      ok(`${tag}: no tabs and no waiting list on it`,
+        (await page.getByRole('button', { name: /^(Catalog|Sales|Rentals|Consignment)$|waiting for a warehouse/i }).count()) === 0);
+      ok(`${tag}: the link to Special & Rentals is on screen`, (await rightEdge(page.getByRole('link', { name: 'Special & Rentals' }))) <= width);
+      ok(`${tag}: the page does not scroll sideways`, await noSideScroll(page));
+      await page.screenshot({ path: `.invoice-test/browser/special-${width}-consignment.png`, fullPage: true });
 
-    await consignmentTab.click();
-    await page.getByRole('button', { name: 'Add Consignment Product' }).click();
-    const form = page.getByRole('dialog', { name: 'Add Consignment Product' });
-    await form.waitFor();
-    ok(`${tag}: a product added here starts ticked`, await form.getByRole('checkbox', { name: /^Consignment: a supplier can send it directly/ }).isChecked());
-    ok(`${tag}: the form fits`, (await rightEdge(page.locator('.modal').last())) <= width);
-    await page.screenshot({ path: `.invoice-test/browser/special-${width}-form.png` });
-    ok(`${tag}: no page errors on the Consignment path`, errors.length === 0, errors.join(' | '));
-    await context.close();
+      await page.getByRole('button', { name: 'Add Consignment Product' }).click();
+      const form = page.getByRole('dialog', { name: 'Add Consignment Product' });
+      await form.waitFor();
+      ok(`${tag}: a product added here starts ticked`, await form.getByRole('checkbox', { name: /^Consignment: a supplier can send it directly/ }).isChecked());
+      ok(`${tag}: the form fits`, (await rightEdge(page.locator('.modal').last())) <= width);
+      await page.screenshot({ path: `.invoice-test/browser/special-${width}-form.png` });
+      ok(`${tag}: no page errors on the Consignment page`, errors.length === 0, errors.join(' | '));
+      await context.close();
+    }
   }
   console.log(`PASS: ${checks} checks`);
 } finally {

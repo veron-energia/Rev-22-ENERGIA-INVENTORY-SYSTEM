@@ -6,7 +6,7 @@ import { ErrorBoundary } from './ErrorBoundary';
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
-  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X , Upload, PartyPopper, RefreshCw } from 'lucide-react';
+  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X , Upload, PartyPopper, RefreshCw, Truck } from 'lucide-react';
 
 // Below this width the menu is a drawer that slides in (globals.css).
 const DRAWER_QUERY = '(max-width: 900px)';
@@ -56,6 +56,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/transfers', label: 'Transfers', icon: <ArrowLeftRight size={17} />, show: true },
     { to: '/stock-movements', label: 'Stock History', icon: <History size={17} />, show: isManagerOrAbove(role) || role === 'inventory_manager' || role === 'staff' },
     { to: '/special', label: 'Special & Rentals', icon: <KeyRound size={17} />, show: isOwnerOrManager(role) },
+    { to: '/consignment', label: 'Consignment', icon: <Truck size={17} />, show: isOwnerOrManager(role) },
   ];
 
   const salesNav: NavItem[] = [
