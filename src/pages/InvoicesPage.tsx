@@ -4013,6 +4013,8 @@ const InvoicesPage: React.FC = () => {
                     return (
                     <React.Fragment key={i}>
                       <div className="invoice-editor-line" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        {/* 150 px holds the longest category, Premium Bundle (the user, 10 Nov
+                            2026: Special Product was cut short at 130 px). */}
                         <select value={isServiceLine(line) ? 'service' : isConsignmentLine(line) ? 'consignment' : line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: (e.target.value === 'service' ? 'product' : e.target.value === 'consignment' ? 'special_product' : e.target.value) as LineDraft['kind'], as_service: e.target.value === 'service', as_consignment: e.target.value === 'consignment', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
                             credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
@@ -4025,7 +4027,7 @@ const InvoicesPage: React.FC = () => {
                             // CREATE-4: another kind of line keeps no promotion picks.
                             selections: {},
                             // CREATE-17: today in Singapore, not the UTC day.
-                            rental_start_date: singaporeToday(), rental_return_date: '' } : l))} style={{ width: 130 }}>
+                            rental_start_date: singaporeToday(), rental_return_date: '' } : l))} style={{ width: 150 }}>
                           <option value="product">Product</option>
                           {products.some(isService) && <option value="service">Service</option>}
                           <option value="voucher">Voucher</option>

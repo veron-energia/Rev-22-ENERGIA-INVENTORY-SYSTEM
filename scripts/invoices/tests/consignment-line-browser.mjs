@@ -176,10 +176,14 @@ try {
       const k = await kinds(page, 0);
       ok(`${tag}: the Items dropdown has Consignment right after Special Product, then Rental`,
         k.indexOf('Consignment') === k.indexOf('Special Product') + 1 && k.indexOf('Rental') === k.indexOf('Consignment') + 1, k.join(' | '));
-      ok(`${tag}: the box shows the whole of "Consignment"`, await kindOf(page, 0).evaluate(el => {
+      // Every category the dropdown can offer, whether or not these fixtures have it (150 px since
+      // the user, 10 Nov 2026: "Widen the box so Special Product shows fully").
+      const cut = await kindOf(page, 0).evaluate(el => ['Product', 'Service', 'Voucher', 'Promotion', 'Therapy', 'Credit Package',
+        'Premium Bundle', 'Special Product', 'Consignment', 'Rental', 'Event ticket'].filter(label => {
         const probe = document.createElement('select'); probe.style.width = 'auto';
-        probe.append(new Option('Consignment')); el.after(probe);
-        const need = probe.offsetWidth; probe.remove(); return need <= el.offsetWidth; }));
+        probe.append(new Option(label)); el.after(probe);
+        const need = probe.offsetWidth; probe.remove(); return need > el.offsetWidth; }));
+      same(`${tag}: the box shows every category in full`, cut, []);
 
       await kindOf(page, 0).selectOption('special_product');
       const special = await listed(page, 0, 'Search special product…');
@@ -201,6 +205,29 @@ try {
 
       await pick(page, 0, 'Search consignment product…', 'Bed', 'Fixture Bed — S$900.00');
       ok(`${tag}: picked, the line stays under Consignment`, await kindOf(page, 0).inputValue() === 'consignment');
+      // A computer keeps the whole line on one row. A phone keeps the 150 px category, the quantity
+      // and the total on the first row, and puts the item search with the remove button beside it
+      // on the second (the user, 10 Nov 2026); nothing runs past the edge, even with a long total.
+      const layout = () => line(page, 0).evaluate(el => {
+        const kid = tag => [...el.children].find(c => c.tagName === tag);
+        const box = c => c.getBoundingClientRect(), mid = c => box(c).top + box(c).height / 2;
+        const sel = kid('SELECT'), inp = kid('INPUT'), span = kid('SPAN'), div = kid('DIV'), btn = kid('BUTTON');
+        return {
+          firstRow: Math.max(mid(sel), mid(inp), mid(span)) - Math.min(mid(sel), mid(inp), mid(span)) < 6,
+          removeOnFirstRow: Math.abs(mid(btn) - mid(sel)) < 6,
+          removeBesideSearch: Math.abs(mid(btn) - mid(div)) < 12 && box(btn).left > box(div).right - 1,
+          searchBelow: box(div).top >= box(sel).bottom - 1,
+          inside: [sel, inp, span, div, btn].every(c => box(c).right <= box(el).right + 1),
+        };
+      });
+      const expected = width > 600
+        ? { firstRow: true, removeOnFirstRow: true, removeBesideSearch: true, searchBelow: false, inside: true }
+        : { firstRow: true, removeOnFirstRow: false, removeBesideSearch: true, searchBelow: true, inside: true };
+      same(`${tag}: ${width > 600 ? 'one row for the whole line' : 'category, quantity and total on one row; the item search and remove button on the next'}`, await layout(), expected);
+      await line(page, 0).getByPlaceholder('Qty').fill('99');
+      ok(`${tag}: the total reads S$89100.00`, (await line(page, 0).innerText()).includes('S$89100.00'));
+      same(`${tag}: and the line keeps its shape with that long total`, await layout(), expected);
+      await line(page, 0).getByPlaceholder('Qty').fill('1');
       await page.screenshot({ path: `.invoice-test/browser/consignment-line-${width}.png`, fullPage: true });
 
       await m.getByRole('button', { name: 'Add Item' }).click();
@@ -210,6 +237,8 @@ try {
         rental.includes('Test Chair') && rental.includes('Fixture Lamp') && rental.includes('Fixture Rent Only') && !rental.includes('Fixture Bed'), rental);
       await kindOf(page, 1).selectOption('special_product');
       await pick(page, 1, 'Search special product…', 'Chair', 'Test Chair — S$500.00');
+      await line(page, 0).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `.invoice-test/browser/consignment-line-${width}-two.png`, fullPage: true });
 
       await m.getByRole('button', { name: 'Create Invoice', exact: true }).click();
       await page.waitForFunction(() => window.__calls.some(c => c.name === 'create_invoice_with_details'));
