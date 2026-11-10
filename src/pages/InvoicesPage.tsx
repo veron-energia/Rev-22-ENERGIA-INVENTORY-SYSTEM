@@ -58,6 +58,7 @@ import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, em
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
 import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
 import { isService } from '../lib/stock/stockPages';
+import { suppliersOf, type ProductSupplierRow, type SupplierRow } from '../lib/special/consignment';
 
 const money = (n: number) => `S$${n.toFixed(2)}`;
 
@@ -109,6 +110,9 @@ interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup
   // Chosen under Service in the Items dropdown, before a service is picked. It
   // stays a 'product' line: only the dropdown and the list it offers differ.
   as_service?: boolean;
+  // The same for Consignment (the user, 10 Nov 2026): it stays a
+  // 'special_product' line.
+  as_consignment?: boolean;
   // An event ticket (370): the option, the day(s) it covers, and a name for
   // every person — the quantity is the number of people named.
   event_ticket_option_id?: string; event_days?: string[]; attendees?: TicketPerson[];
@@ -259,6 +263,9 @@ const InvoicesPage: React.FC = () => {
   // render threw "Cannot access 'specialProducts' before initialization" and
   // the whole page went blank.
   const [specialProducts, setSpecialProducts] = useState<any[]>([]);
+  // Who sends each consignment product: shown under it in the Items list.
+  const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
+  const [productSuppliers, setProductSuppliers] = useState<ProductSupplierRow[]>([]);
   const [cLines, setCLines] = useState<LineDraft[]>([{ kind: 'product', product_id: '', voucher_id: '', promotion_id: '', quantity: 1, line_voucher_id: '', selections: {} }]);
   const [originalDrafts, setOriginalDrafts] = useState<LineDraft[]>([]);
   // A saved line the form has not changed. Compared field by field with empty
@@ -600,7 +607,7 @@ const InvoicesPage: React.FC = () => {
    */
   const loadReferenceData = useCallback(async () => {
     setLoading(true);
-    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, utpk, utsp, vsp, psp, focr, services, serviceStores] = await Promise.all([
+    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, utpk, utsp, vsp, psp, focr, services, serviceStores, sup, psu] = await Promise.all([
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       // The customers table is deliberately absent. It was read whole here —
@@ -627,6 +634,8 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('active_foc_reasons'),
       supabase.from('therapy_services').select('*').eq('is_active', true).order('name'),
       supabase.from('therapy_service_stores').select('*'),
+      supabase.from('suppliers').select('id,name,phone,is_active,deleted_at').order('name'),
+      supabase.from('product_suppliers').select('product_id,supplier_id'),
     ]);
     if (!mountedRef.current) return;
     setStores((st.data as Store[]) ?? []);
@@ -644,6 +653,8 @@ const InvoicesPage: React.FC = () => {
     setAssignedStoreId((myStore.data as string | null) ?? null);
     setMyStores((myStoreList.data as any[]) ?? []);
     setSpecialProducts((specialRes.data as any[]) ?? []);
+    setSuppliers((sup.data as SupplierRow[]) ?? []);
+    setProductSuppliers((psu.data as ProductSupplierRow[]) ?? []);
     setTherapyPackages((utpk?.data as any[]) ?? []);
     setTherapyServices((services.data as any[]) ?? []);
     setTherapyServiceStores((serviceStores.data as any[]) ?? []);
@@ -786,6 +797,16 @@ const InvoicesPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeStore, products, prices]);
   const isServiceLine = (l: LineDraft) => l.kind === 'product' && (!!l.as_service || isService(products.find(p => p.id === l.product_id)));
+  // The user, 10 Nov 2026: a consignment product has its own category in the
+  // Items dropdown, "Consignment" (the box is too narrow on a phone for
+  // "Consignment Product"), after Special Product, which lists the others.
+  // Rental lists both, as a rental always comes from our own stock.
+  const isConsignmentLine = (l: LineDraft) => l.kind === 'special_product'
+    && (!!l.as_consignment || !!specialProducts.find((sp: any) => sp.id === l.special_product_id)?.is_consignment);
+  const suppliersText = (sp: any) => {
+    const names = suppliersOf(sp.product_id, productSuppliers, suppliers).map(s => s.name);
+    return names.length ? `Supplier: ${names.join(', ')}` : 'No supplier linked yet';
+  };
 
   const [therapyPrices, setTherapyPrices] = useState<any[]>([]);
   const therapyPrice = (pkgId: string, _member: boolean = effMember): number | null => {
@@ -3992,7 +4013,7 @@ const InvoicesPage: React.FC = () => {
                     return (
                     <React.Fragment key={i}>
                       <div className="invoice-editor-line" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <select value={isServiceLine(line) ? 'service' : line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: (e.target.value === 'service' ? 'product' : e.target.value) as LineDraft['kind'], as_service: e.target.value === 'service', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
+                        <select value={isServiceLine(line) ? 'service' : isConsignmentLine(line) ? 'consignment' : line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: (e.target.value === 'service' ? 'product' : e.target.value === 'consignment' ? 'special_product' : e.target.value) as LineDraft['kind'], as_service: e.target.value === 'service', as_consignment: e.target.value === 'consignment', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
                             credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
                             event_ticket_option_id: '', event_days: [],
@@ -4012,7 +4033,10 @@ const InvoicesPage: React.FC = () => {
                           {(therapyPackages.length > 0 || therapyServices.length > 0) && <option value="therapy">Therapy</option>}
                           {creditPkgs.length > 0 && <option value="credit_package">Credit Package</option>}
                           {creditBundles.length > 0 && <option value="premium_bundle">Premium Bundle</option>}
-                          {specialProducts.length > 0 && <option value="special_product">Special Product</option>}
+                          {(specialProducts.some((sp: any) => !sp.is_consignment) || (line.kind === 'special_product' && !isConsignmentLine(line)))
+                            && <option value="special_product">Special Product</option>}
+                          {(specialProducts.some((sp: any) => sp.is_consignment) || isConsignmentLine(line))
+                            && <option value="consignment">Consignment</option>}
                           {specialProducts.length > 0 && <option value="rental">Rental</option>}
                           {(ticketOptions.length > 0 || line.kind === 'event_ticket') && <option value="event_ticket">Event ticket</option>}
                         </select>
@@ -4020,10 +4044,10 @@ const InvoicesPage: React.FC = () => {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <SearchSelect value={line.special_product_id ?? ''}
                               onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { special_product_id: v }) : l))}
-                              placeholder="Search special product…"
+                              placeholder={isConsignmentLine(line) ? 'Search consignment product…' : 'Search special product…'}
                               options={specialProducts
                                 .filter((sp: any) => line.kind === 'special_product'
-                                  ? Number(sp.sale_price) > 0
+                                  ? Number(sp.sale_price) > 0 && !!sp.is_consignment === isConsignmentLine(line)
                                   : (Number(sp.rate_day) > 0 || Number(sp.rate_week) > 0
                                      || Number(sp.rate_month) > 0 || Number(sp.rate_year) > 0))
                                 .map((sp: any) => ({
@@ -4031,8 +4055,10 @@ const InvoicesPage: React.FC = () => {
                                   label: line.kind === 'special_product'
                                     ? `${sp.name} — ${money(Number(sp.sale_price))}`
                                     : sp.name,
-                                  sublabel: line.kind === 'rental' ? `${sp.sku ?? ''} · ${['day','week','month','year'].filter(k => Number(sp[`rate_${k}`]) > 0).map(k => `${k}: ${money(Number(sp[`rate_${k}`]))}`).join(' · ')}` : sp.sku,
-                                  search: `${sp.name} ${sp.sku ?? ''}`,
+                                  sublabel: line.kind === 'rental' ? `${sp.sku ?? ''} · ${['day','week','month','year'].filter(k => Number(sp[`rate_${k}`]) > 0).map(k => `${k}: ${money(Number(sp[`rate_${k}`]))}`).join(' · ')}`
+                                    : sp.is_consignment ? `${sp.sku ?? ''} · ${suppliersText(sp)}` : sp.sku,
+                                  // A consignment product is found by its supplier too.
+                                  search: `${sp.name} ${sp.sku ?? ''}${line.kind === 'special_product' && sp.is_consignment ? ` ${suppliersText(sp)}` : ''}`,
                                   searchPrices: line.kind === 'special_product' ? [sp.sale_price] : ['day','week','month','year'].map(k => Number(sp[`rate_${k}`]) > 0 ? sp[`rate_${k}`] : null),
                                 }))} />
                             {/* 497: on a settled invoice the special sales follow their corrected line. */}

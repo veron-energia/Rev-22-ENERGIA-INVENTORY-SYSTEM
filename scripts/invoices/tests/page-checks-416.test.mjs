@@ -140,7 +140,7 @@ test('SALES-EXTRAS-9: the promotion picker offers what is on sale on the invoice
 
 test('CREATE-4: a promotion line sends only its own promotion\'s picks', () => {
   assert.match(page, /withCatalogueItem\(l, \{ promotion_id: v \}, \{ selections: \{\} \}\)/, 'another promotion starts with no picks');
-  assert.match(between("value={isServiceLine(line) ? 'service' : line.kind} onChange", 'style={{ width: 130 }}'), /selections: \{\},/, 'another kind of line keeps none');
+  assert.match(between("value={isServiceLine(line) ? 'service' : isConsignmentLine(line) ? 'consignment' : line.kind} onChange", 'style={{ width: 130 }}'), /selections: \{\},/, 'another kind of line keeps none');
   assert.match(page, /Object\.keys\(l\.selections\)\.filter\(groupId => groupsFor\(l\.promotion_id\)\.some\(g => g\.id === groupId\)\)/);
 });
 
