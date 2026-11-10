@@ -78,6 +78,18 @@ const mock = `export const supabase={ from(table) {
  if(name==='invoice_financial_position')data=window.__financial;
  if(name==='invoice_refund_options')data={financial:window.__financial,sources:[],stock:[],benefits:[],lines:[],review_required:false};
  if(name==='invoice_benefit_review_options')data={lines:[]};
+ // Refund / Cancel opens the guided dialog (409), which reads the invoice's plan:
+ // what a refund would give back is what the invoice still holds.
+ if(name==='invoice_action_plan'){
+   const inv=window.__tables.invoices.find(i=>i.id===args.p_invoice_id), held=Number(window.__financial?.net_received||0);
+   data={invoice_no:inv.invoice_no,action:args.p_action,status:inv.status,net_held:held,
+     refund_amount:args.p_action==='cancel'?0:held,refund_due:args.p_action==='cancel'?held:0,
+     lines:window.__tables.invoice_items.filter(l=>l.invoice_id===inv.id).map(l=>({invoice_item_id:l.id,name:'Long Energia Socks',
+       line_kind:l.line_kind,quantity:l.quantity,selected_quantity:l.quantity,amount:held>0?Number(l.line_total):0})),
+     stock:[],sources:[],overrides_required:[],blockers:[],summary:[],requires_override:false,blocked:false,plan_hash:'plan-'+inv.status};
+ }
+ // Correct Invoice asks for the server's summary first (Review Changes), then saves (Save the correction).
+ if(name==='preview_invoice_correction')data={invoice_no:'INV-TEST',status:window.__tables.invoices[0].status,effects:[],needs_review:[],blocking:false};
  if(name==='invoice_stock_component_evidence')data=[
    {invoice_item_id:'line',line_kind:'promotion',description:'Phone Width Bundle',
     evidence_status:'needs_confirmation',evidence_source:"Recorded choices, plus this promotion's CURRENT fixed contents",
@@ -92,8 +104,10 @@ const mock = `export const supabase={ from(table) {
    window.__tables.invoices=[...window.__tables.invoices,{...window.__tables.invoices[0],id:'created',invoice_no:'INV-NEW',status:'unpaid',paid_amount:0}];
    data='created';
  }
- if(name==='record_invoice_payment_with_instalment'){
-   const taken=(args.p_payments||[]).reduce((s,p)=>s+Number(p.amount||0),0);
+ // A payment is recorded as receipts under their real methods (63f86db); an
+ // instalment's terms are stamped afterwards (set_invoice_instalment_label).
+ if(name==='record_invoice_settlement'){
+   const taken=(args.p_payload?.receipts||[]).reduce((s,p)=>s+Number(p.amount||0),0);
    const held=Number(window.__financial.net_received||0)+taken;
    const left=Math.max(Number(window.__financial.total||0)-held,0);
    const settled=left<=0.001;
@@ -125,6 +139,9 @@ const ok = (label, condition, detail = '') => {
   assert.ok(condition, `${label}${detail ? ` — ${detail}` : ''}`);
   checks++; console.log(`  ok  ${label}`);
 };
+
+// Payments the page has sent to the server.
+const paymentsSent = page => page.evaluate(() => window.__calls.filter(c => c.name === 'record_invoice_settlement').length);
 
 const mount = async (page, scenario) => {
   const s = scenarios[scenario];
@@ -178,48 +195,72 @@ try {
        await recordBtn.isDisabled());
     ok('and the reason is stated, not just greyed out',
        (await page.getByText('Choose a payment method for every amount entered.').count()) > 0);
-    ok('nothing was sent to the server', await page.evaluate(() =>
-       window.__calls.filter(c => c.name.startsWith('record_invoice_payment')).length) === 0);
+    ok('nothing was sent to the server', await paymentsSent(page) === 0);
 
-    // The instalment arrangement lives here now, and expands to the agreed
-    // options: in-house, provider-funded, a searchable method and 3/6/9/12 or
-    // any positive whole number of months.
-    ok('the payment arrangement appears in the payment section',
-       await page.getByRole('group', { name: 'Payment arrangement' }).count() === 1);
-    await page.getByRole('checkbox', { name: 'Instalments' }).check();
-    const arrangement = page.getByRole('group', { name: 'Payment arrangement' });
-    const categories = await arrangement.locator('select').first().locator('option').allTextContents();
-    ok('both instalment kinds are offered',
-       categories.some(t => /In-house/i.test(t)) && categories.some(t => /Provider-funded/i.test(t)), categories.join(', '));
-    ok('the instalment method is searchable',
-       await arrangement.getByRole('button', { name: 'Instalment payment method', exact: true }).count() === 1);
+    // An instalment is chosen on the payment line it belongs to, as that line's
+    // method (63f86db, 342a863): one checkbox for the whole invoice could not
+    // record part cash, part instalment. Choosing it opens the line's terms: the
+    // real method the money comes through (searchable), 3/6/9/12 or any positive
+    // whole number of months, and the amount received now. It labels money that
+    // has arrived, so there is no in-house / provider-funded choice any more.
+    ok('no instalment terms show until Instalment is chosen',
+       await page.getByRole('group', { name: 'Instalment', exact: true }).count() === 0);
+    await page.getByRole('button', { name: 'Payment method', exact: true }).first().click();
+    ok('Instalment is offered among the payment methods',
+       await page.getByRole('listbox', { name: 'Payment method', exact: true })
+         .getByRole('option', { name: 'Instalment', exact: true }).count() === 1);
+    await page.getByRole('combobox', { name: 'Search payment method' }).fill('instal');
+    await page.getByRole('combobox', { name: 'Search payment method' }).press('Enter');
+    const instalment = page.getByRole('group', { name: 'Instalment', exact: true });
+    ok('choosing it opens the instalment terms on that payment line', await instalment.count() === 1);
+    const actualMethod = instalment.getByRole('button', { name: 'Actual payment method', exact: true });
+    await actualMethod.click();
+    const actualOptions = await instalment.getByRole('listbox', { name: 'Actual payment method', exact: true })
+      .getByRole('option').allTextContents();
+    ok('the method the money actually comes through is searchable',
+       await instalment.getByRole('combobox', { name: 'Search actual payment method' }).count() === 1);
+    ok('and lists the real methods, never Instalment itself',
+       actualOptions.includes('Cash') && actualOptions.includes('Bank Transfer') && !actualOptions.includes('Instalment'),
+       actualOptions.join(', '));
+    await actualMethod.click();
+    const duration = instalment.getByRole('group', { name: 'Duration', exact: true });
     for (const n of [3, 6, 9, 12]) {
-      ok(`a ${n}-month term is offered`, await arrangement.getByRole('button', { name: `${n} months`, exact: true }).count() === 1);
+      ok(`a ${n}-month term is offered`, await duration.getByRole('button', { name: String(n), exact: true }).count() === 1);
     }
-    await arrangement.getByRole('spinbutton', { name: 'Duration (months)' }).fill('7');
+    await duration.getByRole('spinbutton', { name: 'Custom number of months' }).fill('7');
     ok('and a custom whole number of months is accepted',
-       await arrangement.getByRole('spinbutton', { name: 'Duration (months)' }).inputValue() === '7');
-    ok('choosing an arrangement records no payment',
-       await page.evaluate(() => window.__calls.filter(c => c.name.startsWith('record_invoice_payment')).length) === 0);
-    await page.getByRole('checkbox', { name: 'Instalments' }).uncheck();
+       await duration.getByRole('spinbutton', { name: 'Custom number of months' }).inputValue() === '7');
+    ok('its amount is the money received on that line now',
+       await instalment.getByRole('spinbutton', { name: /^Amount/ }).inputValue() === '100');
+    ok('there is no in-house or provider-funded choice to make',
+       await instalment.locator('select').count() === 0);
+    ok('choosing an instalment records no payment', await paymentsSent(page) === 0);
 
     // --- the chooser ----------------------------------------------------
+    // Refund / Cancel opens the guided dialog (409; the separate chooser is
+    // gone). Its title names the invoice from the plan the server works out.
     await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Refund or cancel this invoice' });
+    const dialog = page.getByRole('dialog', { name: 'Refund or cancel INV-TEST', exact: true });
+    await dialog.waitFor();
+    const nothingPaid = dialog.getByText('Nothing has been paid on this invoice, so it can only be cancelled.');
+    await nothingPaid.waitFor().catch(() => {});
     ok('the chooser opens as a labelled dialog', await dialog.count() === 1);
     ok('it offers cancellation explicitly',
-       await dialog.getByRole('button', { name: /Cancel invoice/ }).count() === 1);
-    ok('and a refund explicitly',
-       await dialog.getByRole('button', { name: /Full or partial refund/ }).count() === 1);
+       await dialog.getByRole('button', { name: /^Cancel invoice/ }).count() === 1);
+    ok('and a full or a partial refund explicitly',
+       await dialog.getByRole('button', { name: /^Full refund/ }).count() === 1
+       && await dialog.getByRole('button', { name: /^Partial refund/ }).count() === 1);
     ok('refund is unavailable when no payment is held, and says why',
-       await dialog.getByRole('button', { name: /Full or partial refund/ }).isDisabled()
-       && (await dialog.getByText('No refundable payment.').count()) > 0);
+       await dialog.getByRole('button', { name: /^Full refund/ }).isDisabled()
+       && await dialog.getByRole('button', { name: /^Partial refund/ }).isDisabled()
+       && await nothingPaid.count() === 1);
     ok('opening the chooser changed nothing on the server',
        await page.evaluate(() => window.__calls.filter(c =>
-         ['refund_invoice_recorded', 'cancel_invoice_recorded', 'correct_invoice'].includes(c.name)).length) === 0);
+         ['request_invoice_action_v2', 'resolve_invoice_action_v2', 'refund_invoice_recorded', 'cancel_invoice_recorded',
+          'correct_invoice'].includes(c.name)).length) === 0);
     await page.keyboard.press('Escape');
     ok('Escape closes it and leaves the invoice open',
-       await page.getByRole('dialog', { name: 'Refund or cancel this invoice' }).count() === 0
+       await page.getByRole('dialog', { name: /^Refund or cancel/ }).count() === 0
        && await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).count() === 1);
 
     // --- recording a part payment keeps the invoice open -----------------
@@ -243,7 +284,7 @@ try {
     ok('and the next amount is prefilled from the new outstanding balance',
        await page.getByPlaceholder('Amount').first().inputValue() === '60');
     const payCalls = await page.evaluate(() =>
-      window.__calls.filter(c => c.name === 'record_invoice_payment_with_instalment'));
+      window.__calls.filter(c => c.name === 'record_invoice_settlement'));
     ok('exactly one payment was sent', payCalls.length === 1, `${payCalls.length} call(s)`);
     const firstRequestId = payCalls[0].args.p_request_id;
     await page.getByRole('button', { name: 'Payment method', exact: true }).first().click();
@@ -251,9 +292,9 @@ try {
     await page.getByRole('combobox', { name: 'Search payment method' }).press('Enter');
     await page.getByRole('button', { name: 'Record Payment', exact: true }).click();
     await page.waitForFunction(() =>
-      window.__calls.filter(c => c.name === 'record_invoice_payment_with_instalment').length === 2);
+      window.__calls.filter(c => c.name === 'record_invoice_settlement').length === 2);
     const secondRequestId = await page.evaluate(() =>
-      window.__calls.filter(c => c.name === 'record_invoice_payment_with_instalment').at(-1).args.p_request_id);
+      window.__calls.filter(c => c.name === 'record_invoice_settlement').at(-1).args.p_request_id);
     ok('a second payment carries a new request id, so it is not merged with the first',
        Boolean(firstRequestId) && Boolean(secondRequestId) && firstRequestId !== secondRequestId,
        `${firstRequestId} vs ${secondRequestId}`);
@@ -280,8 +321,7 @@ try {
     await page.getByRole('combobox', { name: 'Search payment method' }).press('Enter');
     await page.getByPlaceholder('Amount').first().fill('40');
     await page.getByRole('button', { name: 'Record Payment', exact: true }).click();
-    const afterCalls = await page.evaluate(() =>
-      window.__calls.filter(c => c.name === 'record_invoice_payment_with_instalment').length);
+    const afterCalls = await paymentsSent(page);
     ok('a recorded payment is never sent twice by the interface', afterCalls === 1, `${afterCalls} call(s)`);
     ok('a failed refresh is reported as a display problem, not a failed payment',
        await page.getByText('The payment was recorded', { exact: false }).count() > 0);
@@ -296,8 +336,11 @@ try {
     ok('and no ordinary Edit Invoice',
        await page.getByRole('button', { name: 'Edit Invoice', exact: true }).count() === 0);
     await page.getByRole('button', { name: 'Refund / Cancel', exact: true }).click();
+    const paidDialog = page.getByRole('dialog', { name: 'Refund or cancel INV-TEST', exact: true });
+    await paidDialog.waitFor();
     ok('refund is offered when a payment is actually held',
-       !(await page.getByRole('dialog').getByRole('button', { name: /Full or partial refund/ }).isDisabled()));
+       await paidDialog.getByRole('button', { name: /^Full refund/ }).isEnabled()
+       && await paidDialog.getByRole('button', { name: /^Partial refund/ }).isEnabled());
     await page.keyboard.press('Escape');
 
     // Payment correction sits with the payment history.
@@ -314,16 +357,18 @@ try {
     });
     ok('the audited correction notice precedes the invoice business date', order === true);
 
-    // A saved arrangement loads into the correction form and survives a
-    // correction that has nothing to do with it.
-    const arrangementOnCorrection = page.getByRole('group', { name: 'Payment arrangement' });
-    ok('the saved arrangement is shown on a correction',
+    // Saved instalment terms load into the correction form and survive a
+    // correction that has nothing to do with them.
+    const arrangementOnCorrection = page.getByRole('group', { name: 'Instalment', exact: true });
+    ok('the saved instalment terms are shown on a correction',
        await arrangementOnCorrection.count() === 1
        && await arrangementOnCorrection.getByRole('checkbox', { name: 'Instalments' }).isChecked());
     ok('with its saved term',
        await arrangementOnCorrection.getByRole('spinbutton', { name: 'Duration (months)' }).inputValue() === '6');
     await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix a note, nothing else');
-    await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    await page.waitForFunction(() => window.__calls.some(c => c.name === 'correct_invoice'));
     const correction = await page.evaluate(() => window.__calls.findLast(c => c.name === 'correct_invoice'));
     ok('an unrelated correction preserves the saved instalment settings',
        correction?.args?.p_header?.instalment_category === 'in_house'
@@ -336,7 +381,8 @@ try {
     await page.evaluate(() => { window.__failCorrection = true; });
     await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
     await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Move this invoice to the other store');
-    await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
     const review = page.getByRole('group', { name: 'Historical stock evidence review' });
     await review.waitFor();
     ok('a refused store change opens the evidence review', await review.count() === 1);
@@ -366,8 +412,9 @@ try {
        rebuilt?.p_reason === 'Checked against the original till record'
        && Array.isArray(rebuilt?.p_confirmations) && rebuilt.p_confirmations.length === 1,
        JSON.stringify(rebuilt ?? {}).slice(0, 120));
-    ok('and the operator is told to save again rather than left guessing',
-       await page.getByText('Press Save Changes again', { exact: false }).count() > 0);
+    // CREATE-19 (d): saving is Review Changes, then Save the correction.
+    ok('and the operator is told to review the changes again rather than left guessing',
+       await page.getByText('Press Review Changes again', { exact: false }).count() > 0);
     await page.evaluate(() => { window.__failCorrection = false; });
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
@@ -384,8 +431,9 @@ try {
     await page.getByRole('button', { name: 'New Invoice', exact: true }).click();
     const noticeInNew = await page.getByText('Audited invoice correction', { exact: false }).count();
     ok('a new invoice carries no audited-correction notice', noticeInNew === 0);
-    ok('and instalment options are not at the top of the creation form',
-       await page.getByText('Payment arrangement', { exact: false }).count() === 0);
+    ok('and instalment terms are not at the top of the creation form',
+       await page.getByRole('group', { name: 'Instalment', exact: true }).count() === 0
+       && await page.getByRole('checkbox', { name: 'Instalments' }).count() === 0);
 
     ok('no unexpected browser errors', errors.length === 0, errors.join(' | '));
     await page.close();

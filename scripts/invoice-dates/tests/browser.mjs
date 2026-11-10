@@ -30,6 +30,28 @@ const mock = `export const supabase={from(table){
   return(...args)=>{if(key==='eq'||key==='is')rows=rows.filter(r=>r[args[0]]===args[1]);if(key==='in')rows=rows.filter(r=>args[1].includes(r[args[0]]));if(key==='range'){start=args[0];end=args[1];window.__ranges.push([table,start,end]);}if(key==='order')orders.push([args[0],args[1]||{}]);if(key==='single'||key==='maybeSingle')one=true;return q;};
  }});return q;
 },rpc(name,args){window.__calls.push({name,args});let data=[];
+ // The list is one page from the server (invoice_list_page): its filters, search, sort and paging run in the
+ // database (324; undated invoices out of any date range, 329; the search reads the day the list shows, 416),
+ // and scripts/invoice-pagination/tests/*.sql check them there. This stands in for it over the fixture rows.
+ if(name==='invoice_list_page'){
+  const t=window.__tables,q=String(args.p_search||'').trim().toLowerCase(),mon=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const dayShown=i=>i.business_date||new Date(Date.parse(i.created_at)+8*36e5).toISOString().slice(0,10);   // as the list shows it
+  const found=i=>{const [y,m,d]=dayShown(i).split('-'),words=[Number(d)+' '+mon[m-1]+' '+y,d+' '+mon[m-1]+' '+y];
+   return words.includes(q)||[i.invoice_no,t.customers.find(c=>c.id===i.customer_id)?.full_name,t.stores.find(s=>s.id===i.store_id)?.name,d+'/'+m+'/'+y,y+'-'+m+'-'+d]
+    .some(v=>String(v||'').toLowerCase().includes(q));};
+  const rows=t.invoices.filter(i=>!i.deleted_at&&(!args.p_status||i.status===args.p_status)
+   &&(args.p_date_mode!=='confirmed'||i.business_date)&&(args.p_date_mode!=='pending'||!i.business_date)
+   &&(!args.p_date_from||(i.business_date&&i.business_date>=args.p_date_from))&&(!args.p_date_to||(i.business_date&&i.business_date<=args.p_date_to))
+   &&(!q||found(i)));
+  const f=args.p_sort_field==='business_date'||args.p_sort_field==='invoice_no'?args.p_sort_field:'created_at',dir=args.p_sort_dir==='asc'?1:-1;
+  rows.sort((a,b)=>(a[f]==null)-(b[f]==null)||(a[f]<b[f]?-dir:a[f]>b[f]?dir:0));   // undated last, either way
+  const sum=k=>rows.reduce((s,i)=>s+Number(i[k]||0),0);
+  data={rows:rows.slice(args.p_offset,args.p_offset+args.p_limit).map(i=>({...i,customer_name:t.customers.find(c=>c.id===i.customer_id)?.full_name??null})),
+   total:rows.length,pages:Math.ceil(rows.length/args.p_limit),limit:args.p_limit,
+   summary:{matching:rows.length,total_amount:sum('total_amount'),outstanding:rows.reduce((s,i)=>s+Math.max(0,Number(i.total_amount||0)-Number(i.paid_amount||0)),0),paid:sum('paid_amount')}};
+ }
+ // Correct Invoice shows the server's summary first (Review Changes), then saves (Save the correction).
+ if(name==='preview_invoice_correction')data={invoice_no:window.__tables.invoices.find(i=>i.id===args.p_invoice_id)?.invoice_no,status:'paid',effects:[],needs_review:[],blocking:false};
  if(name==='invoice_effective_affiliate')data={found:true,has_affiliate:false};
  if(name==='customer_search')data=window.__tables.customers;
  if(name==='my_assigned_store_id')data='store';
@@ -66,10 +88,22 @@ try {
  await page.addScriptTag({content:built.outputFiles[0].text});
  const search=page.getByPlaceholder('Search invoice number, customer, store, payment method or invoice date…');
  await page.getByRole('button',{name:'View',exact:true}).first().waitFor();
- ok('confirmed dates sorted by business date, pending last', (await page.locator('tbody tr td:first-child strong').allTextContents()).join(',')==='DATE-recovered,DATE-backdated,DATE-pending');
- await search.fill('15 Dec 2019');ok('search uses the selected date, not creation date',await page.locator('tbody tr').count()===1&&(await page.locator('tbody').textContent()).includes('DATE-backdated'));
+ // The list shows the rows the server returns, in its order, for what the person asked; a search is asked
+ // 300 ms after typing stops. shown() waits for the latest request to carry `asked` and for the rows on screen
+ // to settle on `want` (invoice numbers, in order), then says whether both hold.
+ const shown=async(want,asked)=>{
+  const holds=([w,a])=>{const c=window.__calls.findLast(x=>x.name==='invoice_list_page');
+   return !!c&&Object.entries(a).every(([k,v])=>c.args[k]===v)&&Array.from(document.querySelectorAll('tbody tr td:first-child strong'),e=>e.textContent).join(',')===w;};
+  await page.waitForFunction(holds,[want,asked]).catch(()=>{});return page.evaluate(holds,[want,asked]);};
+ const dateHeader=page.locator('thead').getByRole('button',{name:'Date',exact:true});
+ await dateHeader.click();
+ ok('sorting by Date asks the server for business-date order: newest first, pending last',await shown('DATE-recovered,DATE-backdated,DATE-pending',{p_sort_field:'business_date',p_sort_dir:'desc'}));
+ await dateHeader.click();
+ ok('and oldest first, pending still last, as the server orders them',await shown('DATE-backdated,DATE-recovered,DATE-pending',{p_sort_field:'business_date',p_sort_dir:'asc'}));
+ await search.fill('15 Dec 2019');ok('search uses the selected date, not creation date',await shown('DATE-backdated',{p_search:'15 Dec 2019'}));
  await search.fill('');await page.getByLabel('Invoice date from',{exact:true}).fill('2020-02-01');await page.getByLabel('Invoice date to',{exact:true}).fill('2020-02-01');
- ok('same-day filter includes only recovered invoice across time zones',await page.locator('tbody tr').count()===1&&(await page.locator('tbody').textContent()).includes('DATE-recovered'));
+ // In a western browser time zone the typed day goes to the server as typed, not shifted a day.
+ ok('same-day filter includes only recovered invoice across time zones',await shown('DATE-recovered',{p_search:null,p_date_from:'2020-02-01',p_date_to:'2020-02-01'}));
  await page.getByRole('button',{name:'View',exact:true}).click();
  ok('details show the recovered business date',(await page.getByTestId('invoice-detail-date').textContent()).includes('01/02/2020'));
  await page.getByRole('button',{name:'Print',exact:true}).click();
@@ -81,17 +115,19 @@ try {
  await page.getByRole('button',{name:'Correct Invoice',exact:true}).click();
  ok('Correct Invoice loads the saved date',await page.getByLabel('Invoice business date',{exact:true}).inputValue()==='2020-02-01');
  await page.getByLabel('Internal notes (not printed)',{exact:true}).fill('Delivery note only');await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verified delivery note');
- await page.getByRole('button',{name:'Save Changes',exact:true}).click();
+ await page.getByRole('button',{name:'Review Changes',exact:true}).click();await page.getByRole('button',{name:'Save the correction',exact:true}).click();
+ await page.waitForFunction(()=>window.__calls.some(c=>c.name==='correct_invoice'));
  await page.getByRole('button',{name:'New Invoice',exact:true}).waitFor();
  ok('unrelated correction submits the saved date',await page.evaluate(()=>window.__calls.findLast(c=>c.name==='correct_invoice')?.args.p_header.business_date==='2020-02-01'));
  await page.getByRole('button',{name:'Export Excel',exact:true}).click();
  // The export range must also handle date-only strings in a western timezone.
  await page.locator('.modal input[type=date]').first().fill('2020-02-01');await page.locator('.modal input[type=date]').last().fill('2020-02-01');
- downloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'Export 1 row(s)',exact:true}).click();download=await downloadPromise;
+ // The export reads every matching invoice from the server (fetchAll), so its button is Export, not a row count.
+ downloadPromise=page.waitForEvent('download');await page.locator('.modal').last().getByRole('button',{name:'Export',exact:true}).click();download=await downloadPromise;
  const wb=XLSX.read(await readFile(await download.path()));const exported=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
  ok('Excel exports recovered date in the correct range',exported.length===1&&exported[0].Date==='01/02/2020');
  await page.getByLabel('Invoice date status').selectOption('pending');
- ok('pending filter clears date bounds and keeps unresolved invoices visible',await page.locator('tbody tr').count()===1&&(await page.locator('tbody').textContent()).includes('DATE-pending'));
+ ok('pending filter clears date bounds and keeps unresolved invoices visible',await shown('DATE-pending',{p_date_mode:'pending',p_date_from:null,p_date_to:null}));
  // An invoice with no recorded date now simply shows the day it was created,
  // as one date. No second line, and no 'pending review' wording anywhere.
  ok('an invoice with no recorded date shows its creation date as the date',(await page.locator('tbody').textContent()).includes('01/02/2020'));
@@ -117,11 +153,13 @@ try {
  ok('creation submits the chosen backdate',await page.evaluate(()=>window.__calls.findLast(c=>c.name==='create_invoice_with_details')?.args.p_header.business_date==='2017-06-01'));
  ok('saved new invoice reopens with its selected date',(await page.getByTestId('invoice-detail-date').textContent()).includes('01/06/2017'));
  await page.getByRole('button',{name:'Close',exact:true}).first().click();
- // More than a PostgREST page: verify historical and pending rows are fetched.
+ // More than a PostgREST page (1,000 rows). The browser used to page through the invoices table itself to
+ // find these; the list now asks the server, which filters the whole table (list-page.sql checks 1,205 rows).
  await page.evaluate(()=>{const sample=window.__tables.invoices[0];window.__tables.invoices=Array.from({length:1001},(_,n)=>({...sample,id:String(n).padStart(4,'0'),invoice_no:'PAGE-'+n,business_date:n===1000?null:'2020-02-01'}));});
  await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.getByLabel('Invoice date status').selectOption('pending');
  await page.getByText('PAGE-1000',{exact:true}).waitFor();
- ok('pending invoice beyond 1000 rows is discoverable',await page.evaluate(()=>window.__ranges.some(x=>x[0]==='invoices'&&x[1]===1000)));
+ ok('pending invoice beyond 1000 rows is discoverable',await shown('PAGE-1000',{p_date_mode:'pending',p_date_from:null,p_date_to:null})
+  &&await page.evaluate(()=>!window.__ranges.some(x=>x[0]==='invoices')));
  await page.setViewportSize({width:375,height:950});await page.screenshot({path:'.invoice-date-test/browser/pending-mobile.png',fullPage:true});
  ok('no browser runtime errors',errors.length===0);await page.close();
  console.log(`${checks} invoice-date browser checks passed.`);

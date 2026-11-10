@@ -24,9 +24,15 @@ tables.store_product_prices.push(...['a','b'].map(store_id=>({product_id:'code',
 tables.store_inventory=['a','b'].flatMap(store_id=>['product','code'].map(product_id=>({store_id,product_id,current_qty:100})));
 tables.therapy_service_stores=['a','b'].map(store_id=>({store_id,service_id:'session',is_available:true,price_override:store_id==='a'?72:90}));
 const mock=`export const supabase={from(t){let rows=[...(window.tables[t]||[])],one=false;const q=new Proxy({}, {get(_,k){if(k==='then')return(ok,bad)=>Promise.resolve({data:one?rows[0]||null:rows,error:null}).then(ok,bad);return(...args)=>{if(k==='eq')rows=rows.filter(r=>r[args[0]]===args[1]);if(k==='in')rows=rows.filter(r=>args[1].includes(r[args[0]]));if(k==='single'||k==='maybeSingle')one=true;return q;};}});return q;},rpc(name,args){window.calls.push({name,args});let data=[];
+// The list is one page from the server (invoice_list_page), not a read of the invoices table.
+if(name==='invoice_list_page'){const rows=window.tables.invoices.filter(i=>!i.deleted_at).map(i=>({...i,customer_name:window.tables.customers.find(c=>c.id===i.customer_id)?.full_name??null}));const sum=k=>rows.reduce((s,i)=>s+Number(i[k]||0),0);data={rows,total:rows.length,pages:rows.length?1:0,limit:args.p_limit,summary:{matching:rows.length,total_amount:sum('total_amount'),outstanding:rows.reduce((s,i)=>s+Math.max(0,Number(i.total_amount||0)-Number(i.paid_amount||0)),0),paid:sum('paid_amount')}};}
 if(name==='customer_search')data=window.tables.customers;
 if(name==='invoice_refund_options')data={financial:{net_received:31},sources:[],stock:[],benefits:[],lines:[],review_required:false};
 if(name==='invoice_benefit_review_options')data={lines:[]};
+// Refund / Cancel opens the guided dialog (409), which asks the server for this invoice's plan.
+if(name==='invoice_action_plan')data={invoice_no:'PRICE-HISTORY',action:args.p_action,status:'paid',refund_amount:31,refund_due:0,net_held:31,lines:[{invoice_item_id:'line',name:'Priced Product',line_kind:'product',quantity:2,selected_quantity:2,amount:31}],stock:[],sources:[{payment_id:'receipt',method:'Cash',wallet:false,amount:31}],overrides_required:[],blockers:[],summary:[],requires_override:false,blocked:false,plan_hash:'price-history'};
+// Correct Invoice shows the server's summary of the correction before it saves (Review Changes, then Save the correction).
+if(name==='preview_invoice_correction')data={invoice_no:'PRICE-HISTORY',status:'paid',effects:[],needs_review:[],blocking:false};
 if(name==='invoice_effective_affiliate')data={found:true,has_affiliate:false};
 if(name==='invoice_financial_position')data={total:31,net_received:31,refunded:0,outstanding:0};
 if(name==='credit_packages_for_store')data=[{id:'credit',name:'Priced Credit Package',customer_price:args.p_store_id==='a'?72:90,paid_credit_amount:1000}];
@@ -58,12 +64,17 @@ try{
  // price 31 and the historical FOC reason untouched in the submitted payload.
  await mount();await page.getByRole('button',{name:'View',exact:true}).first().click();
  const red=page.getByRole('button',{name:'Refund / Cancel',exact:true});await red.waitFor().catch(async e=>{console.log('Browser errors:',errors,'Page:',await page.locator('body').innerText());throw e;});assert.equal(await red.evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(180, 35, 24)');
- await red.focus();await red.press('Enter');const chooser=page.getByRole('dialog');assert.match(await chooser.innerText(),/PRICE-HISTORY/);assert.match(await chooser.innerText(),/Payment still held: S\$31.00/);
+ // 409: the red button opens the guided refund/cancel dialog, a dialog of its own over the invoice (also a dialog).
+ // The old chooser and its "Payment still held" line are gone; the dialog names the invoice from its plan, and
+ // offers a full refund because the plan finds the S$31.00 held refundable.
+ await red.focus();await red.press('Enter');const chooser=page.getByRole('dialog',{name:'Refund or cancel PRICE-HISTORY',exact:true});await chooser.waitFor();
+ assert.ok(await chooser.getByRole('button',{name:/^Full refund/}).isEnabled(),'a full refund is offered while money is held');
  await page.keyboard.press('Shift+Tab');await page.keyboard.press('Tab');assert.ok(await chooser.evaluate(el=>el.contains(document.activeElement)));await page.keyboard.press('Escape');assert.equal(await red.evaluate(el=>el===document.activeElement),true);checks+=4;
  await page.getByRole('button',{name:'Correct Invoice',exact:true}).click();modal=page.locator('.modal').last();
  await modal.getByRole('button',{name:/Priced Product —/}).click();await modal.getByPlaceholder('Search product name or SKU…').fill('S$72');await modal.locator('h3').click();
  await modal.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verify historical pricing');
- await modal.getByRole('button',{name:'Save Changes',exact:true}).click();
+ await modal.getByRole('button',{name:'Review Changes',exact:true}).click();await modal.getByRole('button',{name:'Save the correction',exact:true}).click();
+ await page.waitForFunction(()=>window.calls.some(c=>c.name==='correct_invoice'));
  const calls=await page.evaluate(()=>window.calls);const correction=calls.find(c=>c.name==='correct_invoice');assert.ok(correction,JSON.stringify(calls.slice(-5)));
  const payload=correction.args.p_items[0];assert.equal(payload.unit_price,31);assert.equal(payload.foc_quantity,1);assert.equal(payload.foc_reason,'Saved FOC reason');checks+=3;
  await mkdir('.commission-test/browser',{recursive:true});await page.screenshot({path:'.commission-test/browser/invoice-price.png'});assert.deepEqual(errors,[]);
