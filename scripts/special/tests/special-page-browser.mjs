@@ -234,6 +234,7 @@ try {
       await sent.waitFor();
       ok(`${tag}: the Sales tab names the supplier and the note`, /Supplier: Fixture Medical Supplies Pte Ltd\s*Deliver to: 12 Example Road, #03-45/.test(await sent.textContent()));
       ok(`${tag}: a supplier sale whose invoice was refunded says so`, /Invoice refunded/.test(await page.locator('tbody tr', { hasText: 'SPS-2026-9914' }).textContent()));
+      ok(`${tag}: the Sales tab has no Method column`, !(await page.locator('thead th').allInnerTexts()).some(t => /method/i.test(t)));
       ok(`${tag}: the Sales tab does not scroll the page sideways`, await noSideScroll(page));
       await page.waitForTimeout(300);
       await page.screenshot({ path: `.invoice-test/browser/special-${width}-sales.png`, fullPage: true });

@@ -213,7 +213,6 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
   const spName = (id: string) => rows.find(r => r.id === id)?.name ?? spAll.find(r => r.id === id)?.name ?? '—';
   const whName = (id: string) => warehouses.find(w => w.id === id)?.name ?? '—';
   const cuName = (id: string | null) => id ? (customers.find(c => c.id === id)?.full_name ?? '—') : '—';
-  const pmName = (id: string | null) => id ? (methods.find(m => m.id === id)?.name ?? '—') : '—';
   const storeStockOf = (spId: string, stId?: string) =>
     storeStock.filter(s2 => s2.special_product_id === spId && (!stId || s2.warehouse_id === stId));
   const totalIn = (list: SpecialProductStock[]) => list.reduce((a, b) => a + (b.current_qty || 0), 0);
@@ -874,7 +873,9 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
         ) : tab === 'sales' ? (
           sales.length === 0 ? <div className="empty-state"><ShoppingBag size={32} style={{ opacity: 0.3 }} /><p style={{ fontWeight: 600, marginTop: 8 }}>No special sales yet</p></div>
           : <table>
-              <thead><tr><th>Sale</th><th>Product</th><th>From</th><th>Customer</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Total</th><th>Method</th><th>Status</th><th></th></tr></thead>
+              {/* No Method column (the user, 10 Nov 2026): a sale is paid on its
+                  invoice, so it never held a method of its own. */}
+              <thead><tr><th>Sale</th><th>Product</th><th>From</th><th>Customer</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Total</th><th>Status</th><th></th></tr></thead>
               <tbody>{sales.map(s => (
                 <tr key={s.id}>
                   <td style={{ fontFamily: 'var(--font-display)', fontSize: 12 }}>{s.sale_no}<div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(s.created_at).toLocaleDateString()}</div></td>
@@ -886,7 +887,6 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
                   <td style={{ fontSize: 12.5 }}>{cuName(s.customer_id)}</td>
                   <td style={{ textAlign: 'right' }}>{s.quantity}</td>
                   <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(Number(s.total_amount))}</td>
-                  <td style={{ fontSize: 12 }}>{pmName(s.payment_method_id)}</td>
                   <td>{(() => { const b = specialSaleBadge(s); return <span className={`badge badge-${b.tone}`}>{b.label}</span>; })()}
                     {s.supplier_id && s.invoice_id && invoiceTakenBack(docInvoices[s.invoice_id]?.status) && (
                       <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 2 }}>{invoiceTakenBack(docInvoices[s.invoice_id]?.status)}</div>)}

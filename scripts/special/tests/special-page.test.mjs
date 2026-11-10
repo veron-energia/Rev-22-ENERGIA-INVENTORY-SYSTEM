@@ -725,6 +725,10 @@ test('Sales tab: From names the supplier, or where it left; the note and a taken
     const row = no => [...ui.node.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(no));
     const fromHeader = [...ui.node.querySelectorAll('thead th')].findIndex(th => th.textContent === 'From');
     assert.ok(fromHeader >= 0, 'the column is From: not every sale leaves a warehouse');
+    assert.deepEqual([...ui.node.querySelectorAll('thead th')].map(th => th.textContent),
+      ['Sale', 'Product', 'From', 'Customer', 'Qty', 'Total', 'Status', ''],
+      'no Method column (the user, 10 Nov 2026): a sale is paid on its invoice');
+    assert.equal(row('SPS-2026-9901').querySelectorAll('td').length, 8, 'and a row has one cell per heading');
     const from = no => row(no).querySelectorAll('td')[fromHeader].textContent;
     assert.equal(from('SPS-2026-9901'), 'Supplier: Fixture Supplier ADeliver to: 12 Example Road');
     assert.equal(from('SPS-2026-9902'), 'Supplier: Fixture Supplier B');
