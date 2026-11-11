@@ -1418,6 +1418,8 @@ try {
       const ix = window.__tables.invoices.findIndex(x => x.id === i); window.__tables.invoices[ix] = { ...window.__tables.invoices[ix], customer_id: c };
     }, [id, cust]);
     const EVE_OFFER = 'Wallet — Credit Package Paid — S$100.00 available (S$300.00 held)';
+    // Closing the invoice with the payment above still being entered asks first: yes, discard it.
+    p.once('dialog', d => d.accept());
     await view(p, 'eve-moves');
     ok('443: Eve\'s invoice offers Eve\'s figures', (await walletOptions(p)).some(([t]) => t === EVE_OFFER));
     // Another tab moves the open invoice to Fay (Edit Invoice); Fay's figures are slow.
