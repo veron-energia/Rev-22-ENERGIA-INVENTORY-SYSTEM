@@ -220,13 +220,19 @@ const TherapyPage: React.FC = () => {
   const [pkgErr, setPkgErr] = useState<string | null>(null);
   const saveCreditPkg = async () => {
     if (!pkgForm) return;
+    // A blank "Effective from" works as on a Premium Bundle (upsert_premium_bundle):
+    // a new package starts today (Singapore date), and an edited one keeps the date
+    // it has. upsert_credit_package saves the blank as it is, which the column refuses.
+    const effectiveFrom = pkgForm.effective_from
+      || (pkgForm.id ? (creditPkgs.find(p => p.id === pkgForm.id)?.effective_from ?? '') : sgToday());
+    if (!effectiveFrom) { setPkgErr('Enter the "Effective from" date.'); return; }
     setPkgBusy(true); setPkgErr(null);
     const { data, error } = await supabase.rpc('upsert_credit_package', {
       p_id: pkgForm.id, p_name: pkgForm.name,
       p_customer_price: Number(pkgForm.customer_price || 0),
       p_paid_credit_amount: Number(pkgForm.paid_credit_amount || 0),
       p_is_active: pkgForm.is_active,
-      p_effective_from: pkgForm.effective_from || null,
+      p_effective_from: effectiveFrom,
       p_effective_to: pkgForm.effective_to || null,
       p_commission_classification: pkgForm.commission_classification,
       p_staff_commission_enabled: pkgForm.staff_commission_enabled,

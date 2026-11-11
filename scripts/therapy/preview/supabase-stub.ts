@@ -238,7 +238,7 @@ const TABLES: Record<string, unknown[]> = {
   // before go-live (502): the window shows none of it, sends the threshold and the
   // list back as read, and switches the reward off on every save.
   credit_packages: [{ id: 'cp1', name: 'S$1,000 Credit Package', sku: 'CP-1000', customer_price: 1000,
-    paid_credit_amount: 1000, grants_reward: true, is_active: true, effective_from: null, effective_to: null,
+    paid_credit_amount: 1000, grants_reward: true, is_active: true, effective_from: '2026-09-01', effective_to: null,
     tier1_rate: null, tier2_rate: null, reward_qualifying_amount: 994, staff_commission_enabled: true,
     allow_product: true, allow_voucher: true, allow_promotion: true, allow_therapy: true, allow_rental: true,
     allow_event: true, allow_special_product: true, bonus_enabled: true, bonus_mode: 'fixed', bonus_value: 50,

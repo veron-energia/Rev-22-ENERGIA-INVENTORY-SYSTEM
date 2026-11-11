@@ -582,6 +582,52 @@ test('the credit-package form shows what the till lets the credit buy, with no t
   } finally { await done(); }
 });
 
+test('a blank "Effective from" on a Credit Package: a new one starts today, an edited one keeps its date, a typed date is sent as typed', async () => {
+  const { host, done } = await renderPage();
+  try {
+    await openTab(host, 'Credit Packages');
+    await until(() => host.textContent.includes('S$1,000 Credit Package'), 'the Credit Packages tab');
+    const field = label => [...host.querySelectorAll('.modal .form-group')].find(g => g.querySelector('label')?.textContent === label).querySelector('input');
+    const save = async what => {
+      const from = calls().length;
+      await click(button(host.querySelector('.modal-footer'), 'Save'));
+      await until(() => calls().slice(from).some(c => c.name === 'set_catalogue_reward'), what);
+      await until(() => !host.querySelector('.modal'), 'the window closes after ' + what);
+      return calls().slice(from).find(c => c.name === 'upsert_credit_package').args;
+    };
+    // The column cannot be blank: the server would refuse null with a raw database message.
+    // Today in Singapore, written out the way the page and the server write a date.
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
+    assert.match(today, /^\d{4}-\d{2}-\d{2}$/);
+
+    // A new package with the date left blank starts today.
+    await click(button(host, 'New Package'));
+    await until(() => host.querySelector('.modal'), 'the new package window');
+    await setValue(field('Package name *'), 'Fixture Credit Package');
+    assert.equal(field('Effective from').value, '', 'the date starts blank');
+    const created = await save('the new package save');
+    assert.equal(created.p_id, null);
+    assert.equal(created.p_effective_from, today, 'a new package with no date starts today');
+
+    // An existing package with its date cleared keeps the date it has.
+    const pkgRow = () => [...host.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('S$1,000 Credit Package'));
+    await click(pkgRow().querySelector('button.btn-icon'));
+    await until(() => host.querySelector('.modal') && field('Effective from').value === '2026-09-01', 'the edit window, with its date');
+    await setValue(field('Effective from'), '');
+    const kept = await save('the edited package save');
+    assert.equal(kept.p_id, 'cp1');
+    assert.equal(kept.p_effective_from, '2026-09-01', 'a cleared date keeps the package\'s own date, never today');
+
+    // A typed date is sent as typed.
+    await click(pkgRow().querySelector('button.btn-icon'));
+    await until(() => host.querySelector('.modal') && field('Effective from').value === '2026-09-01', 'the edit window again');
+    await setValue(field('Effective from'), '2026-12-01');
+    const typed = await save('the save with a typed date');
+    assert.equal(typed.p_effective_from, '2026-12-01');
+    assert.ok(!host.textContent.includes('violates not-null constraint'), 'no raw database message');
+  } finally { await done(); }
+});
+
 test('the Premium Bundle form is unchanged: free vouchers, a threshold falling back to 994, and the reward tick', async () => {
   const { host, done } = await renderPage();
   try {
