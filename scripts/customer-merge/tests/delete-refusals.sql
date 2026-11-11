@@ -16,6 +16,14 @@
 -- It takes the payouts' lock, then locks the customer's row without waiting
 -- for it, starts with the 406 staff check, and is still Owner/Manager only.
 --
+-- 502 (the user, 10 Nov 2026): only vouchers still owed stop a
+-- delete, a Credit Package, Premium Bundle or therapy-package reward still
+-- waiting with vouchers left, within its collect-by date, on a sale not
+-- refunded, cancelled or deleted (or a live unlimited period). A Legacy reward
+-- never does. Check 2f expects the old refusal without 502, and 502's rule and
+-- words with it. Whether 502 is in is read from the refund guard it drops (the
+-- trigger legacy_refund_guard on invoices; its UNDO puts it back).
+--
 -- Disposable database only; everything is rolled back. The migration is
 -- applied inside this transaction, so run the file on its own against a
 -- database with production's schema (406 to 414 in; 418 refuses without
@@ -263,6 +271,54 @@ begin
   v := pg_temp.del('owner', 'c:commission');
   perform pg_temp.check(v like 'ok%', '2e written off, still refused: ' || v);
 
+  if not exists (select 1 from pg_trigger where tgrelid = 'public.invoices'::regclass
+                  and tgname = 'legacy_refund_guard' and not tgisinternal) then
+    -- 502 is in. The customer also has a Credit Package's reward: 10 vouchers to collect
+    -- within 30 days, none handed over yet.
+    insert into public.therapy_entitlements(entitlement_no, customer_id, store_id, package_name, entitlement_kind,
+                                            voucher_qty, qualifying_amount, qualified_value, activation_deadline, status,
+                                            earner_kind, claim_source_type)
+      values ('T418D-CPK-1', pg_temp.id('c:legacy'), pg_temp.id('store'), 'T418D Credit Package reward', 'voucher',
+              10, 994, 994, public.sg_today() + 30, 'pending_activation', 'credit_package', 'credit_package')
+      returning id into v;
+    insert into t418d values ('cpk', v::uuid);
+    -- Vouchers still owed refuse, with 502's words; the Legacy reward waiting beside them is not counted.
+    v := pg_temp.del('owner', 'c:legacy');
+    perform pg_temp.check(v like 'P0001' || chr(9) || 'This customer still has 1 reward(s) with vouchers to hand over (Therapy → Vouchers to hand over). Hand them over, or refund or cancel the sale they came from, first.',
+                          '2f (502) vouchers still to hand over: ' || v);
+    -- Past its collect-by date, nothing is owed any more (tried, then undone).
+    begin
+      update public.therapy_entitlements set activation_deadline = public.sg_today() - 1 where id = pg_temp.id('cpk');
+      v := pg_temp.del('owner', 'c:legacy');
+      raise exception using message = 'undo', detail = v;
+    exception when others then
+      get stacked diagnostics v = pg_exception_detail;
+    end;
+    perform pg_temp.check(v like 'ok%', '2f (502) a reward past its collect-by date still blocks: ' || v);
+    -- Every voucher handed over (tried, then undone).
+    begin
+      update public.therapy_entitlements set status = 'active', activation_date = public.sg_today() where id = pg_temp.id('cpk');
+      v := pg_temp.del('owner', 'c:legacy');
+      raise exception using message = 'undo', detail = v;
+    exception when others then
+      get stacked diagnostics v = pg_exception_detail;
+    end;
+    perform pg_temp.check(v like 'ok%', '2f (502) a reward handed over in full still blocks: ' || v);
+    -- The rest withdrawn: the Legacy reward alone, waiting to start (tried, then undone), then running.
+    update public.therapy_entitlements set status = 'cancelled', revoked_qty = 10, revoked_at = now(),
+                                           revoked_reason = 'T418D withdrawn'
+     where id = pg_temp.id('cpk');
+    begin
+      v := pg_temp.del('owner', 'c:legacy');
+      raise exception using message = 'undo', detail = v;
+    exception when others then
+      get stacked diagnostics v = pg_exception_detail;
+    end;
+    perform pg_temp.check(v like 'ok%', '2f (502) a Legacy reward waiting to start still blocks: ' || v);
+    update public.therapy_entitlements set status = 'active' where id = pg_temp.id('leg');
+    v := pg_temp.del('owner', 'c:legacy');
+    perform pg_temp.check(v like 'ok%', '2f (502) active Legacy therapy still blocks: ' || v);
+  else
   v := pg_temp.del('owner', 'c:legacy');
   perform pg_temp.check(v like 'P0001%1 legacy therapy entitlement(s) still open%', '2f legacy therapy waiting to start: ' || v);
   update public.therapy_entitlements set status = 'active' where id = pg_temp.id('leg');
@@ -271,12 +327,13 @@ begin
   update public.therapy_entitlements set status = 'cancelled' where id = pg_temp.id('leg');
   v := pg_temp.del('owner', 'c:legacy');
   perform pg_temp.check(v like 'ok%', '2f cancelled legacy therapy still blocks: ' || v);
+  end if;
 
   perform pg_temp.check((select count(*) from public.customers where id in (select id from t418d where k like 'c:%') and deleted_at is not null) = 8,
                         '2 the customers settled were not all deleted');
   perform pg_temp.check((select count(*) from public.audit_logs where action = 'customer_deleted'
                            and record_id in (select id from t418d where k like 'c:%')) = 8, '2 each deletion is recorded once');
-  raise notice 'PASS 2: an open rental, an open stock loan, an affiliate record or login, commission still owed as referrer, commission owed back and not settled (a part, or a voided settlement, still refuses), and open legacy therapy each refuse; a cancelled rental, blocked commission and a row that only recovered a take-back do not; once settled, the customer is deleted';
+  raise notice 'PASS 2: an open rental, an open stock loan, an affiliate record or login, commission still owed as referrer, commission owed back and not settled (a part, or a voided settlement, still refuses), and open legacy therapy (with 502: reward vouchers still owed, and no Legacy reward) each refuse; a cancelled rental, blocked commission and a row that only recovered a take-back do not; once settled, the customer is deleted';
 end $$;
 
 rollback;

@@ -98,11 +98,6 @@ export const PRINT_CSS = `
   th{font-size:9px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #999;padding:2px 3px;}
   th.r{text-align:right;} td{padding:3px 3px;border-bottom:1px solid #eee;vertical-align:top;}
   tr.sub td{border-bottom:none;padding:0 3px 0 12px;font-size:9.5px;color:#555;}
-  .ther{border:1px solid #ddd;border-radius:3px;padding:3px 4px;margin-top:2px;}
-  .entb{margin-top:3px;padding-top:3px;border-top:1px solid #eee;}
-  .entb:first-of-type{border-top:none;padding-top:0;margin-top:2px;}
-  .bentbl{margin-top:2px;} .bentbl th{font-size:8.5px;padding:1px 2px;border-bottom:1px solid #ccc;}
-  .bentbl td{font-size:9.5px;padding:1px 2px;border-bottom:1px solid #f2f2f2;}
   .totals{margin-top:3px;width:170px;margin-left:auto;} .totals td{border:none;padding:1px 3px;}
   .paytbl td{border:none;padding:1px 3px;}
   .grand{font-size:14px;font-weight:bold;border-top:1px solid #999;}

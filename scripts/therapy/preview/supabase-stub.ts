@@ -45,6 +45,8 @@ const DETAIL = {
   customer: { id: 'c1', name: 'Preview Customer A', phone: '+6591000001' },
   as_of: '2026-09-08', expiry_is_inclusive: true,
   vouchers: [
+    // Handed over from the old same-day spending reward, under the source name
+    // a server before 502 still sends: the page shows "Earlier reward".
     { voucher_id: 'v1', name: 'Therapy Session', kind: 'normal', unit: 'session',
       source_type: 'legacy_entitlement', source: 'Legacy qualification reward', source_ref: 'e1',
       issued: 10, redeemed: 0, revoked: 0, remaining: 10,
@@ -72,32 +74,46 @@ const DETAIL = {
     explanation: EXPLANATION,
     adjustments: [{ at: '2026-09-05T02:00:00Z', action: 'country_assigned', reason: null,
                     old_expiry: null, new_expiry: '2026-11-08', old_country: null, new_country: 'SG' }],
+  }, {
+    // The old same-day spending reward's free month, used and ended. A server
+    // before 502 still lists it (kind 'legacy', named as production names it);
+    // the page leaves it out.
+    kind: 'legacy', id: 'u-old', entitlement_no: 'LEG-0009081', package_name: 'Legacy Qualification unlimited (per month)',
+    months: 1, source: 'Legacy qualification', status: 'expired',
+    scheduled_date: null, activation_date: '2026-09-14',
+    base_expiry: '2026-10-13', closure_days_added: 0, expiry_date: '2026-10-13',
+    holiday_country: 'SG', holiday_region: null, holiday_country_source: 'phone',
+    calendar_days_remaining: 0,
+    coverage: { verified: true, country: 'SG', missing_years: [], reasons: [] },
+    explanation: { ...EXPLANATION, activation_date: '2026-09-14', months: 1, convention: 'legacy',
+                   base_expiry: '2026-10-13', adjusted_expiry: '2026-10-13', added_days: 0, applied: [], skipped_sundays: [] },
+    adjustments: [],
   }],
-  pending: [{ kind: 'legacy', entitlement_no: 'ENT-000891', status: 'pending_activation',
-              reward_kind: 'unlimited', voucher_qty: null, months: 1, deadline: '2027-03-31' }],
+  // What is waiting, as 502's server sends it: vouchers still owed (kind
+  // 'legacy' is the server's name for any therapy_entitlements row; since 502
+  // these are never the old same-day reward), and therapy packages bought but
+  // not claimed yet, one a choice not made.
+  pending: [
+    // Past its collect-by date: the server still lists it (soonest first).
+    { kind: 'legacy', entitlement_no: 'LEG-0009132', status: 'pending_activation',
+      reward_kind: 'voucher', voucher_qty: 3, months: 1, deadline: '2026-10-15' },
+    // Far ahead, so the test does not depend on when it runs.
+    { kind: 'legacy', entitlement_no: 'LEG-0009131', status: 'pending_activation',
+      reward_kind: 'voucher', voucher_qty: 4, months: 1, deadline: '2036-03-31' },
+    { kind: 'purchased', entitlement_no: 'UTP-0009021', status: 'pending_activation',
+      reward_kind: 'unlimited', voucher_qty: null, months: 3, deadline: '2027-04-30' },
+    { kind: 'purchased', entitlement_no: 'UTP-0009022', status: 'pending_activation',
+      reward_kind: 'choice', voucher_qty: 10, months: 1, deadline: '2027-05-31' },
+  ],
 };
-
-const REWARD_OPTIONS = [
-  { rule_id: 'r1', name: '1 Month Unlimited Therapy', entitlement_kind: 'unlimited',
-    duration_months: 1, voucher_qty: null, tier_key: 't1', applies_to: 'customer', is_current_choice: true },
-  { rule_id: 'r2', name: '10 Therapy Vouchers', entitlement_kind: 'voucher',
-    duration_months: null, voucher_qty: 10, tier_key: 't1', applies_to: 'customer', is_current_choice: false },
-];
-
-const VOUCHER_OPTIONS = [
-  { voucher_id: 'v1', name: 'Therapy Session', code: 'TS', available_qty: null },
-  { voucher_id: 'v3', name: 'Deep Tissue Session', code: 'DT', available_qty: 6 },
-  { voucher_id: 'v4', name: 'Hot Stone Session', code: 'HS', available_qty: 2 },
-];
 
 const RESPONSES: Record<string, unknown> = {
   therapy_customer_summary: CUSTOMERS,
   therapy_customer_detail: DETAIL,
-  legacy_reward_options: REWARD_OPTIONS,
-  legacy_reward_options_diagnostic: { found: true, option_count: 2, has_choice: true, reasons: [] },
-  legacy_reward_voucher_options: VOUCHER_OPTIONS,
   therapy_calendar_gaps: { verified: false, country: 'SG', missing_years: [2027],
                            reasons: ['SG has no verified holiday calendar for 2027.'] },
+  // The 'legacy' row is a period kept in therapy_entitlements: the page calls its
+  // source "Reward", never by the server's name for it.
   therapy_recalculation_preview: [
     { entitlement_kind: 'purchased', entitlement_id: 'u1', entitlement_no: 'PTE-000412',
       customer_id: 'c1', customer_name: 'Preview Customer A', status: 'active',
@@ -111,16 +127,6 @@ const RESPONSES: Record<string, unknown> = {
       current_expiry: '2026-10-31', base_expiry: '2026-10-31', proposed_expiry: '2026-10-31',
       days_added: 0, change_days: 0, shortens: false, needs_country: true,
       coverage: { verified: false, reasons: ['No holiday country is assigned.'] } },
-  ],
-  therapy_reward_mapping_preview: [
-    { entitlement_id: 'e9', entitlement_no: 'ENT-000512', customer_id: 'c2',
-      customer_name: 'Preview Customer B', recipient: 'customer', qualifying_amount: '794.00',
-      current_kind: 'unlimited', current_months: 1, current_qty: null,
-      activation_deadline: '2027-01-15', option_count: 0, mapped_tier: null,
-      candidates: [{ tier_key: 'customer:994.00:s1', qualifying_amount: '994.00',
-                     kinds: ['unlimited', 'voucher'],
-                     names: ['1 Month Unlimited Therapy', '10 Therapy Vouchers'],
-                     alternatives: 2, closeness: 0, threshold_differs: true }] },
   ],
 };
 
@@ -228,12 +234,16 @@ const TABLES: Record<string, unknown[]> = {
   purchased_therapy_entitlements: PTE, stores: [{ id: 's1', name: 'Energia Rev 22 (Adelphi)' }],
   voucher_store_stock: [{ voucher_id: 'vc-meol', current_qty: 40 }],
   // Every allow_* box ticked, as on production: the till never read them (422, Q15 A).
+  // The reward is still on, with a threshold and a voucher list, as on production
+  // before go-live (502): the window shows none of it, sends the threshold and the
+  // list back as read, and switches the reward off on every save.
   credit_packages: [{ id: 'cp1', name: 'S$1,000 Credit Package', sku: 'CP-1000', customer_price: 1000,
     paid_credit_amount: 1000, grants_reward: true, is_active: true, effective_from: null, effective_to: null,
     tier1_rate: null, tier2_rate: null, reward_qualifying_amount: 994, staff_commission_enabled: true,
     allow_product: true, allow_voucher: true, allow_promotion: true, allow_therapy: true, allow_rental: true,
     allow_event: true, allow_special_product: true, bonus_enabled: true, bonus_mode: 'fixed', bonus_value: 50,
     deleted_at: null }],
+  credit_package_vouchers: [{ package_id: 'cp1', voucher_id: 'vc-meol' }],
 };
 
 // Invented people only: the repository is public.
@@ -268,75 +278,142 @@ const purchasedRows = () => [...PTE, PTE_REFUNDED, PTE_FUTURE, ...padding()].map
     invoice_closed_reason: closed, status_now: e.status,
     days_remaining: e.id === 'e-active' ? 80 : e.id === 'e-sched' ? 94 : e.id === 'e-future' ? 92 : null };
 });
-const LEGACY = [
-  // Handed over in full before claim documents existed (THERAPY-5).
-  { id: 'l-old', entitlement_no: 'LEG-0009004', customer_id: 'c1', store_id: 's1', earner_kind: 'customer',
-    package_name: '10 Therapy Vouchers', entitlement_kind: 'voucher', duration_months: 1, qualified_value: 994,
-    voucher_qty: 10, claimed_qty: 10, revoked_qty: 0, remaining: 0, activation_deadline: '2027-01-15',
-    deadline_passed: false, activation_date: '2026-01-20', expiry_date: null, status: 'active', status_now: 'active',
-    claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
-    next_free_start: null, days_remaining: null, created_at: '2026-01-15T02:00:00Z' },
+// Every therapy_entitlements row, Legacy ones included: Vouchers to hand over
+// must never show earner_kind customer or affiliate (502). The Legacy rows carry
+// the names production gives them, so a leak would show the word.
+const ent = (o: any) => ({ store_id: 's1', duration_months: 1, qualified_value: 994, voucher_qty: null, claimed_qty: 0,
+  revoked_qty: 0, remaining: 0, deadline_passed: false, activation_date: null, expiry_date: null,
+  claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
+  owner_or_manager_only: false, next_free_start: null, days_remaining: null, ...o, status_now: o.status });
+const ENTITLEMENTS = [
+  // Legacy (a customer's paid day): handed over in full in August. Never listed.
+  ent({ id: 'l-old', entitlement_no: 'LEG-0009004', customer_id: 'c1', earner_kind: 'customer',
+    package_name: 'Legacy Qualification Vouchers', entitlement_kind: 'voucher', voucher_qty: 10, claimed_qty: 10,
+    activation_deadline: '2027-01-15', activation_date: '2026-01-20', status: 'active', created_at: '2026-01-15T02:00:00Z' }),
   // A credit-package reward, 3 of 10 handed over.
-  { id: 'l-credit', entitlement_no: 'LEG-0009120', customer_id: 'c2', store_id: 's1', earner_kind: 'credit_package',
-    package_name: 'Credit package reward', entitlement_kind: 'voucher', duration_months: 1, qualified_value: 3000,
-    voucher_qty: 10, claimed_qty: 3, revoked_qty: 0, remaining: 7, activation_deadline: '2027-09-20',
-    deadline_passed: false, activation_date: null, expiry_date: null, status: 'pending_activation', status_now: 'pending_activation',
+  ent({ id: 'l-credit', entitlement_no: 'LEG-0009120', customer_id: 'c2', earner_kind: 'credit_package',
+    package_name: 'Credit package reward', entitlement_kind: 'voucher', qualified_value: 3000, voucher_qty: 10,
+    claimed_qty: 3, remaining: 7, activation_deadline: '2027-09-20', status: 'pending_activation',
     claim_source_type: 'credit_package', claim_source_invoice_id: 'inv-cp', source_invoice_no: 'INV-2026-9337',
-    blocked_reason: null, next_free_start: null, days_remaining: null, created_at: '2026-09-20T02:00:00Z' },
-  // Unclaimed unlimited therapy; the customer has a period running to 25 Dec.
-  { id: 'l-pend', entitlement_no: 'LEG-0009200', customer_id: 'c2', store_id: 's1', earner_kind: 'customer',
-    package_name: '1 Month Unlimited Therapy', entitlement_kind: 'unlimited', duration_months: 1, qualified_value: 994,
-    voucher_qty: null, claimed_qty: 0, revoked_qty: 0, remaining: 0, activation_deadline: '2027-10-01',
-    deadline_passed: false, activation_date: null, expiry_date: null, status: 'pending_activation', status_now: 'pending_activation',
-    claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
-    next_free_start: '2026-12-26', days_remaining: null, created_at: '2026-10-01T02:00:00Z' },
-  // Unclaimed unlimited therapy whose first free day (1 Mar 2027) is after
-  // its claim deadline (31 Jan 2027).
-  { id: 'l-late', entitlement_no: 'LEG-0009201', customer_id: 'c1', store_id: 's1', earner_kind: 'customer',
-    package_name: '1 Month Unlimited Therapy', entitlement_kind: 'unlimited', duration_months: 1, qualified_value: 994,
-    voucher_qty: null, claimed_qty: 0, revoked_qty: 0, remaining: 0, activation_deadline: '2027-01-31',
-    deadline_passed: false, activation_date: null, expiry_date: null, status: 'pending_activation', status_now: 'pending_activation',
-    claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
-    next_free_start: '2027-03-01', days_remaining: null, created_at: '2026-09-30T02:00:00Z' },
-  // A customer deleted since: the server sends no name or phone (422, rule 9).
-  { id: 'l-gone', entitlement_no: 'LEG-0009300', customer_id: 'c-gone', store_id: 's1', earner_kind: 'customer',
-    package_name: '10 Therapy Vouchers', entitlement_kind: 'voucher', duration_months: 1, qualified_value: 994,
-    voucher_qty: 10, claimed_qty: 4, revoked_qty: 0, remaining: 6, activation_deadline: '2027-03-01',
-    deadline_passed: false, activation_date: null, expiry_date: null, status: 'pending_activation', status_now: 'pending_activation',
-    claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
-    next_free_start: null, days_remaining: null, created_at: '2026-03-01T02:00:00Z' },
+    created_at: '2026-09-20T02:00:00Z' }),
+  // A Premium Bundle's free vouchers, all 20 handed over (THERAPY-5: the server counts them).
+  ent({ id: 'l-bundle', entitlement_no: 'LEG-0009130', customer_id: 'c1', earner_kind: 'premium_bundle',
+    package_name: 'Premium bundle reward — Fixture Bundle', entitlement_kind: 'voucher', voucher_qty: 20, claimed_qty: 20,
+    activation_deadline: '2027-09-25', status: 'active', claim_source_type: 'premium_bundle',
+    claim_source_invoice_id: 'inv-pb', source_invoice_no: 'INV-2026-9338', created_at: '2026-09-25T02:00:00Z' }),
+  // A therapy package taken as vouchers, 4 of 10 handed over.
+  ent({ id: 'l-pkg', entitlement_no: 'LEG-0009140', customer_id: 'c3', earner_kind: 'therapy_package',
+    package_name: '1 month - Unlimited MEOL and 3-in-1 Therapy', entitlement_kind: 'voucher', voucher_qty: 10,
+    claimed_qty: 4, remaining: 6, activation_deadline: '2027-09-10', status: 'pending_activation',
+    claim_source_type: 'therapy_package', claim_source_invoice_id: 'inv-pk', source_invoice_no: 'INV-2026-9303',
+    created_at: '2026-09-10T02:00:00Z' }),
+  // A credit-package reward whose collect-by date has passed, nothing handed over.
+  ent({ id: 'l-passed', entitlement_no: 'LEG-0009150', customer_id: 'c3', earner_kind: 'credit_package',
+    package_name: 'Credit package reward', entitlement_kind: 'voucher', voucher_qty: 10, remaining: 10,
+    activation_deadline: '2026-10-01', deadline_passed: true, status: 'pending_activation',
+    claim_source_type: 'credit_package', claim_source_invoice_id: 'inv-cp2', source_invoice_no: 'INV-2026-9310',
+    created_at: '2025-10-01T02:00:00Z' }),
+  // A Premium Bundle's vouchers on a sale deleted since: still waiting on the
+  // server (only a refund or cancellation withdraws what is left), but nothing
+  // can be handed over on it (422, THERAPY-20).
+  ent({ id: 'l-closed', entitlement_no: 'LEG-0009170', customer_id: 'c1', earner_kind: 'premium_bundle',
+    package_name: 'Premium bundle reward — Fixture Bundle', entitlement_kind: 'voucher', voucher_qty: 5, remaining: 5,
+    activation_deadline: '2027-09-28', status: 'pending_activation', claim_source_type: 'premium_bundle',
+    claim_source_invoice_id: 'inv-pb3', source_invoice_no: 'INV-2026-9339', blocked_reason: 'Invoice INV-2026-9339 was deleted',
+    created_at: '2026-09-28T02:00:00Z' }),
+  // A therapy package taken as vouchers: 4 handed over, the other 6 withdrawn, so nothing is left
+  // ('active' with its sale open: a refund withdrew the rest, and the invoice was reopened later).
+  ent({ id: 'l-pkg-done', entitlement_no: 'LEG-0009160', customer_id: 'c2', earner_kind: 'therapy_package',
+    package_name: '1 month - Unlimited MEOL and 3-in-1 Therapy', entitlement_kind: 'voucher', voucher_qty: 10,
+    claimed_qty: 4, revoked_qty: 6, activation_deadline: '2027-08-15', status: 'active',
+    claim_source_type: 'therapy_package', claim_source_invoice_id: 'inv-pk2', source_invoice_no: 'INV-2026-9320',
+    created_at: '2026-08-15T02:00:00Z' }),
+  // A therapy package taken as vouchers, ended by an Owner or Manager after 4 were handed over:
+  // the other 6 withdrawn, the sale still open, and the server keeps it waiting with nothing left.
+  ent({ id: 'l-pkg-ended', entitlement_no: 'LEG-0009190', customer_id: 'c1', earner_kind: 'therapy_package',
+    package_name: '1 month - Unlimited MEOL and 3-in-1 Therapy', entitlement_kind: 'voucher', voucher_qty: 10,
+    claimed_qty: 4, revoked_qty: 6, remaining: 0, activation_deadline: '2027-08-20', status: 'pending_activation',
+    claim_source_type: 'therapy_package', claim_source_invoice_id: 'inv-pk3', source_invoice_no: 'INV-2026-9342',
+    created_at: '2026-08-20T02:00:00Z' }),
+  // A credit-package reward on a sale refunded since: 2 handed over before the
+  // refund, which withdrew the other 8. Nothing is left: "Sale closed", not "Handed over".
+  ent({ id: 'l-cp-refunded', entitlement_no: 'LEG-0009180', customer_id: 'c2', earner_kind: 'credit_package',
+    package_name: 'Credit package reward', entitlement_kind: 'voucher', voucher_qty: 10,
+    claimed_qty: 2, revoked_qty: 8, activation_deadline: '2027-09-05', status: 'active',
+    claim_source_type: 'credit_package', claim_source_invoice_id: 'inv-cp3', source_invoice_no: 'INV-2026-9341',
+    blocked_reason: 'Invoice INV-2026-9341 was refunded', created_at: '2026-09-05T02:00:00Z' }),
+  // Legacy: unclaimed unlimited therapy (the customer has a period running to 25 Dec). Never listed.
+  ent({ id: 'l-pend', entitlement_no: 'LEG-0009200', customer_id: 'c2', earner_kind: 'customer',
+    package_name: 'Legacy Qualification unlimited (per month)', entitlement_kind: 'unlimited',
+    activation_deadline: '2027-10-01', status: 'pending_activation', next_free_start: '2026-12-26',
+    created_at: '2026-10-01T02:00:00Z' }),
+  // Legacy: unclaimed unlimited therapy whose first free day is after its deadline. Never listed.
+  ent({ id: 'l-late', entitlement_no: 'LEG-0009201', customer_id: 'c1', earner_kind: 'customer',
+    package_name: 'Legacy Qualification unlimited (per month)', entitlement_kind: 'unlimited',
+    activation_deadline: '2027-01-31', status: 'pending_activation', next_free_start: '2027-03-01',
+    created_at: '2026-09-30T02:00:00Z' }),
+  // Legacy, for a customer deleted since. Never listed.
+  ent({ id: 'l-gone', entitlement_no: 'LEG-0009300', customer_id: 'c-gone', earner_kind: 'customer',
+    package_name: 'Legacy Qualification Vouchers', entitlement_kind: 'voucher', voucher_qty: 10, claimed_qty: 4,
+    remaining: 6, activation_deadline: '2027-03-01', status: 'pending_activation', created_at: '2026-03-01T02:00:00Z' }),
+  // A Premium Bundle's vouchers for a customer deleted since: the server sends no
+  // name or phone (422, rule 9).
+  ent({ id: 'l-gone-pb', entitlement_no: 'LEG-0009301', customer_id: 'c-gone', earner_kind: 'premium_bundle',
+    package_name: 'Premium bundle reward — Fixture Bundle', entitlement_kind: 'voucher', voucher_qty: 5, remaining: 5,
+    activation_deadline: '2027-03-02', status: 'pending_activation', claim_source_type: 'premium_bundle',
+    claim_source_invoice_id: 'inv-pb2', source_invoice_no: 'INV-2026-9302', created_at: '2026-03-02T02:00:00Z' }),
   // No sale and no voucher list: an Owner or Manager hands it over (422, rule 10).
-  { id: 'l-nolist', entitlement_no: 'LEG-0009400', customer_id: 'c3', store_id: 's1', earner_kind: 'credit_package',
-    package_name: 'Credit package reward', entitlement_kind: 'voucher', duration_months: 1, qualified_value: 994,
-    voucher_qty: 20, claimed_qty: 0, revoked_qty: 0, remaining: 20, activation_deadline: '2027-08-01',
-    deadline_passed: false, activation_date: null, expiry_date: null, status: 'pending_activation', status_now: 'pending_activation',
-    claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
-    owner_or_manager_only: true, next_free_start: null, days_remaining: null, created_at: '2026-08-01T02:00:00Z' },
-  // Cancelled: hidden unless asked for.
-  { id: 'l-cancel', entitlement_no: 'LEG-0009078', customer_id: 'c3', store_id: 's1', earner_kind: 'customer',
-    package_name: '10 Therapy Vouchers', entitlement_kind: 'voucher', duration_months: 1, qualified_value: 994,
-    voucher_qty: 10, claimed_qty: 0, revoked_qty: 10, remaining: 0, activation_deadline: '2027-02-01',
-    deadline_passed: false, activation_date: null, expiry_date: null, status: 'cancelled', status_now: 'cancelled',
-    claim_source_type: null, claim_source_invoice_id: null, source_invoice_no: null, blocked_reason: null,
-    next_free_start: null, days_remaining: null, created_at: '2026-02-01T02:00:00Z' },
+  ent({ id: 'l-nolist', entitlement_no: 'LEG-0009400', customer_id: 'c3', earner_kind: 'credit_package',
+    package_name: 'Credit package reward', entitlement_kind: 'voucher', voucher_qty: 20, remaining: 20,
+    activation_deadline: '2027-08-01', status: 'pending_activation', owner_or_manager_only: true,
+    created_at: '2026-08-01T02:00:00Z' }),
+  // The same kind of reward past its collect-by date: nothing can be handed
+  // over on it any more, so it is not marked for an Owner or Manager either.
+  ent({ id: 'l-nolist-passed', entitlement_no: 'LEG-0009410', customer_id: 'c3', earner_kind: 'credit_package',
+    package_name: 'Credit package reward', entitlement_kind: 'voucher', voucher_qty: 10, remaining: 10,
+    activation_deadline: '2026-09-15', deadline_passed: true, status: 'pending_activation', owner_or_manager_only: true,
+    created_at: '2025-09-15T02:00:00Z' }),
+  // A credit-package reward cancelled long ago, with no sale and no list.
+  ent({ id: 'l-cp-cancel', entitlement_no: 'LEG-0009079', customer_id: 'c3', earner_kind: 'credit_package',
+    package_name: 'Credit package reward', entitlement_kind: 'voucher', voucher_qty: 10, revoked_qty: 10,
+    activation_deadline: '2027-02-02', status: 'cancelled', created_at: '2026-02-02T02:00:00Z' }),
+  // Legacy, cancelled. Never listed.
+  ent({ id: 'l-cancel', entitlement_no: 'LEG-0009078', customer_id: 'c3', earner_kind: 'customer',
+    package_name: 'Legacy Qualification Vouchers', entitlement_kind: 'voucher', voucher_qty: 10, revoked_qty: 10,
+    activation_deadline: '2027-02-01', status: 'cancelled', created_at: '2026-02-01T02:00:00Z' }),
+  // Legacy, an affiliate's reward with no list. Never listed.
+  ent({ id: 'l-aff', entitlement_no: 'LEG-0009500', customer_id: 'c1', earner_kind: 'affiliate',
+    package_name: 'Legacy Qualification Vouchers', entitlement_kind: 'voucher', voucher_qty: 10, remaining: 10,
+    activation_deadline: '2027-06-01', status: 'pending_activation', created_at: '2026-06-01T02:00:00Z' }),
 ];
-const listPage = (args: any) => {
+// therapy_list_page: 'purchased' or 'vouchers' (502); any other list is refused
+// with the server's words. 'vouchers' leaves the old same-day spending reward out.
+const listPage = (args: any): { data: any; error: { message: string } | null } => {
   const tab = args?.p_tab;
+  if (tab !== 'purchased' && tab !== 'vouchers') {
+    return { data: null, error: { message: `Unknown list: ${tab ?? 'none'} (purchased or vouchers)` } };
+  }
+  // A page test may answer as a server without 502 does
+  // (globalThis.__therapyStubBefore502), which knows only 'purchased' and 'legacy'.
+  if (tab === 'vouchers' && (globalThis as any).__therapyStubBefore502) {
+    return { data: null, error: { message: 'Unknown list: vouchers (purchased or legacy)' } };
+  }
   const q = String(args?.p_search ?? '').trim().toLowerCase();
-  const status = args?.p_status ?? (tab === 'legacy' ? 'open' : 'all');
+  const status = args?.p_status ?? (tab === 'purchased' ? 'all' : 'open');
   const all: any[] = tab === 'purchased' ? purchasedRows()
-    : LEGACY.map(l => ({ ...l, customer_name: PEOPLE[l.customer_id]?.full_name ?? null, customer_phone: PEOPLE[l.customer_id]?.phone ?? null }));
+    : ENTITLEMENTS.filter(l => !['customer', 'affiliate'].includes(l.earner_kind))
+        .map(l => ({ ...l, customer_name: PEOPLE[l.customer_id]?.full_name ?? null, customer_phone: PEOPLE[l.customer_id]?.phone ?? null }));
   const rows = all.filter(r =>
     (!q || [r.customer_name, r.customer_phone, r.entitlement_no, r.package_name, r.invoice_no, r.source_invoice_no]
             .some(x => String(x ?? '').toLowerCase().includes(q)))
     && (status === 'all'
-        || (status === 'open' && (tab === 'legacy' ? r.status_now !== 'cancelled'
+        || (status === 'open' && (tab === 'vouchers' ? r.status_now !== 'cancelled'
                                   : ['pending_activation', 'scheduled', 'active'].includes(r.status_now)))
         || (status === 'closed' && ['cancelled', 'refunded'].includes(r.status_now))
         || r.status_now === status));
   const limit = Math.min(Math.max(Number(args?.p_limit ?? 50), 1), 200);
   const offset = Math.max(Number(args?.p_offset ?? 0), 0);
-  return { tab, total: rows.length, limit, offset, status, rows: rows.slice(offset, offset + limit) };
+  return { data: { tab, total: rows.length, limit, offset, status, rows: rows.slice(offset, offset + limit) }, error: null };
 };
 const VOUCHER_STATE: Record<string, unknown> = {
   'l-credit': { entitlement_id: 'l-credit', entitlement_no: 'LEG-0009120', package_name: 'Credit package reward',
@@ -349,6 +426,17 @@ const VOUCHER_STATE: Record<string, unknown> = {
     status: 'pending_activation', cancelled: false, snapshot_present: false, blocked_reason: null,
     eligible: [{ voucher_id: 'vc-meol', name: 'MEOL Voucher', available: 40, still_offered: true }],
     owner_or_manager_only: true },
+  'l-pkg': { entitlement_id: 'l-pkg', entitlement_no: 'LEG-0009140', package_name: '1 month - Unlimited MEOL and 3-in-1 Therapy',
+    entitled: 10, claimed: 4, revoked: 0, remaining: 6, claim_deadline: '2027-09-10', deadline_passed: false,
+    status: 'pending_activation', cancelled: false, snapshot_present: true, blocked_reason: null,
+    eligible: [{ voucher_id: 'vc-meol', name: 'MEOL Voucher', available: 40, still_offered: true },
+               { voucher_id: 'vc-3in1', name: '3-in-1 Vouchers', available: null, still_offered: true }],
+    owner_or_manager_only: false },
+  'l-passed': { entitlement_id: 'l-passed', entitlement_no: 'LEG-0009150', package_name: 'Credit package reward',
+    entitled: 10, claimed: 0, revoked: 0, remaining: 10, claim_deadline: '2026-10-01', deadline_passed: true,
+    status: 'pending_activation', cancelled: false, snapshot_present: true, blocked_reason: null,
+    eligible: [{ voucher_id: 'vc-meol', name: 'MEOL Voucher', available: 40, still_offered: true }],
+    owner_or_manager_only: false },
 };
 
 // Every call, for the page tests to read (the preview ignores it).
@@ -365,32 +453,18 @@ export function mergeCustomers<T extends { id: string }>(existing: T[], extra: a
 export const supabase = {
   rpc: async (name: string, args?: any) => {
     calls.push({ name, args });
-    if (name === 'therapy_list_page') return { data: listPage(args), error: null };
+    if (name === 'therapy_list_page') return listPage(args);
     if (name === 'purchased_therapy_units') return { data: UNITS, error: null };
     if (name === 'purchased_therapy_unit_state') return { data: UNIT_STATE[args?.p_purchased_id] ?? null, error: null };
     if (name === 'entitlement_voucher_state') return { data: VOUCHER_STATE[args?.p_entitlement_id] ?? null, error: null };
     if (name === 'credit_package_effective_rules') {
       return { data: { paid: ['therapy_session'], bonus: ['own_product', 'third_party_product'], source: 'default' }, error: null };
     }
-    if (name === 'claim_legacy_therapy') {
-      if (args?.p_entitlement_id === 'l-pend' && !args?.p_allow_overlap) {
-        return { data: { success: false, claimed: false, requires_confirmation: true,
-          reason: 'This customer already has unlimited therapy running on that date.',
-          suggested_start: '2026-12-26',
-          existing: [{ kind: 'purchased', entitlement_no: 'UTP-0009012', status: 'active', activation_date: '2026-09-21', expiry_date: '2026-12-25' }] },
-          error: null };
-      }
-      if (args?.p_entitlement_id === 'l-late' && !args?.p_allow_overlap) {
-        return { data: { success: false, claimed: false, requires_confirmation: true,
-          reason: 'This customer already has unlimited therapy running on that date.',
-          suggested_start: '2027-03-01',
-          existing: [{ kind: 'purchased', entitlement_no: 'UTP-0009011', status: 'scheduled', activation_date: '2026-12-01', expiry_date: '2027-02-28' }] },
-          error: null };
-      }
-      return { data: { success: true, claimed: true, overlapped: !!args?.p_allow_overlap, status: 'active', kind: 'unlimited',
-        activation_date: args?.p_activation_date, expiry_date: '2027-01-25', base_expiry: '2027-01-25', closure_days_added: 0,
-        entitlement_no: 'LEG-0009200', issued_vouchers: [] }, error: null };
-    }
+    // The saved package's id, as the server returns it, so the page goes on to
+    // set its SKU and its reward (set_catalogue_sku, set_catalogue_reward). A
+    // new package gets an id of its own, never the one last edited.
+    if (name === 'upsert_credit_package') return { data: args?.p_id ?? 'cp-new', error: null };
+    if (name === 'upsert_premium_bundle') return { data: args?.p_id ?? 'pb1', error: null };
     if (name === 'claim_purchased_therapy') {
       return { data: args?.p_choice === 'unlimited'
         ? { success: true, choice: 'unlimited', activation: { status: 'active', activation_date: args.p_activation_date,
@@ -403,6 +477,8 @@ export const supabase = {
     return { data: RESPONSES[name] ?? null, error: null };
   },
   from: (table: string) => {
+    // Recorded too, so a test can tell which tables the page reads itself.
+    calls.push({ name: 'from', args: { table } });
     let rows: any[] = (TABLES[table] ?? []) as any[];
     const chain: any = {};
     for (const m of ['select', 'is', 'gte', 'lte', 'order', 'limit', 'range', 'neq', 'not'])

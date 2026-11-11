@@ -28,13 +28,15 @@
 //     outcome is unknown, Cancel then asks, and the split opened again for the
 //     same package and store sends the same id; a refusal says the invoices
 //     were not created; an id that already made another sale (other
-//     customers or amounts) is let go and says to check the invoices first.
+//     customers or amounts) is let go and says to check the invoices first;
+//     a Credit Package that gives no reward vouchers names none (502).
 //   * Benefit window: no unreachable "Confirm choice"; a switch retried after
 //     an error keeps its request id.
 //   * Holidays: a region field for the calendar (needed to mark a regional
 //     calendar checked) and for a new date, read once typing pauses, and an
 //     older answer arriving late is dropped; the recalculation asks first and
-//     counts only the periods it will change.
+//     counts only the periods it will change, and names each period's source
+//     Purchased or Reward (502).
 //
 // Run: node --test scripts/therapy/tests/vouchers-services-pages.test.mjs
 process.env.TZ = 'America/Los_Angeles'; // west of UTC: a date parsed as a Date would show a day early
@@ -544,6 +546,10 @@ test('Split panels: a failed preview shows the error with Retry', async () => {
   assert.doesNotMatch(document.body.textContent, /Loading package/);
   await click(byText('button', 'Retry'));
   assert.match(document.body.textContent, /Customer Allocation — T Credit/);
+  // 502: a Credit Package sold now gives credit only, so the summary names no
+  // reward vouchers at all, not "Reward 0 vouchers".
+  assert.match(document.body.textContent, /Package S\$1,?000\.00 · Paid S\$1,?000\.00 · Bonus S\$0\.00/);
+  assert.doesNotMatch(document.body.textContent, /Reward 0 vouchers/);
 
   await mount(React.createElement(PremiumBundleSplitPanel, { storeId: 's-a', bundleId: 'pb1', serviceStaff: [], affiliateId: null,
     notes: null, onCreated: () => {}, onCancel: () => {} }));
@@ -887,10 +893,18 @@ test('Recalculation: Apply asks first, with how many periods are lengthened', as
         coverage: { verified: false } },
       // No country and shorter: skipped for the country, so counted once.
       { entitlement_kind: 'purchased', entitlement_id: 'e6', entitlement_no: 'UTP-T6', change_days: -1, shortens: true, needs_country: true },
+      // A period kept in therapy_entitlements, which the server calls 'legacy'
+      // (502: shown as "Reward"); unchanged, so it counts for nothing.
+      { entitlement_kind: 'legacy', entitlement_id: 'e7', entitlement_no: 'LEG-T7', change_days: 0, shortens: false, coverage: { verified: true } },
     ], error: null },
     therapy_apply_recalculation: { data: { updated: 2, unchanged: 0, skipped_needs_country: 3, skipped_would_shorten: 1 }, error: null },
   };
   await mount(React.createElement(RecalculationPreview, { canManage: true }));
+  // The source in staff's words: Purchased or Reward, never the server's 'legacy'.
+  const source = no => $$('tbody tr').find(tr => tr.textContent.includes(no))?.querySelectorAll('td')[2].textContent;
+  assert.equal(source('UTP-T1'), 'Purchased');
+  assert.equal(source('LEG-T7'), 'Reward');
+  assert.doesNotMatch($$('table')[0].textContent, /legacy/i);
   const apply = byText('button', 'Apply 2 lengthening change(s)');
   answers = [false];
   await click(apply);

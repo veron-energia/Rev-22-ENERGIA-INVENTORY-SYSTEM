@@ -22,16 +22,3 @@ export function purchasedStatusOn(e: PurchasedDates, today: string): string {
   if ((e.status === 'pending_activation' || e.status === 'scheduled') && !act && deadline && deadline < today) return 'expired';
   return e.status;
 }
-
-export interface LegacyDates { status: string; activation_date?: string | null; expiry_date?: string | null }
-
-/** Mirrors public.refresh_legacy_therapy_statuses(): a start reached is
- *  active, an expiry passed is expired. Unclaimed entitlements keep their
- *  status (the page says when their deadline has passed). */
-export function legacyStatusOn(e: LegacyDates, today: string): string {
-  const act = e.activation_date || null, exp = e.expiry_date || null;
-  let st = e.status;
-  if (st === 'scheduled' && act && act <= today) st = 'active';
-  if ((st === 'active' || st === 'scheduled') && exp && exp < today) st = 'expired';
-  return st;
-}

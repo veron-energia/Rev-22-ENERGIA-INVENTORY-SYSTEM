@@ -1267,8 +1267,10 @@ do $$ begin
       and md5(pg_get_functiondef('public.reopen_invoice(uuid,text,uuid)'::regprocedure)) = '30066e137b9b75b5789a050c14debc04'
       and md5(pg_get_functiondef('public.invoice_transferable_benefits(uuid)'::regprocedure)) = '1546de1f83d970424d26e65941f4dcb8',
     'S 462, 463 and 470 to 476 are in: reopen_invoice at 475''s AFTER, the list at 476''s (477 goes in after them)');
-  perform pg_temp.t477_check(split_part(pg_temp.t477_inv_triggers(), ' ', 1) = '92c94e3ebc6113a68d972330bbca8938',
-    'S the triggers on invoices are as read (27 Oct 2026): ' || pg_temp.t477_inv_triggers());
+  -- 502 (Legacy Therapy retired, 10 Nov 2026) drops legacy_refund_guard and nothing else on invoices:
+  -- 1bd24d05... is the same list without it (18 triggers).
+  perform pg_temp.t477_check(split_part(pg_temp.t477_inv_triggers(), ' ', 1) = any (array['92c94e3ebc6113a68d972330bbca8938', '1bd24d0583150b3350139c6445369013']),
+    'S the triggers on invoices are as read (27 Oct 2026, or as 502 leaves them): ' || pg_temp.t477_inv_triggers());
   perform pg_temp.t477_check((select bool_and(pg_temp.t477_grant_set(sig) = acl) from t477_md5),
     'S who may call the three is not as read');
 end $$;

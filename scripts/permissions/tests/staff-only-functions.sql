@@ -47,6 +47,17 @@
 -- difference. That is why it is not part of npm run test:permissions; run it
 -- with npm run test:permissions:staff-only once the integration database
 -- carries production's schema.
+--
+-- 502 (the user, 10 Nov 2026) retired Legacy Therapy and Qualification: 13
+-- functions only they used are no longer callable by signed-in logins (their
+-- bodies stay, for the service role and the database's own functions). With 502
+-- in, those named in the lists below are not a list out of date, no signed-in
+-- login or signed-out visitor may call any of the 13 while the service role
+-- still can, and the page calls in section 2 that reach one are refused to
+-- every login, staff too, with 42501. Whether 502 is in is read from the refund
+-- guard it drops (the trigger legacy_refund_guard on invoices; its UNDO puts
+-- it back).
+--
 -- Disposable database only; everything is rolled back. Fixture names carry
 -- SOFX, phones +65914001xx, emails @sig.invalid; nothing real is read or printed.
 \set ON_ERROR_STOP on
@@ -58,6 +69,19 @@ create temp table sof_tally(k text primary key, n int not null default 0);
 
 create function pg_temp.sof_id(p text) returns uuid language sql stable as
   $f$ select id from sof where k = p $f$;
+
+-- Whether 502 is in, and the 13 functions it revoked from signed-in logins.
+create function pg_temp.has_502() returns boolean language sql stable as
+  $f$ select not exists (select 1 from pg_trigger where tgrelid = 'public.invoices'::regclass
+                          and tgname = 'legacy_refund_guard' and not tgisinternal) $f$;
+create function pg_temp.sof_502_revoked() returns text[] language sql immutable as $f$
+  select array['affiliate_legacy_day_summary(date)', 'backfill_legacy_qualification(date,date,uuid)',
+               'claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)', 'invoice_legacy_entitlements(uuid)',
+               'invoice_therapy_summary(uuid)', 'legacy_qualification_diagnose(uuid,uuid,date)',
+               'legacy_qualification_group(uuid,uuid,date)', 'legacy_reward_options(uuid)',
+               'legacy_reward_options_diagnostic(uuid)', 'legacy_setup_status()',
+               'therapy_map_entitlement_tier(uuid,text,text)', 'therapy_reward_mapping_preview()',
+               'upsert_legacy_rule(uuid,uuid,text,numeric,text,integer,integer,integer,boolean,date,text)'] $f$;
 
 -- Run p_sql as one of the fixture's logins and say what happened:
 --   'ok' and the result as text, or the SQLSTATE and the message.
@@ -413,11 +437,23 @@ begin
   if (select count(*) from unnest(v_named) x) <> (select count(distinct x) from unnest(v_named) x) then
     perform pg_temp.sof_fail('1: a function is named in two lists');
   end if;
-  -- A name that no longer matches a function is a list out of date.
+  -- A name that no longer matches a function is a list out of date (but, with
+  -- 502 in, one of the 13 it revoked).
   perform pg_temp.sof_fail('1: named but not a function signed-in logins can call: ' || x)
      from unnest(v_named) x
-    where to_regprocedure('public.' || x) is null
-       or not has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute');
+    where (to_regprocedure('public.' || x) is null
+           or not has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute'))
+      and not (pg_temp.has_502() and x = any (pg_temp.sof_502_revoked()));
+  -- 502: none of the 13 is callable by a signed-in login or a signed-out
+  -- visitor; the service role keeps them all.
+  if pg_temp.has_502() then
+    perform pg_temp.sof_fail('1: 502 revoked it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
+       from unnest(pg_temp.sof_502_revoked()) x
+      where to_regprocedure('public.' || x) is null
+         or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
+         or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
+         or not has_function_privilege('service_role', to_regprocedure('public.' || x), 'execute');
+  end if;
   for r in
     select p.oid, p.proname, p.oid::regprocedure::text as sig, p.prosecdef,
            p.prorettype = 'void'::regtype as is_void,
@@ -657,6 +693,11 @@ begin
       when 'om' then array['owner', 'manager']
       when 'mup' then array['owner', 'admin', 'manager']
       when 'notinv' then array['owner', 'admin', 'manager', 'staff1', 'staff2'] end;
+    -- 502: a call that reaches a function it revoked is refused to every login, staff too.
+    if pg_temp.has_502() and exists (select 1 from unnest(pg_temp.sof_502_revoked()) f
+                                      where strpos(r.sql, 'public.' || split_part(f, '(', 1) || '(') > 0) then
+      v_may := '{}';
+    end if;
     foreach v_who in array c_everyone loop
       v_out := pg_temp.sof_try(v_who, pg_temp.sof_sql(r.sql));
       v_state := split_part(v_out, chr(9), 1);

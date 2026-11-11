@@ -117,6 +117,7 @@
     "test:therapy:splits:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/therapy/tests/split-replay.sql",
     "test:therapy:split-concurrency": "node scripts/therapy/tests/split-replay-concurrency.mjs",
     "test:therapy:repairs:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/therapy/tests/repair-promotion-therapy-units.sql -f scripts/therapy/tests/sg-2027-holidays-repair.sql -f scripts/therapy/tests/sg-holiday-country-repair.sql",
+    "test:therapy:legacy-retired:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/therapy/tests/legacy-retired-502.sql -f scripts/therapy/tests/legacy-retired-502-reads.sql -f scripts/therapy/tests/legacy-retired-golive-502.sql",
     "test:users:db": "node scripts/users/tests/database.mjs",
     "test:payment-methods:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/payment-methods/tests/payment-methods.sql",
     "test:therapy-services:db": "node scripts/therapy-services/tests/database.mjs",

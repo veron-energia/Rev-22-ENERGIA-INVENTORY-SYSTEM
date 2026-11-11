@@ -8,6 +8,12 @@
 --      in any report or on the Dashboard, and staging stores new ones as
 --      reconciled; a real gap is still flagged.
 --   A5 The Therapy report returns a legacy entitlement's activation and expiry.
+--      502 (the user, 10 Nov 2026): a Legacy reward (earned by a customer's
+--      or an affiliate's paid day) is history and leaves the report, and the
+--      rows that are not Legacy stay; a Credit Package's reward vouchers show
+--      their own dates in both worlds, and the Legacy one only without 502.
+--      Whether 502 is in is read from the refund guard it drops (the trigger
+--      legacy_refund_guard on invoices).
 --   A6 Periods on Exchange Invoices, Transfer receipts and Sources are
 --      Singapore dates (00:30 on 1 Sep in Singapore is 31 Aug in UTC).
 --   A7 Wallet credit not counted is net of wallet credit refunded; the report
@@ -129,10 +135,14 @@ begin
  perform record_invoice_payment(inv_p,jsonb_build_array(jsonb_build_object('payment_method_id',cash,'amount',
    (select total_amount from invoices where id=inv_p))),gen_random_uuid());
 
- -- A5: a legacy entitlement with its own dates.
+ -- A5: a legacy entitlement with its own dates, and a Credit Package's reward vouchers with theirs.
  insert into therapy_entitlements(entitlement_no,customer_id,store_id,package_name,entitlement_kind,
    qualifying_amount,qualified_value,activation_deadline,activation_date,expiry_date,status)
  values('R367-L-'||sfx,cust,st,'R367 Legacy','unlimited',0,0,'2026-10-31','2026-09-01','2026-12-01','active');
+ insert into therapy_entitlements(entitlement_no,customer_id,store_id,package_name,entitlement_kind,voucher_qty,
+   qualifying_amount,qualified_value,activation_deadline,activation_date,expiry_date,status,earner_kind,claim_source_type)
+ values('R367-C-'||sfx,cust,st,'R367 Credit Package reward','voucher',10,994,994,'2026-11-30','2026-09-02','2026-12-02','active',
+   'credit_package','credit_package');
 
  -- A6: an exchange and a survey at 01:00 on 1 Sep in Singapore (17:00 UTC on 31 Aug).
  insert into product_exchanges(exchange_no,original_invoice_id,customer_id,processing_store_id,created_at)
@@ -287,11 +297,22 @@ end $$;
 -- ═════ A5: legacy therapy dates ═════
 do $$
 declare r record;
+ v_502 boolean:=not exists(select 1 from pg_trigger where tgrelid='public.invoices'::regclass
+                            and tgname='legacy_refund_guard' and not tgisinternal);
 begin
+ if v_502 then
+  perform pg_temp.check(not exists (select 1 from report_therapy() where entitlement_no='R367-L-'||pg_temp.tx('sfx')),
+    'A5 (502) a Legacy reward is no longer in the Therapy report');
+ else
  select * into r from report_therapy() where entitlement_no='R367-L-'||pg_temp.tx('sfx');
  perform pg_temp.check(r.activation_date = '2026-09-01' and r.expiry_date = '2026-12-01' and r.is_legacy
      and r.activation_deadline = '2026-10-31',
    format('A5 a legacy entitlement shows activation 2026-09-01 and expiry 2026-12-01, got %s / %s', r.activation_date, r.expiry_date));
+ end if;
+ select * into r from report_therapy() where entitlement_no='R367-C-'||pg_temp.tx('sfx');
+ perform pg_temp.check(r.activation_date = '2026-09-02' and r.expiry_date = '2026-12-02' and r.is_legacy
+     and r.activation_deadline = '2026-11-30',
+   format('A5 a Credit Package''s reward vouchers show activation 2026-09-02 and expiry 2026-12-02, got %s / %s', r.activation_date, r.expiry_date));
 end $$;
 
 -- ═════ A6: periods are Singapore dates ═════

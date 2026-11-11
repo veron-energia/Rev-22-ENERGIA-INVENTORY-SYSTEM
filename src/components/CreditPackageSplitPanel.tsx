@@ -8,8 +8,10 @@ import { heldSplitRequest, holdSplitRequest, outcomeUnknown, releaseSplitRequest
 
 // A Credit Package purchase divided between several customers, each of whom
 // gets their own normal invoice. Paid/Bonus credit are derived from payment
-// (read-only); reward vouchers are staff-adjustable but must total the
-// package's reward. The RPC is authoritative — this panel is a live preview.
+// (read-only); reward vouchers (only on a package that still gives them: none
+// does for new sales since 502, the user's decision of 10 Nov 2026) are
+// staff-adjustable but must total the package's reward. The RPC is
+// authoritative — this panel is a live preview.
 // One request id per sale (423): pressing Create again after a lost answer
 // returns the sale already made instead of making a second one. After a lost
 // answer the id is kept until a try succeeds, so closing the panel and
@@ -247,7 +249,7 @@ export function CreditPackageSplitPanel(props: Props) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
         <strong>Customer Allocation — {pv.package_name}</strong>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          Package {money(price)} · Paid {money(paidTotal)} · Bonus {money(bonusTotal)} · Reward {rewardTotal} vouchers
+          Package {money(price)} · Paid {money(paidTotal)} · Bonus {money(bonusTotal)}{rewardTotal > 0 ? ` · Reward ${rewardTotal} vouchers` : ''}
         </span>
       </div>
 

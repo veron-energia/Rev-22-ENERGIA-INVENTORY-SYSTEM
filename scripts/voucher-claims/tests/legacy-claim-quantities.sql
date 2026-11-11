@@ -13,6 +13,13 @@
 -- and quantities below one; and a Legacy reward taken as vouchers by its rule
 -- refuses negative and zero lines but still takes exactly 10.
 --
+-- 502 (the user, 10 Nov 2026) retired Legacy Therapy: signed-in logins can no
+-- longer call claim_legacy_therapy. With 502 in, the Legacy claim's checks (1
+-- and 3) give way to one check that a signed-in Owner is refused (42501) and
+-- nothing moves; the Vouchers window's checks (2) run either way. Whether 502 is
+-- in is read from the refund guard it drops (the trigger legacy_refund_guard on
+-- invoices; its UNDO puts it back).
+--
 -- Needs 422 on the database. Disposable database only; everything is rolled
 -- back.
 begin;
@@ -20,7 +27,9 @@ do $$
 declare
   own uuid := gen_random_uuid(); st uuid; c uuid; pm uuid; cp uuid; inv uuid;
   v1 uuid; v2 uuid; vd uuid; e uuid; u uuid; rv uuid; r jsonb;
-  v_issued int; v_stock int; v_msg text;
+  v_issued int; v_stock int; v_msg text; v_state text;
+  v_502 boolean := not exists (select 1 from pg_trigger where tgrelid = 'public.invoices'::regclass
+                                and tgname = 'legacy_refund_guard' and not tgisinternal);
 begin
   if to_regprocedure('public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)') is null then
     raise exception 'FIXTURE: this database does not have 422 (claim_legacy_therapy has no p_allow_overlap)'; end if;
@@ -62,6 +71,22 @@ begin
   select current_qty into v_stock from voucher_store_stock where voucher_id = v1 and store_id = st;
 
   -- 1. The Legacy claim refuses the reward outright, whatever it is sent.
+  if v_502 then
+    -- 502: a signed-in Owner cannot call the retired Legacy claim at all.
+    begin
+      perform set_config('request.jwt.claims', json_build_object('sub', own, 'role', 'authenticated')::text, true);
+      execute 'set local role authenticated';
+      perform claim_legacy_therapy(e, null, null,
+        jsonb_build_array(jsonb_build_object('voucher_id', v1, 'quantity', (r->>'entitled')::int)));
+      raise exception 'FAIL: 502 is in, yet a signed-in Owner called claim_legacy_therapy';
+    exception when others then
+      get stacked diagnostics v_msg = message_text, v_state = returned_sqlstate;
+      if v_msg like 'FAIL:%' then raise; end if;
+      if v_state <> '42501' then
+        raise exception 'FAIL: 502 is in, and the signed-in Legacy claim was refused for the wrong reason (% %)', v_state, v_msg; end if;
+    end;
+    perform set_config('request.jwt.claims', '', true);
+  else
   begin
     perform claim_legacy_therapy(e, null, null,
       jsonb_build_array(jsonb_build_object('voucher_id', v1, 'quantity', (r->>'entitled')::int)));
@@ -72,6 +97,7 @@ begin
     if v_msg not like 'This is a voucher reward.%' then
       raise exception 'FAIL: refused for the wrong reason (%)', v_msg; end if;
   end;
+  end if;
   if (select coalesce(sum(quantity),0) from customer_reward_vouchers where entitlement_id = e) <> v_issued
      or (select current_qty from voucher_store_stock where voucher_id = v1 and store_id = st) <> v_stock
      or (select status from therapy_entitlements where id = e) <> 'pending_activation' then
@@ -103,6 +129,11 @@ begin
     raise exception 'FAIL: a refused claim in the Vouchers window still issued vouchers'; end if;
 
   -- 3. A Legacy reward of unlimited therapy, taken as 10 vouchers by its rule.
+  -- (Through the retired Legacy claim: only without 502; check 1 covers 502.)
+  if v_502 then
+    raise notice 'PASS: 502 is in: a signed-in Owner cannot call the retired Legacy claim (42501) and nothing moves; the Vouchers window refuses a voucher off the list and a zero line, and nothing moves on a refusal';
+    return;
+  end if;
   insert into therapy_package_rules(name, qualifying_amount, entitlement_kind, voucher_qty, tier_key, applies_to)
     values ('LCQ Ten Vouchers', 994, 'voucher', 10, 'LCQ-TIER', 'customer') returning id into rv;
   insert into therapy_entitlements(entitlement_no, customer_id, store_id, package_name, entitlement_kind,

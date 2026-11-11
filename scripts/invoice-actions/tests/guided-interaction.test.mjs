@@ -697,15 +697,28 @@ check('an approval without a note of the approver\'s own sends none (the request
 stub.requestStatus = null; stub.detail = null; stub.resolveResult = null;
 
 // ---------------------------------------------------------------------
-// 417 (AFTER-M1): a credit package's reward entitlements are shown with the
-// credits, and their overrides take a reason, not an amount.
+// 417 (AFTER-M1): an older Credit Package sale's reward vouchers are shown
+// with the credits, and their overrides take a reason, not an amount. 502 (the
+// user, 10 Nov 2026): the review says it in its own plain words, "Reward
+// vouchers withdrawn (not handed over yet)" and "Reward vouchers kept (some or
+// all already handed over; their history stays)". The overrides' messages
+// below are the server's (invoice_action_plan), which 502 leaves as they are:
+// they say "entitlements" and "claimed". Each override carries its code and
+// its reward numbers (entitlements), as 417 builds them, so the page puts it
+// in the same plain words; without the numbers it shows the server's message.
 // ---------------------------------------------------------------------
 calls.length = 0;
+const SERVER_KEPT = 'Reward entitlements from this credit package were already activated or claimed (LEG-9000003). They stay with the customer and keep their history.';
+const rewardOverrides = action => [
+  { code: 'reward_withdrawal', invoice_item_ids: ['LC'], entitlements: ['LEG-9000001', 'LEG-9000002'],
+    message: `Reward entitlements from this credit package that were not claimed yet (LEG-9000001, LEG-9000002) are withdrawn with this ${action === 'cancel' ? 'cancellation' : 'refund'}.` },
+  { code: 'reward_consumed_kept', entitlements: ['LEG-9000003'], message: SERVER_KEPT }];
+const PLAIN_WITHDRAWN = 'Reward vouchers not handed over yet (LEG-9000001, LEG-9000002) are withdrawn with this refund.';
+const PLAIN_KEPT = 'Reward vouchers already handed over (LEG-9000003) stay with the customer and keep their history.';
+const overridesListed = () => [...(byText('h5', 'Overrides required')?.parentElement?.querySelectorAll('li') ?? [])].map(li => li.textContent);
 planNow = args => basePlan({ action: args.p_action, refund_amount: 4000,
   lines: [{ invoice_item_id: 'LC', name: 'Fixture Package', line_kind: 'credit_package', quantity: 1, selected_quantity: 1, amount: 4000 }],
-  stock: [], overrides_required: [
-    { code: 'reward_withdrawal', message: 'Reward entitlements from this credit package that were not claimed yet (LEG-9000001, LEG-9000002) are withdrawn with this refund.' },
-    { code: 'reward_consumed_kept', message: 'Reward entitlements from this credit package were already activated or claimed (LEG-9000003). They stay with the customer and keep their history.' }],
+  stock: [], overrides_required: rewardOverrides(args.p_action),
   effects: { money_returned: { total: 4000, destinations: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 4000 }] },
              benefits: [], stock_returned: [], overrides: [],
              rewards: { withdrawn: ['LEG-9000001', 'LEG-9000002'], kept: ['LEG-9000003'] } } });
@@ -714,17 +727,61 @@ await render({ canApprove: true });
 await click(byText('button', 'Full refund'));
 await type(document.querySelector('.invoice-guided-why textarea'), 'Package returned');
 await click(byText('button', 'Continue'));
-check('the review names the reward entitlements withdrawn and kept',
-  text().includes('Reward entitlements withdrawn: LEG-9000001, LEG-9000002') && text().includes('LEG-9000003'));
+check('the review names the reward vouchers withdrawn and kept',
+  text().includes('Reward vouchers withdrawn (not handed over yet): LEG-9000001, LEG-9000002')
+  && text().includes('Reward vouchers kept (some or all already handed over; their history stays): LEG-9000003'));
+const cancelledSection = byText('h5', 'Credits and benefits cancelled')?.parentElement;
+check('in plain words: nothing "claimed", "activated" or "entitlement" in the review\'s own list',
+  !!cancelledSection && !/entitlement|claimed|activated/i.test(cancelledSection.textContent), cancelledSection?.textContent);
 check('each takes a reason and no amount',
   !!field('Reason for override: reward_withdrawal') && !!field('Reason for override: reward_consumed_kept')
   && !field('Amount for override: reward_withdrawal'));
+check('the overrides say it in the same plain words, from their codes and reward numbers',
+  JSON.stringify(overridesListed()) === JSON.stringify([PLAIN_WITHDRAWN, PLAIN_KEPT]), overridesListed().join(' | '));
+check('and so do their reason boxes',
+  field('Reason for override: reward_withdrawal')?.closest('label')?.textContent === PLAIN_WITHDRAWN
+  && field('Reason for override: reward_consumed_kept')?.closest('label')?.textContent === PLAIN_KEPT,
+  [field('Reason for override: reward_withdrawal')?.closest('label')?.textContent, field('Reason for override: reward_consumed_kept')?.closest('label')?.textContent].join(' | '));
+check('nothing "entitlement", "claimed" or "activated" anywhere in the review',
+  !/entitlement|claimed|activated/i.test(document.querySelector('.invoice-guided-review')?.textContent ?? 'missing'),
+  document.querySelector('.invoice-guided-review')?.textContent);
 await type(field('Reason for override: reward_withdrawal'), 'Package refunded');
 await type(field('Reason for override: reward_consumed_kept'), 'The used one stays');
 await click(byText('button', 'Confirm S$4000.00 refund'));
 check('both reasons go with the approval',
   JSON.stringify(calls.find(c => c.name === 'resolve_invoice_action_v2')?.args.p_overrides) === JSON.stringify([
     { code: 'reward_withdrawal', reason: 'Package refunded' }, { code: 'reward_consumed_kept', reason: 'The used one stays' }]));
+// On a cancellation, as staff see it before asking: "with this cancellation",
+// the server's own word for the action.
+calls.length = 0;
+await render({ canApprove: false });
+await click(byText('button', 'Cancel invoice'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Package not wanted');
+await click(byText('button', 'Continue'));
+check('on a cancellation, the vouchers not handed over yet are withdrawn "with this cancellation"',
+  JSON.stringify(overridesListed()) === JSON.stringify([
+    'Reward vouchers not handed over yet (LEG-9000001, LEG-9000002) are withdrawn with this cancellation.', PLAIN_KEPT]),
+  overridesListed().join(' | '));
+// Every reward already handed over: the withdrawal names none, and says the
+// rewards are settled. An override without its reward numbers (no server since
+// 417 sends one so) shows the server's message as it is.
+calls.length = 0;
+planNow = args => basePlan({ action: args.p_action, refund_amount: 4000,
+  lines: [{ invoice_item_id: 'LC', name: 'Fixture Package', line_kind: 'credit_package', quantity: 1, selected_quantity: 1, amount: 4000 }],
+  stock: [], overrides_required: [
+    { code: 'reward_withdrawal', invoice_item_ids: ['LC'], entitlements: [],
+      message: 'The reward entitlements from this credit package are settled with this refund.' },
+    { code: 'reward_consumed_kept', message: SERVER_KEPT }],
+  effects: { money_returned: { total: 4000, destinations: [{ payment_id: 'P1', method: 'PayNow', wallet: false, amount: 4000 }] },
+             benefits: [], stock_returned: [], overrides: [], rewards: { withdrawn: [], kept: ['LEG-9000003'] } } });
+await render({ canApprove: false });
+await click(byText('button', 'Full refund'));
+await type(document.querySelector('.invoice-guided-why textarea'), 'Package returned');
+await click(byText('button', 'Continue'));
+check('a withdrawal with no rewards left to withdraw says they are settled; one without its numbers keeps the server\'s words',
+  JSON.stringify(overridesListed()) === JSON.stringify([
+    'The reward vouchers from this Credit Package are settled with this refund.', SERVER_KEPT]),
+  overridesListed().join(' | '));
 
 // ---------------------------------------------------------------------
 // 417 (the Owner's Q2): cancelling a sale the customer already used part of.

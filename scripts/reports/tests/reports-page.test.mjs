@@ -12,6 +12,8 @@
 // invoices, Outstanding = Earned − Paid Out and never negative, what was paid
 // out beyond it a deduction to recover (410), voucher uses read from the sale
 // invoices), and every export carries the headings of the table on screen.
+// Therapy (502, the user, 10 Nov 2026) lists every row report_therapy returns,
+// typed "Purchased" or "Reward vouchers", and never says Legacy.
 //
 // Run: node --test scripts/reports/tests/reports-page.test.mjs
 process.env.TZ = 'America/Los_Angeles'; // west of UTC, where a date-only value parsed as a Date shows a day early
@@ -176,8 +178,12 @@ function makeFixture({ extraCustomers = 0 } = {}) {
     { customer_id: 'c-10', customer_name: 'Customer 00', member_id: null, affiliate_state: 'active', block_reason: null, store_name: 'South Store',
       direct_referrals: 1, downline: 0, earned: 0, paid: 0, reversed: 0, blocked: 0, tier1_earned: 0, tier2_earned: 0 },
   ];
+  // A package bought, and (is_legacy true) free vouchers a customer is still
+  // owed from a Credit Package, as report_therapy returns them since 502.
   const therapy = [{ entitlement_no: 'UTP-T001', customer_name: 'Customer 01', package_name: '3 months - Unlimited', store_name: 'North Store', price_snapshot: 300,
-    price_mode: 'member', purchase_date: '2026-09-01', activation_deadline: '2026-10-01', activation_date: '2026-09-02', expiry_date: '2026-12-02', status: 'active', is_legacy: false }];
+    price_mode: 'member', purchase_date: '2026-09-01', activation_deadline: '2026-10-01', activation_date: '2026-09-02', expiry_date: '2026-12-02', status: 'active', is_legacy: false },
+  { entitlement_no: 'LEG-T009', customer_name: 'Customer 02', package_name: 'Credit package reward — Fixture Package', store_name: 'South Store', price_snapshot: 994,
+    price_mode: null, purchase_date: null, activation_deadline: '2027-09-29', activation_date: null, expiry_date: null, status: 'pending_activation', is_legacy: true }];
   const sources = [
     { source_label: 'Walk in', is_active: true, customers_count: 4, surveys_count: 3 },
     { source_label: 'Facebook', is_active: false, customers_count: 2, surveys_count: 0 },
@@ -719,7 +725,37 @@ test('B7: switching tabs with 13,000 customers keeps working', async () => {
 test('B12: therapy dates are shown as stored, with no shift west of UTC', async () => {
   await mount();
   await selectTab('Therapy');
-  assert.deepEqual(dataRows(0)[0].slice(5, 8), ['01/09/2026', '02/09/2026', '02/12/2026']);
+  // The package bought: rows are listed by number, so the reward vouchers'
+  // LEG-T009 (no dates of its own) comes first.
+  assert.deepEqual(dataRows(0).find(r => r[0] === 'UTP-T001').slice(5, 8), ['01/09/2026', '02/09/2026', '02/12/2026']);
+});
+
+test('Therapy (502): packages bought and reward vouchers both show, each with its Type; the word Legacy never shows; the export is the table', async () => {
+  await mount();
+  await selectTab('Therapy');
+  const shown = tables()[0];
+  assert.deepEqual(shown.headers, ['No.', 'Customer', 'Package', 'Store', 'Price', 'Purchased', 'Activation', 'Expiry', 'Status', 'Type']);
+  const rows = dataRows(0);
+  assert.deepEqual(rows.map(r => [r[0], r.at(-1)]), [['LEG-T009', 'Reward vouchers'], ['UTP-T001', 'Purchased']],
+    'every row the server returns, each with its Type');
+  // A reward row has no price of its own: the server's figure (here 994) is
+  // the sale's, so it is shown as a dash, never as a price that would be
+  // counted again in a total. A package bought keeps its price.
+  assert.deepEqual(rows[0], ['LEG-T009', 'Customer 02', 'Credit package reward — Fixture Package', 'South Store', '—',
+    '—', '—', '—', 'pending activation', 'Reward vouchers']);
+  assert.equal(rows[1][4], 'S$300.00', 'a package bought shows its price');
+  assert.ok(![...shown.headers, ...rows.flat()].some(c => /legacy/i.test(c)), 'no cell says Legacy: ' + JSON.stringify(rows));
+  assert.ok(!text().includes('Legacy'), 'the page says Legacy nowhere');
+  // The export: the same headings, and the same rows in the same order. The
+  // sheet holds numbers and blanks where the screen shows S$ and a dash.
+  const exported = await exportWith(pageExport());
+  assert.deepEqual(exported.sheet.ws.header, shown.headers, 'the export has the table\'s headings');
+  const asShown = v => typeof v === 'number' ? `S$${v.toFixed(2)}` : v === '' ? '—' : String(v);
+  assert.deepEqual(exported.sheet.ws.body.map(o => exported.sheet.ws.header.map(h => asShown(o[h]))), rows, 'the export has the table\'s rows');
+  // The reward row's Price cell is blank in Excel, so a sum of the column
+  // counts only what packages bought cost; the package bought's is a number.
+  assert.deepEqual(exported.sheet.ws.body.map(o => [o['No.'], o.Price]), [['LEG-T009', ''], ['UTP-T001', 300]]);
+  assert.deepEqual(globalThis.__renderErrors, []);
 });
 
 test('B13: stock under a deleted product is not counted', async () => {

@@ -22,6 +22,10 @@
 //    correcting a completed FOC invoice; late fees still never corrected.
 //  - W4-B04-IM-ADD-CUSTOMER: no Add customer button for Inventory Managers,
 //    on the form and on each split-panel row.
+//  - 502 (the user, 10 Nov 2026): the invoice shows no same-day reward (its
+//    box, its working block, its hints and its switched-off print block are
+//    gone, and their server reads with them); what only shares the word
+//    "legacy" stays.
 //
 // Run: node --test scripts/invoices/tests/page-checks-416.test.mjs
 // A device outside Singapore: every day below must still be Singapore's.
@@ -123,7 +127,11 @@ test('CREATE-17, AFTER-16: Singapore days, on a device that is not in Singapore'
     'no date on the invoice follows the device\'s time zone');
   assert.doesNotMatch(page, /new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/, 'no UTC "today"');
   assert.match(page, /rental_start_date: singaporeToday\(\)/, 'a new rental starts today in Singapore');
-  assert.match(page, /calendarDate\(src\.paid_at, 'Asia\/Singapore'\)/, 'the legacy diagnosis asks about the Singapore day');
+  // 502 (the user, 10 Nov 2026): the same-day reward hint, which asked about
+  // the Singapore day the invoice was paid, went with the reward. A payment's
+  // own day, which Correct Invoice fills in and compares, is still Singapore's.
+  assert.match(page, /const sgDateOf = \(p: InvoicePayment\) => calendarDate\(\(p as any\)\.effective_at \|\| p\.created_at, 'Asia\/Singapore'\);/,
+    'a payment\'s day is its Singapore day');
   assert.match(page, /<input type="date" aria-label="Date received" value=\{part\.date\} max=\{singaporeToday\(\)\}/, 'a corrected payment cannot be dated in the future');
 });
 
@@ -240,4 +248,34 @@ test('457: every invoice has its correct path, and none offers a save that alway
   assert.match(page, /const instalmentError = correctingFoc \? null : validateInstalment\(cInstalment\);/);
   // Cancelled and refunded: Owners and Managers, never a late fee (as before).
   assert.match(page, /: detail\.status === 'cancelled' \|\| detail\.status === 'refunded'\n\s*\? <>\{copyButtons\}\{isOwnerOrManager\(profile\?\.role\) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick=\{openEdit\}/);
+});
+
+test('502: the invoice shows no same-day reward; what only shares the word stays', () => {
+  // The user, 10 Nov 2026: Legacy Therapy and its same-day qualification go
+  // from every page, and every record stays in the database. The invoice loses
+  // its "Legacy therapy earned" box, the "Unlimited Therapy" working block with
+  // its two hints, and the print block that was switched off, and no longer
+  // asks the server for any of them.
+  for (const gone of ['invoice_legacy_entitlements', 'legacy_qualification_diagnose', 'invoice_therapy_summary',
+                      'PRINT_THERAPY_BLOCK', 'therapyBlock', 'loadInvoiceLegacy', 'detailTherapy', 'legacyDiag', 'invLegacy',
+                      'Unlimited Therapy', 'same-day']) {
+    assert.ok(!page.includes(gone), `${gone} is still in the page`);
+  }
+  assert.doesNotMatch(page, /Legacy/, 'no "Legacy" on the page (what only shares the word, below, is lower case)');
+  assert.doesNotMatch(page, /[Qq]ualif/, 'nor the same-day qualification');
+  // The open invoice still reads the rest, each into its own name.
+  const reads = [...between('const [items, pays, svc, financial, evt] = await Promise.all([', ']);')
+    .matchAll(/supabase\.(?:from|rpc)\('(\w+)'/g)].map(m => m[1]);
+  assert.deepEqual(reads, ['invoice_items', 'invoice_payments', 'invoice_service_staff', 'invoice_financial_position', 'invoice_event_guests'],
+    'five reads for five names, in the same order');
+  // The printed copy goes from the credit balance to who authorised it, as before.
+  assert.match(page, /\$\{creditBlock\}\n\s*\$\{authorisedBlock\}/);
+  assert.doesNotMatch(readFileSync('src/lib/printDoc.ts', 'utf8'), /\.(ther|entb|bentbl)\b/, 'and the print block\'s styles are gone with it');
+  // What only shares the word stays: the Premium Bundle's free vouchers chosen
+  // at the till, the old FOC + voucher line discount, the wallet's Legacy credit
+  // category and an old invoice's business date.
+  assert.match(page, /rpc\('legacy_reward_voucher_options', \{ p_store_id: activeStore \}\)/, 'the Premium Bundle voucher picker');
+  assert.match(page, /choice === 'legacy'/, 'the old FOC + voucher line discount');
+  assert.match(page, /\['paid','bonus','legacy','promotional','exchange'\]/, 'the wallet\'s credit categories');
+  assert.match(page, /This legacy invoice’s business date is pending review\./, 'an old invoice\'s business date');
 });

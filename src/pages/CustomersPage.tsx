@@ -957,10 +957,21 @@ const CustomersPage: React.FC = () => {
                   </div>)}
                 </section>
               )}
-              {overview.legacy_therapy?.length > 0 && (
-                <section>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Legacy therapy</div>
-                  {overview.legacy_therapy.map((t: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t.no} · {t.package} · {t.status}</div>)}
+              {/* Vouchers this customer is still owed: a Premium Bundle's not chosen at the
+                  till, a therapy package taken as vouchers, an older Credit Package sale's
+                  free vouchers. Handed over on Therapy → Vouchers to hand over. The old
+                  same-day rewards are history (10 Nov 2026, migration 502) and are not
+                  listed; without this list (a server before 502) the section is not shown. */}
+              {overview.vouchers_to_hand_over?.length > 0 && (
+                <section data-vouchers-to-hand-over="">
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Vouchers to hand over</div>
+                  {overview.vouchers_to_hand_over.map((t: any, i: number) => <div key={i} style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                    {t.no} · {t.package} · {t.left} of {t.entitled} left · {t.blocked_reason
+                      ? t.blocked_reason
+                      : t.deadline_passed ? `the collect-by date, ${showDate(t.deadline)}, has passed`
+                      : t.deadline ? `collect by ${showDate(t.deadline)}` : 'no collect-by date'}
+                  </div>)}
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11.5, marginTop: 2 }}>Hand them over on Therapy → Vouchers to hand over.</div>
                 </section>
               )}
               {overview.deleted_invoices?.length > 0 && (

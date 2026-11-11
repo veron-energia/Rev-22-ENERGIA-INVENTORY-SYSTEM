@@ -36,7 +36,7 @@ const readable = (iso?: string | null) => {
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * Claiming a purchased package, the way a Legacy entitlement is claimed.
+ * Claiming a purchased package.
  *
  * One window: take unlimited therapy with a start date, or take vouchers. The
  * database chooses and starts (or chooses and hands over) in one transaction,
@@ -44,8 +44,8 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * first and records nothing until it is confirmed.
  *
  * Vouchers can be collected a few at a time up to the number. Anyone at the
- * counter can record the choice, start therapy and hand vouchers over, as
- * anyone can when claiming a Legacy entitlement as vouchers; the page still
+ * counter can record the choice, start therapy and hand vouchers over (the
+ * Owner, 25 Sep 2026), as on Therapy → Vouchers to hand over; the page still
  * passes canCollectVouchers so a narrower rule can be put back in one place.
  */
 export const PurchasedClaimPanel: React.FC<{

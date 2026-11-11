@@ -22,6 +22,19 @@ const cents = (n: number) => Math.round(Number(n ?? 0) * 100) / 100;
 // Parsed as a Date it becomes UTC midnight, a day early west of UTC.
 const dateOnly = (d: string | null | undefined) => d ? String(d).slice(0, 10).split('-').reverse().join('/') : '—';
 const time = (v: string | null | undefined) => v ? new Date(v).getTime() : 0;
+// The Therapy report's Type, on screen and in the Excel export alike: a
+// therapy package bought on an invoice, or free vouchers a customer is owed
+// (from a Credit Package, a Premium Bundle, or a therapy package taken as
+// vouchers). report_therapy marks the second kind with is_legacy, a column
+// name the server keeps so the function keeps its shape; since 502 (10 Nov
+// 2026) it no longer returns the old same-day rewards at all.
+const therapyType = (r: { is_legacy?: boolean | null }) => (r.is_legacy ? 'Reward vouchers' : 'Purchased');
+// Its Price: what a package bought cost. A reward row has no price of its own:
+// the server sends the sale's figure (the bundle's payment, the package's
+// price, or 994), and the same sale may be listed already as Purchased, so
+// a sum of the column would count it twice. A dash on screen, a blank in Excel.
+const therapyPrice = (r: { is_legacy?: boolean | null; price_snapshot?: number | null }) =>
+  (r.is_legacy ? null : cents(r.price_snapshot as number));
 
 // Each invoice's line discounts by type (owner, 3 Oct 2026), as
 // report_discounts returns them since 384: Vouchers, Birthday, Staff,
@@ -271,6 +284,9 @@ const ReportsPage: React.FC = () => {
     // Paged by id, then by name as report_affiliates orders them.
     (await fetchReportRows(() => supabase.rpc('report_affiliates'), ['customer_id']))
       .sort((a, b) => String(a.customer_name ?? '').localeCompare(String(b.customer_name ?? ''))), NO_ROWS);
+  // Every row report_therapy returns is listed: the packages bought, and the
+  // free vouchers still recorded against customers (the user, 10 Nov 2026).
+  // The server itself leaves out the old same-day rewards since 502.
   const therapyLoad = useReportLoad(true, String(refreshKey), () =>
     fetchReportRows(() => supabase.rpc('report_therapy'), ['entitlement_no', 'customer_name']), NO_ROWS);
   // A handful of rows, fetched without a paging key so the owner's configured
@@ -744,9 +760,9 @@ const ReportsPage: React.FC = () => {
         col('Earned', r => cents(r.earned)), col('Paid', r => cents(r.paid)), col('Reversed', r => cents(r.reversed)), col('Blocked', r => cents(r.blocked))] };
       case 'r_therapy': return { rows: repTherapy, sheet: 'Therapy', columns: [
         col('No.', r => r.entitlement_no), col('Customer', r => r.customer_name), col('Package', r => r.package_name), col('Store', r => r.store_name ?? null),
-        col('Price', r => cents(r.price_snapshot)), col('Purchased', r => r.purchase_date ? dateOnly(r.purchase_date) : null),
+        col('Price', therapyPrice), col('Purchased', r => r.purchase_date ? dateOnly(r.purchase_date) : null),
         col('Activation', r => r.activation_date ? dateOnly(r.activation_date) : null), col('Expiry', r => r.expiry_date ? dateOnly(r.expiry_date) : null),
-        col('Status', r => String(r.status).replace('_', ' ')), col('Type', r => r.is_legacy ? 'Legacy' : 'Purchased')] };
+        col('Status', r => String(r.status).replace('_', ' ')), col('Type', therapyType)] };
       case 'r_discounts': return { rows: repDiscounts, sheet: 'Discounts', columns: [
         col('Invoice', r => r.invoice_no), col('Business date', pricingDate), col('Store', r => r.store_name), col('Staff', r => r.staff_names ?? null),
         col('Customer', r => r.customer_name), ...DISCOUNT_COLUMNS.map(c => col(c.header, r => cents(c.value(r)))),
@@ -1108,7 +1124,7 @@ const ReportsPage: React.FC = () => {
                 <table>
                   <thead><tr><th>No.</th><th>Customer</th><th>Package</th><th>Store</th><th style={{ textAlign: 'right' }}>Price</th><th>Purchased</th><th>Activation</th><th>Expiry</th><th>Status</th><th>Type</th></tr></thead>
                   <tbody>{repTherapy.length === 0 ? <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 30 }}>No therapy</td></tr>
-                    : repTherapy.map((r, i) => <tr key={i}><td>{r.entitlement_no}</td><td><strong>{r.customer_name}</strong></td><td>{r.package_name}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{money(Number(r.price_snapshot))}</td><td style={{ fontSize: 12 }}>{dateOnly(r.purchase_date)}</td><td style={{ fontSize: 12 }}>{dateOnly(r.activation_date)}</td><td style={{ fontSize: 12 }}>{dateOnly(r.expiry_date)}</td><td style={{ textTransform: 'capitalize' }}>{String(r.status).replace('_', ' ')}</td><td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{r.is_legacy ? 'Legacy' : 'Purchased'}</td></tr>)}</tbody>
+                    : repTherapy.map((r, i) => <tr key={i}><td>{r.entitlement_no}</td><td><strong>{r.customer_name}</strong></td><td>{r.package_name}</td><td style={{ fontSize: 12 }}>{r.store_name ?? '—'}</td><td style={{ textAlign: 'right' }}>{r.is_legacy ? '—' : money(Number(r.price_snapshot))}</td><td style={{ fontSize: 12 }}>{dateOnly(r.purchase_date)}</td><td style={{ fontSize: 12 }}>{dateOnly(r.activation_date)}</td><td style={{ fontSize: 12 }}>{dateOnly(r.expiry_date)}</td><td style={{ textTransform: 'capitalize' }}>{String(r.status).replace('_', ' ')}</td><td style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{therapyType(r)}</td></tr>)}</tbody>
                 </table>
               )}
               {tab === 'r_sources' && (

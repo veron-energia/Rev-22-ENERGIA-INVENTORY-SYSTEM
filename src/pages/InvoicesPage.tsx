@@ -418,7 +418,6 @@ const InvoicesPage: React.FC = () => {
   // AFTER-6: rows whose payment methods could not be read, so the list says
   // so instead of showing them as having no payment.
   const [payMethodsUnread, setPayMethodsUnread] = useState<Set<string>>(() => new Set());
-  const [detailTherapy, setDetailTherapy] = useState<any>(null);
   const [detailServiceStaff, setDetailServiceStaff] = useState<string[]>([]);
   // Every name on the open invoice, resolved by invoice_display_names():
   // unaffected by RLS on deleted records or by the page's active-only lists.
@@ -544,7 +543,6 @@ const InvoicesPage: React.FC = () => {
   const [affiliateBusy, setAffiliateBusy] = useState(false);
   const [affiliateErr, setAffiliateErr] = useState<string | null>(null);
   const [effAffiliate, setEffAffiliate] = useState<any>(null);
-  const [invLegacy, setInvLegacy] = useState<any[]>([]);
   // Credit Packages and Premium Bundles are now bought inside New Invoice as
   // ordinary line kinds (Phase 31). These hold what is available at the chosen
   // New Invoice store; the reward-voucher options for a selected bundle are
@@ -557,7 +555,6 @@ const InvoicesPage: React.FC = () => {
   const [keptTicketOptions, setKeptTicketOptions] = useState<TicketOption[]>([]);
   const [creditBundles, setCreditBundles] = useState<any[]>([]);
   const [bundleVoucherOpts, setBundleVoucherOpts] = useState<Record<string, any[]>>({});
-  const [legacyDiag, setLegacyDiag] = useState<any>(null);
   const [payWallet, setPayWallet] = useState<any>(null);
   // 443 (the Owner, 21 Oct 2026): what each wallet method can pay of the open
   // invoice (invoice_wallet_availability; null until read, or before 443),
@@ -1656,24 +1653,6 @@ const InvoicesPage: React.FC = () => {
     setEffAffiliate(data ?? null);
   };
 
-  // Legacy therapy this invoice's same-day qualification earned the customer.
-  const loadInvoiceLegacy = async (invoiceId: string, inv?: Invoice) => {
-    const { data } = await supabase.rpc('invoice_legacy_entitlements', { p_invoice_id: invoiceId });
-    setInvLegacy((data as any[]) ?? []);
-    // If nothing was earned, find out why so staff aren't left guessing.
-    const src = inv ?? detail;
-    if ((!data || (data as any[]).length === 0) && src?.customer_id && src?.store_id) {
-      // The Singapore day it was paid, as the server reads it (CREATE-17); not the UTC day.
-      const day = src.paid_at ? (calendarDate(src.paid_at, 'Asia/Singapore') || null) : null;
-      const { data: dg } = await supabase.rpc('legacy_qualification_diagnose', {
-        p_customer_id: src.customer_id, p_store_id: src.store_id, p_day: day,
-      });
-      setLegacyDiag(dg ?? null);
-    } else {
-      setLegacyDiag(null);
-    }
-  };
-
   const changeInvoiceAffiliate = async (affiliateId: string | null) => {
     if (!detail) return;
     setAffiliateBusy(true); setAffiliateErr(null);
@@ -1755,7 +1734,6 @@ const InvoicesPage: React.FC = () => {
       setDetailServiceStaff([]); setDetailExchange(null); setDetailRevisions([]);
     }
     setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
-    setDetailTherapy(null);
     setDetailNames(null);
     const namesLoaded = supabase.rpc('invoice_display_names', { p_invoice_id: inv.id })
       .then(({ data }) => { if (!superseded()) setDetailNames(data ?? null); });
@@ -1782,7 +1760,6 @@ const InvoicesPage: React.FC = () => {
     // Printed in Bill To, so a slow answer for the invoice before is ignored.
     const billToLoaded = supabase.rpc('invoice_bill_to_source', { p_invoice_id: inv.id })
       .then(({ data }) => { if (!superseded()) setBillToSource((data as string) || '-'); });
-    void loadInvoiceLegacy(inv.id, inv);
     // 417 (AFTER-14): the invoice's refund or cancellation request, waiting or
     // last. Without 417 in the database there is nothing to read, and the
     // invoice shows no banner, as before.
@@ -1832,18 +1809,16 @@ const InvoicesPage: React.FC = () => {
       .then(({ data, error }) => { if (!superseded()) setPaySources(error ? {} : ((data as Record<string, string[]>) ?? {})); },
         () => { if (!superseded()) setPaySources({}); });
     setDetailEvent(null); setEventTagErr(null);
-    const [items, pays, svc, ther, financial, evt] = await Promise.all([
+    const [items, pays, svc, financial, evt] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
-      supabase.rpc('invoice_therapy_summary', { p_invoice_id: inv.id }),
       supabase.rpc('invoice_financial_position', { p_invoice_id: inv.id }),
       // Which event this is a sale of, and the people on its tickets (370).
       supabase.rpc('invoice_event_guests', { p_invoice_id: inv.id }),
     ]);
     if (superseded()) return;
     setDetailEvent(evt.error ? null : (evt.data ?? null));
-    setDetailTherapy(ther.data ?? null);
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
     setDetailPayments((pays.data as InvoicePayment[]) ?? []);
@@ -3080,47 +3055,6 @@ const InvoicesPage: React.FC = () => {
       st.co_reg_no ? `Co. Reg No.: ${esc(st.co_reg_no)}` : '',
     ].filter(Boolean).join(' &nbsp;|&nbsp; ');
 
-    // Therapy block for print (spec 4.12) — only when this invoice qualified one.
-    //
-    // TURNED OFF. The Unlimited Therapy qualification block is internal working:
-    // eligible totals, qualification top-up, forfeited amounts, entitlement
-    // numbers and beneficiary rows. It sits AFTER the totals and payment
-    // methods, so hiding it changes no figure on the invoice — the customer's
-    // copy still reconciles exactly as before.
-    //
-    // The markup is kept rather than deleted so it can be brought back by
-    // setting this to true. The same block still shows on screen, so staff can
-    // see the qualification without it going out to the customer.
-    const PRINT_THERAPY_BLOCK = false;
-
-    const th = detailTherapy;
-    const therapyBlock = (PRINT_THERAPY_BLOCK && th && th.used) ? `
-      <h2>Unlimited Therapy</h2>
-      <div class="ther">
-        <div class="mut">
-          Eligible: S$${Number(th.eligible_total).toFixed(2)}${Number(th.topup_amount) > 0 ? ` &nbsp;|&nbsp; Qualification top-up: S$${Number(th.topup_amount).toFixed(2)}` : ''} &nbsp;|&nbsp; Applied: S$${Number(th.qualified_total).toFixed(2)}${Number(th.forfeited_total) > 0 ? ` &nbsp;|&nbsp; Forfeited: S$${Number(th.forfeited_total).toFixed(2)}` : ''}
-        </div>
-        ${(th.linked_invoices ?? []).length > 1
-          ? `<div class="mut">Combined invoices: ${(th.linked_invoices ?? []).map((li: any) => `${esc(li.invoice_no)} (S$${Number(li.contributed_amount).toFixed(2)})`).join(', ')}</div>`
-          : ''}
-        ${(th.entitlements ?? []).map((en: any) => `
-          <div class="entb">
-            <div><strong>${esc(en.package_name)}</strong> — ${en.entitlement_kind === 'unlimited' ? `${en.duration_months} month(s) unlimited` : `${en.voucher_qty} voucher(s)`}</div>
-            <div class="mut">${esc(en.entitlement_no)} &nbsp;|&nbsp; Created: ${displayDay(en.created_at)} &nbsp;|&nbsp; Activate by: ${displayDay(en.activation_deadline)} &nbsp;|&nbsp; Status: ${esc(String(en.status).replace(/_/g, ' '))}</div>
-            ${(en.beneficiaries ?? []).length
-              ? `<table class="bentbl"><thead><tr><th>Beneficiary</th><th>Portion</th><th>Activated</th><th>Ends</th><th>Status</th></tr></thead><tbody>
-                  ${(en.beneficiaries ?? []).map((b: any) => `<tr>
-                    <td>${esc(b.name)}</td>
-                    <td>${b.portion_months ? `${b.portion_months} mo` : `${b.portion_vouchers} vouchers`}</td>
-                    <td>${b.activation_date ? displayDay(b.activation_date) : '—'}</td>
-                    <td>${b.ending_date ? displayDay(b.ending_date) : (b.portion_vouchers ? 'No expiry' : '—')}</td>
-                    <td>${esc(String(b.status).replace(/_/g, ' '))}</td>
-                  </tr>`).join('')}
-                </tbody></table>`
-              : `<div class="mut">No beneficiary assigned yet.</div>`}
-          </div>`).join('')}
-      </div>` : '';
-
     // One invoice copy — rendered twice (customer + store) on a single A4 page.
     // Item 5 (the Owner, 22 Oct 2026): its head (.p-head) and its tail
     // (.p-tail) are wrapped, drawing no box of their own, so a copy longer
@@ -3161,7 +3095,6 @@ const InvoicesPage: React.FC = () => {
         </table>
         ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}${moneyRowsHtml}</tbody></table>` : ''}
         ${creditBlock}
-        ${therapyBlock}
         ${authorisedBlock}
         ${collectionBlock}
         ${noteBlock}
@@ -4965,27 +4898,6 @@ const InvoicesPage: React.FC = () => {
               </div>
             )}
 
-            {invLegacy.length > 0 && (
-              <div style={{ border: '1px solid var(--success)', background: 'var(--success-light)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
-                  Legacy therapy earned {invLegacy.length > 1 ? `(${invLegacy.length})` : ''}
-                </div>
-                {invLegacy.map(e => (
-                  <div key={e.id} style={{ fontSize: 12, marginBottom: 3 }}>
-                    <strong>{e.entitlement_no}</strong> · {e.package_name}
-                    {e.entitlement_kind === 'voucher' ? ` · ${e.voucher_qty ?? 0} voucher(s)` : e.duration_months ? ` · ${e.duration_months} months` : ''}
-                    {' · '}
-                    {e.status === 'pending_activation'
-                      ? <span>unclaimed — claim by {e.activation_deadline ? displayDay(e.activation_deadline) : '—'} under Therapy → Legacy Therapy</span>
-                      : <span>{String(e.status).replace('_', ' ')}{e.expiry_date ? ` until ${displayDay(e.expiry_date)}` : ''}</span>}
-                  </div>
-                ))}
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  Earned from this customer's same-day paid total at this store.
-                </div>
-              </div>
-            )}
-
             {detailRevisions.length > 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                 <b>Edit history:</b> {detailRevisions.map(r =>
@@ -5144,108 +5056,6 @@ const InvoicesPage: React.FC = () => {
                 <p style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>
                   Correcting a payment records a reversal and a replacement. The original receipt stays in this history.
                 </p>
-              </div>
-            )}
-
-            {/* Therapy (spec 4.12) */}
-            {detailTherapy?.used && (
-              <div>
-                <label>Unlimited Therapy</label>
-                <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 12, marginTop: 4 }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', fontSize: 12.5, marginBottom: 8 }}>
-                    <span>Eligible amount: <strong>{money(detailTherapy.eligible_total)}</strong></span>
-                    {Number(detailTherapy.topup_amount) > 0 && <span>Qualification top-up: <strong>{money(detailTherapy.topup_amount)}</strong></span>}
-                    <span>Applied to packages: <strong>{money(detailTherapy.qualified_total)}</strong></span>
-                    {/* DERIVED, not taken from the RPC.
-                        forfeited_total is a SUM of a per-entitlement column,
-                        but forfeiture belongs to the qualification as a whole —
-                        so a group of 8 entitlements reported 8 x S$742 =
-                        S$5,936 against an eligible total of S$7,094, which is
-                        more than was ever eligible. Eligible less applied is the
-                        definition and cannot be multiplied by a row count. */}
-                    {(() => {
-                      const derived = Math.max(
-                        Math.round((Number(detailTherapy.eligible_total ?? 0)
-                          - Number(detailTherapy.qualified_total ?? 0)) * 100) / 100, 0);
-                      if (derived <= 0) return null;
-                      return (
-                        <span style={{ color: 'var(--danger)' }}>
-                          Forfeited balance: <strong>{money(derived)}</strong>
-                        </span>
-                      );
-                    })()}
-                  </div>
-
-                  {(detailTherapy.linked_invoices ?? []).length > 1 && (
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                      Combined invoices: {(detailTherapy.linked_invoices ?? []).map((li: any, i: number) => (
-                        <span key={i}>{i > 0 && ', '}
-                          <strong style={{ color: li.is_this_invoice ? 'var(--primary)' : undefined }}>{li.invoice_no}</strong> ({money(li.contributed_amount)})
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {(detailTherapy.entitlements ?? []).map((en: any, i: number) => (
-                    <div key={i} style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 10, marginBottom: 6 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
-                        <div style={{ fontSize: 13 }}>
-                          <strong>{en.package_name}</strong>
-                          <span style={{ color: 'var(--text-muted)' }}> · {en.entitlement_kind === 'unlimited' ? `${en.duration_months} month(s) unlimited` : `${en.voucher_qty} voucher(s)`}</span>
-                          <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
-                            {en.entitlement_no} · created {displayDay(en.created_at)} · activate by {displayDay(en.activation_deadline)}
-                          </div>
-                        </div>
-                        <span className={`badge ${en.status === 'expired_before_activation' || en.status === 'cancelled' ? 'badge-danger' : en.status === 'activated' ? 'badge-success' : 'badge-muted'}`}>
-                          {String(en.status).replace(/_/g, ' ')}
-                        </span>
-                      </div>
-                      {(en.beneficiaries ?? []).length > 0 && (
-                        <div style={{ marginTop: 6, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
-                          {(en.beneficiaries ?? []).map((b: any, j: number) => (
-                            <div key={j} style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, fontSize: 12, marginBottom: 2 }}>
-                              <span>
-                                <strong>{b.name}</strong>
-                                <span style={{ color: 'var(--text-muted)' }}> · {b.portion_months ? `${b.portion_months} mo` : `${b.portion_vouchers} vouchers`}</span>
-                                {b.transferred_from && <span style={{ color: 'var(--text-muted)' }}> · transferred from {b.transferred_from}</span>}
-                              </span>
-                              <span style={{ color: 'var(--text-secondary)' }}>
-                                {b.activation_date
-                                  ? <>{displayDay(b.activation_date)}{b.ending_date ? ` → ${displayDay(b.ending_date)}` : ' · no expiry'}</>
-                                  : 'not activated'}
-                                {' '}<span className={`badge ${b.status === 'active' ? 'badge-success' : b.status === 'scheduled' ? 'badge-primary' : b.status === 'cancelled' || b.status === 'expired_before_activation' ? 'badge-danger' : 'badge-muted'}`} style={{ fontSize: 10 }}>{String(b.status).replace(/_/g, ' ')}</span>
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {(en.beneficiaries ?? []).length === 0 && (
-                        <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--text-muted)' }}>No beneficiary assigned yet.</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {detailTherapy && !detailTherapy.used && detailTherapy.eligible && legacyDiag && (
-              <div className={`alert ${legacyDiag.qualifies ? 'alert-info' : 'alert-warning'}`} style={{ marginBottom: 0 }}>
-                <span>💡</span>
-                <div>
-                  <div>No Legacy therapy from this invoice yet. {legacyDiag.reason}</div>
-                  {legacyDiag.day_charged != null && (
-                    <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 3 }}>
-                      Same-day paid total at this store: {money(Number(legacyDiag.day_charged))}
-                      {legacyDiag.best_tier_amount ? ` · qualifying tier ${money(Number(legacyDiag.best_tier_amount))}` : ''}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            {detailTherapy && !detailTherapy.used && detailTherapy.eligible && !legacyDiag && (
-              <div className="alert alert-info" style={{ marginBottom: 0 }}>
-                <span>💡</span>
-                <div>This invoice hasn't been used for therapy qualification yet.</div>
               </div>
             )}
 

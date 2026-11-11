@@ -1,5 +1,7 @@
 # Therapy packages cover therapy services, and Purchased is claimed like Legacy
 
+> Since 502 (10 Nov 2026) the Legacy tab is Vouchers to hand over and Legacy claims are gone; "like Legacy" below describes the page before then.
+
 Status on 25 Sep 2026: migration 359 is **applied to production**. After applying, all 11 functions it creates or changes matched the tested local version exactly. The frontend goes live when it is pushed.
 
 ## What you decided

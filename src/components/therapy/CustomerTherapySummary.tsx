@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { ExpiryExplanation, CoverageNotice } from './ExpiryExplanation';
 import { CoverageLine } from './coverage';
+import { useSingaporeToday } from '../../lib/useSingaporeToday';
 import './therapy.css';
 
 /**
@@ -36,6 +37,14 @@ const fmt = (d: string | null | undefined) =>
   !d ? '—' : new Date(`${d}T12:00:00Z`).toLocaleDateString('en-GB',
     { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
 
+// The vouchers of the old same-day spending reward stay with their customers
+// as ordinary vouchers (10 Nov 2026). Where the server still names their source
+// by the reward's old name it is shown as "Earlier reward", and the reward's
+// unlimited months (kind 'legacy': the only unlimited periods kept in
+// therapy_entitlements) are not listed.
+const OLD_REWARD_SOURCES = ['Legacy qualification reward', 'Legacy qualification'];
+const sourceLabel = (s?: string | null) => (s && OLD_REWARD_SOURCES.includes(s) ? 'Earlier reward' : (s ?? ''));
+
 const UnlimitedStatus: React.FC<{ r: SummaryRow }> = ({ r }) => {
   if (r.unlimited_active > 0) {
     return (
@@ -59,6 +68,9 @@ const UnlimitedStatus: React.FC<{ r: SummaryRow }> = ({ r }) => {
 };
 
 const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
+  // Vouchers still owed past their collect-by date are marked, as on
+  // Vouchers to hand over (the server does not leave them out of this list).
+  const today = useSingaporeToday();
   const [data, setData] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -90,6 +102,16 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
 
   const usable = (data.vouchers ?? []).filter((v: any) => v.remaining > 0 && !v.expired);
   const notUsable = (data.vouchers ?? []).filter((v: any) => v.remaining === 0 || v.expired);
+  const unlimited = (data.unlimited ?? []).filter((u: any) => u.kind !== 'legacy');
+  // What is waiting, in two lists, each in the words of the tab where staff act
+  // on it: vouchers still owed (a Premium Bundle's, an older Credit Package
+  // sale's, or a therapy package taken as vouchers) are handed over on
+  // Vouchers to hand over, by their collect-by date; a therapy package not
+  // claimed yet is claimed on Purchased, by its claim-by date. The server's
+  // kind words ('voucher', 'unlimited') are not shown.
+  const pending: any[] = data.pending ?? [];
+  const owedVouchers = pending.filter(p => p.reward_kind === 'voucher');
+  const notClaimed = pending.filter(p => p.reward_kind !== 'voucher');
 
   return (
     <div className="therapy-detail therapy-scope">
@@ -100,7 +122,7 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
           {usable.map((v: any, i: number) => (
             <div className="therapy-kv" key={`${v.voucher_id}-${v.source_ref ?? i}`}>
               <span className="k">
-                {v.name} <span className="therapy-chip therapy-chip-source">{v.source}</span>
+                {v.name} <span className="therapy-chip therapy-chip-source">{sourceLabel(v.source)}</span>
               </span>
               <span className="v">
                 {v.remaining} {v.unit === 'session' ? 'session' : 'money'}
@@ -115,7 +137,7 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
           {notUsable.length === 0 && <p className="therapy-remaining-hint">Nothing.</p>}
           {notUsable.map((v: any, i: number) => (
             <div className="therapy-kv" key={`${v.voucher_id}-x-${v.source_ref ?? i}`}>
-              <span className="k">{v.name} <span className="therapy-chip therapy-chip-source">{v.source}</span></span>
+              <span className="k">{v.name} <span className="therapy-chip therapy-chip-source">{sourceLabel(v.source)}</span></span>
               <span className="v therapy-remaining-hint">
                 {v.redeemed > 0 && <>{v.redeemed} used </>}
                 {v.revoked > 0 && <>{v.revoked} revoked </>}
@@ -127,13 +149,13 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
       </div>
 
       <h4 style={{ fontSize: 12.5, margin: '14px 0 6px' }}>Unlimited therapy</h4>
-      {(data.unlimited ?? []).length === 0 && <p className="therapy-remaining-hint">None.</p>}
-      {(data.unlimited ?? []).map((u: any) => (
+      {unlimited.length === 0 && <p className="therapy-remaining-hint">None.</p>}
+      {unlimited.map((u: any) => (
         <div key={u.id} style={{ padding: '8px 0', borderTop: '1px solid var(--border)' }}>
           <div className="therapy-card-head">
             <div>
               <strong style={{ fontSize: 13 }}>{u.package_name}</strong>{' '}
-              <span className="therapy-chip">{u.source}</span>{' '}
+              <span className="therapy-chip">{sourceLabel(u.source)}</span>{' '}
               <span className="therapy-chip">{u.status}</span>
             </div>
             <span className="therapy-remaining-hint">{u.entitlement_no}</span>
@@ -163,18 +185,31 @@ const Detail: React.FC<{ customerId: string }> = ({ customerId }) => {
         </div>
       ))}
 
-      {(data.pending ?? []).length > 0 && (
-        <>
+      {owedVouchers.length > 0 && (
+        <section data-vouchers-to-hand-over="">
+          <h4 style={{ fontSize: 12.5, margin: '14px 0 6px' }}>Vouchers still to hand over</h4>
+          {owedVouchers.map((p: any, i: number) => (
+            <div className="therapy-kv" key={`${p.entitlement_no ?? ''}-${i}`}>
+              <span className="k">{p.entitlement_no}</span>
+              <span className="v therapy-remaining-hint">collect by {fmt(p.deadline)}
+                {p.deadline && today && String(p.deadline) < today && <span style={{ color: 'var(--danger)' }}> · passed</span>}</span>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {notClaimed.length > 0 && (
+        <section data-not-claimed="">
           <h4 style={{ fontSize: 12.5, margin: '14px 0 6px' }}>Unclaimed — not yet usable</h4>
-          {data.pending.map((p: any, i: number) => (
-            <div className="therapy-kv" key={i}>
+          {notClaimed.map((p: any, i: number) => (
+            <div className="therapy-kv" key={`${p.entitlement_no ?? ''}-${i}`}>
               <span className="k">{p.entitlement_no} · {p.reward_kind === 'choice'
                 ? `unlimited ${p.months ?? ''} mo or ${p.voucher_qty ?? ''} vouchers — not chosen yet`
-                : p.reward_kind}</span>
+                : `unlimited therapy${p.months ? `, ${p.months} mo` : ''}`}</span>
               <span className="v therapy-remaining-hint">claim by {fmt(p.deadline)}</span>
             </div>
           ))}
-        </>
+        </section>
       )}
 
       {(data.redemptions ?? []).length > 0 && (

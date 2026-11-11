@@ -92,8 +92,8 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   const [transferBenefit, setTransferBenefit] = useState('');
   const [transferCustomer, setTransferCustomer] = useState('');
   const [transferStore, setTransferStore] = useState('');
-  // Set when a refund or cancellation is refused because the package's
-  // qualification rewards are still outstanding. The review answers it.
+  // Set when a refund or cancellation is refused because an older Credit
+  // Package sale still has reward vouchers to settle. The review answers it.
   const [rewardReview, setRewardReview] = useState(false);
   // 409: "Record refund paid" was refused because the money must go back
   // through the purchase's benefits; the line-by-line form is offered.
@@ -260,8 +260,11 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
     } catch (e: any) {
       const message = e.message || 'The request could not be completed. Your entered details have been kept.';
       setError(message);
-      // This refusal has a way forward; offer it instead of a dead end.
-      if (/qualification reward entitlements/i.test(message)) setRewardReview(true);
+      // This refusal has a way forward; offer it instead of a dead end. An older
+      // Credit Package sale's reward vouchers are still outstanding: the review
+      // settles them. The server's old and new wording both open it (502 changed
+      // the words; scripts/invoices/tests/reward-review-opens-502.test.mjs).
+      if (/qualification reward entitlements|reward vouchers that are still outstanding/i.test(message)) setRewardReview(true);
       // Issued credit or sold vouchers go back through the purchase's own
       // benefits, line by line (the server refuses the single line for them).
       if (mode === 'refund_due' && /original unused purchased benefits/i.test(message)) setDueByLine(true);
@@ -285,7 +288,7 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
       onCancel={() => setRewardReview(false)}
       onResolved={() => {
         setRewardReview(false);
-        setError('The reward entitlements are recorded. Confirm again to complete the refund or cancellation.');
+        setError('The decision on the reward vouchers is recorded. Now try again.');
       }} />}
     {options?.review_notes?.map(note => <p role="status" key={note}>{note}</p>)}
     {f && <p>Net payments held: <strong>{money(f.net_received)}</strong> · Outstanding: <strong>{money(f.outstanding)}</strong> · Refund due: <strong>{money(f.refund_due)}</strong> · Refunded: {money(f.refunded)}</p>}

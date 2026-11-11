@@ -28,6 +28,15 @@
 -- login 407 does not count as staff is refused first, with 42501, by the five
 -- purchased-package functions 422 gives 406's check.
 --
+-- 502 (the user, 10 Nov 2026) retired Legacy Therapy and Qualification, and
+-- this file passes with or without it. With 502 in, 422 is not applied again
+-- (502 changed therapy_list_page, so 422's guard refuses a re-run); the Legacy
+-- claim (claim_legacy_therapy), which signed-in logins can no longer call, is
+-- checked only without 502; and the second list (p_tab 'legacy', now also
+-- 'vouchers': Vouchers to hand over) shows a sale's reward but no reward earned
+-- by a customer's or an affiliate's paid day, so each list check expects its
+-- world's answer.
+--
 -- Disposable local database only; everything is rolled back. The migration
 -- is applied inside this transaction, so run the file on its own:
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/therapy/tests/claims-and-legacy-rewards.sql
@@ -74,11 +83,21 @@ create function pg_temp.as_server() returns void language sql as $$
   select set_config('request.jwt.claims', '', true), set_config('request.jwt.claim.sub', '', true)
 $$;
 create function pg_temp.t(n int default 0) returns date language sql as $$ select public.sg_today() + n $$;
+-- Whether 502 is in: it drops the refund guard (the trigger legacy_refund_guard
+-- on invoices), and its UNDO puts it back.
+create function pg_temp.has_502() returns boolean language sql stable as $$
+  select not exists (select 1 from pg_trigger where tgrelid = 'public.invoices'::regclass
+                      and tgname = 'legacy_refund_guard' and not tgisinternal)
+$$;
 create function pg_temp.sel(voucher text, qty jsonb) returns jsonb language sql as
 $$ select jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.fx(voucher), 'quantity', qty)) $$;
 create function pg_temp.issued(ent text) returns int language sql as
 $$ select coalesce(sum(quantity), 0)::int from public.customer_reward_vouchers where entitlement_id = pg_temp.fx(ent) $$;
--- A Legacy entitlement.
+-- A Legacy entitlement. With 502 in, one that names a Credit Package or
+-- Premium Bundle sale (src) is that sale's reward, with the earner kind the
+-- server writes for it (issue_credit_package, sell_premium_bundle), because
+-- 502's list reads it; without 502 every row is 'customer', the column's
+-- default, as before.
 create function pg_temp.legacy(no text, kind text, qty int, st text, store text default 'store_a',
                                cust text default 'buyer', src text default null, src_inv text default null,
                                act date default null, exp date default null, tier text default null,
@@ -88,10 +107,12 @@ declare v uuid;
 begin
   insert into public.therapy_entitlements(entitlement_no, customer_id, store_id, package_name, entitlement_kind,
       duration_months, voucher_qty, qualifying_amount, qualified_value, activation_deadline, status,
-      activation_date, expiry_date, claim_source_type, claim_source_invoice_id, reward_tier_key, eligible_voucher_ids)
+      activation_date, expiry_date, claim_source_type, claim_source_invoice_id, reward_tier_key, eligible_voucher_ids,
+      earner_kind)
     values ('T422-' || no, pg_temp.fx(cust), pg_temp.fx(store), 'T422 ' || no, kind,
             1, qty, 994, 994, pg_temp.t(60), st,
-            act, exp, src, pg_temp.fx(src_inv), tier, eligible)
+            act, exp, src, pg_temp.fx(src_inv), tier, eligible,
+            case when pg_temp.has_502() and src in ('credit_package', 'premium_bundle') then src else 'customer' end)
     returning id into v;
   insert into fx values (no, v);
   return v;
@@ -338,23 +359,43 @@ end $$;
 rollback to savepoint before422;
 
 -- ===== The migration, twice =====
+-- Not once 502 is in: 502 changed therapy_list_page, so 422's guard refuses a
+-- re-run (422 is in either way).
+select pg_temp.has_502() as t422_has_502 \gset
+\if :t422_has_502
+do $$ begin raise notice 'SKIP  422 is not applied again: 502 is in, and changed therapy_list_page'; end $$;
+\else
 \ir ../../../supabase/422_therapy_claims_and_legacy_rewards.sql
 \ir ../../../supabase/422_therapy_claims_and_legacy_rewards.sql
+\endif
 reset role;
 
 -- ===== 2. After 422 =====
 do $$
 declare e text; r jsonb; n int; v_audits int; k text;
+  v_502 boolean := pg_temp.has_502();
 begin
   perform pg_temp.as_login('owner');
 
   -- ── The function set ──
+  if v_502 then
+    -- 502 (the user, 10 Nov 2026: Legacy Therapy is retired): no signed-in login claims a Legacy
+    -- reward any more.
+    perform pg_temp.check(to_regprocedure('public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text)') is null
+                          and not has_function_privilege('authenticated',
+                                'public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)', 'execute')
+                          and not has_function_privilege('anon',
+                                'public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)', 'execute'),
+      '502: claim_legacy_therapy has one signature, and neither staff nor anon can call it');
+    raise notice 'SKIP  the Legacy claim''s checks (THERAPY-4, -7 and -M2 through claim_legacy_therapy): 502 retired it';
+  else
   perform pg_temp.check(to_regprocedure('public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text)') is null
                         and has_function_privilege('authenticated',
                               'public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)', 'execute')
                         and not has_function_privilege('anon',
                               'public.claim_legacy_therapy(uuid,date,uuid,jsonb,text,text,boolean)', 'execute'),
     'claim_legacy_therapy has one signature, with p_allow_overlap, for staff and not anon');
+  end if;
   perform pg_temp.check(not exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
                                      and p.proname = 'activate_legacy_therapy'),
     'the unused activate_legacy_therapy wrapper is gone (it would return without claiming on an overlap)');
@@ -363,7 +404,10 @@ begin
     'the sale check is internal; the list is for staff');
 
   -- ── THERAPY-4: quantities and voucher rewards ──
+  -- With 502 in, the rows are made but nothing goes through claim_legacy_therapy
+  -- (502 retired the Legacy claim: signed-in logins can no longer call it).
   perform pg_temp.legacy('L1', 'unlimited', null, 'pending_activation', tier => 'T422-TIER');
+  if not v_502 then
   e := pg_temp.refused(format('select public.claim_legacy_therapy(%L, null, %L, %L)', pg_temp.fx('L1'), pg_temp.fx('rule_v'),
          jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.fx('v_session'), 'quantity', 15),
                            jsonb_build_object('voucher_id', pg_temp.fx('v_massage'), 'quantity', -5))));
@@ -387,23 +431,30 @@ begin
   perform pg_temp.check((r->>'claimed')::boolean and pg_temp.issued('L1') = 10
                         and (select status from public.therapy_entitlements where id = pg_temp.fx('L1')) = 'active',
     'THERAPY-4: an unlimited reward taken as exactly 10 vouchers by its rule issues 10 (a number written as text counts)');
+  end if;
   -- A voucher reward is never claimed here, handed over in part or not.
   perform pg_temp.legacy('L2', 'voucher', 10, 'pending_activation', src => 'credit_package', src_inv => 'inv_paid');
   perform public.claim_entitlement_vouchers(pg_temp.fx('L2'), pg_temp.sel('v_session', '3'), null);
+  if not v_502 then
   e := pg_temp.refused(format('select public.claim_legacy_therapy(%L, null, null, %L)', pg_temp.fx('L2'), pg_temp.sel('v_session', '10')));
   perform pg_temp.check(e like 'This is a voucher reward.%' and pg_temp.issued('L2') = 3,
     'THERAPY-4: a credit-package reward with 3 of 10 handed over is not claimed again whole');
+  end if;
   perform pg_temp.legacy('L3', 'voucher', 10, 'pending_activation');
+  if not v_502 then
   e := pg_temp.refused(format('select public.claim_legacy_therapy(%L, null, null, %L)', pg_temp.fx('L3'), pg_temp.sel('v_session', '10')));
   perform pg_temp.check(e like 'This is a voucher reward.%', 'THERAPY-4: a Legacy voucher reward goes to the Vouchers window too');
+  end if;
   -- An unlimited reward with vouchers already issued against it (before claim
   -- documents existed) is not taken as vouchers again.
   perform pg_temp.legacy('L4', 'unlimited', null, 'pending_activation', tier => 'T422-TIER');
   insert into public.customer_reward_vouchers(customer_id, voucher_id, entitlement_id, store_id, quantity, notes)
     values (pg_temp.fx('buyer'), pg_temp.fx('v_massage'), pg_temp.fx('L4'), pg_temp.fx('store_a'), 2, 'T422 handed over before');
+  if not v_502 then
   e := pg_temp.refused(format('select public.claim_legacy_therapy(%L, null, %L, %L)', pg_temp.fx('L4'), pg_temp.fx('rule_v'),
          pg_temp.sel('v_session', '10')));
   perform pg_temp.check(e like 'Vouchers were already handed over or withdrawn%', 'THERAPY-4: a reward with vouchers already out is not taken as vouchers again');
+  end if;
   -- In the Vouchers window: a voucher off the list it was sold with is refused.
   perform pg_temp.legacy('L5', 'voucher', 4, 'pending_activation', src => 'credit_package', src_inv => 'inv_paid',
                          eligible => array[pg_temp.fx('v_session')]);
@@ -429,11 +480,13 @@ begin
                            from jsonb_array_elements(r->'eligible') x),
     'THERAPY-7: the Vouchers window marks the discount voucher as not offered');
   perform pg_temp.legacy('L7', 'unlimited', null, 'pending_activation', tier => 'T422-TIER');
+  if not v_502 then
   e := pg_temp.refused(format('select public.claim_legacy_therapy(%L, null, %L, %L)', pg_temp.fx('L7'), pg_temp.fx('rule_v'),
          jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.fx('v_session'), 'quantity', 9),
                            jsonb_build_object('voucher_id', pg_temp.fx('v_birthday'), 'quantity', 1))));
   perform pg_temp.check(e like 'That voucher cannot be given as a reward%' and pg_temp.issued('L7') = 0,
     'THERAPY-7: a Legacy claim refuses a discount voucher and issues nothing');
+  end if;
 
   -- ── THERAPY-8: no voucher list ──
   perform pg_temp.legacy('L8', 'voucher', 5, 'pending_activation');
@@ -489,8 +542,10 @@ begin
     'THERAPY-20: an Owner closes a package on a cancelled sale');
 
   -- ── THERAPY-M2: overlaps ask first ──
+  -- (Through claim_legacy_therapy: with 502 in, only the rows are made.)
   perform pg_temp.legacy('RUN', 'unlimited', null, 'active', cust => 'buyer3', act => pg_temp.t(-5), exp => pg_temp.t(20));
   perform pg_temp.legacy('L10', 'unlimited', null, 'pending_activation', cust => 'buyer3');
+  if not v_502 then
   select count(*) into v_audits from public.audit_logs where record_id = pg_temp.fx('L10');
   r := public.claim_legacy_therapy(pg_temp.fx('L10'), pg_temp.t(0));
   perform pg_temp.check((r->>'requires_confirmation')::boolean and not (r->>'claimed')::boolean
@@ -504,15 +559,20 @@ begin
   r := public.claim_legacy_therapy(pg_temp.fx('L10'), pg_temp.t(21));
   perform pg_temp.check((r->>'claimed')::boolean and not (r->>'overlapped')::boolean and r->>'status' = 'scheduled',
     'THERAPY-M2: the suggested start claims without asking, scheduled');
+  end if;
   perform pg_temp.legacy('L11', 'unlimited', null, 'pending_activation', cust => 'buyer3');
+  if not v_502 then
   r := public.claim_legacy_therapy(pg_temp.fx('L11'), pg_temp.t(0), null, null, null, null, true);
   perform pg_temp.check((r->>'claimed')::boolean and (r->>'overlapped')::boolean and r->>'status' = 'active'
                         and exists (select 1 from public.audit_logs where record_id = pg_temp.fx('L11')
                                      and action = 'legacy_therapy_claimed' and (new_data->>'overlap_confirmed')::boolean),
     'THERAPY-M2: a confirmed overlap claims and is recorded as confirmed');
+  end if;
   perform pg_temp.legacy('L12', 'unlimited', null, 'pending_activation', cust => 'buyer_b', store => 'store_b');
+  if not v_502 then
   r := public.claim_legacy_therapy(pg_temp.fx('L12'), pg_temp.t(0));
   perform pg_temp.check((r->>'claimed')::boolean and r->>'status' = 'active', 'THERAPY-M2: with nothing running it claims straight');
+  end if;
 
   -- ── THERAPY-15: days left ──
   perform pg_temp.unit('U_ACT', 'active', 'inv_paid', act => pg_temp.t(-20), exp => pg_temp.t(9), cust => 'buyer_b');
@@ -522,53 +582,96 @@ begin
     'THERAPY-15: 10 days left for a unit ending in nine days (today counts), 30 for one starting in ten and running 30 days');
 
   -- ── THERAPY-5, -19: the page's list ──
+  -- 502 (the user, 10 Nov 2026: Legacy goes from every page; the records stay)
+  -- makes this list Vouchers to hand over: a reward earned by a customer's or an
+  -- affiliate's paid day (every row here with no sale) is history and is not
+  -- listed, whatever the filter; a Credit Package's or a Premium Bundle's reward
+  -- still is. Where that changes the answer, each check expects its world's.
   -- An old reward: 10 vouchers issued before claim documents existed.
   perform pg_temp.legacy('L13', 'voucher', 10, 'active');
   insert into public.customer_reward_vouchers(customer_id, voucher_id, entitlement_id, store_id, quantity, notes)
     values (pg_temp.fx('buyer'), pg_temp.fx('v_session'), pg_temp.fx('L13'), pg_temp.fx('store_a'), 10, 'T422 issued before 310');
   perform pg_temp.legacy('L14', 'voucher', 10, 'cancelled');
   r := public.therapy_list_page('legacy', 'T422-L13', null, 50, 0);
+  if v_502 then
+    perform pg_temp.check((r->>'total')::int = 0, '502: an old Legacy reward, all handed over, is not listed');
+  else
   perform pg_temp.check((r->>'total')::int = 1 and (r->'rows'->0->>'claimed_qty')::int = 10
                         and (r->'rows'->0->>'remaining')::int = 0,
     'THERAPY-5: an old reward shows all 10 handed over, none left');
+  end if;
   r := public.therapy_list_page('legacy', 'T422-L14', null, 50, 0);
   perform pg_temp.check((r->>'total')::int = 0 and r->>'status' = 'open', 'THERAPY-19: a cancelled reward is hidden by default');
   r := public.therapy_list_page('legacy', 'T422-L14', 'cancelled', 50, 0);
+  if v_502 then
+    perform pg_temp.check((r->>'total')::int = 0, '502: a cancelled Legacy reward is not shown on request either');
+  else
   perform pg_temp.check((r->>'total')::int = 1 and (r->'rows'->0->>'remaining')::int = 0,
     'THERAPY-5: shown on request, a cancelled reward has nothing left');
+  end if;
   r := public.therapy_list_page('legacy', '+6591422104', 'all', 50, 0);
+  if v_502 then
+    perform pg_temp.check((r->>'total')::int = 0
+                          and (select count(*) from public.therapy_entitlements where customer_id = pg_temp.fx('buyer3')) > 0,
+      '502: search by phone finds none of a customer''s Legacy rewards');
+  else
   perform pg_temp.check((r->>'total')::int = (select count(*) from public.therapy_entitlements where customer_id = pg_temp.fx('buyer3'))
                         and (r->>'total')::int > 0
                         and (select bool_and(x->>'customer_name' = 'T422 Third Buyer') from jsonb_array_elements(r->'rows') x),
     'THERAPY-19: search by phone finds that customer''s rows, with the name');
+  end if;
   r := public.therapy_list_page('legacy', 'T422', 'all', 2, 2);
+  if v_502 then
+    -- The three sales' rewards so far (L2, L5, L9): the page from the third row holds one.
+    perform pg_temp.check(jsonb_array_length(r->'rows') = 1 and r->'rows'->0->>'earner_kind' = 'credit_package'
+                          and (r->>'total')::int = 3
+                          and (r->>'total')::int = (select count(*) from public.therapy_entitlements where entitlement_no like 'T422-%'
+                                                      and earner_kind not in ('customer', 'affiliate'))
+                          and (r->>'offset')::int = 2,
+      '502: a page from the third row, with the total of the rewards that are not Legacy');
+  else
   perform pg_temp.check(jsonb_array_length(r->'rows') = 2
                         and (r->>'total')::int = (select count(*) from public.therapy_entitlements where entitlement_no like 'T422-%')
                         and (r->>'offset')::int = 2,
     'THERAPY-19: a page of two from the third row, with the full total');
+  end if;
   -- A page past the end (a claim took the only row of the last page): no
-  -- rows, and still the full total, so the page can step back.
+  -- rows, and still the full total, so the page can step back. (502: the
+  -- total of the rewards that are not Legacy.)
   r := public.therapy_list_page('legacy', 'T422', 'all', 2, 100000);
   perform pg_temp.check(jsonb_array_length(r->'rows') = 0
-                        and (r->>'total')::int = (select count(*) from public.therapy_entitlements where entitlement_no like 'T422-%'),
+                        and (r->>'total')::int = (select count(*) from public.therapy_entitlements where entitlement_no like 'T422-%'
+                                                    and (not v_502 or earner_kind not in ('customer', 'affiliate'))),
     'THERAPY-19: a Legacy page past the end has no rows and the full total');
   r := public.therapy_list_page('purchased', 'T422', 'all', 50, 100000);
   perform pg_temp.check(jsonb_array_length(r->'rows') = 0
                         and (r->>'total')::int = (select count(*) from public.purchased_therapy_entitlements where entitlement_no like 'T422-%')
                         and (r->>'total')::int > 0,
     'THERAPY-19: a Purchased page past the end has no rows and the full total');
+  if v_502 then
+    -- L10 and L11 were not claimed (the Legacy claim is retired); RUN is a running Legacy period.
+    r := public.therapy_list_page('legacy', 'T422-RUN', 'active', 50, 0);
+    perform pg_temp.check((r->>'total')::int = 0, '502: a running Legacy period is not listed');
+    r := public.therapy_list_page('legacy', 'T422-L1', 'all', 50, 0);
+    perform pg_temp.check((r->>'total')::int = 0, '502: no filter lists a Legacy reward (all: none of L1, L10 to L14)');
+  else
   r := public.therapy_list_page('legacy', 'T422-L11', 'active', 50, 0);
   perform pg_temp.check((r->>'total')::int = 1 and (r->'rows'->0->>'days_remaining')::int
                           = (select expiry_date - public.sg_today() + 1 from public.therapy_entitlements where id = pg_temp.fx('L11')),
     'THERAPY-15: a running Legacy period counts today in its days left');
   r := public.therapy_list_page('legacy', 'T422-L10', 'scheduled', 50, 0);
   perform pg_temp.check((r->>'total')::int = 1, 'THERAPY-19: the status filter reads the status');
+  end if;
   perform pg_temp.legacy('L15', 'unlimited', null, 'pending_activation', cust => 'buyer3');
   r := public.therapy_list_page('legacy', 'T422-L15', null, 50, 0);
+  if v_502 then
+    perform pg_temp.check((r->>'total')::int = 0, '502: an unclaimed unlimited Legacy reward is not listed');
+  else
   perform pg_temp.check((r->'rows'->0->>'next_free_start')::date
                           = (select max(expiry_date) + 1 from public.therapy_entitlements
                               where customer_id = pg_temp.fx('buyer3') and status in ('active', 'scheduled')),
     'THERAPY-M2: the list gives the next free start for an unclaimed unlimited reward');
+  end if;
   r := public.therapy_list_page('purchased', 'T422-INV-REFUNDED', null, 50, 0);
   perform pg_temp.check((r->>'total')::int = 1 and r->'rows'->0->>'invoice_closed_reason' = 'Invoice T422-INV-REFUNDED was refunded'
                         and r->'rows'->0->>'invoice_no' = 'T422-INV-REFUNDED',
@@ -588,8 +691,9 @@ begin
   -- ── Rule 9: a deleted customer's name and phone ──
   -- The list is a SECURITY DEFINER read, so it must hide what the read rule
   -- on customers hides (deleted_at is null). delete_customer refuses open
-  -- purchased units, so the unit here has ended.
-  perform pg_temp.legacy('L_GONE', 'voucher', 2, 'active', cust => 'buyer_gone');
+  -- purchased units, so the unit here has ended. The reward is a Credit
+  -- Package's, so 502's list, which leaves Legacy rewards out, shows it too.
+  perform pg_temp.legacy('L_GONE', 'voucher', 2, 'active', cust => 'buyer_gone', src => 'credit_package');
   perform pg_temp.unit('U_GONE', 'expired', 'inv_paid', act => pg_temp.t(-60), exp => pg_temp.t(-30), cust => 'buyer_gone');
   r := public.therapy_list_page('legacy', 'T422 Gone Buyer', 'all', 50, 0);
   perform pg_temp.check((r->>'total')::int = 1 and r->'rows'->0->>'customer_phone' = '+6591422105',
@@ -659,11 +763,19 @@ begin
   r := public.entitlement_voucher_state(pg_temp.fx('N1'));
   perform pg_temp.check((r->>'owner_or_manager_only')::boolean and r->>'blocked_reason' is null,
     'rule 10: the Vouchers window says it waits for an Owner or Manager');
+  if v_502 then
+    -- N1 and N2 have no sale: Legacy rewards, which 502's list leaves out.
+    r := public.therapy_list_page('legacy', 'T422-N', 'all', 50, 0);
+    perform pg_temp.check((r->>'total')::int = 1 and r->'rows'->0->>'entitlement_no' = 'T422-N3'
+                          and not (r->'rows'->0->>'owner_or_manager_only')::boolean,
+      '502: the list shows the sale''s reward only, and does not mark it for an Owner or Manager');
+  else
   perform pg_temp.check(
     (select bool_and(((x->>'owner_or_manager_only')::boolean) = (x->>'entitlement_no' = 'T422-N1'))
        from jsonb_array_elements(public.therapy_list_page('legacy', 'T422-N', 'all', 50, 0)->'rows') x)
     and (public.therapy_list_page('legacy', 'T422-N', 'all', 50, 0)->>'total')::int = 3,
     'rule 10: the Legacy list marks that reward only, not one with a list or a sale');
+  end if;
   perform public.claim_entitlement_vouchers(pg_temp.fx('N2'), pg_temp.sel('v_session', '1'), null);
   perform public.claim_entitlement_vouchers(pg_temp.fx('N3'), pg_temp.sel('v_session', '1'), null);
   perform pg_temp.check(pg_temp.issued('N2') = 1 and pg_temp.issued('N3') = 1
@@ -707,7 +819,10 @@ begin
 end $$;
 
 -- ── Rule 11: new qualification voucher rewards save the voucher list ──
--- In its own savepoint: store C's sales and rules are undone after.
+-- In its own savepoint: store C's sales and rules are undone after. It calls
+-- the recount directly, as the server: with 502 in nothing calls it any more
+-- (a payment no longer earns), but its body is unchanged, and 502's UNDO puts
+-- the call back, so this runs in both worlds.
 savepoint w2;
 do $$
 declare v_list uuid[];

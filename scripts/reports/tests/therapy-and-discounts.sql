@@ -8,6 +8,13 @@
 --     the report still loads after that voucher is deactivated, deleted or
 --     expired. Before 366 it recalculated through voucher_discount_amount,
 --     which raised, and the whole report failed.
+--   * 502 (the user, 10 Nov 2026): a Legacy reward (earned by a customer's or
+--     an affiliate's paid day) is history and leaves the Therapy report; the
+--     rows that are not Legacy stay. The fixture has both, a Legacy reward and
+--     a Credit Package's reward vouchers at each store, so the store checks
+--     still cover both kinds of row once 502 is in, and each count expects its
+--     world's answer. Whether 502 is in is read from the refund guard it drops
+--     (the trigger legacy_refund_guard on invoices).
 --
 -- Disposable database only; everything is rolled back. Run with
 --   ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/reports/tests/therapy-and-discounts.sql
@@ -29,6 +36,11 @@ declare o uuid:=gen_random_uuid(); m uuid:=gen_random_uuid(); s uuid:=gen_random
  ad uuid:=gen_random_uuid(); mi uuid:=gen_random_uuid(); vp uuid; vl uuid; inv_m uuid;
  tag text:=substr(md5(random()::text),1,6); sa uuid; sb uuid; ca uuid; cb uuid; pm uuid; p uuid; pk uuid;
  inv_a uuid; inv_b uuid; inv_v uuid; v uuid; n int; r record;
+ v_502 boolean:=not exists(select 1 from pg_trigger where tgrelid='public.invoices'::regclass
+                            and tgname='legacy_refund_guard' and not tgisinternal);
+ -- The fixture's rows the report shows an Owner: 2 purchased, 2 Credit Package rewards and,
+ -- without 502, the 2 Legacy rewards.
+ v_rows int:=case when v_502 then 4 else 6 end;
 begin
  insert into auth.users(id,email) values (o,'rt-o-'||tag||'@tests.invalid'),(m,'rt-m-'||tag||'@tests.invalid'),
    (s,'rt-s-'||tag||'@tests.invalid'),(a,'rt-a-'||tag||'@tests.invalid'),
@@ -60,24 +72,34 @@ begin
    qualifying_amount,qualified_value,activation_deadline)
  values ('RT-LA-'||tag,ca,sa,'RT Legacy','unlimited',0,0,current_date+30),
         ('RT-LB-'||tag,cb,sb,'RT Legacy','unlimited',0,0,current_date+30);
+ -- Reward vouchers from a Credit Package sale at each store, as issue_credit_package writes them:
+ -- not Legacy, so the report keeps them with or without 502.
+ insert into therapy_entitlements(entitlement_no,customer_id,store_id,package_name,entitlement_kind,voucher_qty,
+   qualifying_amount,qualified_value,activation_deadline,earner_kind,claim_source_type)
+ values ('RT-CA-'||tag,ca,sa,'RT Credit Package reward','voucher',10,994,994,sg_today()+30,'credit_package','credit_package'),
+        ('RT-CB-'||tag,cb,sb,'RT Credit Package reward','voucher',10,994,994,sg_today()+30,'credit_package','credit_package');
 
  -- ---- report_therapy ------------------------------------------------------
  select count(*) into n from report_therapy() where entitlement_no like 'RT-%-'||tag;
- if n <> 4 then raise exception 'An Owner should see all 4 fixture rows, saw %', n; end if;
+ if n <> v_rows then raise exception 'An Owner should see all % fixture rows, saw %', v_rows, n; end if;
+ if v_502 and exists (select 1 from report_therapy() where entitlement_no in ('RT-LA-'||tag,'RT-LB-'||tag)) then
+   raise exception '502 is in, yet a Legacy reward is in the therapy report'; end if;
+ -- Every row, but (502) the Legacy rewards.
  if (select count(*) from report_therapy())
-    <> (select count(*) from purchased_therapy_entitlements) + (select count(*) from therapy_entitlements) then
+    <> (select count(*) from purchased_therapy_entitlements)
+     + (select count(*) from therapy_entitlements where not v_502 or earner_kind not in ('customer','affiliate')) then
    raise exception 'An Owner should see every therapy row in every store'; end if;
 
  -- A Manager sees the stores assigned to them (store A), both kinds of therapy.
  perform set_config('request.jwt.claim.sub',m::text,true);
  select count(*) into n from report_therapy() where entitlement_no like 'RT-%-'||tag;
- if n <> 2 then raise exception 'A Manager of store A should see its 2 rows only, saw %', n; end if;
- if exists (select 1 from report_therapy() where entitlement_no in ('RT-PB-'||tag,'RT-LB-'||tag)) then
+ if n <> v_rows/2 then raise exception 'A Manager of store A should see its % rows only, saw %', v_rows/2, n; end if;
+ if exists (select 1 from report_therapy() where entitlement_no in ('RT-PB-'||tag,'RT-LB-'||tag,'RT-CB-'||tag)) then
    raise exception 'A Manager saw therapy from a store not assigned to them'; end if;
 
  perform set_config('request.jwt.claim.sub',ad::text,true);
  select count(*) into n from report_therapy() where entitlement_no like 'RT-%-'||tag;
- if n <> 4 then raise exception 'An Admin should see every store, saw % of 4 rows', n; end if;
+ if n <> v_rows then raise exception 'An Admin should see every store, saw % of % rows', n, v_rows; end if;
 
  perform set_config('request.jwt.claim.sub',mi::text,true);
  if exists (select 1 from report_therapy()) then raise exception 'A deactivated Manager can read the therapy report'; end if;

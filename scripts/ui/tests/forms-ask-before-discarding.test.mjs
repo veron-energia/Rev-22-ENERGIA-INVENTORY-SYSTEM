@@ -153,7 +153,6 @@ const THERAPY_TABLES = {
   therapy_package_vouchers: [{ package_id: 'pk1', voucher_id: 'v1' }],
   therapy_package_services: [{ package_id: 'pk1', service_id: 'sv1' }],
   therapy_services: [{ id: 'sv1', name: 'Made-up Service', is_active: true }],
-  therapy_package_rules: [{ id: 'r1', name: 'Made-up Rule', store_id: 's1', qualifying_amount: 100, entitlement_kind: 'unlimited', duration_months: 12, voucher_qty: null, activation_deadline_days: 365, is_active: true }],
   credit_packages: [{ id: 'c1', name: 'Made-up Credit', sku: 'MU-C', customer_price: 100, paid_credit_amount: 100, is_active: true, allow_product: true }],
   credit_package_stores: [{ store_id: 's1' }],
   credit_package_vouchers: [{ voucher_id: 'v1' }],
@@ -162,7 +161,8 @@ const THERAPY_TABLES = {
   premium_bundle_vouchers: [{ voucher_id: 'v1' }],
 };
 
-test('Premium Bundle, Credit Package, Qualification Rule and Therapy Package', async () => {
+// 502: the Qualification Rule window went with the same-day spending reward.
+test('Premium Bundle, Credit Package and Therapy Package', async () => {
   await show(mod.TherapyPage, { tables: THERAPY_TABLES });
   const edit = () => d.click(document.querySelector('tbody button.btn-icon'));
 
@@ -178,9 +178,6 @@ test('Premium Bundle, Credit Package, Qualification Rule and Therapy Package', a
   await asksOnlyOnceChanged({ title: 'New Therapy Package', open: () => press('New Package'), change: () => type('Name') });
   // Its voucher and service lists arrive after it opens: not a change.
   await asksOnlyOnceChanged({ title: 'Edit Package', open: edit, change: () => type('Name') });
-
-  await press('Qualification');
-  await asksOnlyOnceChanged({ title: 'New Qualification Rule', open: () => press('New Rule'), change: () => type('Name') });
 });
 
 test('Add and Edit Therapy Service, whose notes arrive after it opens', async () => {

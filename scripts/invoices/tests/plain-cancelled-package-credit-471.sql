@@ -1365,8 +1365,10 @@ create function pg_temp.t471_at(p_col text) returns boolean language sql as $f$
 do $$ begin
   perform pg_temp.t471_check(pg_temp.t471_462_in() and pg_temp.t471_463_in() and pg_temp.t471_470_in(),
     'S 462, 463 and 470 are in (471 goes in after them)');
-  perform pg_temp.t471_check(split_part(pg_temp.t471_inv_triggers(), ' ', 1) = '92c94e3ebc6113a68d972330bbca8938',
-    'S the triggers on invoices are as read on production (26 Oct 2026): ' || pg_temp.t471_inv_triggers());
+  -- 502 (Legacy Therapy retired, 10 Nov 2026) drops legacy_refund_guard and nothing else on invoices:
+  -- 1bd24d05... is the same list without it (18 triggers).
+  perform pg_temp.t471_check(split_part(pg_temp.t471_inv_triggers(), ' ', 1) = any (array['92c94e3ebc6113a68d972330bbca8938', '1bd24d0583150b3350139c6445369013']),
+    'S the triggers on invoices are as read on production (26 Oct 2026, or as 502 leaves them): ' || pg_temp.t471_inv_triggers());
 end $$;
 \if :{?nomig}
 do $$ begin

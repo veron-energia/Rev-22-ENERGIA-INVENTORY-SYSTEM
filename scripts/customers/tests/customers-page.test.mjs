@@ -44,6 +44,11 @@
 //     Owner/Manager; with no referrer yet staff still pick the first. Delete
 //     (the window Health Surveys → To match shares) needs the name typed and
 //     goes through delete_customer.
+//   * 502 (the user, 10 Nov 2026): View lists the vouchers the customer is
+//     still owed (Vouchers to hand over), with what is left and the
+//     collect-by date, a passed date or the closed sale; the old same-day
+//     rewards are never listed, even from a server that still sends them,
+//     and the wallet's Legacy credit is untouched.
 //
 // Run: node --test scripts/customers/tests/customers-page.test.mjs
 import { test, after } from 'node:test';
@@ -135,7 +140,8 @@ function createBackend(fx) {
   const rpcs = {
     search_customers: () => fx.customers,
     active_customer_source_options: () => [],
-    customer_overview: a => ({ affiliate_state: { state: 'none' }, refunds: [], purchased_therapy: [], legacy_therapy: [],
+    // Shaped as since 502: vouchers_to_hand_over replaced the list of every reward row.
+    customer_overview: a => ({ affiliate_state: { state: 'none' }, refunds: [], purchased_therapy: [], vouchers_to_hand_over: [],
                                deleted_invoices: [], _for: a.p_customer_id }),
     customer_credit_balances: a => ({ available_total: a.p_customer_id === 'c-1' ? 111 : 222, categories: {} }),
     customer_credit_statement: () => [],
@@ -435,6 +441,61 @@ test('View: a failed load says so with Retry instead of "Loading…" for ever', 
   backend.failures.delete('customer_overview');
   await click(button('Retry', modal()));
   assert.ok(modal().textContent.includes('Credit wallet'), 'loaded after Retry');
+});
+
+// ── Vouchers to hand over (502) ────────────────────────────────────────────
+// customer_overview as 502 returns it, with the old list sent as well (a
+// server that still has it): the page reads only vouchers_to_hand_over.
+const overviewWith = extra => b => {
+  b.handlers.customer_overview = a => ({ affiliate_state: { state: 'none' }, refunds: [], purchased_therapy: [],
+    deleted_invoices: [], _for: a.p_customer_id, ...extra });
+};
+const OLD_REWARD_LIST = [{ no: 'LEG-0000001', package: '1 Month Unlimited', status: 'pending_activation', deadline: '2027-08-09' }];
+
+test('502: View lists the vouchers still to hand over, with what is left and when they can be collected; the old reward list is never shown', async () => {
+  await mount('manager', overviewWith({
+    legacy_therapy: OLD_REWARD_LIST,
+    vouchers_to_hand_over: [
+      { no: 'LEG-0000002', package: 'Credit package reward — Fixture Package', left: 7, entitled: 10,
+        deadline: '2027-09-29', deadline_passed: false, blocked_reason: null },
+      { no: 'LEG-0000003', package: 'Premium bundle reward — Fixture Bundle', left: 2, entitled: 5,
+        deadline: '2026-10-31', deadline_passed: true, blocked_reason: null },
+      { no: 'LEG-0009604', package: 'Credit package reward — Fixture Package', left: 10, entitled: 10,
+        deadline: '2027-09-30', deadline_passed: false, blocked_reason: 'Invoice INV-2026-0950 was refunded' },
+      { no: 'LEG-0009605', package: 'Fixture Therapy Package', left: 3, entitled: 3,
+        deadline: null, deadline_passed: false, blocked_reason: null },
+    ],
+  }));
+  backend.handlers.customer_credit_balances = () => ({ available_total: 105, categories: { legacy: 105 } });
+  await click(button('View', row('Ada Tan')));
+  const section = modal().querySelector('[data-vouchers-to-hand-over]');
+  assert.ok(section, 'the section is shown: ' + modal().textContent);
+  assert.deepEqual([...section.children].map(d => d.textContent), [
+    'Vouchers to hand over',
+    'LEG-0000002 · Credit package reward — Fixture Package · 7 of 10 left · collect by 29/09/2027',
+    'LEG-0000003 · Premium bundle reward — Fixture Bundle · 2 of 5 left · the collect-by date, 31/10/2026, has passed',
+    'LEG-0009604 · Credit package reward — Fixture Package · 10 of 10 left · Invoice INV-2026-0950 was refunded',
+    'LEG-0009605 · Fixture Therapy Package · 3 of 3 left · no collect-by date',
+    'Hand them over on Therapy → Vouchers to hand over.',
+  ]);
+  // Case-sensitive on purpose: the wallet's Legacy credit is in the same
+  // window and stays (its category tile, and the Opening balance button).
+  assert.doesNotMatch(modal().textContent, /Legacy therapy|LEG-0000001/);
+  assert.ok(modal().textContent.includes('S$105.00') && button('Opening balance', modal()), 'the wallet and its Legacy credit stay');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('502: with nothing to hand over, or from a server before 502, there is no such section and no old reward list', async () => {
+  await mount('manager');                                      // vouchers_to_hand_over: []
+  await click(button('View', row('Ada Tan')));
+  assert.ok(modal().textContent.includes('Credit wallet'), 'the View is shown');
+  assert.equal(modal().querySelector('[data-vouchers-to-hand-over]'), null);
+  await mount('manager', overviewWith({ legacy_therapy: OLD_REWARD_LIST }));   // before 502: the old key only
+  await click(button('View', row('Ada Tan')));
+  assert.ok(modal().textContent.includes('Credit wallet'), 'the View is shown');
+  assert.equal(modal().querySelector('[data-vouchers-to-hand-over]'), null);
+  assert.doesNotMatch(modal().textContent, /Legacy therapy|LEG-0000001|Vouchers to hand over/);
+  assert.deepEqual(globalThis.__renderErrors, []);
 });
 
 // ── credit windows ─────────────────────────────────────────────────────────

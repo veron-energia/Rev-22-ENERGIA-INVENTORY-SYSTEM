@@ -1,11 +1,244 @@
 # Therapy: closure extensions, holiday calendars and reward choices
 
+> **10 Nov 2026: Legacy Therapy and Qualification removed (migration 502).**
+> Same-day qualification earns nothing any more. The unclaimed Legacy rewards
+> were cancelled at go-live, and the Therapy page lost its Legacy Therapy and
+> Qualification tabs. Section 1 (reward choices: `legacy_reward_options`,
+> `claim_legacy_therapy`) and the reward-tier part of section 3 describe what
+> no page uses any more; they are kept as history. Sections 2 (closure
+> extension), 4 (customer voucher balances) and 5 (multiple unlimited
+> packages) still apply. The holiday calendars and the expiry recalculation
+> preview are on **Therapy → Holidays** (Owners and Managers). Credit
+> Package, Premium Bundle and therapy-package vouchers are handed over on
+> **Therapy → Vouchers to hand over**.
+
+## Legacy Therapy retired (502, the user's decisions of 10 Nov 2026)
+
+### What was decided
+
+* **Earning stops at go-live**, the moment migration 502 commits, for
+  customers and for affiliates. Paying, part-paying, correcting, reopening,
+  cancelling or refunding an invoice no longer recounts anyone's day, and
+  "Re-check paid days" refuses.
+* **Nothing is deleted.** Every reward, its invoice links
+  (`therapy_entitlement_invoices`), the rules and the audit rows stay as
+  history.
+* **Unclaimed rewards are cancelled at go-live:** 102 one-month rewards (43
+  customers) and 1 affiliate reward of 10 vouchers. The 50 vouchers already
+  handed over to 3 customers stay with them as ordinary vouchers.
+* **New Credit Package sales give credit only.** The vouchers still owed from
+  earlier sales (100, to 2 customers) can still be handed over, and refunding
+  or cancelling one of those sales still opens the reward review first. One
+  earlier sale was not paid off yet: see "The earlier part-paid Credit Package
+  sale" below.
+* **Premium Bundle free vouchers are not Legacy** and work exactly as before,
+  including a blank bundle threshold falling back to S$994 now that the rules
+  are off.
+* **The refund guard is gone.** The trigger `legacy_refund_guard` on
+  `invoices` is dropped; its two functions stay, attached to nothing. The one
+  paid invoice whose day earned the only free month ever used can now be
+  refunded like any other, and the month already used is not taken back.
+* **Deleting a customer:** of their rewards, only vouchers still owed to them
+  block it: a Credit Package, Premium Bundle or therapy-package reward still
+  waiting with vouchers left, within its collect-by date, on a sale not
+  refunded, cancelled or deleted (or a live unlimited period). Legacy rows
+  never do, and nor does a reward fully handed over or withdrawn. So the 3
+  customers holding the 50 vouchers are no longer kept from being deleted by
+  their old rewards (vouchers a customer holds never blocked a delete).
+* **`LEG-` numbers stay** for new voucher rows: `next_legacy_entitlement_no()`
+  is unchanged.
+
+### What staff see
+
+| Where | Since 502 |
+|---|---|
+| Therapy | Purchased · **Vouchers to hand over** (the Credit Package, Premium Bundle and therapy-package vouchers still owed, with the Vouchers button); for Owners and Managers also **Holidays** (holiday calendars and company closures, and the expiry recalculation preview) · Credit Packages · Premium Bundles · Packages. The Credit Package window has no reward section, and every save switches the package's reward off (the saved threshold and voucher list stay in the database, unchanged). |
+| Invoices | No Legacy box. Refunding or cancelling an older Credit Package sale lists its reward vouchers in plain words: those not handed over are withdrawn with it, those handed over stay with the customer. Moving its unused credit to another customer ("Correct unused benefit recipient") is refused until the review "This Credit Package came with reward vouchers" is recorded. |
+| Customers → View | **Vouchers to hand over**: only what is still owed, with what is left and the collect-by date. The wallet's Legacy credit (an opening balance) is another thing and is unchanged. |
+| Reports → Therapy | The packages bought and the reward vouchers, typed "Purchased" or "Reward vouchers". |
+| Dashboard | Nothing changes on screen. The alert "Refunded or cancelled sales still holding credit or rewards" no longer follows the old same-day rewards (none was flagged through them on 10 Nov 2026); what else it counts is unchanged. |
+
+### The recount functions are retired: never run them by hand
+
+After 502 nothing calls these four, and no signed-in login can:
+
+* `recompute_legacy_qualification(uuid,uuid,date)`
+* `recompute_affiliate_legacy_qualification(uuid,date)`
+* `recompute_affiliates_for_customer_day(uuid,date)`
+* `recompute_legacy_qualification_for_invoice(uuid)`
+
+**Never run them by hand**, not as the service role and not from the SQL
+editor either. A recount deletes the day's rows in
+`therapy_entitlement_invoices` and puts back only those of rewards that are not
+cancelled. After go-live every unclaimed reward is cancelled, so a single run
+drops the record of which invoices earned a reward, for good. 502 puts a
+comment on each of the four saying so.
+
+### Before the window
+
+1. Run `scripts/therapy/golive-preview-502.sql` on production. It only reads
+   (a read-only transaction, counts only, no names). Each row has a kind:
+   * **constant**: the figure production has now, next to the name of the
+     constant that must equal it when the scripts run. `expected` is the
+     constant as written on 10 Nov 2026, so `ok` false means the figure has
+     moved since. Figures do move: Legacy rewards are earned until 502
+     commits, and hand-overs change the counts too.
+   * **stop**: a stop sign (see 3 below).
+   * **check**: what a step checks when it runs. Before 502 the "502 in" rows
+     show the old md5s, and before step 2a the "2a in" rows read as before it.
+     That is expected.
+2. If a figure has moved, tell the user the new figure. Only with their OK,
+   change that constant in every file the preview's note names (steps 2a and
+   2b, undo 2b, undo 2a, the earlier-sale script), then run the go-live suite
+   (`scripts/therapy/tests/legacy-retired-golive-502.sql`) again. The suite
+   checks that the constants repeated across the files still agree, and runs
+   the scripts with its own figures, so it tests them whatever the constants
+   say. Change nothing without the user's OK.
+3. **Stop signs.** If one of these shows anything, stop and tell the user. No
+   constant can fix it: the scripts refuse, or would do what was not decided,
+   until the code changes.
+   * A Legacy month booked or running.
+   * A waiting Legacy reward that step 2b leaves out (part handed over, no
+     rule, from a sale).
+   * A waiting reward that is neither a customer's one-month reward nor an
+     affiliate's voucher reward, or affiliate rewards with different numbers
+     of vouchers.
+   * A rule on for one store only, rules with different amounts, or a rule
+     the rule form would refuse or change.
+   * A Credit Package with the reward on that is deleted. Step 2a refuses.
+   * A Credit Package sale split between customers, not paid off, that still
+     carries reward vouchers. Step 2a refuses, counting each such sale once and
+     naming its invoices: paid off later, it would still give them.
+   * An earlier sale owed a reward that is split between customers, or
+     earlier sales that differ in rewards, threshold or price.
+   * A Credit Package sale with the reward on, not paid off, on a draft or on
+     an invoice waiting for a cancel or refund. Step 2a does not keep its
+     reward.
+4. Run the preview again just before the window.
+
+### Go-live order
+
+One quiet window, outside opening hours, in this order:
+
+1. **Migration 502** (`supabase/502_legacy_therapy_retired.sql`), with its row
+   in the migration history, in the same transaction. From the moment it
+   commits, nothing new is earned.
+2. **Step 2a: `scripts/therapy/credit-package-credit-only-502.sql`.** It
+   switches the reward off on the 3 Credit Packages, and records in the Audit
+   Log the one earlier part-paid sale still owed its reward, with the values
+   it would have got.
+   * If it refuses, do not open with 502 alone: fix the cause and run it
+     again, or undo 502. No Credit Package may have its reward on when the
+     shop opens.
+3. **Step 2b: `scripts/therapy/legacy-retired-golive-502.sql`.** It cancels the
+   103 unclaimed rewards and switches the 3 rules off. It refuses unless step
+   2a has run. Run on its own, if it refuses, step 2a still stands. A voucher
+   hand-over at the same moment waits for it and is then refused (the reward
+   is cancelled by then).
+4. **The pages**: commit, push and deploy. Then **every till and office PC
+   reloads the app**. A page left open from before keeps the old screens: an
+   old refund window, for one, does not open the reward review.
+
+**No Credit Package may be paid between 502 and step 2a.** One paid off in
+between still gets reward vouchers, and step 2b then refuses. The safe way is
+**one transaction**: 502 with its history row, the recording account, step 2a
+and step 2b, then commit. Nothing can fall between them, and if anything
+refuses, all of it rolls back, 502 included.
+
+To run it as one transaction, as the database owner: `begin;` and
+`set local lock_timeout = '5s';`; then refuse if 502 is already in the
+migration history (`supabase_migrations.schema_migrations`) or if the newest
+migration there is not 501's (`20261107085301`); then the whole 502 file; then
+its history row (a version from the clock, the name
+`502_legacy_therapy_retired`, and the file's text as its one statement); then
+the recording account (step 2a's header says how); then the step 2a file and
+the step 2b file as they are; then `commit;`. With psql, run it as
+`psql -X -v ON_ERROR_STOP=1 -f <file>`: a refusal then stops psql before the
+commit, and the transaction rolls back whole. Without `ON_ERROR_STOP` it still
+rolls back whole, but psql ends with exit code 0, which looks like success.
+
+**Never push the pages before 502, step 2a and step 2b are in.** The new
+pages ask the server for lists that only 502 has, and they no longer show the
+Legacy rewards that step 2b cancels.
+
+Both steps write to the Audit Log under a recording account, which must be an
+active Owner or Manager (each script's header says how to set it).
+
+### Rollback order
+
+Only in this order:
+
+1. Revert the pages and deploy them again.
+2. Undo step 2b: `scripts/therapy/undo-legacy-retired-golive-502.sql`
+3. Undo step 2a: `scripts/therapy/undo-credit-package-credit-only-502.sql`
+4. `scripts/therapy/undo-502.sql`. It reminds you that the pages must already
+   be reverted: the new Therapy page asks for a list ("vouchers") that the
+   server before 502 does not have.
+
+Then every till and office PC reloads the app again.
+
+### Rollback limits
+
+* **Paid days are not recounted.** While 502 was in, paying, refunding or
+  cancelling an invoice recounted nothing, and `undo-502.sql` does not recount
+  either. With the user's OK, an Owner or Manager runs "Re-check paid days"
+  (`backfill_legacy_qualification`) from the go-live date to today, for all
+  stores (it works again once `undo-502.sql` has run). It only recounts days
+  that still have a paid or part-paid invoice, so list the days whose invoices
+  were all refunded or cancelled meanwhile, and ask the user.
+* **The 502 row in the migration history stays.** The history still says 502
+  is in, so applying 502 again with its history row is refused (it is already
+  recorded). With the user's OK, remove that one row (found by its name and
+  the md5 of its stored statements), or leave it and record the undo beside
+  it.
+* **The time of last change is not put back** (`updated_at`) on the 3 rules
+  and the 3 Credit Packages: the undo saves them again. Everything else in
+  them is as before.
+* **Undo 2a refuses once the earlier part-paid S$1,000 sale is paid off.**
+  Its reward vouchers are then given, or still owed, and undoing step 2a would
+  lose the record of them. A full rollback then needs the user's decision.
+* **The earlier-sale script has no UNDO file.** If its vouchers were given by
+  mistake, the reward review on that invoice (Owner or Manager) withdraws the
+  reward only while none of its vouchers has been handed over; once any has,
+  the review keeps the reward, and the rest can still be handed over. The
+  review opens on the invoice's Finance panel when "Correct unused benefit
+  recipient" (moving its unused credit) is refused because of those vouchers;
+  recording the decision moves nothing. Refund / Cancel does not open it: a
+  refund or cancellation withdraws the vouchers not handed over as part of the
+  action. Or an Owner or Manager calls `resolve_invoice_credit_rewards` for
+  that invoice. Ask the user first.
+* The UNDOs carry the same constants as steps 2a and 2b. If those were changed
+  at go-live, these were changed with them (the go-live suite checks that
+  they agree).
+
+### The earlier part-paid Credit Package sale
+
+One Credit Package sold before go-live was not paid off on 10 Nov 2026. It
+keeps the terms it was sold with:
+
+* When it is paid off, it is issued as any sale is now: credit only, because
+  the package's reward is off by then.
+* Its 10 reward vouchers are then given by
+  `scripts/therapy/credit-package-presale-reward-502.sql`, on the terms
+  recorded for it at go-live (step 2a above).
+* That script is run **only with the user's OK, asked for fresh at that
+  time**. Nothing about it is automatic.
+
+---
+
+*The report below was written on 9 Sep 2026, before those migrations went live.*
+
 Migrations 220–224, `src/lib/therapy/`, `src/components/therapy/`.
 Nothing here is committed, deployed, or applied to production data.
 
 ---
 
 ## 1. Why the claim dialog only ever offered unlimited therapy
+
+> History since 502 (10 Nov 2026): no page offers this claim any more,
+> nothing new is earned to claim, and signed-in logins can no longer call
+> `legacy_reward_options`, `legacy_reward_options_diagnostic` or
+> `claim_legacy_therapy` (their bodies stay). See the note at the top.
 
 Reproduced against the real function before anything was changed.
 
@@ -167,7 +400,7 @@ gazetted dates, 2 Sundays skipped.
 | Screen | Function | What it will not do |
 |---|---|---|
 | Expiry recalculation | `therapy_recalculation_preview()` | Touch expired, cancelled or refunded entitlements; shorten a granted expiry; guess a country |
-| Reward tier mapping | `therapy_reward_mapping_preview()` | Attach any tier automatically; alter a qualifying amount; touch a claimed unit |
+| Reward tier mapping (no longer on any page) | `therapy_reward_mapping_preview()` | Attach any tier automatically; alter a qualifying amount; touch a claimed unit |
 | Calendar impact | `therapy_closure_impact(date)` | Shorten anyone when a date is removed |
 | Successor reconciliation | `therapy_successor_reconciliation()` | Move a start date a member of staff chose |
 
@@ -271,6 +504,9 @@ argument list, and PostgreSQL will not change either in place. Grants are
 reissued in the same files.
 
 ### Rollback
+
+> **Superseded by 502. Do not run: it would bring back the Legacy reward
+> functions.** To undo 502, follow "Rollback order" at the top.
 
 ```sql
 -- 224: the seeded calendar (this alone changes no expiry)

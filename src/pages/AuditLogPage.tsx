@@ -101,7 +101,14 @@ export function auditDetailsText(e: Pick<AuditEntry, 'old_data' | 'new_data'>): 
   return text.length > CELL_LIMIT ? `${text.slice(0, CELL_LIMIT)}… (cut at ${CELL_LIMIT.toLocaleString('en-GB')} characters)` : text;
 }
 
-const actionText = (a: string) => a.replace(/_/g, ' ');
+// An action whose stored name is not what staff call it now, in their words,
+// on screen and in the export. Every other action is its name with spaces.
+// 502 (the user, 10 Nov 2026): an older Credit Package sale's reward vouchers
+// settled with its refund or cancellation (resolve_invoice_credit_rewards).
+const ACTION_LABEL = new Map<string, string>([
+  ['qualification_rewards_resolved', 'reward vouchers settled'],
+]);
+const actionText = (a: string) => ACTION_LABEL.get(a) ?? a.replace(/_/g, ' ');
 const roleText = (r: string | null) => (r ? r.replace(/_/g, ' ') : '');
 const moduleText = (e: AuditEntry) => (e.module ? (e.module_recorded ? e.module : `${e.module} (from table)`) : '');
 const recordText = (e: AuditEntry) => e.record_label || e.record_id || '';

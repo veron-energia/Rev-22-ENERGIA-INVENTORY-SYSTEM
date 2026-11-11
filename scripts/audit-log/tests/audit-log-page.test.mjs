@@ -3,7 +3,8 @@
 // times are Singapore time, a failed read is shown as a failure rather than
 // "No audit entries" (REPORTS-5), and the export holds every entry of the
 // search with When, Action, Table, Module, By, Role, Reason, Record and
-// Details.
+// Details. An action whose stored name staff would not know is shown in their
+// words (502: qualification_rewards_resolved reads "reward vouchers settled").
 //
 // The actual src/pages/AuditLogPage.tsx is bundled with esbuild and mounted in
 // jsdom. Only the Supabase client, the auth context and xlsx are stubbed: the
@@ -342,6 +343,26 @@ test('the export reads every entry of the search at its as-of time, with By, Rol
   await tick(20);
   assert.deepEqual(calls().slice(mark).map(c => c.args.p_actor), [STAFF]);
   assert.equal(globalThis.__exports.at(-1).sheet.ws.body.length, 1);
+});
+
+test('an older Credit Package sale\'s reward vouchers settled read "reward vouchers settled", on screen and in the export; other actions keep their names', async () => {
+  // 502 (the user, 10 Nov 2026): the stored action keeps its old name,
+  // qualification_rewards_resolved; staff read it in today's words.
+  await mount({ setup: b => {
+    b.entries.unshift({ id: 'e-reward-settled', created_at: '2026-10-08T17:00:00Z', action: 'qualification_rewards_resolved',
+      table_name: 'credit_package_sales', module: null, module_recorded: false, changed_by: OWNER, actor_name: 'Fixture Owner',
+      actor_role: 'owner', reason: 'Package refunded', record_id: '00000000-0000-4000-8000-0000000000d1', record_label: null,
+      old_data: null, new_data: { withdrawn: 1, kept: 0 } });
+  } });
+  const [settled, paid, requested] = bodyRows().map(cells);
+  assert.equal(settled[1], 'reward vouchers settled');
+  assert.equal(paid[1], 'invoice paid', 'every other action is its name with spaces');
+  assert.equal(requested[1], 'transfer requested by staff');
+  assert.doesNotMatch(text(document.querySelector('tbody')), /qualification/i, 'the stored name is not shown');
+  await click(button('Export Excel'));
+  await tick(20);
+  const { sheet } = globalThis.__exports.at(-1);
+  assert.deepEqual(sheet.ws.body.slice(0, 3).map(r => r.Action), ['reward vouchers settled', 'invoice paid', 'transfer requested by staff']);
 });
 
 test('the export helpers: Singapore time, and long details cut to fit an Excel cell', () => {

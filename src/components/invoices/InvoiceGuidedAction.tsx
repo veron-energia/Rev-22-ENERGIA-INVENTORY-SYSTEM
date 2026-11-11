@@ -62,7 +62,10 @@ type Plan = {
   invoice_no: string; action: Action; refund_amount: number; refund_due: number;
   window: { created_on: string; deadline: string; within: boolean; days_remaining: number; override_required: boolean; creation_reliable: boolean; review_note?: string };
   lines: PlanLine[]; stock: PlanStock[]; sources: { payment_id: string; method: string; wallet: boolean; amount: number }[];
-  overrides_required: { code: string; message: string; amount_required?: boolean; default_amount?: number | null; invoice_item_id?: string }[];
+  overrides_required: { code: string; message: string; amount_required?: boolean; default_amount?: number | null; invoice_item_id?: string;
+    /** 417: the reward numbers an older Credit Package sale's reward override is about
+     *  (reward_withdrawal: those not handed over yet; reward_consumed_kept: those kept). */
+    entitlements?: string[] }[];
   blockers: { code: string; message: string }[];
   summary: string[]; requires_override: boolean; blocked: boolean; plan_hash: string;
   status?: string;
@@ -84,9 +87,9 @@ type Plan = {
     therapy_closed?: { entitlement_no: string; package?: string; used: boolean; benefit?: string | null; line?: string }[];
     /** Used therapy on no invoice line (a correction removed it), which the action leaves running. */
     therapy_left?: { entitlement_no: string; package?: string; line?: string }[];
-    /** 417: a credit package's reward entitlements, settled with this action:
-     *  those not claimed yet are withdrawn, those already activated or claimed
-     *  stay with the customer. */
+    /** 417: an older Credit Package sale's reward vouchers, settled with this
+     *  action: rewards not handed over yet are withdrawn; those with vouchers
+     *  already handed over stay with the customer. */
     rewards?: { withdrawn: string[]; kept: string[] };
   };
 };
@@ -98,6 +101,27 @@ type RequestStatus = {
     requested_at?: string | null; resolved_by?: string | null; resolved_at?: string | null;
     rejection_reason?: string | null; legacy?: boolean };
 };
+
+/** An override's text as the review shows it. The two overrides for an older
+ *  Credit Package sale's reward vouchers (417: reward_withdrawal and
+ *  reward_consumed_kept) are put in the review's own plain words, from their
+ *  code and the reward numbers they carry, because the server words them
+ *  "entitlements" and "claimed" (502, the user, 10 Nov 2026). Any other
+ *  override, or one without its numbers, shows the server's message as it is. */
+function overrideText(o: { code: string; message: string; entitlements?: unknown }, action: Action | null): string {
+  if (!Array.isArray(o.entitlements) || !o.entitlements.every(n => typeof n === 'string' && n.trim() !== '')) return o.message;
+  const nos = (o.entitlements as string[]).join(', ');
+  // The server's own word for the action: a cancellation, or any refund.
+  const what = action === 'cancel' ? 'cancellation' : 'refund';
+  if (o.code === 'reward_withdrawal') {
+    return nos ? `Reward vouchers not handed over yet (${nos}) are withdrawn with this ${what}.`
+      : `The reward vouchers from this Credit Package are settled with this ${what}.`;
+  }
+  if (o.code === 'reward_consumed_kept' && nos) {
+    return `Reward vouchers already handed over (${nos}) stay with the customer and keep their history.`;
+  }
+  return o.message;
+}
 
 /**
  * The guided refund/cancellation flow.
@@ -819,8 +843,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                         {b.holder ? <> — {b.holder}</> : null}
                         {b.line ? <span className="muted"> ({b.line})</span> : null}
                       </li>))}
-                      {withdrawn.length > 0 && <li>Reward entitlements withdrawn: {withdrawn.join(', ')}</li>}
-                      {kept.length > 0 && <li>Reward entitlements kept (already activated or claimed, with their history): {kept.join(', ')}</li>}
+                      {withdrawn.length > 0 && <li>Reward vouchers withdrawn (not handed over yet): {withdrawn.join(', ')}</li>}
+                      {kept.length > 0 && <li>Reward vouchers kept (some or all already handed over; their history stays): {kept.join(', ')}</li>}
                     </ul>
                   </section>
                 )}
@@ -855,7 +879,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                 {(plan.overrides_required ?? []).length > 0 && (
                   <section className="invoice-guided-section">
                     <h5>Overrides required</h5>
-                    <ul>{plan.overrides_required.map((o, n) => <li key={`${overrideKey(o)}:${n}`}>{o.message}</li>)}</ul>
+                    <ul>{plan.overrides_required.map((o, n) => <li key={`${overrideKey(o)}:${n}`}>{overrideText(o, planAction)}</li>)}</ul>
                   </section>
                 )}
               </>);
@@ -931,7 +955,7 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
                 <legend>Override reasons</legend>
                 {plan.overrides_required.map((o, i) => (
                   <div key={`${overrideKey(o)}:${i}`}>
-                    <label><span>{overrideLine(o) ? <strong>{overrideLine(o)}: </strong> : null}{o.message}</span>
+                    <label><span>{overrideLine(o) ? <strong>{overrideLine(o)}: </strong> : null}{overrideText(o, planAction)}</span>
                       <input type="text" value={overrideReasons[overrideKey(o)] ?? ''} required
                         aria-label={`Reason for override: ${o.code}${overrideLine(o) ? ` (${overrideLine(o)})` : ''}`}
                         onChange={e => setOverrideReasons({ ...overrideReasons, [overrideKey(o)]: e.target.value })} />

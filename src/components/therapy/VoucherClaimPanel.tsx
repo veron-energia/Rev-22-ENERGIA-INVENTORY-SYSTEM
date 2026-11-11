@@ -30,11 +30,13 @@ const readable = (iso?: string | null) => {
 };
 
 /**
- * Vouchers a customer is owed, claimed a few at a time.
+ * Vouchers a customer is owed, handed over a few at a time.
  *
  * The three numbers at the top are the ones the counter conversation starts
  * with, so they are stated plainly rather than left to be worked out from a
- * total and a history.
+ * total and a history. They use the words of the list that opens this window
+ * (Therapy → Vouchers to hand over): owed, handed over, left, collect by
+ * (502, the user, 10 Nov 2026). The quantity step keeps "collect".
  *
  * The choices offered are the ones snapshotted when the purchase happened, not
  * whatever the package lists today — a customer who bought in January is owed
@@ -141,7 +143,7 @@ export const VoucherClaimPanel: React.FC<{
     <div className="credit-rules-backdrop" {...backdrop}>
       <div className="credit-rules" role="dialog" aria-modal="true" aria-labelledby="vc-title">
         <div className="credit-rules-head">
-          <h3 id="vc-title">Claim vouchers{state ? ` — ${state.entitlement_no}` : ''}</h3>
+          <h3 id="vc-title">Hand over vouchers{state ? ` — ${state.entitlement_no}` : ''}</h3>
           <button type="button" className="credit-rules-close" aria-label="Close" onClick={requestClose}>&times;</button>
         </div>
 
@@ -149,8 +151,8 @@ export const VoucherClaimPanel: React.FC<{
           {loadError && (
             <div className="alert alert-danger" role="alert">
               <AlertTriangle size={15} aria-hidden="true" />
-              <div><strong>The entitlement could not be loaded.</strong> {loadError}
-                <br />Nothing has been claimed.
+              <div><strong>This reward could not be loaded.</strong> {loadError}
+                <br />Nothing has been handed over.
                 <br /><button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }}
                   onClick={() => void load()}><RefreshCw size={13} aria-hidden="true" /> Try again</button>
               </div>
@@ -160,26 +162,26 @@ export const VoucherClaimPanel: React.FC<{
           {state && (
             <>
               <div className="voucher-claim-tally">
-                <div><span>{state.entitled}</span>Entitled</div>
-                <div><span>{state.claimed}</span>Claimed</div>
-                <div className="vc-remaining"><span>{state.remaining}</span>Remaining</div>
+                <div><span>{state.entitled}</span>Owed</div>
+                <div><span>{state.claimed}</span>Handed over</div>
+                <div className="vc-remaining"><span>{state.remaining}</span>Left</div>
                 {state.revoked > 0 && <div><span>{state.revoked}</span>Withdrawn</div>}
               </div>
               <p className="credit-rules-hint">
-                {state.package_name} · claim by {readable(state.claim_deadline)}
-                {state.deadline_passed && ' — the deadline has passed'}
+                {state.package_name} · collect by {readable(state.claim_deadline)}
+                {state.deadline_passed && ' — the collect-by date has passed'}
               </p>
 
               {done && (
                 <p role="status" className="voucher-claim-done">
-                  Claimed {done.claimed_now}. Document {done.invoice_no}. It records the hand-over
+                  Handed over {done.claimed_now}. Document {done.invoice_no}. It records the hand-over
                   only — no payment, and nothing further is owed on it.
                 </p>
               )}
 
               {!state.snapshot_present && !waitsForManager && (
                 <p className="credit-rules-warn">
-                  This entitlement predates the record of which vouchers it was sold with, so any
+                  This reward predates the record of which vouchers it was sold with, so any
                   free-session reward voucher can be chosen. Check it against the original purchase first.
                 </p>
               )}
@@ -194,17 +196,17 @@ export const VoucherClaimPanel: React.FC<{
 
               {state.cancelled ? (
                 <p className="credit-rules-warn">
-                  This entitlement was cancelled, so nothing can be claimed against it. The
-                  entitled figure is shown for reference only.
+                  This reward was cancelled, so nothing can be handed over on it. The
+                  owed figure is shown for reference only.
                 </p>
               ) : state.blocked_reason ? (
                 <p className="credit-rules-warn" role="status">
                   {state.blocked_reason}, so nothing can be handed over on this reward.
                 </p>
               ) : state.deadline_passed ? (
-                <p className="credit-rules-warn">The claim deadline has passed. Nothing can be claimed.</p>
+                <p className="credit-rules-warn">The collect-by date has passed. Nothing can be handed over.</p>
               ) : state.remaining <= 0 ? (
-                <p className="credit-rules-hint">Nothing left to claim on this entitlement.</p>
+                <p className="credit-rules-hint">Nothing left to hand over on this reward.</p>
               ) : waitsForManager ? null : step === 'quantity' ? (
                 <>
                   <h4 className="vc-step-title">How many vouchers would you like to collect today?</h4>
@@ -257,7 +259,7 @@ export const VoucherClaimPanel: React.FC<{
                         </tr>
                       ))}
                       {state.eligible.length === 0 && (
-                        <tr><td colSpan={3} className="vc-note">No eligible vouchers are recorded for this entitlement.</td></tr>
+                        <tr><td colSpan={3} className="vc-note">No voucher choices are recorded for this reward.</td></tr>
                       )}
                     </tbody>
                   </table>

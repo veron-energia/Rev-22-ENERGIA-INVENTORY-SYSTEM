@@ -104,7 +104,7 @@ fixed during this task, **(c)** not applicable to the current implementation,
 | 9 | Unpaginated queries silently omitting records | **(b)**, partly | Two of the worst fixed: the invoice export (400 of every 1,000) and the TikTok settlement confirm (first 1,000 rows of the file). The class is wider — section 7 lists the rest. |
 | 10 | Incomplete voucher-claim documents | **(d)** | Confirmed present and presentation-only: a claim document prints as a zero-line S$0.00 "Tax Invoice" although `voucher_claims.selections` holds what was handed over. Left unfixed: what the customer's copy should say is a business decision. |
 | 11 | Missing historical eligibility allowing overly broad claims | **(d)** | Confirmed present. Entitlements predating migration 310 have no eligible-voucher snapshot, and the guard only applies when the snapshot exists, so any active reward voucher can be chosen. A reconciliation function computes a suggested list but nothing writes it back. Left unfixed: backfilling what a customer was sold is exactly the invention this task was told not to make. |
-| 12 | Deferred voucher deadlines from unrelated rules | **(d)**, partly | Fixed for premium bundles by migration 323. Still present for credit packages, which derive the deadline from the therapy rule with the lowest qualifying amount — unrelated to the package. Left unfixed: the correct deadline is a business rule. |
+| 12 | Deferred voucher deadlines from unrelated rules | **(d)**, partly | Fixed for premium bundles by migration 323. Still present for credit packages, which derive the deadline from the therapy rule with the lowest qualifying amount — unrelated to the package. Left unfixed: the correct deadline is a business rule. **Moot for new sales since 502 (10 Nov 2026):** Credit Packages no longer give reward vouchers. The rewards still owed keep the deadlines they were given. |
 | 13 | Ineffective stock regression assertions | **(b)** | Confirmed: `sum(...) <> 9` is NULL when the key is missing, and a NULL condition takes the false branch, so the assertion passes on the regression it guards. Fixed in the fixtures listed in section 5. |
 | 14 | Excessively large initial bundles | **(a)** | All 47 routes are lazy; the eager graph is nine modules. Measured in section 8. |
 
@@ -357,6 +357,11 @@ Each is a business rule. The instruction was not to change one by guessing.
    is derived from the therapy package rule with the lowest qualifying amount.
    Premium bundles were fixed (323) by using one year from payment. Whether that
    is also right for credit packages is yours to say.
+   **Moot for new sales since 502 (10 Nov 2026):** Credit Packages no longer
+   give reward vouchers. The rewards still owed keep the deadlines they were
+   given. (One sale made before then and not yet paid off gets its vouchers
+   later, through a separate script run only with the user's OK; see
+   THERAPY_HOLIDAY_AND_REWARDS.md.)
 2. **Entitlements predating migration 310 have no eligible-voucher list**, so
    any active reward voucher may be claimed against them. A reconciliation
    function suggests a list; nothing writes it back. Backfilling what a customer

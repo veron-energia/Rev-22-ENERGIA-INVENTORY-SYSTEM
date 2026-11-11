@@ -1,8 +1,16 @@
+-- 502 (the user, 10 Nov 2026: Credit Package rewards already given keep their
+-- refund and cancel review) words the refusal without "qualification"; it is
+-- matched by the words of the world the file runs in. Whether 502 is in is read
+-- from the refund guard it drops (legacy_refund_guard on invoices).
 begin;
 do $$
 declare o uuid:=gen_random_uuid(); st uuid; c uuid; pm uuid; cp uuid; inv uuid; it uuid; s uuid; l uuid; bonus uuid;
  pay uuid; b uuid; bb uuid; x jsonb; r jsonb;
+ v_502 boolean:=not exists(select 1 from pg_trigger where tgrelid='public.invoices'::regclass
+                            and tgname='legacy_refund_guard' and not tgisinternal);
+ v_refusal text;
 begin
+ v_refusal:=case when v_502 then '%reward vouchers that are still outstanding%' else '%qualification reward entitlements%' end;
  insert into auth.users(id,email) values(o,'original-sources@tests.invalid');
  insert into profiles(id,full_name,email,role) values(o,'Original Sources Owner','original-sources@tests.invalid','owner');
  perform set_config('request.jwt.claim.sub',o::text,true);
@@ -60,11 +68,11 @@ begin
   perform refund_invoice_recorded(inv,jsonb_build_array(jsonb_build_object('invoice_item_id',it,'amount',100,'benefits',jsonb_build_array(jsonb_build_object('benefit_id',b,'amount',100)))),
    jsonb_build_array(jsonb_build_object('payment_id',pay,'amount',100)),'[]','Unresolved qualification reward',gen_random_uuid());
   raise exception 'Refund bypassed qualification reward evidence';
- exception when others then if sqlerrm not like '%qualification reward entitlements%' then raise; end if; end;
+ exception when others then if sqlerrm not like v_refusal then raise; end if; end;
  begin
   perform cancel_invoice_recorded(inv,'Unresolved qualification reward',gen_random_uuid());
   raise exception 'Cancellation bypassed qualification reward evidence';
- exception when others then if sqlerrm not like '%qualification reward entitlements%' then raise; end if; end;
+ exception when others then if sqlerrm not like v_refusal then raise; end if; end;
  -- The block must be answerable, not permanent: resolving the rewards lets the
  -- ordinary cancellation through, and the sale records that it was resolved.
  perform resolve_invoice_credit_rewards(inv,'Reviewed the reward entitlements for this return');

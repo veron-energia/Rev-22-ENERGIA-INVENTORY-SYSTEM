@@ -2,6 +2,10 @@
 --
 -- 191 blocked every such invoice with no way to clear the block. These cover the
 -- refusal, the resolution, and the lines that must stay untouched.
+-- 502 (the user, 10 Nov 2026: Credit Package rewards already given keep their
+-- refund and cancel review) words the refusal without "qualification"; the
+-- refusal is matched by the words of the world it runs in. Whether 502 is in is
+-- read from the refund guard it drops (legacy_refund_guard on invoices).
 -- Disposable database only; everything is rolled back.
 begin;
 do $$
@@ -9,6 +13,8 @@ declare o uuid:=gen_random_uuid(); staff uuid:=gen_random_uuid();
  st uuid; c uuid; pm uuid; pkg uuid; smallpkg uuid;
  inv uuid; inv2 uuid; inv3 uuid; it uuid; it3 uuid; pay uuid; pay3 uuid;
  sale uuid; sale2 uuid; sale3 uuid; r jsonb; n integer; ent uuid;
+ v_502 boolean:=not exists(select 1 from pg_trigger where tgrelid='public.invoices'::regclass
+                            and tgname='legacy_refund_guard' and not tgisinternal);
 begin
  insert into auth.users(id,email) values(o,'cr-owner@tests.invalid'),(staff,'cr-staff@tests.invalid');
  insert into profiles(id,full_name,email,role) values
@@ -41,7 +47,8 @@ begin
   raise exception 'Cancelled while rewards were unresolved';
  exception when others then
   if sqlerrm like 'Cancelled while rewards%' then raise; end if;
-  if sqlerrm not like '%qualification reward entitlements that are still outstanding%' then
+  if sqlerrm not like (case when v_502 then '%reward vouchers that are still outstanding%'
+                            else '%qualification reward entitlements that are still outstanding%' end) then
    raise exception 'Unexpected refusal: %', sqlerrm; end if; end;
 
  -- ---------------------------------------------------------------

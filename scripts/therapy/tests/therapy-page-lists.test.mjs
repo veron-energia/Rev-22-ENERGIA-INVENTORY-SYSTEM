@@ -1,27 +1,46 @@
-// The Therapy page's lists and windows after 422, rendered for real against
-// the preview stub (scripts/therapy/preview/supabase-stub.ts):
-//   * the Purchased and Legacy lists come a page at a time from
+// The Therapy page's lists and windows after 422 and 502, rendered for real
+// against the preview stub (scripts/therapy/preview/supabase-stub.ts):
+//   * the Purchased and Vouchers to hand over lists come a page at a time from
 //     therapy_list_page, searched and filtered on the server, with names,
-//     claimed and left figures and days left from it (THERAPY-5, -15, -19);
+//     handed-over and left figures and days left from it (THERAPY-5, -15, -19);
+//   * Vouchers to hand over lists what customers are still owed from a Credit
+//     Package, a Premium Bundle or a therapy package taken as vouchers, and
+//     never a reward of the old same-day spending reward (502: the server's
+//     contract, which the stub reproduces; the SQL suite proves the server);
+//     Vouchers shows only where vouchers can still be handed over (some left,
+//     the collect-by date not passed, the sale not closed); a reward on a
+//     closed sale reads "Sale closed", and a cancelled one says so once; a
+//     server without 502 makes that tab say the list could not be loaded,
+//     and nothing else breaks;
+//   * the hand-over window uses the list's words (owed, handed over, left,
+//     collect by), and the holdings card lists the vouchers still to hand
+//     over by their collect-by date, apart from packages not claimed yet;
 //   * a package on a refunded sale offers no Claim, Benefit or Reschedule,
 //     says why, and an Owner closes it with "Cancel package (no money back)",
 //     which says no money moves and links to the invoice (THERAPY-20, -9);
 //   * typing in a search box reads nothing until Search is pressed, and a
 //     page past the end steps back to the last page (THERAPY-19);
-//   * a Legacy claim starts on the first free day and asks before it
-//     overlaps (THERAPY-M2), and never offers a free day after the claim
-//     deadline;
 //   * any member of staff hands a credit-package reward's vouchers over
 //     (THERAPY-12, Q16 A); a reward with no sale and no voucher list waits
 //     for an Owner or Manager (the Owner, 9 Oct 2026);
 //   * Cancel package says commission stays as it is (commission follows the
-//     money, the Owner, 9 Oct 2026), and reads the Legacy list again too;
+//     money, the Owner, 9 Oct 2026), and reads the Vouchers to hand over list
+//     again too;
 //   * on a reward that waits for an Owner or Manager, staff see one message
 //     only: no number to type and no "any reward voucher" warning;
 //   * the tabs wrap and the Packages table scrolls in its frame (THERAPY-11);
 //   * the credit-package form shows the till's rules, not tick boxes
-//     (THERAPY-6, Q15 A);
-//   * the holdings say Issued and Held, never Used (THERAPY-16).
+//     (THERAPY-6, Q15 A), and no reward: new sales give credit only, the
+//     threshold and voucher list are sent back as read, and every save
+//     switches the reward off (502), a new package's on the id the server
+//     gave it;
+//   * the Premium Bundle form is unchanged (502);
+//   * Holidays holds only the holiday calendars and the expiry recalculation
+//     preview;
+//   * no tab, window or row names Legacy or Qualification, and the page calls
+//     none of their functions (502);
+//   * the holdings say Issued and Held, never Used (THERAPY-16), and the old
+//     reward's vouchers read "Earlier reward".
 //
 // src/pages/TherapyPage.tsx is bundled with esbuild, as the preview bundles it:
 // the Supabase client and the auth context are the preview's stubs. The stub
@@ -74,9 +93,9 @@ const { TherapyPage, createRoot, act, React } =
   await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 
 const sgToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
-// The page's own date format (TherapyPage's d()).
-const d = s => new Date(s).toLocaleDateString('en-GB');
-const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The page's own date format (TherapyPage's d()): the Singapore day, dd/mm/yyyy,
+// whatever the time zone the test runs in.
+const d = s => s.split('-').reverse().join('/');
 const calls = () => globalThis.__therapyStubCalls ?? [];
 const lastCall = name => [...calls()].reverse().find(c => c.name === name);
 const tick = () => act(async () => { await new Promise(r => setTimeout(r, 10)); });
@@ -94,6 +113,32 @@ const setValue = (el, value) => act(async () => {
 const buttonsIn = el => [...el.querySelectorAll('button')].map(b => b.textContent.trim() || b.title);
 const button = (el, text) => [...el.querySelectorAll('button')].find(b => b.textContent.trim() === text);
 const row = (host, no) => [...host.querySelectorAll('tbody tr')].find(tr => tr.querySelector('td')?.textContent === no);
+const tabBtn = (host, label) => [...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.trim() === label);
+const tabLabels = host => [...host.querySelectorAll('.therapy-tabs button')].map(b => b.textContent.trim());
+const openTab = async (host, label) => {
+  const b = tabBtn(host, label);
+  assert.ok(b, `a tab "${label}": ` + tabLabels(host).join(', '));
+  await click(b);
+};
+// The rows of the old same-day spending reward in the stub (earner_kind
+// customer or affiliate). Vouchers to hand over never shows them (502).
+//
+// A stub-contract check, not a test of a filter in the page: the page lists
+// whatever therapy_list_page('vouchers') returns, and the stub leaves these
+// rows out itself, as 502's server does. So the checks below pin that the page
+// asks for the 'vouchers' list (never 'legacy') and adds nothing of its own.
+// The proof that the server leaves them out is the 502 SQL suite
+// (scripts/therapy/tests/legacy-retired-502-reads.sql).
+const OLD_REWARD_ROWS = ['LEG-0009004', 'LEG-0009078', 'LEG-0009200', 'LEG-0009201', 'LEG-0009300', 'LEG-0009500'];
+const VOUCHERS_TAB = 'Vouchers to hand over';
+const showFilter = async (host, label) => {
+  const select = host.querySelector('.therapy-filters select');
+  const option = [...select.options].find(o => o.textContent === label);
+  assert.ok(option, `a "${label}" filter: ` + [...select.options].map(o => o.textContent).join(', '));
+  await setValue(select, option.value);
+  await until(() => lastCall('therapy_list_page')?.args.p_status === option.value
+    && !host.querySelector('.therapy-filters')?.textContent.includes('Loading'), `the ${label} list`);
+};
 
 async function renderPage(role = 'owner') {
   globalThis.__THERAPY_PREVIEW_ROLE = role;
@@ -146,9 +191,9 @@ test('a package on a refunded sale is not offered Claim, and an Owner closes it 
     await until(() => lastCall('refund_purchased_therapy'), 'the cancel call');
     assert.deepEqual(lastCall('refund_purchased_therapy').args, { p_entitlement_id: 'e-refunded', p_reason: 'The sale was refunded' });
     // Both lists are read again: closing a package also cancels the voucher
-    // allowance it gave, which the Legacy tab shows.
+    // allowance it gave, which Vouchers to hand over shows.
     const sinceCancel = () => calls().slice(calls().findIndex(c => c.name === 'refund_purchased_therapy'));
-    await until(() => ['purchased', 'legacy'].every(t =>
+    await until(() => ['purchased', 'vouchers'].every(t =>
       sinceCancel().some(c => c.name === 'therapy_list_page' && c.args.p_tab === t)), 'both lists read again');
     // A unit not claimed yet on a paid sale keeps Claim.
     assert.ok(buttonsIn(row(host, 'UTP-0000013')).includes('Claim'));
@@ -211,88 +256,148 @@ test('a page past the end steps back to the last page there is', async () => {
   } finally { globalThis.__therapyStubPurchasedPadding = 0; await done(); }
 });
 
-test('the Legacy list shows what was handed over, hides cancelled rewards, and asks before an overlap', async () => {
+test('Vouchers to hand over lists what customers are still owed, offers Vouchers only where they can be handed over, and lists no Legacy reward (the server contract, as the stub reproduces it)', async () => {
   const { host, done } = await renderPage();
   try {
-    await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.includes('Legacy Therapy')));
-    await until(() => row(host, 'LEG-0009004'), 'the Legacy list');
-    const old = row(host, 'LEG-0009004');
-    assert.match(old.textContent, /0 of 10 left/, 'claimed before claim documents counts (THERAPY-5)');
-    assert.match(old.textContent, /10 handed over/);
-    assert.ok(!row(host, 'LEG-0009078'), 'a cancelled reward is hidden by default');
-    const legacyCall = [...calls()].reverse().find(c => c.name === 'therapy_list_page' && c.args.p_tab === 'legacy');
-    assert.equal(legacyCall.args.p_status, 'open');
-    // Cancelled on request: says so, and offers no Vouchers.
-    const select = [...host.querySelectorAll('.therapy-filters select')].pop();
-    await setValue(select, 'cancelled');
-    await until(() => row(host, 'LEG-0009078'), 'the cancelled reward');
-    const cancelled = row(host, 'LEG-0009078');
-    assert.match(cancelled.textContent, /cancelled/);
-    assert.ok(!buttonsIn(cancelled).includes('Vouchers'), 'no Vouchers on a cancelled reward');
-    await setValue(select, 'open');
-    await until(() => row(host, 'LEG-0009200'), 'the open rewards');
+    // The list is read when the page opens, from the server's 'vouchers' list,
+    // and starts on what is still to hand over. The old list is never asked for.
+    const first = calls().find(c => c.name === 'therapy_list_page' && c.args.p_tab === 'vouchers');
+    assert.ok(first, 'the list is read through therapy_list_page');
+    assert.equal(first.args.p_status, 'pending_activation', 'it opens on To hand over');
+    await openTab(host, VOUCHERS_TAB);
+    await until(() => row(host, 'LEG-0009120'), 'the Vouchers to hand over list');
+    assert.deepEqual([...host.querySelectorAll('thead th')].map(th => th.textContent.trim()),
+      ['No.', 'Customer', 'From', 'Vouchers', 'Collect by', 'Status', '']);
+    assert.equal(host.querySelector('input[type="search"]').getAttribute('aria-label'), 'Search vouchers to hand over');
+    assert.deepEqual([...host.querySelector('.therapy-filters select').options].map(o => o.textContent),
+      ['To hand over', 'Handed over', 'All but cancelled', 'Cancelled', 'All']);
 
-    // THERAPY-M2: the claim starts on the first free day ...
-    await click(button(row(host, 'LEG-0009200'), 'Claim'));
-    await until(() => host.querySelector('#claim-date'), 'the claim window');
-    if (sgToday() < '2026-12-26') {
-      assert.equal(host.querySelector('#claim-date').value, '2026-12-26', 'the start date is the first free day');
-      assert.ok(host.querySelector('[data-next-free]'), 'and the window says why');
-      // In plain words: until when the running therapy lasts, and that the
-      // first free day is filled in.
-      assert.match(host.querySelector('[data-next-free]').textContent.replace(/\s+/g, ' ').trim(),
-        new RegExp(`^This customer's unlimited therapy runs until ${esc(d('2026-12-25'))}\\. The first free day, ${esc(d('2026-12-26'))}, `
-          + `is filled in\\. You can choose another day\\. If it overlaps, you will be asked first\\.$`));
+    // A credit-package reward, 3 of 10 handed over (THERAPY-5: the server's figures).
+    const credit = row(host, 'LEG-0009120');
+    assert.match(credit.textContent, /7 of 10 left/);
+    assert.match(credit.textContent, /3 handed over/);
+    assert.match(credit.textContent, /INV-2026-9337/, 'the sale it came from');
+    assert.equal(credit.querySelector('.badge').textContent, 'To hand over');
+    assert.ok(buttonsIn(credit).includes('Vouchers'), 'its vouchers can be handed over');
+    // A therapy package taken as vouchers.
+    assert.match(row(host, 'LEG-0009140').textContent, /6 of 10 left/);
+    // Past its collect-by date: says so, in the status and by the date.
+    const passed = row(host, 'LEG-0009150');
+    assert.equal(passed.querySelector('.badge').textContent, 'Deadline passed');
+    // The collect-by date is its Singapore day in any time zone (written out, not computed).
+    assert.equal(passed.querySelectorAll('td')[4].textContent, '01/10/2026 · passed');
+    assert.equal(credit.querySelectorAll('td')[4].textContent, d('2027-09-20'));
+    // Nothing can be handed over once the collect-by date has passed (the
+    // server refuses it), so no Vouchers button: the window could only refuse.
+    assert.match(passed.textContent, /10 of 10 left/, 'the vouchers are still left on it');
+    assert.ok(!buttonsIn(passed).includes('Vouchers'), 'no Vouchers once the collect-by date has passed: ' + buttonsIn(passed).join(', '));
+    // A sale refunded, cancelled or deleted: "Sale closed", not "To hand over",
+    // with the reason in red, and no Vouchers button (the server refuses it).
+    const closed = row(host, 'LEG-0009170');
+    assert.ok(closed, 'a reward on a closed sale that the server still keeps waiting is listed');
+    const closedBadge = closed.querySelector('.badge');
+    assert.equal(closedBadge.textContent, 'Sale closed');
+    assert.ok(closedBadge.classList.contains('badge-muted'), 'a muted badge: ' + closedBadge.className);
+    assert.match(closed.textContent, /5 of 5 left/);
+    assert.equal(closed.querySelector('.therapy-cell-sub')?.textContent, 'Invoice INV-2026-9339 was deleted', 'why, in red');
+    assert.ok(!buttonsIn(closed).includes('Vouchers'), 'no Vouchers on a closed sale: ' + buttonsIn(closed).join(', '));
+    // A reward an Owner or Manager hands over, past its collect-by date: nothing
+    // can be handed over on it, so it is not marked for them and offers no Vouchers.
+    const ownerPassed = row(host, 'LEG-0009410');
+    assert.ok(ownerPassed, 'the Owner-or-Manager reward past its date is listed');
+    assert.equal(ownerPassed.querySelector('.badge').textContent, 'Deadline passed');
+    assert.ok(!ownerPassed.querySelector('[data-owner-or-manager]'), 'no "An Owner or Manager hands these over." once the date has passed');
+    assert.ok(!buttonsIn(ownerPassed).includes('Vouchers'), 'no Vouchers: ' + buttonsIn(ownerPassed).join(', '));
+    // A package ended after 4 were handed over, the other 6 withdrawn, its sale
+    // still open: the server keeps it waiting, but nothing is left to hand over.
+    const ended = row(host, 'LEG-0009190');
+    assert.ok(ended, 'the ended package is listed under To hand over (the server keeps it waiting)');
+    assert.match(ended.textContent, /0 of 10 left/);
+    assert.equal(ended.querySelector('.badge').textContent, 'Withdrawn', 'not "To hand over" with nothing left');
+    assert.ok(!buttonsIn(ended).includes('Vouchers'), 'no Vouchers when nothing is left: ' + buttonsIn(ended).join(', '));
+    // Exactly the rows that can be handed over offer Vouchers.
+    assert.deepEqual([...host.querySelectorAll('tbody tr')].filter(tr => buttonsIn(tr).includes('Vouchers'))
+      .map(tr => tr.querySelector('td').textContent).sort(),
+      ['LEG-0009120', 'LEG-0009140', 'LEG-0009301', 'LEG-0009400']);
+    // No Claim, no unlimited therapy and no affiliate reward here.
+    assert.ok(!buttonsIn(host.querySelector('table')).includes('Claim'), 'no Claim button');
+    assert.ok(![...host.querySelectorAll('.badge')].some(b => b.textContent === 'Affiliate'), 'no Affiliate badge');
+    for (const no of OLD_REWARD_ROWS) assert.ok(!row(host, no), `${no} is not listed under To hand over`);
+
+    // Handed over: a reward with nothing left offers no Vouchers (the window
+    // could only refuse), whether it was all collected or the rest withdrawn.
+    await showFilter(host, 'Handed over');
+    await until(() => row(host, 'LEG-0009130'), 'the handed-over rewards');
+    const bundle = row(host, 'LEG-0009130');
+    assert.match(bundle.textContent, /0 of 20 left/);
+    assert.match(bundle.textContent, /20 handed over/);
+    assert.equal(bundle.querySelector('.badge').textContent, 'Handed over');
+    assert.ok(!buttonsIn(bundle).includes('Vouchers'), 'no Vouchers on a reward handed over in full');
+    const refunded = row(host, 'LEG-0009160');
+    assert.match(refunded.textContent, /0 of 10 left/);
+    assert.match(refunded.textContent, /4 handed over/);
+    assert.match(refunded.textContent, /6 withdrawn/);
+    assert.ok(!buttonsIn(refunded).includes('Vouchers'), 'no Vouchers when the rest was withdrawn');
+    // "Handed over" only when nothing was withdrawn.
+    assert.equal(refunded.querySelector('.badge').textContent, 'Withdrawn', 'some withdrawn, the sale still open');
+    const refundedSale = row(host, 'LEG-0009180');
+    assert.ok(refundedSale, 'a reward on a refunded sale with nothing left is listed under Handed over');
+    assert.match(refundedSale.textContent, /0 of 10 left/);
+    assert.match(refundedSale.textContent, /2 handed over/);
+    assert.match(refundedSale.textContent, /8 withdrawn/);
+    assert.equal(refundedSale.querySelector('.badge').textContent, 'Sale closed', 'not "Handed over" when 8 of the 10 were withdrawn');
+    assert.equal(refundedSale.querySelector('.therapy-cell-sub')?.textContent, 'Invoice INV-2026-9341 was refunded', 'why, in red');
+    assert.ok(!buttonsIn(refundedSale).includes('Vouchers'), 'no Vouchers on a refunded sale');
+    for (const no of OLD_REWARD_ROWS) assert.ok(!row(host, no), `${no} is not listed under Handed over`);
+
+    // Cancelled on request: says so once, in Status (a dash under Vouchers),
+    // and offers no Vouchers.
+    await showFilter(host, 'Cancelled');
+    await until(() => row(host, 'LEG-0009079'), 'the cancelled reward');
+    const cancelled = row(host, 'LEG-0009079');
+    assert.match(cancelled.textContent, /cancelled/i);
+    assert.equal(cancelled.querySelectorAll('td')[3].textContent, '—', 'its Vouchers column shows a dash');
+    assert.deepEqual([...cancelled.querySelectorAll('.badge')].map(b => b.textContent), ['Cancelled'],
+      'one Cancelled badge, in Status');
+    assert.ok(!buttonsIn(cancelled).includes('Vouchers'), 'no Vouchers on a cancelled reward');
+    for (const no of OLD_REWARD_ROWS) assert.ok(!row(host, no), `${no} is not listed under Cancelled`);
+
+    // Every filter, All included: never a reward of the old same-day spending reward.
+    for (const label of ['All but cancelled', 'All']) {
+      await showFilter(host, label);
+      await until(() => row(host, 'LEG-0009079') || row(host, 'LEG-0009120'), `the ${label} list`);
+      for (const no of OLD_REWARD_ROWS) assert.ok(!row(host, no), `${no} is not listed under ${label}`);
+      assert.doesNotMatch(host.textContent, /Legacy|Qualification/, label);
     }
-    await until(() => button(host, 'Claim unlimited therapy'), 'the reward options');
-    await click(button(host, 'Claim unlimited therapy'));
-    // ... and asks before it overlaps, claiming nothing.
-    await until(() => host.querySelector('[data-overlap]'), 'the overlap question');
-    const ask = host.querySelector('[data-overlap]');
-    assert.match(ask.textContent, /Nothing has been claimed\./);
-    assert.match(ask.textContent, /UTP-0009012/);
-    assert.equal(lastCall('claim_legacy_therapy').args.p_allow_overlap, false);
-    assert.ok(button(ask, 'Start on 26 Dec 2026 instead'), 'it offers the free day');
-    await click(button(ask, 'Start anyway, overlapping'));
-    await until(() => host.textContent.includes('Unlimited therapy activated'), 'the confirmation');
-    assert.equal(lastCall('claim_legacy_therapy').args.p_allow_overlap, true);
+    assert.ok(row(host, 'LEG-0009079'), 'All lists the cancelled reward too');
+    assert.ok(!calls().some(c => c.name === 'therapy_list_page' && c.args.p_tab === 'legacy'), 'the old list is never asked for');
   } finally { await done(); }
 });
 
-test('a Legacy claim never offers a first free day after the claim deadline', async () => {
-  if (sgToday() > '2027-01-31') return;   // the fixture's deadline has passed
+test('a server without 502 refuses the list: the tab says so, and the rest of the page works', async () => {
+  // The deploy order is 502 first, then the pages; this is what a page deployed
+  // too early shows. It does not fall back to the old list.
+  globalThis.__therapyStubBefore502 = true;
   const { host, done } = await renderPage();
   try {
-    await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.includes('Legacy Therapy')));
-    await until(() => row(host, 'LEG-0009201'), 'the Legacy list');
-    await click(button(row(host, 'LEG-0009201'), 'Claim'));
-    await until(() => host.querySelector('#claim-date'), 'the claim window');
-    assert.equal(host.querySelector('#claim-date').value, sgToday(), 'today is filled in, not 1 Mar 2027');
-    assert.ok(host.querySelector('[data-next-free="after-deadline"]'), 'the window says the free day is after the deadline');
-    assert.match(host.querySelector('[data-next-free="after-deadline"]').textContent.replace(/\s+/g, ' ').trim(),
-      new RegExp(`^This customer's unlimited therapy runs until ${esc(d('2027-02-28'))}\\. The first free day, ${esc(d('2027-03-01'))}, `
-        + `is after the claim deadline, ${esc(d('2027-01-31'))}, so it is not filled in\\. If the day you choose overlaps, `
-        + `you will be asked first\\.$`));
-    assert.ok(!host.querySelector('[data-next-free=""]'), 'it does not say the free day is filled in');
-    await until(() => button(host, 'Claim unlimited therapy'), 'the reward options');
-    await click(button(host, 'Claim unlimited therapy'));
-    await until(() => host.querySelector('[data-overlap]'), 'the overlap question');
-    const ask = host.querySelector('[data-overlap]');
-    assert.ok(!button(ask, 'Start on 1 Mar 2027 instead'), 'a day past the deadline is not offered');
-    assert.match(ask.querySelector('[data-free-after-deadline]').textContent,
-      /The first free day, 1 Mar 2027, is after the claim\s+deadline, 31 Jan 2027\./);
-    assert.ok(button(ask, 'Start anyway, overlapping'));
-  } finally { await done(); }
+    await openTab(host, VOUCHERS_TAB);
+    await until(() => host.querySelector('.card [role="alert"]'), 'the refusal');
+    assert.match(host.querySelector('.card [role="alert"]').textContent,
+      /The list could not be loaded: Unknown list: vouchers \(purchased or legacy\)/);
+    assert.ok(!calls().some(c => c.name === 'therapy_list_page' && c.args.p_tab === 'legacy'), 'no fallback to the old list');
+    await openTab(host, 'Purchased');
+    await until(() => row(host, 'UTP-0000013'), 'the Purchased list');
+  } finally { globalThis.__therapyStubBefore502 = false; await done(); }
 });
 
 test('a deleted customer\'s row says "Deleted customer"', async () => {
   const { host, done } = await renderPage();
   try {
-    await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.includes('Legacy Therapy')));
-    await until(() => row(host, 'LEG-0009300'), 'the Legacy list');
-    assert.equal(row(host, 'LEG-0009300').querySelectorAll('td')[1].textContent, 'Deleted customer',
+    await openTab(host, VOUCHERS_TAB);
+    await until(() => row(host, 'LEG-0009301'), 'the Vouchers to hand over list');
+    assert.equal(row(host, 'LEG-0009301').querySelectorAll('td')[1].textContent, 'Deleted customer',
       'the server sends no name for a deleted customer (422, rule 9), and the page says so');
-    assert.equal(row(host, 'LEG-0009004').querySelectorAll('td')[1].textContent, 'Preview Customer A', 'a live customer keeps their name');
+    assert.equal(row(host, 'LEG-0009120').querySelectorAll('td')[1].textContent, 'Preview Customer B', 'a live customer keeps their name');
   } finally { await done(); }
 });
 
@@ -302,14 +407,22 @@ test('a member of staff hands a credit-package reward over, and cannot close pac
     const refunded = row(host, 'UTP-0009099');
     assert.match(refunded.textContent, /Ask an Owner or Manager to close this package\./);
     assert.ok(!buttonsIn(refunded).some(t => t.startsWith('Cancel package')), 'staff do not close packages');
-    await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.includes('Legacy Therapy')));
-    await until(() => row(host, 'LEG-0009120'), 'the Legacy list');
+    assert.deepEqual(tabLabels(host), ['Purchased', VOUCHERS_TAB], 'staff see the two lists only');
+    assert.ok(!tabBtn(host, 'Holidays'), 'Holidays stays with Owners and Managers');
+    await openTab(host, VOUCHERS_TAB);
+    await until(() => row(host, 'LEG-0009120'), 'the Vouchers to hand over list');
     await click(button(row(host, 'LEG-0009120'), 'Vouchers'));
     await until(() => host.querySelector('#vc-wanted'), 'the Vouchers window');
+    // The window speaks the list's words: hand over, owed, handed over, left, collect by.
+    assert.equal(host.querySelector('#vc-title').textContent, 'Hand over vouchers — LEG-0009120');
+    assert.deepEqual([...host.querySelectorAll('.voucher-claim-tally > div')].map(t => t.textContent),
+      ['10Owed', '3Handed over', '7Left']);
+    assert.equal(host.querySelector('.voucher-claim-tally + .credit-rules-hint').textContent.replace(/\s+/g, ' ').trim(),
+      'Credit package reward · collect by 20 Sep 2027');
+    assert.doesNotMatch(host.querySelector('[role="dialog"]').textContent, /[Ee]ntitle|[Cc]laim/, 'no "claim" or "entitlement" in the window');
     assert.ok(!host.querySelector('#vc-wanted').disabled, 'the number to collect can be typed');
     assert.ok(button(host, 'Choose vouchers'), 'staff may go on to hand them over (Q16 A)');
-    assert.ok(![...host.querySelectorAll('.therapy-tabs button')].some(b => b.textContent.includes('Credit Packages')),
-      'the catalogue tabs stay with Owners and Managers');
+    assert.ok(!tabLabels(host).some(l => l.includes('Credit Packages')), 'the catalogue tabs stay with Owners and Managers');
   } finally { await done(); }
 });
 
@@ -317,8 +430,9 @@ test('a reward with no sale and no voucher list waits for an Owner or Manager', 
   for (const role of ['staff', 'manager']) {
     const { host, done } = await renderPage(role);
     try {
-      await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.includes('Legacy Therapy')));
-      await until(() => row(host, 'LEG-0009400'), 'the Legacy list');
+      await openTab(host, VOUCHERS_TAB);
+      await until(() => row(host, 'LEG-0009400'), 'the Vouchers to hand over list');
+      // A credit-package reward: still listed, and still handed over.
       const r = row(host, 'LEG-0009400');
       assert.match(r.querySelector('[data-owner-or-manager]')?.textContent ?? '', /An Owner or Manager hands these over\./, role);
       assert.ok(!row(host, 'LEG-0009120').querySelector('[data-owner-or-manager]'), 'a reward with a sale is not marked');
@@ -351,24 +465,58 @@ test('the tabs wrap, the Packages table scrolls in its frame, and the holdings s
   const { host, done } = await renderPage();
   try {
     assert.ok(host.querySelector('.therapy-tabs.therapy-tabs-wrap'), 'the tab row wraps (THERAPY-11)');
+    assert.deepEqual(tabLabels(host),
+      ['Purchased', VOUCHERS_TAB, 'Holidays', 'Credit Packages', 'Premium Bundles', 'Packages']);
     await until(() => host.querySelector('.therapy-summary-table'), 'the holdings');
     const heads = [...host.querySelectorAll('.therapy-summary-table th')].map(th => th.textContent.trim());
     assert.ok(heads.includes('Held'), 'Held: ' + heads.join(', '));
     assert.ok(!heads.includes('Used'), 'no Used column: ' + heads.join(', '));
     assert.ok(host.querySelector('[data-not-enforced]'), 'it says use is not recorded yet');
-    await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.trim() === 'Packages'));
+    await openTab(host, 'Packages');
     await until(() => host.textContent.includes('New Package'), 'the Packages tab');
     const table = [...host.querySelectorAll('table')].find(t => t.textContent.includes('Duration'));
     assert.ok(table?.parentElement.classList.contains('table-wrap'), 'the Packages table sits in a table-wrap');
   } finally { await done(); }
 });
 
-test('the credit-package form shows what the till lets the credit buy, with no tick boxes', async () => {
+test('the holdings card lists the vouchers still to hand over by their collect-by date, apart from packages not claimed yet', async () => {
   const { host, done } = await renderPage();
   try {
-    await click([...host.querySelectorAll('.therapy-tabs button')].find(b => b.textContent.trim() === 'Credit Packages'));
+    await until(() => host.querySelector('.therapy-row-button'), 'the holdings');
+    await click([...host.querySelectorAll('.therapy-row-button')].find(b => b.textContent.includes('Preview Customer A')));
+    await until(() => host.querySelector('[data-vouchers-to-hand-over]'), 'the customer\'s detail');
+    const lines = section => [...section.querySelectorAll('.therapy-kv')].map(kv => [...kv.children].map(c => c.textContent));
+    // Vouchers still owed, in the words of Vouchers to hand over: collect by,
+    // and no kind word from the server ('voucher').
+    const owed = host.querySelector('[data-vouchers-to-hand-over]');
+    assert.equal(owed.querySelector('h4').textContent, 'Vouchers still to hand over');
+    // One past its collect-by date is marked, as on Vouchers to hand over.
+    assert.deepEqual(lines(owed), [['LEG-0009132', 'collect by 15 Oct 2026 · passed'], ['LEG-0009131', 'collect by 31 Mar 2036']]);
+    assert.doesNotMatch(lines(owed).flat().join(' | '), /\bvoucher\b|claim|unlimited/i);
+    // A therapy package bought and not claimed yet is not a voucher to hand
+    // over: it keeps its own list and "claim by" (Claim, on Purchased), in words.
+    const notClaimed = host.querySelector('[data-not-claimed]');
+    assert.equal(notClaimed.querySelector('h4').textContent, 'Unclaimed — not yet usable');
+    assert.deepEqual(lines(notClaimed), [
+      ['UTP-0009021 · unlimited therapy, 3 mo', 'claim by 30 Apr 2027'],
+      ['UTP-0009022 · unlimited 1 mo or 10 vouchers — not chosen yet', 'claim by 31 May 2027']]);
+    // The server's kind words never stand alone on the card.
+    const labels = [...owed.closest('.therapy-detail').querySelectorAll('.therapy-kv .k')].map(k => k.textContent.trim());
+    assert.ok(labels.length >= 3, labels.join(' | '));
+    for (const label of labels) assert.doesNotMatch(label, /(^|· )(voucher|unlimited|choice)$/, label);
+  } finally { await done(); }
+});
+
+test('the credit-package form shows what the till lets the credit buy, with no tick boxes and no reward', async () => {
+  const { host, done } = await renderPage();
+  try {
+    await openTab(host, 'Credit Packages');
     await until(() => host.textContent.includes('S$1,000 Credit Package'), 'the Credit Packages tab');
+    // No Reward column (the package in the stub still has the reward on).
+    const heads = [...host.querySelectorAll('thead th')].map(th => th.textContent.trim());
+    assert.deepEqual(heads, ['Name', 'SKU', 'Price', 'Credit', 'Commission', 'Tier 1 / 2', 'Effective', 'Active', '']);
     const pkgRow = [...host.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('S$1,000 Credit Package'));
+    assert.equal(pkgRow.querySelectorAll('td').length, heads.length, 'one cell per heading');
     await click(pkgRow.querySelector('button.btn-icon'));
     await until(() => host.querySelector('[data-credit-rules]')?.textContent.includes('therapy session'), 'the rules');
     const form = host.querySelector('.modal');
@@ -381,7 +529,163 @@ test('the credit-package form shows what the till lets the credit buy, with no t
     for (const gone of ['Normal Products', 'Purchasable Therapy', 'Special Products', 'Rentals']) {
       assert.ok(!labels.includes(gone), `no "${gone}" tick box`);
     }
-    assert.match(form.textContent, /Paid Credit S\$1000\.00, spendable on therapy session/);
+    // 502: no reward section at all — no threshold, no voucher list, no tick,
+    // no reward units — and the package issues Paid Credit and Bonus Credit only.
+    for (const gone of ['Reward threshold (S$)', 'Eligible voucher choices *', 'Vouchers listed on this package']) {
+      assert.ok(!labels.includes(gone), `no "${gone}" field: ` + labels.join(' | '));
+    }
+    assert.ok(!labels.some(l => /Also grant/.test(l)), 'no reward tick box: ' + labels.join(' | '));
+    assert.ok(!labels.includes('MEOL Voucher'), 'no voucher to tick');
+    assert.doesNotMatch(form.textContent, /Reward units|qualification reward|reward threshold/i);
+    const issues = [...form.querySelectorAll('div')].find(el => el.firstElementChild?.textContent === 'This package issues');
+    assert.ok(issues, 'the This package issues box');
+    assert.deepEqual([...issues.children].map(el => el.textContent.replace(/\s+/g, ' ').trim()), [
+      'This package issues',
+      'Paid Credit S$1000.00, spendable on therapy session',
+      'Bonus Credit S$50.00, spendable on own product, third party product',
+      'The full credit and bonus are issued even if the package is discounted or made FOC. Commission is earned only on money actually paid.',
+    ]);
     assert.equal(lastCall('credit_package_effective_rules').args.p_package_id, 'cp1');
+
+    // Save sends the hidden threshold and voucher list back exactly as they were
+    // read, and switches the reward off.
+    const from = calls().length;
+    await click(button(host.querySelector('.modal-footer'), 'Save'));
+    await until(() => calls().slice(from).some(c => c.name === 'set_catalogue_reward'), 'the save');
+    const upsert = calls().slice(from).find(c => c.name === 'upsert_credit_package').args;
+    assert.equal(upsert.p_id, 'cp1');
+    assert.equal(upsert.p_reward_qualifying_amount, 994, 'the threshold, as read');
+    assert.deepEqual(upsert.p_voucher_ids, ['vc-meol'], 'the voucher list, as read');
+    assert.ok(!('p_grants_reward' in upsert));
+    assert.deepEqual(calls().slice(from).find(c => c.name === 'set_catalogue_reward').args,
+      { p_kind: 'credit_package', p_id: 'cp1', p_grants: false });
+    await until(() => !host.querySelector('.modal'), 'the window closes');
+
+    // A new package: nothing to send back, and the reward is switched off too
+    // (the column's default would switch it on), on the new package itself:
+    // the stub gives it the id 'cp-new', so the id the save goes on with is
+    // the one upsert_credit_package returned, not the package edited above.
+    const fromNew = calls().length;
+    await click(button(host, 'New Package'));
+    await until(() => host.querySelector('.modal'), 'the new package window');
+    await setValue([...host.querySelectorAll('.modal .form-group')].find(g => g.querySelector('label')?.textContent === 'Package name *').querySelector('input'),
+      'Fixture Credit Package');
+    await click(button(host.querySelector('.modal-footer'), 'Save'));
+    await until(() => calls().slice(fromNew).some(c => c.name === 'set_catalogue_reward'), 'the new package save');
+    const created = calls().slice(fromNew).find(c => c.name === 'upsert_credit_package').args;
+    assert.equal(created.p_id, null);
+    assert.equal(created.p_reward_qualifying_amount, null);
+    assert.equal(created.p_voucher_ids, null);
+    assert.equal(calls().slice(fromNew).find(c => c.name === 'set_catalogue_sku').args.p_id, 'cp-new', 'the SKU goes on the new package');
+    assert.deepEqual(calls().slice(fromNew).find(c => c.name === 'set_catalogue_reward').args,
+      { p_kind: 'credit_package', p_id: 'cp-new', p_grants: false });
+  } finally { await done(); }
+});
+
+test('the Premium Bundle form is unchanged: free vouchers, a threshold falling back to 994, and the reward tick', async () => {
+  const { host, done } = await renderPage();
+  try {
+    await openTab(host, 'Premium Bundles');
+    await click(button(host, 'New Bundle'));
+    await until(() => host.querySelector('.modal'), 'the bundle window');
+    const form = host.querySelector('.modal');
+    const field = label => [...form.querySelectorAll('.form-group')].find(g => g.querySelector('label')?.textContent === label);
+    assert.equal(field('Free vouchers')?.querySelector('input').getAttribute('placeholder'), 'auto from payment');
+    assert.equal(field('Reward threshold (S$)')?.querySelector('input').getAttribute('placeholder'), '994');
+    assert.ok(field('Eligible voucher choices *'), 'the voucher list');
+    const tick = [...form.querySelectorAll('label')].find(l => l.textContent.trim() === 'Also grant free reward vouchers')?.querySelector('input');
+    assert.ok(tick, 'the reward tick');
+    assert.equal(tick.checked, false, 'off by default');
+    await setValue(field('Bundle name *').querySelector('input'), 'Fixture Bundle');
+    await act(async () => { tick.click(); });
+    assert.equal(tick.checked, true);
+    const from = calls().length;
+    await click(button(host.querySelector('.modal-footer'), 'Save'));
+    await until(() => calls().slice(from).some(c => c.name === 'set_catalogue_reward'), 'the save');
+    assert.equal(calls().slice(from).find(c => c.name === 'upsert_premium_bundle').args.p_reward_qualifying_amount, null,
+      'a blank threshold is sent blank (the server falls back to 994)');
+    assert.deepEqual(calls().slice(from).find(c => c.name === 'set_catalogue_reward').args,
+      { p_kind: 'premium_bundle', p_id: 'pb1', p_grants: true });
+  } finally { await done(); }
+});
+
+test('Holidays holds the holiday calendars and the expiry recalculation preview, and nothing else', async () => {
+  const { host, done } = await renderPage();
+  try {
+    await openTab(host, 'Holidays');
+    await until(() => host.querySelector('[data-holiday-calendars]'), 'the Holidays tab');
+    assert.equal(host.querySelector('[data-holiday-calendars] h3').textContent, 'Holiday calendars and company closures');
+    assert.deepEqual([...host.querySelectorAll('summary')].map(s => s.textContent.trim()), ['Expiry recalculation preview']);
+    assert.match(host.textContent.replace(/\s+/g, ' '),
+      /each one that falls on a Monday to Saturday inside a running period adds one day to its end\. Sundays add nothing/);
+    const buttons = buttonsIn(host);
+    for (const gone of ['New Rule', 'Re-check paid days', 'Show']) assert.ok(!buttons.includes(gone), `no "${gone}" button`);
+    assert.doesNotMatch(host.textContent, /Affiliate residual by day|Unclaimed entitlements and their reward options|is not fully configured/);
+    // The recalculation names its sources Purchased and Reward, never the server's 'legacy'.
+    const recalcRow = no => [...host.querySelectorAll('details tbody tr')].find(tr => tr.textContent.includes(no));
+    await until(() => recalcRow('ENT-000733'), 'the recalculation preview');
+    assert.equal(recalcRow('PTE-000412').querySelectorAll('td')[2].textContent, 'Purchased');
+    assert.equal(recalcRow('ENT-000733').querySelectorAll('td')[2].textContent, 'Reward');
+    assert.doesNotMatch(host.querySelector('details').textContent, /legacy/i);
+  } finally { await done(); }
+  for (const [role, has] of [['manager', true], ['staff', false]]) {
+    const { host: h, done: d2 } = await renderPage(role);
+    try { assert.equal(!!tabBtn(h, 'Holidays'), has, `${role}: Holidays ${has ? 'shown' : 'not shown'}`); }
+    finally { await d2(); }
+  }
+});
+
+test('no tab, window or row names Legacy or Qualification, and none of their functions is called', async () => {
+  const { host, done } = await renderPage();
+  const clean = where => assert.doesNotMatch(host.textContent, /Legacy|Qualification/, where);
+  try {
+    // The holdings: the old reward's vouchers are an "Earlier reward", and its
+    // used free month is not listed.
+    await until(() => host.querySelector('.therapy-row-button'), 'the holdings');
+    await click([...host.querySelectorAll('.therapy-row-button')].find(b => b.textContent.includes('Preview Customer A')));
+    await until(() => host.textContent.includes('PTE-000412'), 'the customer\'s detail');
+    const chips = [...host.querySelectorAll('.therapy-chip-source')].map(c => c.textContent);
+    assert.ok(chips.includes('Earlier reward'), 'the old source name reads Earlier reward: ' + chips.join(', '));
+    assert.ok(chips.includes('Premium bundle'), 'other sources keep their names');
+    assert.doesNotMatch(host.textContent, /LEG-0009081|unlimited \(per month\)/, 'the old free month is not listed');
+    clean('Purchased');
+
+    for (const label of tabLabels(host).slice(1)) {
+      await openTab(host, label);
+      await tick(); await tick();
+      clean(label);
+      if (label === VOUCHERS_TAB) {
+        await showFilter(host, 'All');
+        clean(`${label}, All`);
+      }
+      if (label === 'Credit Packages') {
+        const pkgRow = [...host.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes('S$1,000 Credit Package'));
+        await click(pkgRow.querySelector('button.btn-icon'));
+        await until(() => host.querySelector('[data-credit-rules]')?.textContent.includes('therapy session'), 'the rules');
+        clean('the Credit Package window');
+        await click(button(host.querySelector('.modal-footer'), 'Cancel'));
+      }
+      if (label === 'Premium Bundles') {
+        await click(button(host, 'New Bundle'));
+        clean('the Premium Bundle window');
+        await click(button(host.querySelector('.modal-footer'), 'Cancel'));
+      }
+      if (label === 'Packages') {
+        await click(button(host, 'New Package'));
+        clean('the Therapy Package window');
+        await click(button(host.querySelector('.modal-footer'), 'Cancel'));
+      }
+    }
+
+    const names = new Set(calls().map(c => c.name));
+    for (const fn of ['legacy_setup_status', 'affiliate_legacy_day_summary', 'backfill_legacy_qualification', 'upsert_legacy_rule',
+      'claim_legacy_therapy', 'legacy_reward_options', 'legacy_reward_options_diagnostic', 'legacy_reward_voucher_options',
+      'therapy_reward_mapping_preview', 'therapy_map_entitlement_tier']) {
+      assert.ok(!names.has(fn), `${fn} is not called`);
+    }
+    const tables = calls().filter(c => c.name === 'from').map(c => c.args.table);
+    assert.ok(tables.includes('credit_packages'), 'the page\'s own reads are recorded: ' + tables.join(', '));
+    assert.ok(!tables.includes('therapy_package_rules'), 'the old rules are not read');
+    assert.ok(!calls().some(c => c.name === 'therapy_list_page' && c.args.p_tab === 'legacy'), 'nor the old list');
   } finally { await done(); }
 });
