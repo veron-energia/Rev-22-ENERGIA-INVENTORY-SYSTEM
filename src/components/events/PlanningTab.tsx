@@ -3,7 +3,7 @@ import { AlertTriangle, Crown, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import {
   ACCESS_LABELS, EventRow, FOOD_LABELS, FoodCounts, HEARD_FROM_CHOICES, HEARD_FROM_LABELS, PlanPerson, PlanningSummary,
-  TWO_VIP_PAYMENTS, dayLabel, fmtClock, fmtWeekday, normalizePlanningSummary, vipHeldText,
+  dayLabel, fmtClock, fmtWeekday, normalizePlanningSummary, vipDoubleText, vipHeldText,
 } from './model';
 
 /*
@@ -155,7 +155,13 @@ export const PlanningTab: React.FC<{ event: EventRow; hasWebsite: boolean }> = (
               <div className="alert alert-warning events-plan-vip-doubles" role="note" data-plan-vip-doubles>
                 <AlertTriangle size={15} />
                 <div>
-                  <strong>{TWO_VIP_PAYMENTS}</strong>
+                  <strong>{vipDoubleText(s.vip.doubles.flatMap(d => d.vips))}</strong>
+                  {s.vip.doubles.some(d => d.vips.some(v => v.state === 'waiting')) && (
+                    <div className="events-sub" data-plan-vip-doubles-check>
+                      A payment still waiting may be the same money as the paid one: check the bank. If it is, Dismiss the
+                      waiting order on Website orders (or cancel the unpaid invoice); if both arrived, refund one.
+                    </div>
+                  )}
                   <ul>
                     {s.vip.doubles.map(d => (
                       <li key={d.customer_id} data-plan-vip-double={d.customer_id}>{d.full_name}: {vipHeldText(d.vips)} (counted once)</li>

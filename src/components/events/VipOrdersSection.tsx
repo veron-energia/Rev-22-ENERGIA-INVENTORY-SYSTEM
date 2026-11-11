@@ -6,8 +6,9 @@ import { isOwnerOrManager } from '../../types';
 import { Modal, ReasonModal } from '../ui';
 import { ExcelColumn, ExcelExportButton } from '../ExcelExport';
 import {
-  EventRow, VIP_ORDER_STATUS_BADGE, VIP_ORDER_STATUS_LABELS, VIP_PROVIDER_LABELS, VipOrder, VipOrderList, WEB_ORDER_MODE_BADGE,
-  WEB_ORDER_MODE_LABELS, fmtDate, fmtDateTime, money, normalizeVipOrderList, sgStamp, slug, vipCheckoutText, vipOrderCanClose,
+  EventRow, VIP_ORDER_STATUS_BADGE, VIP_ORDER_STATUS_LABELS, VIP_PROVIDER_LABELS, VipDouble, VipOrder, VipOrderList, WEB_ORDER_MODE_BADGE,
+  WEB_ORDER_MODE_LABELS, alreadyVipConfirmText, alreadyVipText, fmtDate, fmtDateTime, money, normalizeVipDoubles,
+  normalizeVipOrderList, sgStamp, slug, vipCheckoutText, vipOrderAlreadyVip, vipOrderCanClose,
   vipOrderCanDismiss, vipOrderCanInvoice, vipOrderCanRestore, vipOrderCheckoutClosed, vipOrderClosedRefunded, vipOrderRefundOpen,
   vipCheckoutGroupText, vipOrderUnpaidCheckout,
 } from './model';
@@ -34,6 +35,12 @@ import {
  * starts a new one). The owner, 22 Oct 2026: not an Admin, so an Admin is not
  * shown the button (the server refuses them too). If HitPay reports a payment for a closed checkout
  * later, it waits here (needs review) to be refunded or invoiced by hand.
+ *
+ * The decision of 11 Nov 2026: a customer paid once by PayNow, reported it on the website, and was sold the VIP at
+ * the counter for the same money. An order waiting for invoices whose person already holds a VIP paid on an invoice
+ * (the Guests tab's list of customers holding two) says "Already VIP on INV-…: if it is the same money, Dismiss this
+ * order", and Create invoices asks for a tick ("the money arrived twice") before recording a second payment. When that
+ * list cannot be read, Create invoices says it could not check.
  */
 
 type Filter = 'current' | 'waiting' | 'all';
@@ -95,17 +102,28 @@ export const VipOrdersSection: React.FC<{
   const [closing, setClosing] = useState<VipOrder | null>(null);
   const [closingCheckout, setClosingCheckout] = useState<VipOrder | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // 11 Nov 2026: the customers holding two VIP payments for this event (the Guests tab's list), read with the orders;
+  // false when it could not be read, so Create invoices says it could not check.
+  const [doubles, setDoubles] = useState<VipDouble[]>([]);
+  const [doublesRead, setDoublesRead] = useState(true);
+  // Create invoices on an order whose person is already VIP goes on only once this is ticked.
+  const [paidTwice, setPaidTwice] = useState(false);
   // The latest callback, so a parent's inline function does not reload the list.
   const loaded = useRef(onLoaded);
   loaded.current = onLoaded;
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase.rpc('event_vip_orders_list', { p_event_id: event.id });
+    const [orders, extras] = await Promise.all([
+      supabase.rpc('event_vip_orders_list', { p_event_id: event.id }),
+      supabase.rpc('event_web_guest_extras', { p_event_id: event.id }),
+    ]);
     setLoading(false);
+    setDoubles(extras.error ? [] : normalizeVipDoubles((extras.data as { vip_doubles?: unknown } | null)?.vip_doubles));
+    setDoublesRead(!extras.error);
     // A database without 436, or no access: nothing to show here.
-    if (error) { setList(null); loaded.current?.(false); return; }
-    const l = normalizeVipOrderList(data);
+    if (orders.error) { setList(null); loaded.current?.(false); return; }
+    const l = normalizeVipOrderList(orders.data);
     setList(l);
     loaded.current?.(!!l.settings);
   }, [event.id]);
@@ -123,11 +141,14 @@ export const VipOrdersSection: React.FC<{
   const openConfirm = (o: VipOrder) => {
     setConfirmErr(null);
     setArrived(o.amount_paid != null ? o.amount_paid.toFixed(2) : '');
+    setPaidTwice(false);
     setConfirming(o);
   };
+  const confirmAlready = confirming ? vipOrderAlreadyVip(confirming, doubles) : [];
   const createInvoices = async () => {
     const o = confirming;
     if (!o) return;
+    if (confirmAlready.length && !paidTwice) return;
     // Sent only when an Owner or Manager changed it; the server checks the role and audits it.
     let amountCents: number | null = null;
     if (amountDiffers(o) && canCloseRole) {
@@ -254,6 +275,10 @@ export const VipOrdersSection: React.FC<{
                           : o.status === 'pending' && o.expired ? 'Checkout expired' : VIP_ORDER_STATUS_LABELS[o.status]}
                       </span>
                       {o.review_reason && o.status !== 'invoiced' && <div className="events-sub">{o.review_reason}</div>}
+                      {(() => {
+                        const already = alreadyVipText(o, vipOrderAlreadyVip(o, doubles));
+                        return already && <div className="events-sub events-vip-refund" data-already-vip={o.order_id}>{already}</div>;
+                      })()}
                       {o.test_note && <div className="events-sub">{o.test_note}</div>}
                       {vipOrderRefundOpen(o) && (
                         <div className="events-sub events-vip-refund">
@@ -308,9 +333,27 @@ export const VipOrdersSection: React.FC<{
         <Modal title={`Create invoices for ${confirming.order_id}?`} maxWidth={480} onClose={() => setConfirming(null)}
           footer={<>
             <button className="btn btn-secondary" onClick={() => setConfirming(null)}>Cancel</button>
-            <button className="btn btn-primary" data-confirm onClick={() => void createInvoices()}>Create invoices</button>
+            <button className="btn btn-primary" data-confirm disabled={confirmAlready.length > 0 && !paidTwice}
+              onClick={() => void createInvoices()}>Create invoices</button>
           </>}>
           <div className="form-grid">
+            {confirmAlready.length > 0 && (
+              <div className="alert alert-danger" role="alert" data-already-vip-confirm>
+                <span>⚠</span>
+                <div>
+                  <div data-already-vip-text>{alreadyVipConfirmText(confirming, confirmAlready)}</div>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8, fontWeight: 600 }}>
+                    <input type="checkbox" data-paid-twice checked={paidTwice} onChange={e => setPaidTwice(e.target.checked)} />
+                    <span>The money arrived twice: create the invoices anyway</span>
+                  </label>
+                </div>
+              </div>
+            )}
+            {!doublesRead && (
+              <div className="events-sub" data-already-vip-unknown>
+                Could not check whether they are already VIP: look them up on the Guests tab before creating invoices.
+              </div>
+            )}
             {confirming.provider === 'hitpay' ? (
               <div>HitPay took {money(confirming.amount_paid ?? confirming.amount_total)}{confirming.paid_at ? ` on ${fmtDateTime(confirming.paid_at)}` : ''}.
                 Check the payment in HitPay first if the order says why it waits.</div>

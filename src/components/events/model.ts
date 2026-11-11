@@ -830,6 +830,25 @@ export function normalizeWebExtras(v: any): EventWebExtras {
 
 // ── Round 8 (the owner, 21 Oct 2026: P1): two VIP payments for one customer ──
 export const TWO_VIP_PAYMENTS = 'Two VIP payments: refund one';
+/**
+ * The decision of 11 Nov 2026: when one of the two is only waiting (a PayNow or bank transfer reported on the website
+ * and not confirmed yet, or an invoice not paid yet), it may be the same money as the paid one: a customer who paid
+ * once by PayNow on the website and was then sold the VIP at the counter for that same money. Check before refunding.
+ */
+export const TWO_VIP_PAYMENTS_CHECK = 'Two VIP payments? Check the bank';
+/** The red badge's words: "refund one" when they are all paid; "check the bank" when one is only waiting. */
+export const vipDoubleText = (vips: VipHeld[]): string =>
+  (vips.some(v => v.state === 'waiting') ? TWO_VIP_PAYMENTS_CHECK : TWO_VIP_PAYMENTS);
+/** The red badge's hover text, by the same rule (no list from the server: check before refunding). */
+export const vipDoubleTitle = (vips: VipHeld[]): string => (vips.some(v => v.state === 'waiting')
+  ? 'This customer holds two VIP payments for this event, one of them only waiting (a PayNow or bank transfer not '
+    + 'confirmed yet, or an invoice not paid yet). Check the bank before refunding anything: if it is the same money, '
+    + 'Dismiss the waiting order on Website orders, or cancel the unpaid invoice; if both arrived, refund one.'
+  : vips.length ? 'This customer holds two VIP payments for this event, both paid. Refund one.'
+  : 'This customer holds two VIP payments for this event. Check the bank before refunding one.');
+/** The VIP payments the customer of a guest row holds for the event (the server's list), for the badge's words. */
+export const vipDoubleVips = (extras: EventWebExtras | null, g: Pick<Guest, 'customer_id'>): VipHeld[] =>
+  (g.customer_id ? extras?.vip_doubles.find(d => d.customer_id === g.customer_id)?.vips ?? [] : []);
 export function normalizeVipsHeld(v: unknown): VipHeld[] {
   return arr(v).map((x: any) => ({ state: x?.state === 'paid' ? 'paid' as const : 'waiting' as const, invoice_no: str(x?.invoice_no) }));
 }
@@ -871,10 +890,14 @@ export function candidateMergedText(c: HoldCandidate): string | null {
     return had ? `${m.full_name}, who had this ${had}` : m.full_name;
   }).join('; ');
 }
-/** The warning before linking a held person who paid (or waits on) a VIP to a customer who already holds one. */
+/**
+ * The warning before linking a held person who paid (or waits on) a VIP to a customer who already holds one. Their own
+ * payment still waits on Website orders, so it may be the same money (the decision of 11 Nov 2026): check first.
+ */
 export function doubleVipWarning(h: RegistrationHold, c: HoldCandidate | null): string | null {
   if (!c || !h.vip_payment || !c.guest || c.guest.vips.length === 0) return null;
-  return `Linking gives ${c.full_name} two VIP payments for this event. Refund one after linking.`;
+  return `Linking gives ${c.full_name} two VIP payments for this event. Check the bank: if it is the same money, `
+    + 'Dismiss their website order on Website orders after linking; if both arrived, refund one.';
 }
 /**
  * "Find another customer…" (the review of round 8, 21 Oct 2026): the customer staff picked, read from the guest list
@@ -1146,6 +1169,48 @@ export const vipOrderCanClose = (o: Pick<VipOrder, 'status' | 'livemode' | 'amou
   o.status === 'recorded' || o.status === 'needs_review' || (o.status === 'refused' && o.livemode === true && (o.amount_paid ?? 0) > 0);
 /** HitPay's refund notice still to act on: refunded there, not yet covered here (invoices cancelled or refunded, or that much recorded as refunded on them). */
 export const vipOrderRefundOpen = (o: Pick<VipOrder, 'refunded_total' | 'refund_covered'>) => o.refunded_total > 0 && !o.refund_covered;
+
+// ── The decision of 11 Nov 2026: a waiting VIP order for someone already VIP on an invoice ──
+// A customer paid S$72 once by PayNow, reported it on the website (the order waits here for a Manager) and was sold
+// the VIP at the counter for the same money. Creating the order's invoices then records a second payment that never
+// came. Website orders now says so on the order, and Create invoices asks first.
+/** A person on a waiting order whose customer already holds a VIP paid on an invoice for this event, and on which. */
+export interface AlreadyVip { name: string; invoice_nos: string[]; }
+/**
+ * Who on a waiting order (not a test) already holds a VIP paid on an invoice, from the server's list of customers holding
+ * two VIP payments (the Guests tab's vip_doubles: this order's own payment is one of them, waiting, with no invoice yet).
+ */
+export function vipOrderAlreadyVip(o: Pick<VipOrder, 'status' | 'is_test' | 'people'>, doubles: VipDouble[]): AlreadyVip[] {
+  if (!vipOrderCanInvoice(o)) return [];
+  return o.people.flatMap(p => {
+    if (!p.customer_id) return [];
+    const nos = [...new Set((doubles.find(d => d.customer_id === p.customer_id)?.vips ?? [])
+      .filter(v => v.state === 'paid' && v.invoice_no).map(v => v.invoice_no as string))];
+    return nos.length ? [{ name: p.customer_name ?? p.name, invoice_nos: nos }] : [];
+  });
+}
+const alreadyWho = (o: Pick<VipOrder, 'quantity'>, hits: AlreadyVip[]) => (o.quantity === 1 && hits.length === 1
+  ? `Already VIP on ${hits[0].invoice_nos.join(', ')}`
+  : hits.map(h => `${h.name} is already VIP on ${h.invoice_nos.join(', ')}`).join('; '));
+/**
+ * The order's line on Website orders: "Already VIP on INV-0001: if it is the same money, Dismiss this order." A HitPay
+ * payment is not dismissed (the money was taken), and when only some of a group are VIP already the order is still owed
+ * for the others: those say what to do instead.
+ */
+export function alreadyVipText(o: Pick<VipOrder, 'provider' | 'quantity'>, hits: AlreadyVip[]): string | null {
+  if (!hits.length) return null;
+  if (o.provider === 'hitpay') return `${alreadyWho(o, hits)}: HitPay took this payment as well, so one is to be refunded.`;
+  if (hits.length < o.quantity) return `${alreadyWho(o, hits)}: check the bank before creating invoices.`;
+  return `${alreadyWho(o, hits)}: if it is the same money, Dismiss this order.`;
+}
+/** What Create invoices says first, with a tick box to go on (the decision of 11 Nov 2026). */
+export function alreadyVipConfirmText(o: Pick<VipOrder, 'provider' | 'unit_amount'>, hits: AlreadyVip[]): string | null {
+  if (!hits.length) return null;
+  const who = hits.map(h => `${h.name} already has VIP paid on ${h.invoice_nos.join(', ')}`).join('; ');
+  if (o.provider === 'hitpay') return `${who}, and HitPay took this payment as well: create the invoices, then refund one.`;
+  return `${who}. Creating invoices records a second VIP payment of ${money(o.unit_amount)} and gives the VIP vouchers `
+    + `again. If this ${o.provider === 'paynow' ? 'PayNow' : 'bank transfer'} is the same money, press Cancel and Dismiss this order instead.`;
+}
 
 // ── 436 round 7: planning answers (the owner, 21 Oct 2026: Q1-Q7, S1-S4) ────
 // What event_planning_list and event_planning_summary answer, and how the page

@@ -840,7 +840,7 @@ test('to match: someone held under the affiliate\'s own name warns before a new 
 
 // ── Round 8 (the owner, 21 Oct 2026: P1): two VIP payments for one customer ──
 test('to match (round 8): a candidate already a guest shows their days and VIP; a held person who paid gets the two-VIP warning before linking; linking stays allowed', async () => {
-  const warning = 'Linking gives Holly Holder two VIP payments for this event. Refund one after linking.';
+  const warning = 'Linking gives Holly Holder two VIP payments for this event. Check the bank: if it is the same money, Dismiss their website order on Website orders after linking; if both arrived, refund one.';
   await mount({ role: 'staff', setup: (b, fx) => {
     Object.assign(fx.extras.holds[0], { vip_waiting: true, vip_payment: true });
     fx.extras.holds[0].candidates[0].guest = { days: [D1, D2], vips: [{ state: 'paid', invoice_no: 'INV-TEST-0009' }] };
@@ -907,7 +907,7 @@ test('to match (the review of round 8): "Find another customer…" reads the pic
   await mount({ role: 'staff', setup: setup(true) });
   let m = await pick('Vera Vip');
   assert.equal(m.querySelector('[data-double-vip-warning]').textContent,
-    'Linking gives Vera Vip two VIP payments for this event. Refund one after linking.', 'warned before linking, as for a listed candidate');
+    'Linking gives Vera Vip two VIP payments for this event. Check the bank: if it is the same money, Dismiss their website order on Website orders after linking; if both arrived, refund one.', 'warned before linking, as for a listed candidate');
   const note = m.querySelector('[data-candidate-guest]').textContent;
   assert.ok(note.startsWith('Already a guest: ') && note.endsWith(' · VIP paid.'), note);
   await setValue(m.querySelector('textarea'), 'Asked at the door, same birthday');
@@ -947,17 +947,20 @@ test('guests and planning (round 8): a customer holding two VIP payments is flag
     vips: [{ state: 'paid', invoice_no: 'INV-TEST-0001' }, { state: 'waiting', invoice_no: null }] }];
   await mount({ role: 'staff', fixture });
   const flag = id => row(id)?.querySelector('[data-vip-double]')?.textContent ?? null;
-  assert.equal(flag('g-vip'), 'Two VIP payments: refund one');
-  assert.equal(flag('g-staff'), 'Two VIP payments: refund one');
+  // One of the two is only waiting (the decision of 11 Nov 2026): it may be the same money, so check first.
+  assert.equal(flag('g-vip'), 'Two VIP payments? Check the bank');
+  assert.equal(flag('g-staff'), 'Two VIP payments? Check the bank');
+  assert.ok(row('g-vip').querySelector('[data-vip-double]').title.startsWith('This customer holds two VIP payments for this event, one of them only waiting'));
   assert.equal(flag('g-free'), null);
   assert.equal(flag('g-held'), null);
   await setValue(document.querySelector('select[aria-label="Status"]'), 'all');
   assert.ok(row('g-vip-free'), 'the cancelled row is listed');
   assert.equal(flag('g-vip-free'), null, 'a cancelled row is not flagged');
-  assert.equal(flag('g-vip'), 'Two VIP payments: refund one');
+  assert.equal(flag('g-vip'), 'Two VIP payments? Check the bank');
   await click(tab('Planning'));
   const block = document.querySelector('[data-planning-vip] [data-plan-vip-doubles]');
-  assert.ok(block.textContent.startsWith('Two VIP payments: refund one'));
+  assert.ok(block.textContent.startsWith('Two VIP payments? Check the bank'));
+  assert.ok(block.querySelector('[data-plan-vip-doubles-check]').textContent.includes('Dismiss the waiting order on Website orders'));
   assert.equal(block.querySelector('[data-plan-vip-double="c-1"]').textContent,
     'Vera Vip: VIP paid (INV-TEST-0001) + VIP payment waiting (counted once)');
   assert.ok(document.querySelector('[data-planning-vip]').textContent.includes('1 VIP · 1 answered'));
@@ -975,7 +978,7 @@ test('model (round 8): the VIP payment texts and the warning', () => {
   const hold = { vip_payment: true };
   const cand = (vips) => ({ full_name: 'Holly Holder', guest: vips ? { days: [], vips } : null });
   assert.equal(model.doubleVipWarning(hold, cand([{ state: 'waiting', invoice_no: null }])),
-    'Linking gives Holly Holder two VIP payments for this event. Refund one after linking.');
+    'Linking gives Holly Holder two VIP payments for this event. Check the bank: if it is the same money, Dismiss their website order on Website orders after linking; if both arrived, refund one.');
   assert.equal(model.doubleVipWarning(hold, cand([])), null);
   assert.equal(model.doubleVipWarning(hold, cand(null)), null);
   assert.equal(model.doubleVipWarning({ vip_payment: false }, cand([{ state: 'paid', invoice_no: null }])), null);
@@ -995,7 +998,7 @@ test('model (round 8): the VIP payment texts and the warning', () => {
   const p = model.pickedCustomerCandidate('c-p', gl, xs);
   assert.deepEqual([p.full_name, p.guest.days, p.guest.vips], ['Pia Picked', [D1, D2].sort(),
     [{ state: 'waiting', invoice_no: null }, { state: 'paid', invoice_no: 'INV-TEST-0042' }]], 'registered rows only; days joined');
-  assert.equal(model.doubleVipWarning(hold, p), 'Linking gives Pia Picked two VIP payments for this event. Refund one after linking.');
+  assert.equal(model.doubleVipWarning(hold, p), 'Linking gives Pia Picked two VIP payments for this event. Check the bank: if it is the same money, Dismiss their website order on Website orders after linking; if both arrived, refund one.');
   assert.deepEqual(model.pickedCustomerCandidate('c-t', gl, xs).guest.vips, [], 'a test key\'s payment is none');
   assert.equal(model.pickedCustomerCandidate('c-x', gl, xs), null, 'not a guest');
   assert.equal(model.pickedCustomerCandidate('', gl, xs), null, 'nobody picked');
@@ -1009,6 +1012,69 @@ test('model (round 8): the VIP payment texts and the warning', () => {
   assert.equal(x.holds[0].candidates[0].guest, null);
   assert.deepEqual(x.vip_doubles, []);
   assert.deepEqual(model.normalizePlanningSummary({ vip: { count: 1 } }).vip.doubles, []);
+});
+
+// ── The decision of 11 Nov 2026: one payment of the two only waiting may be the same money ──
+test('guests and planning (11 Nov 2026): both VIP payments paid still says "refund one", with no check line', async () => {
+  const fixture = makeFixture();
+  const both = [{ state: 'paid', invoice_no: 'INV-TEST-0001' }, { state: 'paid', invoice_no: 'INV-TEST-0002' }];
+  fixture.extras.guests.find(x => x.guest_id === 'g-vip').vip_double = true;
+  fixture.extras.vip_doubles = [{ customer_id: 'c-1', full_name: 'Vera Vip', vips: both }];
+  fixture.summary.vip.doubles = [{ customer_id: 'c-1', name: 'Vera Vip', vips: both }];
+  await mount({ role: 'staff', fixture });
+  const badge = row('g-vip').querySelector('[data-vip-double]');
+  assert.equal(badge.textContent, 'Two VIP payments: refund one');
+  assert.equal(badge.title, 'This customer holds two VIP payments for this event, both paid. Refund one.');
+  await click(tab('Planning'));
+  const block = document.querySelector('[data-planning-vip] [data-plan-vip-doubles]');
+  assert.ok(block.textContent.startsWith('Two VIP payments: refund one'));
+  assert.equal(block.querySelector('[data-plan-vip-doubles-check]'), null, 'nothing waits: nothing to check');
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('model (11 Nov 2026): the red badge\'s words, and a waiting VIP order for someone already VIP on an invoice', () => {
+  const paid = { state: 'paid', invoice_no: 'INV-1' }, waiting = { state: 'waiting', invoice_no: null };
+  assert.equal(model.vipDoubleText([paid, waiting]), 'Two VIP payments? Check the bank');
+  assert.equal(model.vipDoubleText([paid, { state: 'paid', invoice_no: 'INV-2' }]), 'Two VIP payments: refund one');
+  assert.equal(model.vipDoubleText([]), 'Two VIP payments: refund one', 'no list from the server: as before');
+  assert.ok(model.vipDoubleTitle([paid, waiting]).includes('Check the bank before refunding anything'));
+  assert.equal(model.vipDoubleTitle([]), 'This customer holds two VIP payments for this event. Check the bank before refunding one.');
+  assert.deepEqual(model.vipDoubleVips({ vip_doubles: [{ customer_id: 'c-1', vips: [paid, waiting] }] }, { customer_id: 'c-1' }), [paid, waiting]);
+  assert.deepEqual(model.vipDoubleVips({ vip_doubles: [{ customer_id: 'c-1', vips: [paid] }] }, { customer_id: null }), []);
+
+  const person = (id, name, customer_id) => ({ person_id: id, name, customer_id, customer_name: customer_id ? `${name} (record)` : null });
+  const order = (extra) => ({ status: 'needs_review', is_test: false, provider: 'paynow', quantity: 1, unit_amount: 72,
+    people: [person('p-1', 'Kit Counter', 'c-kit')], ...extra });
+  const doubles = [{ customer_id: 'c-kit', full_name: 'Kit Counter (record)', vips: [{ state: 'paid', invoice_no: 'INV-0777' }, waiting] },
+    { customer_id: 'c-ann', full_name: 'Ann Other', vips: [waiting, waiting] }];
+  const hits = model.vipOrderAlreadyVip(order(), doubles);
+  assert.deepEqual(hits, [{ name: 'Kit Counter (record)', invoice_nos: ['INV-0777'] }]);
+  assert.equal(model.alreadyVipText(order(), hits), 'Already VIP on INV-0777: if it is the same money, Dismiss this order.');
+  assert.equal(model.alreadyVipConfirmText(order(), hits),
+    'Kit Counter (record) already has VIP paid on INV-0777. Creating invoices records a second VIP payment of S$72.00 and gives '
+    + 'the VIP vouchers again. If this PayNow is the same money, press Cancel and Dismiss this order instead.');
+  assert.ok(model.alreadyVipConfirmText(order({ provider: 'bank' }), hits).includes('If this bank transfer is the same money'));
+  // HitPay took the money: it is never dismissed, one is refunded.
+  assert.equal(model.alreadyVipText(order({ provider: 'hitpay' }), hits),
+    'Already VIP on INV-0777: HitPay took this payment as well, so one is to be refunded.');
+  assert.equal(model.alreadyVipConfirmText(order({ provider: 'hitpay' }), hits),
+    'Kit Counter (record) already has VIP paid on INV-0777, and HitPay took this payment as well: create the invoices, then refund one.');
+  // A group where only some are VIP already: the order is still owed for the others.
+  const group = order({ quantity: 2, people: [person('p-1', 'Kit Counter', 'c-kit'), person('p-2', 'Kim New', 'c-kim')] });
+  assert.equal(model.alreadyVipText(group, model.vipOrderAlreadyVip(group, doubles)),
+    'Kit Counter (record) is already VIP on INV-0777: check the bank before creating invoices.');
+  // Nothing to say: not waiting for invoices, a test, someone held (no customer), or only waiting payments elsewhere.
+  assert.deepEqual(model.vipOrderAlreadyVip(order({ status: 'invoiced' }), doubles), []);
+  assert.deepEqual(model.vipOrderAlreadyVip(order({ status: 'dismissed' }), doubles), []);
+  assert.deepEqual(model.vipOrderAlreadyVip(order({ is_test: true }), doubles), []);
+  assert.deepEqual(model.vipOrderAlreadyVip(order({ people: [person('p-1', 'Kit Counter', null)] }), doubles), []);
+  assert.deepEqual(model.vipOrderAlreadyVip(order({ people: [person('p-3', 'Ann Other', 'c-ann')] }), doubles), []);
+  assert.deepEqual(model.vipOrderAlreadyVip(order(), []), []);
+  assert.equal(model.alreadyVipText(order(), []), null);
+  assert.equal(model.alreadyVipConfirmText(order(), []), null);
+  // The same invoice listed twice is named once.
+  assert.deepEqual(model.vipOrderAlreadyVip(order(), [{ customer_id: 'c-kit', vips: [{ state: 'paid', invoice_no: 'INV-0777' },
+    { state: 'paid', invoice_no: 'INV-0777' }] }])[0].invoice_nos, ['INV-0777']);
 });
 
 // ── 11, 12. model.ts against the contract ──────────────────────────────────

@@ -8,10 +8,10 @@ import { RegistrationHoldsPanel } from './RegistrationHoldsPanel';
 import { GuestPlanningModal } from './GuestPlanningModal';
 import {
   DayLoad, EventPlanning, EventRow, EventWebExtras, Guest, GuestExtra, ONLINE_PAYMENT_NOT_PAID, PLAN_BADGE_CLASS, PlanningState, SIGNED_UP_AGAIN,
-  StaffOption, TWO_VIP_PAYMENTS, VIP_PERKS,
+  StaffOption, VIP_PERKS,
   VIP_PROVIDER_LABELS, accessCell, allergyCell, answersUpdatedCell, dayLabel, extraOf, fmtDayMonth, fmtTime, fmtWeekday, foodCell,
   fmtDayList, guestDay, heardFromCell, invoiceStatusLabel, isVipDouble, isVipGuest, normalizeGuestRestored, paymentLabel, paymentTone, planningBadges,
-  planningOf, slug, talksCell, timingCell, vipCheckoutText, vipLink,
+  planningOf, slug, talksCell, timingCell, vipCheckoutText, vipDoubleText, vipDoubleTitle, vipDoubleVips, vipLink,
 } from './model';
 
 type TypeFilter = 'all' | 'ticket' | 'free';
@@ -315,8 +315,8 @@ export const GuestsTab: React.FC<{
                           {vip && <span className="badge events-badge-vip" title={VIP_PERKS}><Crown size={11} /> VIP</span>}
                           {double && (
                             <span className="badge badge-danger events-badge-vip-double" data-vip-double
-                              title="This customer holds two VIP payments for this event (paid or waiting). Refund one.">
-                              {TWO_VIP_PAYMENTS}
+                              title={vipDoubleTitle(vipDoubleVips(extras, g))}>
+                              {vipDoubleText(vipDoubleVips(extras, g))}
                             </span>
                           )}
                           {!vip && x?.vip_waiting && (

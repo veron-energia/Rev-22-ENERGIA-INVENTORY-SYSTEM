@@ -830,6 +830,77 @@ test('website orders: a transfer is dismissed with a reason; an Owner or Manager
   assert.deepEqual(callsOf('event_vip_order_close_refunded').at(-1).args, { p_order_id: 'vo-3', p_reason: 'Refunded in HitPay', p_close: true });
 });
 
+// ── The decision of 11 Nov 2026: a waiting VIP order for someone already VIP on an invoice ──
+// Kit paid once by PayNow and reported it on the website; the counter then sold him the VIP for the same money.
+const alreadyVip = (b, { extrasFail = false } = {}) => {
+  b.handlers.event_vip_orders_list = () => {
+    const v = makeFixture().vip;
+    v.orders.push({ ...v.orders[0], id: 'vo-4', order_id: 'VIP-20261111-00000004', status: 'needs_review', quantity: 1,
+      amount_total: 72, amount_paid: 72, payer_name: 'Kit Counter', payer_email: 'kit@example.com', payer_phone: '+61491570156',
+      reference: 'PN-4', review_reason: 'Person 1 on this order is still to be matched to a customer (Guests, To match)',
+      people: [{ person_id: 'p-9', position: 1, name: 'Kit Counter', phone: '+61491570156', email: 'kit@example.com',
+        match: 'staff_attached', hold_reason: 'email_in_use', customer_id: 'c-kit', customer_name: 'Kit Counter Lee',
+        days: [D1, D2], invoice_id: null, invoice_no: null, invoice_status: null }] });
+    return { ...v, can_close: true };
+  };
+  b.handlers.event_web_guest_extras = () => (extrasFail ? { __error: 'statement timeout' } : {
+    ...makeFixture().extras,
+    vip_doubles: [{ customer_id: 'c-kit', full_name: 'Kit Counter Lee',
+      vips: [{ state: 'paid', invoice_no: 'INV-TEST-0777' }, { state: 'waiting', invoice_no: null }] }],
+  });
+};
+
+test('website orders (11 Nov 2026): a waiting PayNow for someone already VIP on an invoice says so; Create invoices asks for a tick first', async () => {
+  await mount({ role: 'manager', setup: b => alreadyVip(b) });
+  await click(tab('Website orders'));
+  assert.ok(callsOf('event_web_guest_extras').some(c => c.args.p_event_id === 'ev-1'), 'the list of customers holding two is read with the orders');
+  const r = vipRow('VIP-20261111-00000004');
+  assert.equal(r.querySelector('[data-already-vip]').textContent, 'Already VIP on INV-TEST-0777: if it is the same money, Dismiss this order.');
+  assert.equal(vipRow('VIP-20261020-00000001').querySelector('[data-already-vip]'), null, 'nobody on it is VIP already');
+  assert.equal(vipRow('VIP-20261020-00000002').querySelector('[data-already-vip]'), null, 'an invoiced order says nothing');
+  await click(button('Create invoices', r));
+  assert.equal(modal().querySelector('[data-already-vip-confirm] [data-already-vip-text]').textContent,
+    'Kit Counter Lee already has VIP paid on INV-TEST-0777. Creating invoices records a second VIP payment of S$72.00 and gives '
+    + 'the VIP vouchers again. If this PayNow is the same money, press Cancel and Dismiss this order instead.');
+  const go = modal().querySelector('[data-confirm]');
+  assert.equal(go.disabled, true, 'Create invoices waits for the tick');
+  await click(go);
+  assert.equal(callsOf('event_vip_order_invoice').length, 0, 'nothing invoiced without the tick');
+  const tickBox = modal().querySelector('[data-paid-twice]');
+  await click(tickBox);
+  assert.equal(tickBox.checked, true);
+  assert.equal(modal().querySelector('[data-confirm]').disabled, false);
+  await click(modal().querySelector('[data-confirm]'));
+  assert.deepEqual(callsOf('event_vip_order_invoice').at(-1).args, { p_order_id: 'vo-4' });
+  // Opened again, the tick starts empty.
+  await click(button('Create invoices', vipRow('VIP-20261111-00000004')));
+  assert.equal(modal().querySelector('[data-paid-twice]').checked, false);
+  assert.equal(modal().querySelector('[data-confirm]').disabled, true);
+  await click(button('Cancel', modal()));
+  // Dismiss stays the way out: the usual reason window.
+  await click(button('Dismiss', vipRow('VIP-20261111-00000004')));
+  await setValue(modal().querySelector('textarea'), 'Same PayNow as INV-TEST-0777');
+  await click(button('Dismiss', modal()));
+  assert.deepEqual(callsOf('event_vip_order_dismiss').at(-1).args, { p_order_id: 'vo-4', p_reason: 'Same PayNow as INV-TEST-0777', p_dismiss: true });
+  // An order nobody on is VIP already: no box, Create invoices as before.
+  await click(button('Create invoices', vipRow('VIP-20261020-00000001')));
+  assert.equal(modal().querySelector('[data-already-vip-confirm]'), null);
+  assert.equal(modal().querySelector('[data-confirm]').disabled, false);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
+test('website orders (11 Nov 2026): when the list cannot be read, Create invoices says it could not check, and still works', async () => {
+  await mount({ role: 'admin', setup: b => alreadyVip(b, { extrasFail: true }) });
+  await click(tab('Website orders'));
+  assert.equal(document.querySelector('[data-already-vip]'), null);
+  await click(button('Create invoices', vipRow('VIP-20261111-00000004')));
+  assert.equal(modal().querySelector('[data-already-vip-confirm]'), null);
+  assert.ok(modal().querySelector('[data-already-vip-unknown]').textContent.startsWith('Could not check whether they are already VIP'));
+  await click(modal().querySelector('[data-confirm]'));
+  assert.deepEqual(callsOf('event_vip_order_invoice').at(-1).args, { p_order_id: 'vo-4' });
+  assert.deepEqual(globalThis.__renderErrors, []);
+});
+
 // ── 444: an online payment started and not paid ───────────────────────────
 // Its checkout closes at 06:35 UTC: 14:35 in Singapore (the page's clock), whatever the browser's time zone.
 const CHECKOUT = { order_id: 'VIP-20261021-0000000C', opened_at: '2026-10-21T05:25:00Z', expires_at: '2026-10-21T06:35:00Z', people: 1 };
