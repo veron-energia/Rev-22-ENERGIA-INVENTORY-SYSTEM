@@ -236,8 +236,21 @@ function paintDocumentImage(d: PdfDoc, height: number, rowLimit: number):
   y += 2 * MM; font(3.64);
   const totalsTop = y;
   let totalsBottom = -Infinity;
-  const totalsLabelW = Math.max(0, ...d.totals.map(([label]) => x.measureText(label).width));
-  for (const [label, value] of d.totals) {
+  // A note row (13 Nov 2026: what went back into the wallet, under its credit
+  // line) is smaller and sits closer under its row, as on the PDF.
+  const totalsLabelW = Math.max(0, ...d.totals.map(([label, , kind]) => {
+    if (kind !== 'note') return x.measureText(label).width;
+    font(2.9); const w = x.measureText(label).width; font(3.64);
+    return w;
+  }));
+  for (const [label, value, kind] of d.totals) {
+    if (kind === 'note') {
+      y -= 1.2 * MM;
+      font(2.9); x.fillStyle = GREY; right(label, cUnit, y); font(3.64);
+      totalsBottom = y;
+      y += 4.8 * MM;
+      continue;
+    }
     x.fillStyle = GREY; right(label, cUnit, y);
     x.fillStyle = BLACK; right(value, cTot, y);
     totalsBottom = y;

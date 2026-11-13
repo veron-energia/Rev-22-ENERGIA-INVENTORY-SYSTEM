@@ -3,7 +3,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { PRINT_CSS } from '../lib/printDoc';
 import { sendViaWhatsAppLink, sendViaEmailAttachment, saveDocumentFile, whatsappNumber, emailAddress, DocFormat,
   openSendWindow, type EmailResult } from '../lib/sendDoc';
-import { PdfDoc, creditBalanceShown } from '../lib/invoicePdf';
+import { PdfDoc, creditBalanceShown, type TotalsRow } from '../lib/invoicePdf';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { PaymentSummaryExport } from '../components/PaymentSummaryExport';
 import { XeroExportButton } from '../components/XeroExport';
@@ -53,6 +53,7 @@ import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates'
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
 import { PRINT_PAGES_SCRIPT } from '../lib/invoices/printPages.mjs';
 import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMethodLabel, type WalletAvailability } from '../lib/invoices/walletSources.mjs';
+import { walletCredit, walletLineLabel, type WalletRefundLike } from '../lib/invoices/walletCreditLines.mjs';
 import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/creditReceivers.mjs';
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
@@ -412,6 +413,9 @@ const InvoicesPage: React.FC = () => {
   const [goodsNote, setGoodsNote] = useState<string | null>(null);
   const [goodsOutByInvoice, setGoodsOutByInvoice] = useState<Record<string, number>>({});
   const [detailPayments, setDetailPayments] = useState<InvoicePayment[]>([]);
+  // The open invoice's refunds, for what went back into the wallet (13 Nov
+  // 2026, walletCreditLines.mjs); null until read, or when they could not be.
+  const [detailRefunds, setDetailRefunds] = useState<WalletRefundLike[] | null>(null);
   // Payment methods per invoice for the whole list, so the table can show them
   // and the search can match on them. Keyed by invoice for a direct lookup.
   const [payMethodsByInvoice, setPayMethodsByInvoice] = useState<Record<string, string[]>>({});
@@ -1730,7 +1734,7 @@ const InvoicesPage: React.FC = () => {
     // row from here; another invoice's rows go at once.
     if (detailDataForRef.current !== inv.id) {
       detailDataForRef.current = null;
-      setDetailItems([]); setDetailPayments([]); setDetailPromoItems([]); setDetailSelections([]);
+      setDetailItems([]); setDetailPayments([]); setDetailRefunds(null); setDetailPromoItems([]); setDetailSelections([]);
       setDetailServiceStaff([]); setDetailExchange(null); setDetailRevisions([]);
     }
     setDetailStale(false); setDetailUpdatedNote(null); setDetailReloadError(null);
@@ -1809,19 +1813,23 @@ const InvoicesPage: React.FC = () => {
       .then(({ data, error }) => { if (!superseded()) setPaySources(error ? {} : ((data as Record<string, string[]>) ?? {})); },
         () => { if (!superseded()) setPaySources({}); });
     setDetailEvent(null); setEventTagErr(null);
-    const [items, pays, svc, financial, evt] = await Promise.all([
+    const [items, pays, svc, financial, evt, refunds] = await Promise.all([
       supabase.from('invoice_items').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_payments').select('*').eq('invoice_id', inv.id),
       supabase.from('invoice_service_staff').select('staff_id').eq('invoice_id', inv.id),
       supabase.rpc('invoice_financial_position', { p_invoice_id: inv.id }),
       // Which event this is a sale of, and the people on its tickets (370).
       supabase.rpc('invoice_event_guests', { p_invoice_id: inv.id }),
+      // Its refunds: which went back into the wallet, under the wallet
+      // credit's line on the copies and the screen (13 Nov 2026).
+      supabase.from('invoice_refunds').select('id,payment_id,amount,credit_returned,created_at').eq('invoice_id', inv.id),
     ]);
     if (superseded()) return;
     setDetailEvent(evt.error ? null : (evt.data ?? null));
     const its = (items.data as InvoiceItem[]) ?? [];
     setDetailItems(its);
     setDetailPayments((pays.data as InvoicePayment[]) ?? []);
+    setDetailRefunds(refunds.error ? null : ((refunds.data as WalletRefundLike[] | null) ?? []));
     setDetailServiceStaff(((svc.data as any[]) ?? []).map(r => r.staff_id));
     // Promotion contents: fixed items of the promotions on this invoice + this invoice's chosen selections.
     const promoIds = its.filter(i => i.line_kind === 'promotion' && (i as any).promotion_id).map(i => (i as any).promotion_id);
@@ -2578,6 +2586,23 @@ const InvoicesPage: React.FC = () => {
     const name = printedMethod(p?.payment_method_id) || fallback;
     return name ? paymentMethodLabel(name, paySources[p?.id], methods.find(m => m.id === p?.payment_method_id) as any) : name;
   };
+  /** The user's answers, 13 Nov 2026 (src/lib/invoices/walletCreditLines.mjs):
+   *  wallet credit is a line under Discount on every copy (both printed
+   *  halves, the PDF and the image) and on the invoice screen, and Total is
+   *  what it left to pay; PAYMENT METHODS lists only money. Only how the
+   *  invoice is shown: its own total is the full amount, as before. Null: it
+   *  shows as before (no wallet credit, or refunds that could not be read). */
+  const walletCopy = () => detail ? walletCredit({
+    payments: detailPayments as any[],
+    // Retired wallet methods too (walletMethodIds), as well as the active ones.
+    isWallet: (p: any) => walletMethodIds.includes(p?.payment_method_id)
+      || !!(methods.find(m => m.id === p?.payment_method_id) as any)?.is_wallet_credit,
+    lineLabel: (p: any) => walletLineLabel(paymentLabel(p, 'Wallet'), methods.find(m => m.id === p?.payment_method_id) as any),
+    refunds: detailRefunds,
+    refunded: detailFinancial?.refunded,
+    total: detail.total_amount,
+    day: displayDay,
+  }) : null;
   const printedVoucher = (id: any): string => srvName(id) || txt(voucherById(id)?.name);
   const printedCustomer = (d: any): string => txt(detailNames?.customer_name) || txt(customerOf(d?.customer_id)?.full_name) || '—';
   // A saved line's discount other than FOC: a voucher (any category), a
@@ -2697,6 +2722,10 @@ const InvoicesPage: React.FC = () => {
     const bal = Number(detailFinancial?.outstanding ?? 0);
     // AFTER-9: an exchange invoice says so, as the printed copy does.
     const exLabels = exchangeCopyLabels(detailExchange);
+    // 13 Nov 2026: wallet credit as lines under Discount, Total what it left,
+    // and only money under PAYMENT METHODS, as the printed copy says it.
+    const wallet = walletCopy();
+    const shownPayments = wallet ? wallet.moneyPayments : detailPayments;
     const pdf: PdfDoc = {
       kindLabel: 'Tax Invoice',
       docNo: detail.invoice_no,
@@ -2745,18 +2774,26 @@ const InvoicesPage: React.FC = () => {
       totals: [
         ['Subtotal', `S$${Number(detail.subtotal ?? 0).toFixed(2)}`],
         [exLabels.discountLabel, `-S$${Number(detail.discount_total ?? 0).toFixed(2)}`],
+        // 13 Nov 2026: each kind of wallet credit, an ASCII minus as on the
+        // discount, and under it any of it refunded back into the wallet.
+        ...(wallet?.lines ?? []).flatMap(l => [
+          [l.label, `-S$${l.amount.toFixed(2)}`] as TotalsRow,
+          ...l.returned.map(n => [n, '', 'note'] as TotalsRow)]),
         // AFTER-10: what was paid, refunded and is still due back, as the
-        // printed copy says it.
-        ...copyMoneyRows({ paid: paymentsTotal(detailPayments as any[]), refunded: detailFinancial?.refunded,
-          netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due, minus: '-' }),
+        // printed copy says it; with wallet credit shown above, money only.
+        ...copyMoneyRows(wallet
+          ? { paid: wallet.moneyPaid, refunded: wallet.moneyRefunded, netPaid: wallet.moneyPaid - wallet.moneyRefunded,
+              refundDue: detailFinancial?.refund_due, minus: '-' }
+          : { paid: paymentsTotal(detailPayments as any[]), refunded: detailFinancial?.refunded,
+              netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due, minus: '-' }),
         ...(bal > 0 ? [['Balance', `S$${bal.toFixed(2)}`] as [string, string]] : []),
       ],
-      grandTotal: [exLabels.totalLabel, `S$${Number(detail.total_amount ?? 0).toFixed(2)}`],
-      payments: detailPayments.map((pm: any) => [
+      grandTotal: [exLabels.totalLabel, `S$${Number(wallet ? wallet.totalLeft : detail.total_amount ?? 0).toFixed(2)}`],
+      payments: shownPayments.map((pm: any) => [
         `${paymentLabel(pm, 'Payment')} · ${displayDay(pm.effective_at || pm.created_at)}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
         `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
       ] as [string, string]),
-      paymentsTotal: `S$${paymentsTotal(detailPayments as any[]).toFixed(2)}`,
+      paymentsTotal: `S$${(wallet ? wallet.moneyPaid : paymentsTotal(detailPayments as any[])).toFixed(2)}`,
       creditBalance,
       payDetails: [
         instalmentText(detail as any, methods),
@@ -2980,8 +3017,16 @@ const InvoicesPage: React.FC = () => {
       return `<tbody class="p-row"><tr><td>${esc(lineName(it))}${td}${md}${ov}${mem}${lv}${tu}${fc}</td><td class="r">${it.quantity}</td><td class="r">S$${Number(it.unit_price).toFixed(2)}</td><td class="r">${amountCell}</td></tr>` +
         (it.line_kind === 'promotion' ? subFor(it) : '') + '</tbody>';
     }).join('');
-    const payRows = detailPayments.map(p =>
+    // 13 Nov 2026 (walletCreditLines.mjs): wallet credit is a line under
+    // Discount, Total what it left to pay, and only money is a payment row.
+    const wallet = walletCopy();
+    const payRows = (wallet ? wallet.moneyPayments : detailPayments).map(p =>
       `<tr><td>${esc(paymentLabel(p))}${p.payment_reference ? ' · ' + esc(p.payment_reference) : ''} · ${esc(displayDay((p as any).effective_at || p.created_at))}${(p as any).entry_kind === 'correction_reversal' ? ' · Reversal' : (p as any).entry_kind === 'correction_replacement' ? ' · Replacement' : ''}</td><td class="r">S$${(Number(p.amount) * ((p as any).entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}</td></tr>`).join('');
+    // Each kind of credit, with a minus as the discount has, and under it any
+    // of it refunded back into the wallet. One line, never wrapped.
+    const walletRows = (wallet?.lines ?? []).map(l =>
+      `<tr class="wallet-line"><td>${esc(l.label)}</td><td class="r">−S$${l.amount.toFixed(2)}</td></tr>` +
+      l.returned.map(n => `<tr class="wallet-note"><td colspan="2">${esc(n)}</td></tr>`).join('')).join('');
 
     // Service Provided By = the invoice's service staff, each with their work phone.
     const staffRows = servedBy().map(p => ({ full_name: p.name, work_phone: p.work_phone }));
@@ -2996,9 +3041,14 @@ const InvoicesPage: React.FC = () => {
     // corrected invoice.
     const totalPaid = paymentsTotal(detailPayments as any[]);
     // AFTER-10: under the rows, what was paid, what went back and what is
-    // still due back, from the invoice's financial position, as the PDF says.
-    const moneyRows = copyMoneyRows({ paid: totalPaid, refunded: detailFinancial?.refunded,
-      netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due });
+    // still due back, from the invoice's financial position, as the PDF says;
+    // with wallet credit shown above, money only (credit put back into the
+    // wallet is the note under its line).
+    const moneyRows = wallet
+      ? copyMoneyRows({ paid: wallet.moneyPaid, refunded: wallet.moneyRefunded,
+        netPaid: wallet.moneyPaid - wallet.moneyRefunded, refundDue: detailFinancial?.refund_due })
+      : copyMoneyRows({ paid: totalPaid, refunded: detailFinancial?.refunded,
+        netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due });
     const moneyRowsHtml = moneyRows.map(([label, value]) =>
       `<tr><td><strong>${esc(label)}</strong></td><td class="r"><strong>${esc(value)}</strong></td></tr>`).join('');
     const ex = detailExchange?.found ? detailExchange : null;
@@ -3091,9 +3141,10 @@ const InvoicesPage: React.FC = () => {
           <tr><td>${esc(exLabels.discountLabel)}</td><td class="r">−S$${Number(detail.discount_total).toFixed(2)}</td></tr>
           ${ex && Number(ex.foc_waived ?? 0) > 0 ? `<tr><td>incl. FOC waived top-up</td><td class="r">−S$${Number(ex.foc_waived).toFixed(2)}</td></tr>` : ''}
           ${gstEnabled && gstRate > 0 ? `<tr><td>GST (${gstRate}%, incl.)</td><td class="r">S$${gstAmount.toFixed(2)}</td></tr>` : ''}
-          <tr class="grand"><td>${esc(exLabels.totalLabel)}</td><td class="r">S$${Number(detail.total_amount).toFixed(2)}</td></tr>
+          ${walletRows}
+          <tr class="grand"><td>${esc(exLabels.totalLabel)}</td><td class="r">S$${Number(wallet ? wallet.totalLeft : detail.total_amount).toFixed(2)}</td></tr>
         </table>
-        ${payRows ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}${moneyRowsHtml}</tbody></table>` : ''}
+        ${payRows || (wallet && moneyRowsHtml) ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}${moneyRowsHtml}</tbody></table>` : ''}
         ${creditBlock}
         ${authorisedBlock}
         ${collectionBlock}
@@ -3118,6 +3169,12 @@ const InvoicesPage: React.FC = () => {
       /* Shared with the Special Products / Rentals receipts so the two cannot
          drift apart — see src/lib/printDoc.ts */
       ${PRINT_CSS}
+      /* 13 Nov 2026: wallet credit under Discount. Each credit line, and the
+         note of what went back to the wallet, stays on one line: the totals
+         table (170px, right-aligned) widens to them, as a table cannot be
+         narrower than what it holds. */
+      .totals tr.wallet-line td:first-child{white-space:nowrap;padding-right:12px;}
+      .totals tr.wallet-note td{padding:0 3px 1px 12px;font-size:9px;color:#666;white-space:nowrap;}
     </style></head><body>
       <div class="sheet">
         ${copyHtml('CUSTOMER COPY')}
@@ -4798,8 +4855,38 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ marginTop: 4 }}><StatusBadge s={detail.status} /></div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(detail.total_amount)}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Paid {money(detail.paid_amount)}</div>
+                {(() => {
+                  // 13 Nov 2026 (walletCreditLines.mjs): as on every copy,
+                  // wallet credit is a line under Discount and Total is what it
+                  // left to pay; Paid counts money only. Payments Recorded below
+                  // keeps every payment, wallet included: staff correct them there.
+                  const w = walletCopy();
+                  if (!w) return <>
+                    <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(detail.total_amount)}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Paid {money(detail.paid_amount)}</div>
+                  </>;
+                  const labels = exchangeCopyLabels(detailExchange);
+                  const row = (label: string, value: string, muted: boolean) => (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 12, color: muted ? 'var(--text-muted)' : undefined }}>
+                      <span>{label}</span><span>{value}</span>
+                    </div>);
+                  return (
+                    <div data-testid="invoice-wallet-totals" style={{ display: 'grid', gap: 2, minWidth: 230 }}>
+                      {row('Subtotal', money(Number(detail.subtotal ?? 0)), true)}
+                      {row(labels.discountLabel, `−${money(Number(detail.discount_total ?? 0))}`, true)}
+                      {w.lines.map(l => (
+                        <React.Fragment key={l.label}>
+                          <div data-testid="invoice-wallet-line">{row(l.label, `−${money(l.amount)}`, false)}</div>
+                          {l.returned.map((n, k) => <div key={k} data-testid="invoice-wallet-note" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{n}</div>)}
+                        </React.Fragment>
+                      ))}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 16, borderTop: '1px solid var(--border)', paddingTop: 2 }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 600 }}>{labels.totalLabel}</span>
+                        <span data-testid="invoice-wallet-total" style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{money(w.totalLeft)}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Paid {money(w.moneyPaid)}</div>
+                    </div>);
+                })()}
                 {Number(detail.foc_total ?? 0) > 0 && (
                   <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600 }}>
                     {detail.is_full_foc ? 'Fully FOC' : 'Incl. FOC'} {money(Number(detail.foc_total))}

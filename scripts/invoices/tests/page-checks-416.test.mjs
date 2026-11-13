@@ -263,11 +263,12 @@ test('502: the invoice shows no same-day reward; what only shares the word stays
   }
   assert.doesNotMatch(page, /Legacy/, 'no "Legacy" on the page (what only shares the word, below, is lower case)');
   assert.doesNotMatch(page, /[Qq]ualif/, 'nor the same-day qualification');
-  // The open invoice still reads the rest, each into its own name.
-  const reads = [...between('const [items, pays, svc, financial, evt] = await Promise.all([', ']);')
+  // The open invoice still reads the rest, each into its own name; since 13
+  // Nov 2026 its refunds too, for the credit that went back to the wallet.
+  const reads = [...between('const [items, pays, svc, financial, evt, refunds] = await Promise.all([', ']);')
     .matchAll(/supabase\.(?:from|rpc)\('(\w+)'/g)].map(m => m[1]);
-  assert.deepEqual(reads, ['invoice_items', 'invoice_payments', 'invoice_service_staff', 'invoice_financial_position', 'invoice_event_guests'],
-    'five reads for five names, in the same order');
+  assert.deepEqual(reads, ['invoice_items', 'invoice_payments', 'invoice_service_staff', 'invoice_financial_position', 'invoice_event_guests', 'invoice_refunds'],
+    'six reads for six names, in the same order');
   // The printed copy goes from the credit balance to who authorised it, as before.
   assert.match(page, /\$\{creditBlock\}\n\s*\$\{authorisedBlock\}/);
   assert.doesNotMatch(readFileSync('src/lib/printDoc.ts', 'utf8'), /\.(ther|entb|bentbl)\b/, 'and the print block\'s styles are gone with it');

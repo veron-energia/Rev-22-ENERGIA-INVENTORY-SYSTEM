@@ -23,6 +23,11 @@ export interface PdfLine {
   notes?: string[];
 }
 
+/** A row of the totals: its label and formatted value; or (13 Nov 2026) a
+ *  small grey note under the row before it, e.g. 'S$327.00 returned to wallet
+ *  11/11/2026' under a wallet credit line, its value empty. */
+export type TotalsRow = [string, string] | [string, string, 'note'];
+
 export interface PdfDoc {
   /** Cancellation / exchange / refund wording, set per store. */
   policyText?: string | null;
@@ -37,7 +42,7 @@ export interface PdfDoc {
   customerName: string;
   customerContact?: string | null;
   lines: PdfLine[];
-  totals: [string, string][];  // label, formatted value
+  totals: TotalsRow[];  // label, formatted value
   grandTotal?: [string, string];
   payments?: [string, string][];
   /** The customer's credit balance as printed, read fresh for this copy —
@@ -603,8 +608,23 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
   doc.setFontSize(10);
   const totalsTop = y;
   let totalsBottom = -Infinity;
-  const totalsLabelW = Math.max(0, ...d.totals.map(([label]) => doc.getTextWidth(label)));
-  for (const [label, value] of d.totals) {
+  // A note row (13 Nov 2026: what went back into the wallet, under its credit
+  // line) is smaller and sits closer under its row, ending where labels end.
+  const noteSize = 8.5;
+  const rowLabelW = ([label, , kind]: TotalsRow) => {
+    if (kind !== 'note') return doc.getTextWidth(label);
+    doc.setFontSize(noteSize); const w = doc.getTextWidth(label); doc.setFontSize(10);
+    return w;
+  };
+  const totalsLabelW = Math.max(0, ...d.totals.map(rowLabelW));
+  for (const [label, value, kind] of d.totals) {
+    if (kind === 'note') {
+      y -= 1.2;
+      doc.setFontSize(noteSize); grey(); doc.text(label, cUnit, y, { align: 'right' }); doc.setFontSize(10);
+      totalsBottom = y;
+      y += 4.8;
+      continue;
+    }
     grey(); doc.text(label, cUnit, y, { align: 'right' });
     black(); doc.text(value, cTot, y, { align: 'right' });
     totalsBottom = y;

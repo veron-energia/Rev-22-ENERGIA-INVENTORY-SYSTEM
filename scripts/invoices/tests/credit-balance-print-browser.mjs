@@ -1345,7 +1345,12 @@ try {
     ok('443: a past Paid Credit payment of Premium Bundle credit shows its source on screen; a Credit Package payment needs none',
       text.includes(`${BRACKETED} · `) && text.includes('Wallet — Credit Package Paid · ') && !text.includes('Wallet — Credit Package Paid ('), text);
     html = await print(p);
-    ok('443: both printed halves carry the bracket', count(html, `${BRACKETED} · `) === 2 && count(html, 'Wallet — Credit Package Paid · ') === 2);
+    // 13 Nov 2026 (wallet-credit-lines-browser.mjs): wallet credit is a line under Discount on every copy, so the
+    // bracket goes with it there and a Credit Package payment is 'Wallet — Credit Package'; PAYMENT METHODS lists
+    // money only.
+    ok('443: both printed halves carry the bracket, on the credit\'s line under Discount',
+      count(html, `<td>${BRACKETED}</td><td class="r">−S$40.00</td>`) === 2 && count(html, '<td>Wallet — Credit Package</td><td class="r">−S$60.00</td>') === 2
+        && count(html, `${BRACKETED} · `) === 0 && count(html, 'Wallet — Credit Package Paid · ') === 0);
     ok('443: the printed credit line reads Credit Package · Premium Bundle · Other',
       count(flat(html), BREAKDOWN) === 2 && count(html, '<strong>S$665.00</strong>') === 2 && !flat(html).includes('Paid S$570.00'),
       (flat(html).match(/Credit Package S\$[^<]*/) || [''])[0]);
@@ -1467,8 +1472,8 @@ try {
     await p.waitForFunction(() => !!modalButton('Print') && !modalButton('Print').disabled);
     ok('443: they come on once the sources answer', Date.now() - openedAt443 >= 2400);
     html = await print(p);
-    ok('443: the copy made the moment they come on carries the bracket on both halves', count(html, `${BRACKETED} · `) === 2,
-      (html.match(/Wallet — Paid Credit[^·]*·/) || [''])[0]);
+    ok('443: the copy made the moment they come on carries the bracket on both halves', count(html, `<td>${BRACKETED}</td>`) === 2,
+      (html.match(/<td>Wallet — Paid Credit[^<]*<\/td>/) || [''])[0]);
     pdf = await downloadText(p, 'PDF');
     ok('443: and so does the PDF', pdf.includes('Paid Credit (Premium Bundle)'));
     // A reload of the open invoice (another tab records the rest through
@@ -1489,8 +1494,9 @@ try {
     await p.waitForFunction(() => !!modalButton('Print') && !modalButton('Print').disabled);
     html = await print(p);
     ok('443: after the reload, the payment just recorded prints with its source',
-      Date.now() - reloadAt443 >= 2400 && count(html, `${BRACKETED} · `) === 2 && count(html, 'Wallet — Credit Package Paid · ') === 2,
-      (html.match(/Wallet — Paid Credit[^·]*·/) || [''])[0]);
+      Date.now() - reloadAt443 >= 2400 && count(html, `<td>${BRACKETED}</td><td class="r">−S$40.00</td>`) === 2
+        && count(html, '<td>Wallet — Credit Package</td><td class="r">−S$60.00</td>') === 2,
+      (html.match(/<td>Wallet — Paid Credit[^<]*<\/td>/) || [''])[0]);
     ok('no browser errors (443, slow sources)', p.errors.length === 0, p.errors.join(' | '));
     await p.context().close();
   }
