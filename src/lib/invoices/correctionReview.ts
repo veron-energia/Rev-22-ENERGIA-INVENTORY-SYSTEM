@@ -25,14 +25,16 @@ function stable(value: unknown): string {
 }
 
 /**
- * What the review was of: the corrected lines, the header (without the edit
- * count, which a reviewed conflict moves on purpose) and the reason. Two forms
- * with the same fingerprint save the same correction.
+ * What the review was of: the corrected lines and the header (without the edit
+ * count, which a reviewed conflict moves on purpose). Two forms with the same
+ * fingerprint save the same correction. The reason is not part of it: it is
+ * typed after the review, in the window Save the correction opens (the user,
+ * 17 Nov 2026), and changes nothing the summary describes.
  */
-export function correctionFingerprint(items: unknown, header: Record<string, unknown>, reason: string): string {
+export function correctionFingerprint(items: unknown, header: Record<string, unknown>): string {
   const rest: Record<string, unknown> = { ...(header ?? {}) };
   delete rest.expected_edit_count;
-  return stable({ items, header: rest, reason: (reason ?? '').trim() });
+  return stable({ items, header: rest });
 }
 
 export const REVIEW_AGAIN_MESSAGE = 'You changed the invoice after reviewing it. Review the changes again.';

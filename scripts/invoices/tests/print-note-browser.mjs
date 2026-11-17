@@ -282,7 +282,6 @@ try {
       && (await page.locator('.modal').last().innerText()).includes('Internal notes (not printed)')
       && Number(await box.getAttribute('maxlength')) === 500);
   await box.fill('Collect the second pair on Saturday.');
-  await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Customer asked');
   await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
   await page.waitForFunction(() => window.__calls.some(c => c.name === 'preview_invoice_correction'));
   const sent = await page.evaluate(() => window.__calls.filter(c => c.name === 'preview_invoice_correction').at(-1).args.p_header);

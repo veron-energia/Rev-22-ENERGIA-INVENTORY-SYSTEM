@@ -114,8 +114,10 @@ try {
  ok('real rendered image uses the recovered date',await page.evaluate(()=>window.__imageText.includes('Date: 01/02/2020')));
  await page.getByRole('button',{name:'Correct Invoice',exact:true}).click();
  ok('Correct Invoice loads the saved date',await page.getByLabel('Invoice business date',{exact:true}).inputValue()==='2020-02-01');
- await page.getByLabel('Internal notes (not printed)',{exact:true}).fill('Delivery note only');await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verified delivery note');
+ await page.getByLabel('Internal notes (not printed)',{exact:true}).fill('Delivery note only');
  await page.getByRole('button',{name:'Review Changes',exact:true}).click();await page.getByRole('button',{name:'Save the correction',exact:true}).click();
+ // The user, 17 Nov 2026: the reason is asked for in the window Save the correction opens.
+ {const why=page.getByRole('dialog',{name:'Audited invoice correction'});await why.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verified delivery note');await why.getByRole('button',{name:'Save correction',exact:true}).click();}
  await page.waitForFunction(()=>window.__calls.some(c=>c.name==='correct_invoice'));
  await page.getByRole('button',{name:'New Invoice',exact:true}).waitFor();
  ok('unrelated correction submits the saved date',await page.evaluate(()=>window.__calls.findLast(c=>c.name==='correct_invoice')?.args.p_header.business_date==='2020-02-01'));

@@ -272,14 +272,18 @@ const pick = async (modal, current, search, query, option) => {
   await box.fill(query);
   await box.locator('xpath=ancestor::div[3]').getByText(option).first().click();
 };
-// Save the correction with a reason, as the form asks: through the review
-// where it offers one. Returns what the page sent to correct_invoice.
+// Save the correction with a reason, as the form asks: through the review,
+// then (the user, 17 Nov 2026) the reason in the window Save the correction
+// opens. Returns what the page sent to correct_invoice.
 const save = async (page, reason) => {
-  await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill(reason);
   const review = page.getByRole('button', { name: 'Review Changes', exact: true });
   if (await review.count()) {
     await review.click();
     await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    const win = page.getByRole('dialog', { name: 'Audited invoice correction' });
+    await win.waitFor();
+    await win.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill(reason);
+    await win.getByRole('button', { name: 'Save correction', exact: true }).click();
   } else {
     await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
   }
@@ -312,6 +316,10 @@ try {
     await openCorrection(page);
     ok('the form says what stays with an Owner or Manager',
        await page.getByTestId('staff-correction-note').count() === 1);
+    ok('as one small note at the top, without the audited notice or the reason (the user, 17 Nov 2026)',
+       await page.getByTestId('staff-correction-note').evaluate(e => e.tagName === 'P' && !e.closest('.alert'))
+       && await page.getByText('Audited invoice correction', { exact: false }).count() === 0
+       && await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 0);
     ok('a payment amount is read-only for staff',
        await page.getByLabel('Payment amount', { exact: true }).isDisabled());
     ok('and so is the date it was received',
@@ -546,7 +554,6 @@ try {
     // Its label holds the textarea, whose text then joins the label's own.
     const notes = modal.locator('label', { hasText: /^Internal notes \(not printed\)/ }).locator('textarea');
     await notes.fill('First note');
-    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
     await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
     await page.getByTestId('correction-preview').waitFor();
     const previewCall = await page.evaluate(() => window.__calls.findLast(c => c.name === 'preview_invoice_correction'));
@@ -582,6 +589,12 @@ try {
        && window.__calls.filter(c => c.name === 'preview_invoice_correction').length === n + 1
        && window.__calls.findLast(c => c.name === 'preview_invoice_correction').args.p_header.notes === 'Changed after the review', previewsBefore));
     await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    const reviewedWin = page.getByRole('dialog', { name: 'Audited invoice correction' });
+    await reviewedWin.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
+    ok('the reason window fits the screen', await reviewedWin.evaluate(e => {
+       const r = e.getBoundingClientRect(); return r.left >= 0 && r.right <= window.innerWidth + 1; }));
+    await page.screenshot({ path: `.invoice-test/browser/correction-reason-window-${width}.png` });
+    await reviewedWin.getByRole('button', { name: 'Save correction', exact: true }).click();
     await page.waitForFunction(() => window.__calls.some(c => c.name === 'correct_invoice'));
     ok('then it saves what was reviewed',
        await page.evaluate(() => window.__calls.findLast(c => c.name === 'correct_invoice').args.p_header.notes) === 'Changed after the review');
@@ -590,7 +603,6 @@ try {
     await mount(page, 'paid', 'owner');
     modal = await openCorrection(page);
     await modal.locator('label', { hasText: /^Internal notes \(not printed\)/ }).locator('textarea').fill('Left open');
-    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Note added at the till');
     await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
     await page.getByTestId('correction-preview').waitFor();
     await modal.locator('.modal-footer').getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -644,8 +656,9 @@ try {
     await openCorrection(page);
     const focForm = page.getByRole('dialog', { name: 'Correct Invoice' });
     await focForm.waitFor();
-    ok('457: it opens as Correct Invoice, asking for the reason',
-       await focForm.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 1);
+    ok('457: it opens as Correct Invoice, the reason asked only when saving (the user, 17 Nov 2026)',
+       await focForm.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 0
+       && await page.getByText('Audited invoice correction', { exact: false }).count() === 0);
     ok('457: with the line\'s FOC restored as saved',
        await focForm.getByLabel('Line 1 free quantity', { exact: true }).inputValue() === '1');
     ok('457: and no instalment fields (a free invoice has no instalment terms)',
@@ -673,8 +686,8 @@ try {
     await openCorrection(page);
     const againForm = page.getByRole('dialog', { name: 'Correct Invoice' });
     await againForm.waitFor();
-    ok('457: its form asks for the reason, with the instalment fields (it can be paid by instalments)',
-       await againForm.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 1
+    ok('457: its form has the instalment fields (it can be paid by instalments); the reason is asked when saving',
+       await againForm.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 0
        && await againForm.locator('legend', { hasText: /^Instalment$/ }).count() === 1);
     const againSave = await save(page, 'Two pairs after all');
     ok('457: and sends correct_invoice with the reason', againSave?.args?.p_reason === 'Two pairs after all'
@@ -690,6 +703,13 @@ try {
     ok('457: an invoice never settled still opens as Edit Invoice, with no reason asked',
        await page.getByRole('dialog', { name: 'Edit Invoice' }).count() === 1
        && await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 0);
+    await page.evaluate(() => { window.__calls = []; });
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    await page.waitForFunction(() => window.__calls.some(c => c.name === 'correct_invoice'));
+    ok('and Save the correction saves it straight away: no reason window, no reason',
+       await page.getByRole('dialog', { name: 'Audited invoice correction' }).count() === 0
+       && await page.evaluate(() => window.__calls.findLast(c => c.name === 'correct_invoice').args.p_reason === null));
     await mount(page, 'foc_open', 'owner');
     await page.getByRole('button', { name: 'Confirm FOC Invoice', exact: true }).click();
     await page.getByTestId('confirm-foc-question').waitFor();

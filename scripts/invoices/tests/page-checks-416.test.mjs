@@ -13,6 +13,10 @@
 //    changes are not checked until the save.
 //  - CREATE-5: the summary is of the form as it was; a form changed after it
 //    is reviewed again, not saved.
+//  - The user, 17 Nov 2026: a correction's audited notice and its reason are
+//    not at the top of the form; Save the correction opens them in a window
+//    of their own, whose Save correction saves. Staff keep one small note at
+//    the top saying what stays with an Owner or Manager.
 //  - CREATE-17, AFTER-16, SALES-EXTRAS-9: Singapore days, whatever the device.
 //  - CREATE-14 (417, Q4 = A), CREATE-19, CREATE-4, CREATE-18: the page parts.
 //  - 457 (the Owner, 22 Oct 2026, item 9): every invoice has its correct
@@ -84,17 +88,51 @@ test('CREATE-M1 and CREATE-5: the summary is sent the lines and is of the form a
   const f = lib.correctionFingerprint;
   const items = [{ kind: 'product', product_id: 'p1', quantity: 1 }];
   const header = { customer_id: 'c1', notes: 'one', expected_edit_count: 2 };
-  assert.equal(f(items, header, 'why'), f(items, { notes: 'one', customer_id: 'c1', expected_edit_count: 5 }, ' why '),
+  assert.equal(f(items, header), f(items, { notes: 'one', customer_id: 'c1', expected_edit_count: 5 }),
     'the same form, keys in any order and a moved edit count, is the same review');
-  assert.notEqual(f(items, header, 'why'), f(items, { ...header, notes: 'two' }, 'why'), 'a note changed after the review');
-  assert.notEqual(f(items, header, 'why'), f([{ ...items[0], quantity: 2 }], header, 'why'), 'a line changed');
-  assert.notEqual(f(items, header, 'why'), f(items, header, 'other reason'), 'the reason changed');
+  assert.notEqual(f(items, header), f(items, { ...header, notes: 'two' }), 'a note changed after the review');
+  assert.notEqual(f(items, header), f([{ ...items[0], quantity: 2 }], header), 'a line changed');
+  // The reason is typed after the review, in the window Save the correction
+  // opens (the user, 17 Nov 2026): it is not part of what was reviewed.
+  assert.equal(f.length, 2, 'the fingerprint takes the lines and the header only');
+  assert.doesNotMatch(page, /correctionFingerprint\([^)]*editReason/, 'typing the reason does not ask for the review again');
   const create = between('const header = {', 'setCSaving(false);\n    if (error)');
   assert.match(create, /p_header: \{ \.\.\.header, items: allItems \}/, 'the corrected lines go to preview_invoice_correction');
   assert.match(create, /correctionReviewedRef\.current !== fingerprint/, 'Save the correction checks the form still matches');
   assert.match(create, /setCorrectionNotice\(changedAfterReview \? REVIEW_AGAIN_MESSAGE : null\)/);
   assert.equal(lib.REVIEW_AGAIN_MESSAGE, 'You changed the invoice after reviewing it. Review the changes again.');
   assert.match(page, /<fieldset className="form-grid invoice-editor invoice-editor-lock" disabled=\{!!correctionPreview\}/, 'the form is locked while the summary is open');
+});
+
+test('The user, 17 Nov 2026: the audited notice and the reason come with Save the correction, not at the top', () => {
+  // Not at the top of the form any more.
+  assert.doesNotMatch(page, /<strong>Audited invoice correction\.<\/strong>/, 'no audited notice in the form');
+  const form = between('<fieldset className="form-grid invoice-editor invoice-editor-lock"', '</fieldset>');
+  assert.doesNotMatch(form, /e\.g\. Wrong quantity keyed at the till/, 'no reason field in the form');
+  // Staff still see their limits before they start, as one small note.
+  assert.match(form, /\{staffCorrection && \(\s*<p data-testid="staff-correction-note"/, 'the staff note stays at the top, on its own');
+  // Review Changes needs no reason; the save does, from its window.
+  const create = between('const handleCreate = async', "const { data, error } = editingInvoiceId");
+  assert.doesNotMatch(between('const handleCreate = async', '// Show what the correction'), /editingPaid && !editReason/,
+    'Review Changes does not ask for the reason');
+  const gate = between('// A correction is saved from its reason window', "const { data, error } = editingInvoiceId");
+  assert.match(gate, /if \(editingInvoiceId && editingPaid\)/, 'only a correction asks (an unpaid edit saves as before)');
+  assert.match(gate, /if \(!opts\?\.reasonGiven\) \{\s*setCSaving\(false\); setReasonErr\(null\); setReasonOpen\(true\);\s*return;/,
+    'Save the correction opens the window instead of saving');
+  assert.match(gate, /Give a reason for the invoice correction — it is kept in the revision history\./, 'an empty reason is refused in the window');
+  assert.ok(create.indexOf('correctionReviewedRef.current !== fingerprint') < create.indexOf('// A correction is saved from its reason window'),
+    'a form changed after its review is reviewed again before the window is offered');
+  // The window: its notice, the reason, Back and Save correction; Escape closes only it.
+  const win = between('{createOpen && reasonOpen && editingInvoiceId && correctionPreview && (', '{/* Invoice detail + payment modal */}');
+  assert.match(win, /<Modal title="Audited invoice correction"[^>]*onClose=\{\(\) => setReasonOpen\(false\)\}/);
+  assert.match(win, /Unchanged lines keep their saved prices and FOC reasons\./);
+  assert.match(win, /placeholder="e\.g\. Wrong quantity keyed at the till"/);
+  assert.match(win, /onClick=\{\(\) => void handleCreate\(\{ reasonGiven: true \}\)\}/);
+  assert.match(win, /'Save correction'/);
+  assert.match(win, />Back<\/button>/);
+  // A refusal is shown on the form, so the window steps aside; closing the form closes it.
+  assert.match(between("if (error) {", 'setCorrectionPreview(null); setCorrectionNotice(null);'), /setReasonOpen\(false\)/);
+  assert.match(between('const closeEditor = () => {', '};'), /setReasonOpen\(false\)/);
 });
 
 test('CREATE-M1: what the corrected lines make of the invoice, and what was not checked (rule 11)', () => {

@@ -72,8 +72,9 @@ try{
  await page.keyboard.press('Shift+Tab');await page.keyboard.press('Tab');assert.ok(await chooser.evaluate(el=>el.contains(document.activeElement)));await page.keyboard.press('Escape');assert.equal(await red.evaluate(el=>el===document.activeElement),true);checks+=4;
  await page.getByRole('button',{name:'Correct Invoice',exact:true}).click();modal=page.locator('.modal').last();
  await modal.getByRole('button',{name:/Priced Product —/}).click();await modal.getByPlaceholder('Search product name or SKU…').fill('S$72');await modal.locator('h3').click();
- await modal.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verify historical pricing');
  await modal.getByRole('button',{name:'Review Changes',exact:true}).click();await modal.getByRole('button',{name:'Save the correction',exact:true}).click();
+ // The user, 17 Nov 2026: the reason is asked for in the window Save the correction opens.
+ {const why=page.getByRole('dialog',{name:'Audited invoice correction'});await why.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Verify historical pricing');await why.getByRole('button',{name:'Save correction',exact:true}).click();}
  await page.waitForFunction(()=>window.calls.some(c=>c.name==='correct_invoice'));
  const calls=await page.evaluate(()=>window.calls);const correction=calls.find(c=>c.name==='correct_invoice');assert.ok(correction,JSON.stringify(calls.slice(-5)));
  const payload=correction.args.p_items[0];assert.equal(payload.unit_price,31);assert.equal(payload.foc_quantity,1);assert.equal(payload.foc_reason,'Saved FOC reason');checks+=3;

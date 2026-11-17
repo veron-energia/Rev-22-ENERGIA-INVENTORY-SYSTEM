@@ -347,15 +347,13 @@ try {
     ok('payment correction is offered beside the recorded payment',
        await page.getByRole('button', { name: 'Correct amount / date', exact: true }).count() === 1);
 
-    // The audited notice must come before the business date.
+    // The user, 17 Nov 2026: the audited notice and the reason are not at the
+    // top of a correction; Save the correction asks for them, in a window.
     await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
-    const order = await page.evaluate(() => {
-      const notice = Array.from(document.querySelectorAll('.alert')).find(e => e.textContent.includes('Audited invoice correction'));
-      const dateField = Array.from(document.querySelectorAll('label')).find(e => e.textContent.includes('Invoice business date'));
-      if (!notice || !dateField) return null;
-      return (notice.compareDocumentPosition(dateField) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    });
-    ok('the audited correction notice precedes the invoice business date', order === true);
+    await page.getByRole('button', { name: 'Review Changes', exact: true }).waitFor();
+    ok('the correction form opens without the audited notice or the reason at the top',
+       await page.getByText('Audited invoice correction', { exact: false }).count() === 0
+       && await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').count() === 0);
 
     // Saved instalment terms load into the correction form and survive a
     // correction that has nothing to do with them.
@@ -365,11 +363,41 @@ try {
        && await arrangementOnCorrection.getByRole('checkbox', { name: 'Instalments' }).isChecked());
     ok('with its saved term',
        await arrangementOnCorrection.getByRole('spinbutton', { name: 'Duration (months)' }).inputValue() === '6');
-    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix a note, nothing else');
     await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
+    ok('Review Changes needs no reason: the summary opens',
+       await page.getByTestId('correction-preview').count() === 1);
     await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    const reasonWindow = page.getByRole('dialog', { name: 'Audited invoice correction' });
+    await reasonWindow.waitFor();
+    const reasonField = reasonWindow.getByPlaceholder('e.g. Wrong quantity keyed at the till');
+    ok('Save the correction opens the audited correction window and saves nothing yet',
+       (await reasonWindow.innerText()).includes('Unchanged lines keep their saved prices and FOC reasons')
+       && await page.evaluate(() => !window.__calls.some(c => c.name === 'correct_invoice')));
+    ok('with the reason field ready to type in',
+       await reasonField.evaluate(e => e === document.activeElement));
+    await page.screenshot({ path: '.invoice-test/browser/correction-reason-window.png' });
+    await reasonWindow.getByRole('button', { name: 'Save correction', exact: true }).click();
+    ok('an empty reason is refused in the window, and nothing is saved',
+       (await reasonWindow.getByRole('alert').innerText()).includes('Give a reason for the invoice correction')
+       && await page.evaluate(() => !window.__calls.some(c => c.name === 'correct_invoice')));
+    await reasonField.fill('Fix a note, nothing else');
+    await reasonWindow.getByRole('button', { name: 'Back', exact: true }).click();
+    ok('Back closes only the window: the summary is still there',
+       await page.getByRole('dialog', { name: 'Audited invoice correction' }).count() === 0
+       && await page.getByTestId('correction-preview').count() === 1);
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    await reasonWindow.waitFor();
+    ok('and keeps the reason typed', await reasonField.inputValue() === 'Fix a note, nothing else');
+    await page.keyboard.press('Escape');
+    ok('Escape closes only the window too, not the correction',
+       await page.getByRole('dialog', { name: 'Audited invoice correction' }).count() === 0
+       && await page.getByTestId('correction-preview').count() === 1);
+    await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    await reasonWindow.getByRole('button', { name: 'Save correction', exact: true }).click();
     await page.waitForFunction(() => window.__calls.some(c => c.name === 'correct_invoice'));
     const correction = await page.evaluate(() => window.__calls.findLast(c => c.name === 'correct_invoice'));
+    ok('the reason goes with the save', correction?.args?.p_reason === 'Fix a note, nothing else',
+       String(correction?.args?.p_reason));
     ok('an unrelated correction preserves the saved instalment settings',
        correction?.args?.p_header?.instalment_category === 'in_house'
        && correction?.args?.p_header?.instalment_method_id === 'bank'
@@ -380,12 +408,16 @@ try {
     await mount(page, 'paid');
     await page.evaluate(() => { window.__failCorrection = true; });
     await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
-    await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Move this invoice to the other store');
     await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
     await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+    const storeReason = page.getByRole('dialog', { name: 'Audited invoice correction' });
+    await storeReason.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Move this invoice to the other store');
+    await storeReason.getByRole('button', { name: 'Save correction', exact: true }).click();
     const review = page.getByRole('group', { name: 'Historical stock evidence review' });
     await review.waitFor();
     ok('a refused store change opens the evidence review', await review.count() === 1);
+    ok('and the reason window steps aside, so the refusal on the form can be read',
+       await page.getByRole('dialog', { name: 'Audited invoice correction' }).count() === 0);
     // The bug this catches: the review rendered a hundred lines above the error,
     // so nobody scrolled up to find it.
     const gap = await page.evaluate(() => {

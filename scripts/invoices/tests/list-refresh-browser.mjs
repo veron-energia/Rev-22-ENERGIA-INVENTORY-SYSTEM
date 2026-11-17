@@ -390,7 +390,6 @@ try {
       const page = await openTab(context, { seed: everyday(), width });
       await row(page, 'INV-0007').getByRole('button', { name: 'View', exact: true }).click();
       await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
-      await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Wrong date and customer keyed');
       await page.getByLabel('Invoice business date').fill('2026-09-15');
       await page.getByRole('button', { name: /^Ann Buyer/ }).first().click();
       await page.getByPlaceholder('Search name, ID, phone or email…').fill('Ben');
@@ -400,6 +399,9 @@ try {
       await page.getByRole('combobox', { name: 'Search payment method' }).press('Enter');
       await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
       await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+      // The user, 17 Nov 2026: the reason is asked for in the window Save the correction opens.
+      await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Wrong date and customer keyed');
+      await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByRole('button', { name: 'Save correction', exact: true }).click();
       await page.waitForFunction(() => { const tr = Array.from(document.querySelectorAll('tbody tr')).find(r => r.textContent.includes('INV-0007')); return tr && tr.querySelectorAll('td')[6].textContent.trim() === 'Bank Transfer'; });
       ok('after a correction the list shows the new customer', await cell(page, 'INV-0007', 3) === 'Ben Buyer');
       ok('the new invoice date', /15\/09\/2026/.test(await cell(page, 'INV-0007', 1)));
@@ -537,7 +539,6 @@ try {
       const page = await openTab(context, { seed: everyday(), width });
       await row(page, 'INV-0007').getByRole('button', { name: 'View', exact: true }).click();
       await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
-      await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix the date');
       await page.getByLabel('Invoice business date').fill('2026-09-20');
       await dbSet(page, 'inv7', { edit_count: 1, notes: 'someone else saved' });
       await emit(page, 'invoices', { eventType: 'UPDATE', new: { id: 'inv7', edit_count: 1 }, old: { id: 'inv7' } });
@@ -552,6 +553,9 @@ try {
       await page.getByRole('button', { name: /I have reviewed it/ }).click();
       await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
       await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+      // The user, 17 Nov 2026: the reason is asked for in the window Save the correction opens.
+      await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix the date');
+      await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByRole('button', { name: 'Save correction', exact: true }).click();
       await page.waitForFunction(() => window.__calls.some(c => c.name === 'correct_invoice'));
       const sent = await page.evaluate(() => window.__calls.find(c => c.name === 'correct_invoice').args.p_header.expected_edit_count);
       ok('after the review the save carries the current version, so the server accepts it', sent === 1);
@@ -560,11 +564,13 @@ try {
       // The server's own refusal of a stale save (no event seen) maps to the same review.
       await row(page, 'INV-0008').getByRole('button', { name: 'View', exact: true }).click();
       await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
-      await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix a note');
       await page.getByLabel('Notes').fill('mine');
       await dbSet(page, 'inv8', { edit_count: 3 });
       await page.getByRole('button', { name: 'Review Changes', exact: true }).click();
       await page.getByRole('button', { name: 'Save the correction', exact: true }).click();
+      // The user, 17 Nov 2026: the reason is asked for in the window Save the correction opens.
+      await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix a note');
+      await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByRole('button', { name: 'Save correction', exact: true }).click();
       await page.getByTestId('invoice-edit-conflict').waitFor();
       ok('a stale save refused by the server also opens the review and keeps the entries', await page.getByLabel('Notes').inputValue() === 'mine');
       await page.close();
@@ -688,7 +694,6 @@ try {
       const page = await openTab(context, { seed: everyday(), width });
       await row(page, 'INV-0009').getByRole('button', { name: 'View', exact: true }).click();
       await page.getByRole('button', { name: 'Correct Invoice', exact: true }).click();
-      await page.getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Fix a note');
       await page.getByLabel('Notes').fill('mine');
       await dbSet(page, 'inv9', { edit_count: 1 });
       await emit(page, 'invoices', { eventType: 'UPDATE', new: { id: 'inv9', edit_count: 1 }, old: { id: 'inv9' } });

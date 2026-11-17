@@ -486,6 +486,16 @@ const InvoicesPage: React.FC = () => {
   // without its money parts (377, staffMayCorrect below).
   const [editingPaid, setEditingPaid] = useState(false);
   const [editReason, setEditReason] = useState('');
+  // The user, 17 Nov 2026: on a correction the audited notice and the reason
+  // are not at the top of the form. Save the correction (in the summary) opens
+  // them in a window of their own, whose Save correction saves
+  // (handleCreate({ reasonGiven: true })). Closing it keeps what was typed.
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reasonErr, setReasonErr] = useState<string | null>(null);
+  const reasonInputRef = useRef<HTMLInputElement | null>(null);
+  // The window focuses itself first (a child's effect runs before this one),
+  // then the reason field takes the focus, so typing goes straight in.
+  useEffect(() => { if (reasonOpen) reasonInputRef.current?.focus(); }, [reasonOpen]);
   // Correcting the affiliate and the payment methods on a settled invoice.
   const [cAffiliate, setCAffiliate] = useState('');
   const [affTouched, setAffTouched] = useState(false);
@@ -1071,7 +1081,7 @@ const InvoicesPage: React.FC = () => {
     return { payment_methods, payment_corrections, payment_removals };
   };
 
-  const handleCreate = async () => {
+  const handleCreate = async (opts?: { reasonGiven?: boolean }) => {
     // A second click while the first is in flight would create a second invoice.
     if (cSaving) return;
     // 416 rule 3: never after today in Singapore; a date once set stays set.
@@ -1229,10 +1239,8 @@ const InvoicesPage: React.FC = () => {
     setCSaving(true); setCErr(null);
     // Phase 13: the same payload edits an existing unpaid invoice in place —
     // update_invoice revalidates every rule exactly as create_invoice does.
-    if (editingPaid && !editReason.trim()) {
-      setCErr('Give a reason for the invoice correction — it is kept in the revision history.');
-      setCSaving(false); return;
-    }
+    // A correction's reason is asked for only when it is saved (the window
+    // Save the correction opens over the summary), so Review Changes needs none.
     // The same rule the server enforces: a positive discount that is new, or
     // changed, needs a reason. An unchanged historical one does not.
     const needsDiscountReason = (cDiscount || 0) > 0
@@ -1295,7 +1303,7 @@ const InvoicesPage: React.FC = () => {
     // CREATE-5: the summary describes the form as it was when it was asked
     // for. If the form no longer matches it, the summary is asked for again
     // and nothing is saved.
-    const fingerprint = editingInvoiceId ? correctionFingerprint(allItems, header, editReason) : null;
+    const fingerprint = editingInvoiceId ? correctionFingerprint(allItems, header) : null;
     const changedAfterReview = !!editingInvoiceId && !!correctionPreview && correctionReviewedRef.current !== fingerprint;
     if (changedAfterReview) setCorrectionPreview(null);
     if (editingInvoiceId && (!correctionPreview || changedAfterReview)) {
@@ -1311,6 +1319,21 @@ const InvoicesPage: React.FC = () => {
       setCorrectionPreview(pv);
       return;
     }
+    // A correction is saved from its reason window (the user, 17 Nov 2026):
+    // Save the correction opens it, once the form still matches its summary,
+    // and the window's Save correction comes back here with the reason given.
+    if (editingInvoiceId && editingPaid) {
+      if (!opts?.reasonGiven) {
+        setCSaving(false); setReasonErr(null); setReasonOpen(true);
+        return;
+      }
+      if (!editReason.trim()) {
+        setCSaving(false);
+        setReasonErr('Give a reason for the invoice correction — it is kept in the revision history.');
+        reasonInputRef.current?.focus();
+        return;
+      }
+    }
     const { data, error } = editingInvoiceId
       ? await supabase.rpc('correct_invoice', { p_invoice_id: editingInvoiceId, p_items: allItems,
           p_header: header, p_reason: editReason.trim() || null, p_request_id: editRequestId })
@@ -1323,6 +1346,8 @@ const InvoicesPage: React.FC = () => {
       // 399: a correction that takes off goods the customer already took says
       // so plainly (the machine prefix off): record them as returned first.
       setCErr(goodsRefusal(error.message) ?? error.message);
+      // The refusal is shown on the form, so the reason window steps aside.
+      setReasonOpen(false);
       setCorrectionPreview(null); setCorrectionNotice(null);
       // Someone else saved this invoice first (expected_edit_count). Say so
       // where the entries are, with the review, rather than as a bare refusal.
@@ -1356,7 +1381,7 @@ const InvoicesPage: React.FC = () => {
     noteLocalChangeRef.current([newInvoiceId ?? editingInvoiceId].filter(Boolean) as string[]);
     setCorrectionPreview(null);
     setCreateOpen(false); resetCreate(); setEditingInvoiceId(null);
-    setEditingPaid(false); setEditReason('');
+    setEditingPaid(false); setEditReason(''); setReasonOpen(false); setReasonErr(null);
     if (newInvoiceId) {
       // Creation succeeded. Continue into the invoice that was just made rather
       // than dropping back to the list, and let its own detail view say what it
@@ -1601,7 +1626,7 @@ const InvoicesPage: React.FC = () => {
     // are corrections too, with a reason, even while unpaid with no payment.
     setEditingPaid(!['draft', 'unpaid'].includes(String(detail.status)) || detailPayments.length > 0
       || Boolean(detail.locked_at) || Boolean((detail as any).is_topup) || Boolean((detail as any).is_exchange));
-    setEditReason('');
+    setEditReason(''); setReasonOpen(false); setReasonErr(null);
     setCAffiliate((detail as any).affiliate_id ?? '');
     setAffTouched(false);
     {
@@ -2405,11 +2430,12 @@ const InvoicesPage: React.FC = () => {
   const closeEditor = () => {
     setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null);
     setCorrectionPreview(null); setCorrectionNotice(null); correctionReviewedRef.current = null;
+    setReasonOpen(false); setReasonErr(null);
   };
   const discardAndReopen = async () => {
     const id = editingIdRef.current;
     setCreateOpen(false); setEditingInvoiceId(null); setEditingPaid(false); setStockReviewFor(null);
-    setEditConflict(null); setCorrectionPreview(null); setCErr(null);
+    setEditConflict(null); setCorrectionPreview(null); setCErr(null); setReasonOpen(false); setReasonErr(null);
     if (!id) return;
     const { data } = await supabase.from('invoices').select('*').eq('id', id).is('deleted_at', null).maybeSingle();
     if (data) void openDetail(data as Invoice);
@@ -3552,7 +3578,7 @@ const InvoicesPage: React.FC = () => {
 
       {createOpen && (
         <Modal title={editingPaid ? "Correct Invoice" : editingInvoiceId ? "Edit Invoice" : "New Invoice"} wide confirmClose onClose={closeEditor}
-          footer={<><button className="btn btn-secondary" onClick={closeEditor}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={handleCreate} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
+          footer={<><button className="btn btn-secondary" onClick={closeEditor}>Cancel</button>{!splitMode && !correctionPreview && <button className="btn btn-primary" onClick={() => void handleCreate()} disabled={cSaving || previewing}>{previewing ? 'Checking…' : cSaving ? 'Saving…' : editingInvoiceId ? 'Review Changes' : 'Create Invoice'}</button>}</>}>
           <div className="form-grid">
           {/* CREATE-5: locked while its summary is open, so what is saved is
               what was reviewed. Back to the form unlocks it. */}
@@ -3591,29 +3617,16 @@ const InvoicesPage: React.FC = () => {
                 )}
               </div>
             )}
-            {/* On a correction the audited notice and its required reason come
-                first, then the business date. Someone reading downwards learns
-                that this is a correction before they are asked to date it. */}
-            {editingPaid && (
-              <div className="alert alert-warning" style={{ marginBottom: 0 }}>
-                <span>⚠</span>
-                <div>
-                  <strong>Audited invoice correction.</strong> Unchanged lines keep their saved prices and FOC reasons.
-                  The balance uses payments less refunds. Correcting a cancelled or refunded invoice preserves its status.
-                  {staffCorrection && (
-                    <div data-testid="staff-correction-note" style={{ marginTop: 6 }}>
-                      You can change the lines and quantities, the customer, the referrer, the service staff, a
-                      payment’s method, the date and the notes. Prices, payment amounts and dates, removing or
-                      splitting a payment, and the store stay with an Owner or Manager.
-                    </div>
-                  )}
-                  <div style={{ marginTop: 8 }}>
-                    <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Reason for the correction *</div>
-                    <input value={editReason} onChange={e => setEditReason(e.target.value)}
-                      placeholder="e.g. Wrong quantity keyed at the till" />
-                  </div>
-                </div>
-              </div>
+            {/* The user, 17 Nov 2026: the audited notice and the reason are not
+                at the top of a correction; Save the correction asks for them
+                (the reason window). Staff still see, before they start, what
+                stays with an Owner or Manager: one small note. */}
+            {staffCorrection && (
+              <p data-testid="staff-correction-note" style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+                You can change the lines and quantities, the customer, the referrer, the service staff, a
+                payment’s method, the date and the notes. Prices, payment amounts and dates, removing or
+                splitting a payment, and the store stay with an Owner or Manager.
+              </p>
             )}
             {/* 416 rule 3: never after today in Singapore, and a date once set
                 cannot be cleared (CREATE-11). */}
@@ -4710,6 +4723,39 @@ const InvoicesPage: React.FC = () => {
               onBack={() => { setCorrectionPreview(null); setCorrectionNotice(null); }}
               onConfirm={() => { void handleCreate(); }} />
           )}
+          </div>
+        </Modal>
+      )}
+
+      {/* The user, 17 Nov 2026: a correction's audited notice and its required
+          reason, asked for when Save the correction is pressed. Over the form,
+          so Escape, ✕ and Back close only this window, back to the summary,
+          keeping the reason typed. */}
+      {createOpen && reasonOpen && editingInvoiceId && correctionPreview && (
+        <Modal title="Audited invoice correction" maxWidth={460} onClose={() => setReasonOpen(false)}
+          footer={<>
+            <button type="button" className="btn btn-secondary" onClick={() => setReasonOpen(false)} disabled={cSaving}>Back</button>
+            <button type="button" className="btn btn-primary" onClick={() => void handleCreate({ reasonGiven: true })} disabled={cSaving}>
+              {cSaving ? 'Saving…' : 'Save correction'}
+            </button>
+          </>}>
+          <div data-testid="correction-reason-window">
+            <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+              <span>⚠</span>
+              <div>
+                Unchanged lines keep their saved prices and FOC reasons. The balance uses payments less refunds.
+                Correcting a cancelled or refunded invoice preserves its status.
+              </div>
+            </div>
+            <label style={{ display: 'block' }}>Reason for the correction *
+              <input ref={reasonInputRef} value={editReason} aria-invalid={!!reasonErr}
+                onChange={e => { setEditReason(e.target.value); setReasonErr(null); }}
+                onKeyDown={e => { if (e.key === 'Enter' && !cSaving) { e.preventDefault(); void handleCreate({ reasonGiven: true }); } }}
+                placeholder="e.g. Wrong quantity keyed at the till" />
+            </label>
+            {reasonErr
+              ? <p role="alert" style={{ color: 'var(--danger)', fontSize: 12.5, margin: '6px 0 0' }}>{reasonErr}</p>
+              : <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '6px 0 0' }}>It is kept in the invoice’s revision history.</p>}
           </div>
         </Modal>
       )}
