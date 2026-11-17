@@ -71,6 +71,9 @@ const VouchersPage: React.FC = () => {
   const [stockStore, setStockStore] = useState('');
   const [stockQty, setStockQty] = useState(0);
   const [stockBusy, setStockBusy] = useState(false);
+  // 514: one request id per Add stock window, so a second click, or the same
+  // request sent again after its answer was lost, adds the stock once.
+  const [stockRequestId, setStockRequestId] = useState(() => crypto.randomUUID());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,11 +167,11 @@ const VouchersPage: React.FC = () => {
     load();
   };
 
-  const openStock = (v: VoucherRow) => { setStockFor(v); setStockStore(stores[0]?.id ?? ''); setStockQty(0); };
+  const openStock = (v: VoucherRow) => { setStockFor(v); setStockStore(stores[0]?.id ?? ''); setStockQty(0); setStockRequestId(crypto.randomUUID()); };
   const addStock = async () => {
     if (!stockFor || !stockStore || stockQty <= 0) return;
     setStockBusy(true);
-    const { error } = await supabase.rpc('voucher_stock_in', { p_voucher_id: stockFor.id, p_store_id: stockStore, p_quantity: stockQty, p_note: null });
+    const { error } = await supabase.rpc('voucher_stock_in', { p_voucher_id: stockFor.id, p_store_id: stockStore, p_quantity: stockQty, p_note: null, p_request_id: stockRequestId });
     setStockBusy(false);
     if (error) { alert(error.message); return; }
     setStockFor(null); load();

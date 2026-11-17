@@ -90,6 +90,16 @@ create function pg_temp.has_513() returns boolean language sql stable as
 create function pg_temp.sof_513_revoked() returns text[] language sql immutable as $f$
   select array['create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)',
                'update_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text)'] $f$;
+-- Whether 515 is in, and the signatures without a request id it closed to signed-in logins
+-- (the security audit of 17 Nov 2026, L3). The pages call 514's signatures, which take
+-- p_request_id and start with require_active_staff(), so they are in no list.
+create function pg_temp.has_515() returns boolean language sql stable as
+  $f$ select to_regprocedure('public.voucher_stock_in(uuid,uuid,integer,text,uuid)') is not null
+            and not has_function_privilege('authenticated', 'public.voucher_stock_in(uuid,uuid,integer,text)', 'execute') $f$;
+create function pg_temp.sof_515_revoked() returns text[] language sql immutable as $f$
+  select array['correct_tiktok_row(uuid,integer,text)', 'record_stock_use(text,uuid,uuid,integer,text,text)',
+               'special_stock_in(uuid,uuid,integer,text)', 'voucher_stock_in(uuid,uuid,integer,text)',
+               'claim_entitlement_vouchers(uuid,jsonb,text)'] $f$;
 
 -- Run p_sql as one of the fixture's logins and say what happened:
 --   'ok' and the result as text, or the SQLSTATE and the message.
@@ -452,12 +462,22 @@ begin
     where (to_regprocedure('public.' || x) is null
            or not has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute'))
       and not (pg_temp.has_502() and x = any (pg_temp.sof_502_revoked()))
-      and not (pg_temp.has_513() and x = any (pg_temp.sof_513_revoked()));
+      and not (pg_temp.has_513() and x = any (pg_temp.sof_513_revoked()))
+      and not (pg_temp.has_515() and x = any (pg_temp.sof_515_revoked()));
   -- 502: none of the 13 is callable by a signed-in login or a signed-out
   -- visitor; the service role keeps them all.
   if pg_temp.has_502() then
     perform pg_temp.sof_fail('1: 502 revoked it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
        from unnest(pg_temp.sof_502_revoked()) x
+      where to_regprocedure('public.' || x) is null
+         or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
+         or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
+         or not has_function_privilege('service_role', to_regprocedure('public.' || x), 'execute');
+  end if;
+  -- 515: the signatures without a request id are the service role's and the server's alone.
+  if pg_temp.has_515() then
+    perform pg_temp.sof_fail('1: 515 closed it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
+       from unnest(pg_temp.sof_515_revoked()) x
       where to_regprocedure('public.' || x) is null
          or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
          or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
@@ -714,6 +734,11 @@ begin
     -- 502: a call that reaches a function it revoked is refused to every login, staff too.
     if pg_temp.has_502() and exists (select 1 from unnest(pg_temp.sof_502_revoked()) f
                                       where strpos(r.sql, 'public.' || split_part(f, '(', 1) || '(') > 0) then
+      v_may := '{}';
+    end if;
+    -- 515: so is a call to a signature without a request id (here the three-argument
+    -- claim_entitlement_vouchers; the window calls 514's, with p_request_id).
+    if pg_temp.has_515() and strpos(r.sql, 'public.claim_entitlement_vouchers(') > 0 then
       v_may := '{}';
     end if;
     foreach v_who in array c_everyone loop

@@ -239,6 +239,9 @@ const TikTokImportPage: React.FC = () => {
   const [negAck, setNegAck] = useState(false); const [negReason, setNegReason] = useState('');
   const [corrDelta, setCorrDelta] = useState(0);
   const [corrReason, setCorrReason] = useState('');
+  // 514: one request id per Correction window, so a second click, or the same
+  // request sent again after its answer was lost, makes one correction.
+  const [corrRequestId, setCorrRequestId] = useState(() => crypto.randomUUID());
   // Settled lines left unticked when their file was confirmed. They are in no
   // total, so they are listed beside the month's figures to be included on
   // purpose rather than stranded.
@@ -1005,7 +1008,7 @@ const TikTokImportPage: React.FC = () => {
                         )}
                         {canManage && r.confirmed && r.matched_kind && r.staging_status !== 'Already Imported' && (
                           <button className="btn btn-secondary btn-sm btn-icon" title="Correction (Owner/Manager)"
-                            onClick={() => { setCorrectRow(r); setCorrDelta(-1); setCorrReason(''); }}>
+                            onClick={() => { setCorrectRow(r); setCorrDelta(-1); setCorrReason(''); setCorrRequestId(crypto.randomUUID()); }}>
                             <Wrench size={12} /></button>
                         )}
                       </div></td>
@@ -1596,7 +1599,7 @@ const TikTokImportPage: React.FC = () => {
             <button className="btn btn-secondary" onClick={() => setCorrectRow(null)}>Cancel</button>
             <button className="btn btn-primary" disabled={busy !== null || corrDelta === 0 || !corrReason.trim()} onClick={async () => {
               setBusy('corr'); setErr(null);
-              const { error } = await supabase.rpc('correct_tiktok_row', { p_row_id: correctRow.id, p_qty_delta: corrDelta, p_reason: corrReason.trim() });
+              const { error } = await supabase.rpc('correct_tiktok_row', { p_row_id: correctRow.id, p_qty_delta: corrDelta, p_reason: corrReason.trim(), p_request_id: corrRequestId });
               setBusy(null);
               if (error) { setErr(error.message); return; }
               setCorrectRow(null); await load(); if (activeBatch) await loadBatchRows(activeBatch.id);

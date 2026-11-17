@@ -78,7 +78,10 @@ test('handing two over: "Handed over 2", the document, and nothing more owed on 
   await d.click(d.button('Collect 2'));
   assert.equal(words(document.querySelector('.voucher-claim-done')),
     'Handed over 2. Document VC-MADEUP-0001. It records the hand-over only — no payment, and nothing further is owed on it.');
-  assert.deepEqual(backend.calls.filter(c => c.rpc === 'claim_entitlement_vouchers').map(c => c.args),
+  const claims = backend.calls.filter(c => c.rpc === 'claim_entitlement_vouchers').map(c => c.args);
+  // 514: the hand-over carries the window's request id, so a second click hands over once.
+  assert.match(claims[0]?.p_request_id ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.deepEqual(claims.map(({ p_request_id, ...rest }) => rest),
     [{ p_entitlement_id: 'r1', p_selections: [{ voucher_id: 'v1', quantity: 2 }], p_note: null }]);
   plain('after a hand-over');
 });

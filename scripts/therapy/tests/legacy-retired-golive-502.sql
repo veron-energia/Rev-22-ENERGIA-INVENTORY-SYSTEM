@@ -99,6 +99,14 @@ create temp sequence t502g_pass;
 create temp sequence t502g_fail;
 create temp sequence t502g_phone start 2001;
 create temp sequence t502g_inv start 1;
+-- 514 (17 Nov 2026): a hand-over a login makes carries a request id, and 515 closes the
+-- three-argument claim_entitlement_vouchers to logins; so with 514 in it is called here
+-- with a fresh id each time, which hands over exactly as before.
+create function pg_temp.cev_tpl(p_null_note boolean) returns text language sql stable as $cev$
+  select 'select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, '
+         || case when p_null_note then 'null' else '%L' end
+         || case when to_regprocedure('public.claim_entitlement_vouchers(uuid,jsonb,text,uuid)') is not null
+                 then ', gen_random_uuid())::text' else ')::text' end $cev$;
 create function pg_temp.id(p_k text) returns uuid language sql as $f$ select id from t502g where k = p_k $f$;
 create function pg_temp.put(p_k text, p_id uuid) returns uuid language sql as $f$
   insert into t502g values (p_k, p_id) on conflict (k) do update set id = excluded.id returning id $f$;
@@ -174,7 +182,7 @@ create function pg_temp.pay(p_who uuid, p_inv uuid, p_amount numeric) returns te
       'amount', p_amount, 'payment_date', public.sg_today()::text)), 'arrangements', '[]'::jsonb), gen_random_uuid())) $f$;
 -- Vouchers to hand over: the hand-over window and its list.
 create function pg_temp.claim(p_who uuid, p_ent uuid, p_voucher uuid, p_qty int) returns text language sql as $f$
-  select pg_temp.try_as(p_who, format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, %L)::text', p_ent,
+  select pg_temp.try_as(p_who, format(pg_temp.cev_tpl(false), p_ent,
     jsonb_build_array(jsonb_build_object('voucher_id', p_voucher, 'quantity', p_qty)), 'T502G hand-over')) $f$;
 create function pg_temp.state(p_who uuid, p_ent uuid) returns jsonb language plpgsql as $f$
 declare t text;
@@ -361,13 +369,14 @@ begin
   elsif d = '7b63da063576a5c952cc5abe6c53f13d' then
     -- production's functions at 501 (rc501_live), as undo-502.sql gives them back; with 504-510
     -- in as well (17 Nov 2026: they change none of 502's functions), those at 501 with 504-510;
-    -- likewise with 511, 512, both, or 511 to 513 in too (they change none of them either)
+    -- likewise with 511, 512, both, or 511 to 513 or 514 in too (they change none of them either)
     perform pg_temp.setkv('fp_before_502', to_jsonb(case pg_temp.fp()
       when 'f74dea74cee6ed53d2a912a9df8fd231/1427' then '974f4dff7d37a9493a5ac9f6159e9670/1427'  -- 504-510
       when '7fb53ddedcc6a869ea62a81642662ac9/1427' then '112b7d7e6fc396be67aba898cf57825e/1427'  -- and 511
       when '19d5fb842f0cd19bc2a5ee260f3cb51f/1427' then '8874710a8789bc647b4395baaf50364d/1427'  -- and 512
       when 'a5eb562760ef1671bfdb8d705ed33eb4/1427' then '6150d1eac6c0d8c9d24e887040cc9ad2/1427'  -- and both
       when '80f4fba4774d7cf1ace3e95fe4d8d696/1427' then '89f750c613d2b1ec6fc6ac215736a7fc/1427'  -- and 513
+      when '74113fc0668baf74cd1850140de9bf27/1433' then '818a18ffd4830af65b9631ac5f495a5f/1433'  -- and 514
       else '2a58a90a691a37a80b562ad41d546e98/1425' end));
   else
     raise exception 'T502G: trg_create_therapy_on_paid() is neither 502''s nor the one before it (md5 %). Run this on a copy of production at 501, or with 502 in.', d;

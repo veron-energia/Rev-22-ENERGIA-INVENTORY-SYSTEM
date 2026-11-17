@@ -79,6 +79,14 @@ set local client_min_messages = warning;
 create temp table t502(k text primary key, id uuid);
 create temp table t502_res(n serial primary key, ok boolean, label text);
 create temp sequence t502_phone;
+-- 514 (17 Nov 2026): a hand-over a login makes carries a request id, and 515 closes the
+-- three-argument claim_entitlement_vouchers to logins; so with 514 in it is called here
+-- with a fresh id each time, which hands over exactly as before.
+create function pg_temp.cev_tpl(p_null_note boolean) returns text language sql stable as $cev$
+  select 'select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, '
+         || case when p_null_note then 'null' else '%L' end
+         || case when to_regprocedure('public.claim_entitlement_vouchers(uuid,jsonb,text,uuid)') is not null
+                 then ', gen_random_uuid())::text' else ')::text' end $cev$;
 create function pg_temp.id(p_k text) returns uuid language sql as $f$ select id from t502 where k = p_k $f$;
 create function pg_temp.put(p_k text, p_id uuid) returns uuid language sql as $f$
   insert into t502 values (p_k, p_id) on conflict (k) do update set id = excluded.id returning id $f$;
@@ -683,7 +691,7 @@ begin
   -- handed over by staff.
   update public.therapy_entitlements set status = 'expired', activation_date = public.sg_today() - 40, expiry_date = public.sg_today() - 10,
          claimed_at = now(), claimed_by = own where id = first_month;
-  j := pg_temp.must(stf, format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, %L)::text', aff_row,
+  j := pg_temp.must(stf, format(pg_temp.cev_tpl(false), aff_row,
     jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.id('vf'), 'quantity', 4)), 'T502 hand-over'))::jsonb;
   perform pg_temp.ok((j->>'claimed_now')::int = 4, 'B2 4 of the affiliate''s 10 vouchers are handed over');
   h := pg_temp.history(array[c, aff]);
@@ -933,7 +941,7 @@ begin
     'E5 a member of staff of the store sees it in the hand-over window: 10 to hand over, 2 vouchers to choose from');
   t := pg_temp.try_as(stfb, format('select public.entitlement_voucher_state(%L::uuid)::text', u1));
   perform pg_temp.ok(t = 'P0001:No access to this store', 'E6 staff of another store do not: ' || t);
-  j := pg_temp.must(stf, format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, %L)::text', u1,
+  j := pg_temp.must(stf, format(pg_temp.cev_tpl(false), u1,
     jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.id('vf'), 'quantity', 2), jsonb_build_object('voucher_id', pg_temp.id('vm'), 'quantity', 1)),
     'T502 hand-over'))::jsonb;
   perform pg_temp.ok((j->>'claimed_now')::int = 3 and (j->'state'->>'remaining')::int = 7
@@ -946,12 +954,12 @@ begin
   perform pg_temp.pay(stf, i2);
   select id into u3 from public.therapy_entitlements where customer_id = c and earner_kind = 'credit_package';
   update public.therapy_entitlements set activation_deadline = public.sg_today() - 1 where id = u3;
-  t := pg_temp.try_as(stf, format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, null)::text', u3,
+  t := pg_temp.try_as(stf, format(pg_temp.cev_tpl(true), u3,
     jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.id('vf'), 'quantity', 1))));
   perform pg_temp.ok(t = format('P0001:The claim deadline (%s) has passed', public.sg_today() - 1)
                      and public.entitlement_claimed_qty(u3) = 0, 'E8 a hand-over after the reward''s own collect-by date is refused: ' || t);
   update public.therapy_entitlements set activation_deadline = public.sg_today() where id = u3;
-  t := pg_temp.try_as(stf, format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, null)::text', u3,
+  t := pg_temp.try_as(stf, format(pg_temp.cev_tpl(true), u3,
     jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.id('vf'), 'quantity', 1))));
   perform pg_temp.ok(t like 'ok:%' and public.entitlement_claimed_qty(u3) = 1, 'E9 on the date itself it goes through: ' || left(t, 60));
 
@@ -986,7 +994,7 @@ begin
     'E18 then the refund goes through, and the credit goes back: ' || left(t, 80));
   -- The refund withdraws the 7 not handed over (as it always has: trg_revoke_unclaimed_on_close).
   j := pg_temp.must(stf, format('select public.entitlement_voucher_state(%L::uuid)::text', u1))::jsonb;
-  t := pg_temp.try_as(stf, format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, null)::text', u1,
+  t := pg_temp.try_as(stf, format(pg_temp.cev_tpl(true), u1,
     jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.id('vf'), 'quantity', 1))));
   perform pg_temp.ok(t like 'P0001:%' and (j->>'claimed')::int = 3 and (j->>'revoked')::int = 7 and (j->>'remaining')::int = 0
                      and j->>'blocked_reason' = format('Invoice %s was refunded', (select invoice_no from public.invoices where id = i))

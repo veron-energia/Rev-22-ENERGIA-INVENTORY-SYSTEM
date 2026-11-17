@@ -56,6 +56,14 @@ create temp table t502r_res(n serial primary key, ok boolean, label text);
 -- The reward rows made here: Legacy or not, their store, and the status the lists read from them.
 create temp table t502r_row(k text primary key, id uuid, legacy boolean, store text, status_now text);
 create temp sequence t502r_phone;
+-- 514 (17 Nov 2026): a hand-over a login makes carries a request id, and 515 closes the
+-- three-argument claim_entitlement_vouchers to logins; so with 514 in it is called here
+-- with a fresh id each time, which hands over exactly as before.
+create function pg_temp.cev_tpl(p_null_note boolean) returns text language sql stable as $cev$
+  select 'select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, '
+         || case when p_null_note then 'null' else '%L' end
+         || case when to_regprocedure('public.claim_entitlement_vouchers(uuid,jsonb,text,uuid)') is not null
+                 then ', gen_random_uuid())::text' else ')::text' end $cev$;
 create function pg_temp.id(p_k text) returns uuid language sql as $f$ select id from t502r where k = p_k $f$;
 create function pg_temp.put(p_k text, p_id uuid) returns uuid language sql as $f$
   insert into t502r values (p_k, p_id) on conflict (k) do update set id = excluded.id returning id $f$;
@@ -492,7 +500,7 @@ create function pg_temp.gone(p_cust text) returns boolean language sql as $f$
   select deleted_at is not null from public.customers where id = pg_temp.id(p_cust) $f$;
 -- The hand-over window: these vouchers from this reward, as this login.
 create function pg_temp.hand_over(p_who text, p_ent text, p_qty int) returns text language sql as $f$
-  select pg_temp.try_as(pg_temp.id(p_who), format('select public.claim_entitlement_vouchers(%L::uuid, %L::jsonb, %L)::text', pg_temp.id(p_ent),
+  select pg_temp.try_as(pg_temp.id(p_who), format(pg_temp.cev_tpl(false), pg_temp.id(p_ent),
                         jsonb_build_array(jsonb_build_object('voucher_id', pg_temp.id('v1'), 'quantity', p_qty)), '502R check')) $f$;
 create function pg_temp.voucher_state(p_who text, p_ent text) returns jsonb language sql as $f$
   select pg_temp.call(pg_temp.id(p_who), format('select public.entitlement_voucher_state(%L::uuid)::text', pg_temp.id(p_ent)))::jsonb $f$;
@@ -1059,7 +1067,11 @@ begin
   perform pg_temp.ok(t like 'ok:%' and s like 'ok:%', 'N2 the service role still runs them: ' || left(t, 60) || ' / ' || s);
   -- N3 Kept for signed-in logins: shared, not Legacy, and the pages' own.
   kept := array['legacy_reward_voucher_options(uuid)', 'set_catalogue_reward(text,uuid,boolean)', 'therapy_list_page(text,text,text,integer,integer)',
-                'entitlement_voucher_state(uuid)', 'claim_entitlement_vouchers(uuid,jsonb,text)', 'credit_package_reward_group(uuid)',
+                'entitlement_voucher_state(uuid)',
+                -- 514: the hand-over window calls the signature with a request id (515 closes the other)
+                case when to_regprocedure('public.claim_entitlement_vouchers(uuid,jsonb,text,uuid)') is not null
+                     then 'claim_entitlement_vouchers(uuid,jsonb,text,uuid)' else 'claim_entitlement_vouchers(uuid,jsonb,text)' end,
+                'credit_package_reward_group(uuid)',
                 'invoice_credit_reward_entitlements(uuid,uuid)', 'resolve_invoice_credit_rewards(uuid,text,uuid,boolean,uuid)',
                 'invoice_benefit_review_options(uuid)', 'customer_overview(uuid)', 'report_therapy()',
                 'delete_customer(uuid,text,text)', 'dashboard_alerts_summary()', 'therapy_customer_summary(text,integer,integer,boolean)',

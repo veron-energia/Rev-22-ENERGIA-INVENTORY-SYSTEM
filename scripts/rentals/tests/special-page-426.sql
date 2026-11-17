@@ -455,7 +455,10 @@ begin
   foreach f in array array['update_pending_rental(uuid,integer,special_rate_type,integer,date,date,text)',
       'upsert_special_product_from_product(uuid,uuid,numeric,numeric,numeric,numeric,numeric,numeric,text,boolean)',
       'fulfil_special_doc(text,uuid,uuid,text)', 'special_docs_awaiting_fulfilment()', 'special_product_availability(uuid)',
-      'special_stock_in(uuid,uuid,integer,text)', 'receive_returned_rental(uuid,uuid,text,text,uuid)',
+      -- 514: Add stock calls the signature with a request id (515 closes the other)
+      case when to_regprocedure('public.special_stock_in(uuid,uuid,integer,text,uuid)') is not null
+           then 'special_stock_in(uuid,uuid,integer,text,uuid)' else 'special_stock_in(uuid,uuid,integer,text)' end,
+      'receive_returned_rental(uuid,uuid,text,text,uuid)',
       'return_rental_with_fee(uuid,return_condition,boolean,date,boolean,integer,numeric,text,numeric,numeric,text,uuid,text,uuid,text)',
       'products_available_as_special()'] loop
     if not has_function_privilege('authenticated', 'public.' || f, 'execute') then

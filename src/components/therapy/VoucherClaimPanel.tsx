@@ -71,6 +71,9 @@ export const VoucherClaimPanel: React.FC<{
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<any | null>(null);
+  // 514: one request id until a hand-over goes through, so a second click, or
+  // the same request sent again after its answer was lost, hands over once.
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   // What it shows loads after it opens; a claim leaves nothing to lose.
   const changed = useChangedSinceOpened(!!state && !done, [wanted, basket, note]);
   const requestClose = () => { if (okToDiscard(changed)) onClose(); };
@@ -131,9 +134,11 @@ export const VoucherClaimPanel: React.FC<{
       p_entitlement_id: entitlementId,
       p_selections: selections,
       p_note: note.trim() || null,
+      p_request_id: requestId,
     });
     setBusy(false);
     if (err) { setError(err.message); return; }
+    setRequestId(crypto.randomUUID());
     setDone(data);
     onClaimed?.(data);
     void load();

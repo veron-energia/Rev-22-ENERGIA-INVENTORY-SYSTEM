@@ -600,10 +600,13 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
   const [stockWh, setStockWh] = useState('');
   const [stockQtyIn, setStockQtyIn] = useState(0);
   const [stockBusy, setStockBusy] = useState(false);
+  // 514: one request id per Stock window, so a second click, or the same
+  // request sent again after its answer was lost, adds the stock once.
+  const [stockRequestId, setStockRequestId] = useState(() => crypto.randomUUID());
   const addStock = async () => {
     if (!stockFor || !stockWh || stockQtyIn <= 0) return;
     setStockBusy(true);
-    const { error } = await supabase.rpc('special_stock_in', { p_special_product_id: stockFor.id, p_warehouse_id: stockWh, p_quantity: stockQtyIn, p_note: null });
+    const { error } = await supabase.rpc('special_stock_in', { p_special_product_id: stockFor.id, p_warehouse_id: stockWh, p_quantity: stockQtyIn, p_note: null, p_request_id: stockRequestId });
     setStockBusy(false);
     if (error) { alert(error.message); return; }
     setStockFor(null); load();
@@ -863,7 +866,7 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
                     </button>
                   </td>
                   <td><div style={{ display: 'flex', gap: 4 }}>
-                    <button className="btn btn-secondary btn-sm" onClick={() => { setStockFor(p); setStockWh(warehouses[0]?.id ?? ''); setStockQtyIn(0); }}><Boxes size={13} /> Stock</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => { setStockFor(p); setStockWh(warehouses[0]?.id ?? ''); setStockQtyIn(0); setStockRequestId(crypto.randomUUID()); }}><Boxes size={13} /> Stock</button>
                     <button className="btn btn-secondary btn-sm btn-icon" onClick={() => openEdit(p)}><Pencil size={13} /></button>
                     <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleDelete(p)}><Trash2 size={13} /></button>
                   </div></td>
