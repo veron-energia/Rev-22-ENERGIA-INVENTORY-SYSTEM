@@ -161,11 +161,13 @@ select pg_temp.check(not has_function_privilege('anon', 'public.' || f, 'execute
   'G3 ' || f || ': signed-in staff and the service role may call it, anon may not')
   from unnest(array['create_invoice_with_details(uuid,uuid,jsonb,jsonb)', 'correct_invoice(uuid,jsonb,jsonb,text,uuid)']) f;
 -- update_invoice_internal: as at 416, or 457's AFTER (457 changes it and runs after 456);
+-- create_invoice and update_invoice_internal: or 507's AFTER (17 Nov 2026: only an Owner or Manager
+-- makes a credit package, bundle, voucher or therapy line free; nothing a print note reads);
 -- preview_invoice_correction: as read, or 458's AFTER (458 changes it and runs after 457), or 463's, or 497's.
 select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn), 'missing') = any (string_to_array(x.ok, '|')),
   'G4 relied on and unchanged: ' || x.fn)
-  from (values ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '80c80d386a5241e63b353e35e13ef250'),
-               ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '8e674fe0d5e35ed5c2e93d417f14c05a|1f034561a461bdb46a1e6274e0d04606'),
+  from (values ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '80c80d386a5241e63b353e35e13ef250|42f00d595a40df157d28a7ea88fbe7ad'),
+               ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '8e674fe0d5e35ed5c2e93d417f14c05a|1f034561a461bdb46a1e6274e0d04606|09e1d77e450d50fc6195773f92e770e5'),
                ('preview_invoice_correction(uuid,jsonb)', '2bb7c0a5769050d5b2f9247a3aa05ecd|3047239c7418179e84927f6f00e7f2eb|f26752231c100461e11caddc03c98a33|13b0925c29bd8ca14d8d8b7bd961fef8|23c180873b6545bd83fb20d21708aa9e'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('staff_may_correct_invoice(uuid)', '60cbe4859f1f1f43da02115c019fc4bf'),

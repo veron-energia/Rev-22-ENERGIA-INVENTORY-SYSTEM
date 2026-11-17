@@ -283,6 +283,19 @@ export function canGiveFoc(role: string | null | undefined): boolean {
   return !!role && role !== 'inventory_manager';
 }
 
+/** The line kinds only an Owner or Manager may make FOC (507, the Owner,
+ *  17 Nov 2026): made free, each still gives its credit, voucher or sessions,
+ *  which is value given away with no money. Staff still make other lines
+ *  free. The database refuses anyone else; the page leaves Make FOC off. */
+export const FOC_OWNER_OR_MANAGER_KINDS: readonly string[] = ['credit_package', 'premium_bundle', 'voucher', 'therapy'];
+
+/** Who may make a line of this kind FOC: canGiveFoc, and for the kinds
+ *  above an Owner or Manager only (507). */
+export function canGiveFocOn(role: string | null | undefined, kind: string | null | undefined): boolean {
+  if (!canGiveFoc(role)) return false;
+  return !FOC_OWNER_OR_MANAGER_KINDS.includes(String(kind ?? '')) || role === 'owner' || role === 'manager';
+}
+
 /** Who sees the Invoices page's Add customer buttons (the Owner, 18 Oct 2026,
  *  W4-B04-IM-ADD-CUSTOMER): the New Invoice form's own button and each row's
  *  + in the Credit Package and Premium Bundle split panels. Owners, Managers

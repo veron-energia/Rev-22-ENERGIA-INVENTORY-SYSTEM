@@ -82,7 +82,11 @@ export const supabase = {
     },
   },
   rpc: async (fn: string) => {
-    if (fn === 'affiliate_portal_me') return answer({ name: 'Ada Preview', email: DETAILS.login_email, referral_code: 'PREVIEW1', status: 'active', joined_at: '2026-10-01T02:00:00Z' });
+    // ?portal=unproven: a login whose link to its record is not confirmed yet (508);
+    // ?portal=suspended: a suspended affiliate, the portal closed (509).
+    if (fn === 'affiliate_portal_me') return answer(params.get('portal') === 'suspended' ? { status: 'suspended', portal_closed: true }
+      : params.get('portal') === 'unproven' ? { name: 'Ada Preview', email: DETAILS.login_email, referral_code: 'PREVIEW1', status: 'active', joined_at: null, link_proven: false }
+      : { name: 'Ada Preview', email: DETAILS.login_email, referral_code: 'PREVIEW1', status: 'active', joined_at: '2026-10-01T02:00:00Z' });
     if (fn === 'affiliate_portal_details') return answer({ ...DETAILS });
     if (fn === 'affiliate_portal_network') return answer(NETWORK);
     if (fn === 'affiliate_detail_change_requests') return answer([

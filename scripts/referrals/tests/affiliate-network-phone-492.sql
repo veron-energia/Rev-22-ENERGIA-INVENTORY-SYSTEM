@@ -37,6 +37,27 @@
 --   psql -X -v ON_ERROR_STOP=1 [-v skip_install=1] -f scripts/referrals/tests/affiliate-network-phone-492.sql
 \set ON_ERROR_STOP on
 begin;
+-- 508 (17 Nov 2026) patches My Network: the record it reads comes from affiliate_portal_record_id(), so a
+-- login whose link is not proven gets no rows. This suite checks 492's own text, its UNDO and its guards, so where 508
+-- is in, My Network is put back to 492's text (md5 5506f729...) for the run, which is rolled back: 508's one
+-- replacement, reversed (as my-network-as-484.sql does for the suites before 492). Anywhere else this changes nothing.
+-- What 508 adds is checked by scripts/affiliate-signup/tests/unproven-link-portal-508.sql.
+do $as492$
+declare v_path text := current_setting('search_path'); d text;
+begin
+  perform set_config('search_path', 'public', true);
+  d := pg_get_functiondef('public.affiliate_portal_network()'::regprocedure);
+  if md5(d) = '74ab159218853fcf22e1ccd9d75dcded' then  -- 508's AFTER
+    execute replace(d, 'v_me uuid := public.affiliate_portal_record_id()', 'v_me uuid := public.current_affiliate_customer_id()');
+    if md5(pg_get_functiondef('public.affiliate_portal_network()'::regprocedure)) <> '5506f7291146534551a25e52a1e7820b' then
+      raise exception 'affiliate-network-phone-492: My Network is not 492''s after putting it back';
+    end if;
+    raise notice '508 is in: My Network is 492''s for this run (rolled back at the end)';
+  end if;
+  perform set_config('search_path', v_path, true);
+end $as492$;
+-- 509 (17 Nov 2026): where it is in, the four functions it changes are put back for this run (see the file).
+\ir ../../affiliate-signup/tests/portal-as-before-509.sql
 create function pg_temp.row_counts() returns jsonb language plpgsql as
 $$declare r record; n bigint; v jsonb := '{}'::jsonb;
 begin

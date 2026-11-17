@@ -230,8 +230,10 @@ end $$;
 -- correct_invoice: 457's AFTER, or 458's (the next step of this round, which builds on it), or 464's (built on 458), or 497's, or 498's.
 select pg_temp.check((select md5 from pg_temp.fn_md5s() where fn = 'correct_invoice(uuid,jsonb,jsonb,text,uuid)')
         in ('45e7f523e50a6b423b6e1d9f8836ebb6', 'af9451fa15c2cf790edd70f799bae336', '04d647e13e9424a9375942e5812e91a2', '9aac5395dd18fd8349727d6c8aa0c633', 'cea93a5dd73d429f6437f4c9a8fcaa52')
-    and (select md5 from pg_temp.fn_md5s() where fn = 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)') = '1f034561a461bdb46a1e6274e0d04606',
-  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s or 497''s or 498''s)');
+    -- update_invoice_internal: 457's AFTER, or 507's (17 Nov 2026: a free voucher or therapy line is an Owner's or a Manager's)
+    and (select md5 from pg_temp.fn_md5s() where fn = 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)')
+        in ('1f034561a461bdb46a1e6274e0d04606', '09e1d77e450d50fc6195773f92e770e5'),
+  'G1 correct_invoice and update_invoice_internal have 457''s AFTER md5s (correct_invoice: or 458''s or 464''s or 497''s or 498''s; update_invoice_internal: or 507''s)');
 select pg_temp.check(not has_function_privilege('anon', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('authenticated', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
     and has_function_privilege('service_role', 'public.correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'execute')
@@ -252,14 +254,18 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('invoice_revision_retry(uuid,uuid,jsonb)', '5c33c50a8f6870d8a66f74b63b782f24'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855'),
                ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448'),
-               ('apply_line_foc(uuid,integer,uuid,text)', '5fbd0b6feb36e11dea6be231ffa0e952'),
+               -- (507's AFTER where it is in, 17 Nov 2026: Make FOC on a
+               -- credit package, premium bundle, voucher or therapy line is an Owner's or a Manager's)
+               ('apply_line_foc(uuid,integer,uuid,text)', '5fbd0b6feb36e11dea6be231ffa0e952|a249b0e94d4280d6ff4e73fa8e1efbc8'),
                ('confirm_foc_invoice(uuid,text)', 'ba8b1ce2a5671989b927891f0cb7b1a2'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('deduct_invoice_stock(uuid,text)', '32183fe9e7c15ed0b11307c48289831a'),
                -- (481's AFTER where it is in, after 479: less the units a
                -- refund by line paid back since the last reopening)
                ('invoice_stock_to_deduct(uuid)', '6356494ccb8545d46c56b788f8f85f54|5480e6042b4521829ebce1ef14937162'),
-               ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b'),
+               -- (504's AFTER where it is in, 17 Nov 2026: a deleted
+               -- invoice takes no payment)
+               ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b|40b3f45fa283bd54b0f6422363f0e3a2'),
                ('trg_issue_sold_vouchers_on_paid()', 'c840d0d2754e7a8e889848ea8269a293|cf0b5610b77edfea2683751d5c25ca1d'),
                -- (496's AFTER where it is in: a cancellation also puts back the units released for
                -- its special sales)

@@ -359,8 +359,10 @@ begin
     perform pg_temp.setkv('fp_before_502', to_jsonb(pg_temp.fp()));
     execute current_setting('t502g.mig');
   elsif d = '7b63da063576a5c952cc5abe6c53f13d' then
-    -- production's functions at 501 (rc501_live), as undo-502.sql gives them back
-    perform pg_temp.setkv('fp_before_502', to_jsonb('2a58a90a691a37a80b562ad41d546e98/1425'::text));
+    -- production's functions at 501 (rc501_live), as undo-502.sql gives them back; with 504-510
+    -- in as well (17 Nov 2026: they change none of 502's functions), those at 501 with 504-510
+    perform pg_temp.setkv('fp_before_502', to_jsonb(case when pg_temp.fp() = 'f74dea74cee6ed53d2a912a9df8fd231/1427'
+      then '974f4dff7d37a9493a5ac9f6159e9670/1427' else '2a58a90a691a37a80b562ad41d546e98/1425' end));
   else
     raise exception 'T502G: trg_create_therapy_on_paid() is neither 502''s nor the one before it (md5 %). Run this on a copy of production at 501, or with 502 in.', d;
   end if;

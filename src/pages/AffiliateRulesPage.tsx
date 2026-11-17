@@ -303,7 +303,7 @@ const AffiliateRulesPage: React.FC = () => {
   const { session, actorType, loading } = useAuth();
   if (loading) return null;
   return session && actorType === 'affiliate'
-    ? <AffiliateLayout><RulesContent /></AffiliateLayout>
+    ? <AffiliateLayout shows="public"><RulesContent /></AffiliateLayout>
     : <PublicShell><RulesContent /></PublicShell>;
 };
 

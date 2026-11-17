@@ -194,7 +194,7 @@ declare o uuid:=gen_random_uuid(); s uuid:=gen_random_uuid(); st uuid; c uuid; v
 begin
  insert into auth.users(id,email) values(o,'sold-voucher-cfoc@tests.invalid'),(s,'sold-voucher-cfoc-s@tests.invalid');
  insert into profiles(id,full_name,email,role) values(o,'Owner','sold-voucher-cfoc@tests.invalid','owner'),
-   (s,'Staff','sold-voucher-cfoc-s@tests.invalid','staff');
+   (s,'Manager','sold-voucher-cfoc-s@tests.invalid','manager');
  perform set_config('request.jwt.claim.sub',o::text,true);
  insert into stores(name,code,country_code) values('Sold Voucher CFOC','SVC','SG') returning id into st;
  insert into user_store_assignments(user_id,store_id) values(s,st);
@@ -207,7 +207,9 @@ begin
  insert into promotion_store_prices(promotion_id,store_id,selling_price,available_at_store) values(pr,st,60,true);
  insert into promotion_choice_groups(promotion_id,label,item_kind,choose_qty) values(pr,'Pick a voucher','voucher',1) returning id into g;
  insert into promotion_choice_options(group_id,voucher_id) values(g,vlim);
- -- Staff, as on the page.
+ -- A Manager of the store, as on the page. (507, the Owner, 17 Nov 2026: only an Owner or a
+ -- Manager makes a voucher line free; Staff are refused, see foc-credit-lines-507.sql. Before
+ -- 507 this section ran as Staff; a Manager takes the same path here.)
  perform set_config('request.jwt.claim.sub',s::text,true);
 
  -- C1 Two vouchers, made fully FOC in Edit Invoice: 10 → 8, two held, no
@@ -228,7 +230,7 @@ begin
  if not exists(select 1 from audit_logs where record_id=vlim and action='voucher_sold' and new_data->>'invoice_no'=(select invoice_no from invoices where id=inv)
                 and (new_data->>'qty')::int=2 and (new_data->>'foc')::boolean and (new_data->>'correction')::boolean) then
   raise exception 'C1 the stock taken was not audited'; end if;
- -- A later edit of the FOC invoice takes nothing more (Owner: staff may not correct it).
+ -- A later edit of the FOC invoice takes nothing more (the Owner edits it: staff may not correct it).
  perform set_config('request.jwt.claim.sub',o::text,true);
  x:=(select jsonb_agg(jsonb_build_object('invoice_item_id',id,'kind','voucher','voucher_id',voucher_id,'quantity',quantity,
       'unit_price',unit_price,'foc_quantity',foc_quantity,'foc_reason',foc_reason)) from invoice_items where invoice_id=inv);

@@ -30,6 +30,8 @@
 -- is public): names E493 ..., @example.invalid, ACMA's fictional +61 2 5550 phones.
 \set ON_ERROR_STOP on
 begin;
+-- 509 (17 Nov 2026): where it is in, the four functions it changes are put back for this run (see the file).
+\ir ../../affiliate-signup/tests/portal-as-before-509.sql
 set local lock_timeout = '10s';
 create temp table failed(n serial, msg text);
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as

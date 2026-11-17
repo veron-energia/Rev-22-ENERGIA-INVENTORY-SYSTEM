@@ -399,6 +399,26 @@ test('Receive shows each line\'s source, asks a reason on a line that differs, a
   assert.equal(sent[0].args.p_note, 'TFX one damaged');
 });
 
+// ── 510 (the Owner, 17 Nov 2026): extra typed at receipt waits ──────────────
+test('510: Receive says extra above what was sent waits; Resolve says it is added first', async () => {
+  await mount('owner', fx => { Object.assign(fx.lines.find(l => l.id === 'l-extra'), { extra_waiting_quantity: 2 }); });
+  await click(button('Receive', rowOf('r-transit')));
+  assert.ok(modal().textContent.includes('Any extra you type above what was sent is recorded, but waits until an Owner or Manager reviews'),
+    modal().textContent);
+  await setValue(modal().querySelector('input[aria-label="TFX Pillow: received"]'), '8');
+  assert.ok(modal().textContent.includes('3 above what was sent: recorded now, added to stock only when an Owner or Manager accepts it.'),
+    modal().textContent);
+  await setValue(modal().querySelector('input[aria-label="TFX Pillow: received"]'), '4');
+  assert.ok(!modal().textContent.includes('above what was sent:'), 'a shortfall says nothing about waiting');
+});
+
+test('510: Resolve says how many extra are not yet in stock', async () => {
+  await mount('owner', fx => { Object.assign(fx.lines.find(l => l.id === 'l-extra'), { extra_waiting_quantity: 2 }); });
+  await click(button('Resolve', rowOf('r-disc')));
+  assert.ok(/2 extra not yet in stock: resolving adds them to .+ first \(Return excess and Correct destination then take them off again\)\./
+    .test(modal().textContent), modal().textContent);
+});
+
 // ── STOCK-M2 ───────────────────────────────────────────────────────────────
 const optionsOf = sel => [...sel.options].map(o => o.textContent);
 const resolveSelects = () => [...modal().querySelectorAll('select')];

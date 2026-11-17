@@ -23,6 +23,7 @@ declare
   c_437 constant text := '88ee10799d1c93ce93d0056740f05e01';  -- 437's AFTER (21 Oct 2026, AFF-SIGNUP-18)
   c_440 constant text := '43084deab54968eacaf1793c470fd08f';  -- 440's AFTER (21 Oct 2026; 437's, patched)
   c_469 constant text := '1b9dfc819b860dcb19244063a4628f47';  -- 469's AFTER (24 Oct 2026; 440's, patched)
+  c_508 constant text := '0dd12d4c9cef8b86bb1bcc02a5344927';  -- 508's AFTER (17 Nov 2026; 469's, patched)
   c_432 constant text := 'ff59dd1f8a6ca7397efea5880c6a87a7';
   c_def constant text := $def$CREATE OR REPLACE FUNCTION public.complete_affiliate_onboarding(p_first_name text, p_last_name text, p_phone text, p_agree boolean DEFAULT false)
  RETURNS jsonb
@@ -262,7 +263,7 @@ $def$;
 begin
   if md5(c_def) <> c_432 then raise exception 'sign-up-before-437: the 432 text is not the one read (md5 %)', md5(c_def); end if;
   if d = c_432 then return; end if;
-  if d not in (c_437, c_440, c_469) then raise exception 'sign-up-before-437: complete_affiliate_onboarding is neither 432''s, nor 437''s, 440''s or 469''s (md5 %)', d; end if;
+  if d not in (c_437, c_440, c_469, c_508) then raise exception 'sign-up-before-437: complete_affiliate_onboarding is neither 432''s, nor 437''s, 440''s, 469''s or 508''s (md5 %)', d; end if;
   execute c_def;
   if md5(pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure)) <> c_432 then
     raise exception 'sign-up-before-437: the 432 sign-up did not go back as read'; end if;

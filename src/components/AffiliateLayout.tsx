@@ -3,6 +3,8 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Leaf, LayoutDashboard, Users, TrendingUp, Wallet, QrCode, UserCircle, ScrollText, LogOut, Menu, X } from 'lucide-react';
 import VerifyEmailBanner from './VerifyEmailBanner';
+import AffiliatePortalNotice from './AffiliatePortalNotice';
+import { usePortalAccess } from '../lib/affiliatePortalAccess';
 
 const NAV = [
   { to: '/affiliate/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -19,16 +21,28 @@ const NAV = [
 // sidebar, a stacked column on mobile with a sticky header above the content.
 // Above each page, the warning while the email is not verified (3 Nov 2026);
 // the Account page leaves it out, as it has its own Verify your email.
-const AffiliateLayout: React.FC<{ children: React.ReactNode; verifyEmailBanner?: boolean }> = ({ children, verifyEmailBanner = true }) => {
-  const { signOut } = useAuth();
+//
+// What the page may show (the Owner, 17 Nov 2026; affiliatePortalAccess.ts):
+//   shows 'record'  the record's referrals, earnings or payouts (Dashboard,
+//                   My Network, Earnings, Payouts): a login whose link is not
+//                   confirmed yet (508) sees the "checking" notice instead;
+//   shows 'own'     the login's own details and referral link (Account, My
+//                   Referral QR): the "checking" notice above the page;
+//   shows 'public'  the Rules, which anyone may read.
+// A suspended affiliate (509) sees the "suspended" notice and nothing else on
+// every page but the Rules, and only Rules and Sign Out in the menu.
+const AffiliateLayout: React.FC<{ children: React.ReactNode; verifyEmailBanner?: boolean; shows?: 'record' | 'own' | 'public' }> = ({ children, verifyEmailBanner = true, shows = 'record' }) => {
+  const { signOut, session } = useAuth();
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
+  const access = usePortalAccess(session?.user?.id ?? null);
+  const closed = access === 'suspended';
 
   const doSignOut = async () => { setOpen(false); await signOut(); nav('/affiliate/login', { replace: true }); };
 
   const links = (
     <>
-      {NAV.map(({ to, label, icon: Icon }) => (
+      {(closed ? NAV.filter(n => n.to === '/affiliate/rules') : NAV).map(({ to, label, icon: Icon }) => (
         <NavLink key={to} to={to} onClick={() => setOpen(false)}
           className={({ isActive }) => 'portal-navlink' + (isActive ? ' active' : '')}>
           <Icon size={18} /> {label}
@@ -75,8 +89,14 @@ const AffiliateLayout: React.FC<{ children: React.ReactNode; verifyEmailBanner?:
 
       <main className="portal-main">
         <div className="portal-content">
-          {verifyEmailBanner && <VerifyEmailBanner />}
-          {children}
+          {verifyEmailBanner && !closed && <VerifyEmailBanner />}
+          {shows === 'public' ? children
+            // the first page opened: its own read waits for this one
+            : access === null ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
+            : closed ? <AffiliatePortalNotice kind="suspended" />
+            : access === 'unproven' && shows === 'record' ? <AffiliatePortalNotice kind="checking" />
+            : access === 'unproven' ? <><AffiliatePortalNotice kind="checking" />{children}</>
+            : children}
         </div>
       </main>
     </div>

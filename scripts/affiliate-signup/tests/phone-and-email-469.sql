@@ -290,6 +290,11 @@ insert into want values
   ('complete_affiliate_onboarding(text,text,text,boolean)', '43084deab54968eacaf1793c470fd08f', '1b9dfc819b860dcb19244063a4628f47', false, true),
   ('event_web_match_customer(text,text,text)', '9da726006d8055983491b5ec1da1679b', '63bfaf4520406af9f67d3d81c3342baf', false, false),
   ('event_web_register(uuid,jsonb)', '3aad1ad2a8a91732d330b2ef149bf969', 'c188a2dc82b9eb08fc9d01f1e5c15e13', false, false);
+-- A later migration that patches one of the four: its AFTER md5 also counts as "469 is in".
+create function pg_temp.later(p_fn text) returns text[] language sql immutable as
+$$ select case p_fn when 'complete_affiliate_onboarding(text,text,text,boolean)'
+                    then array['0dd12d4c9cef8b86bb1bcc02a5344927']  -- 508's AFTER (17 Nov 2026; 469's, patched)
+                    else '{}'::text[] end $$;
 create temp table c469(k text primary key, v text);
 insert into c469 values
   ('before', 'CHECK ((match = ANY (ARRAY[''exact''::text, ''same_words''::text, ''new_customer''::text, ''held''::text, ''staff_attached''::text, ''staff_created''::text, ''closed''::text, ''test''::text])))'),
@@ -309,7 +314,7 @@ select pg_temp.check(not exists (select 1 from public.customers c, generate_seri
   'P0 no customer uses this run''s test phones (+61 2 5550 ' || pg_temp.tx('phbase') || '..+99; the checks assume so)');
 
 \if :{?skip_install}
-select pg_temp.check((select bool_and(md5(pg_get_functiondef(('public.' || w.fn)::regprocedure)) = w.after_md5) from want w)
+select pg_temp.check((select bool_and(md5(pg_get_functiondef(('public.' || w.fn)::regprocedure)) = any (w.after_md5 || pg_temp.later(w.fn))) from want w)
     and pg_temp.match_con() = (select v from c469 where k = 'after'),
   'P1 469 is installed (skip_install)');
 \else
@@ -335,7 +340,7 @@ select pg_temp.check((select coalesce(array_agg(m.fn order by m.fn), '{}') from 
 select pg_temp.check((select before = after1 from r469),
   'M3 469''s self-test left no row (every table of public and auth counts the same before and after it)');
 \endif
-select pg_temp.check((select bool_and(md5(pg_get_functiondef(('public.' || w.fn)::regprocedure)) = w.after_md5) from want w)
+select pg_temp.check((select bool_and(md5(pg_get_functiondef(('public.' || w.fn)::regprocedure)) = any (w.after_md5 || pg_temp.later(w.fn))) from want w)
     and pg_temp.match_con() = (select v from c469 where k = 'after'),
   'M4 the four functions have 469''s AFTER md5s; event_registration_people.match allows phone_and_email');
 

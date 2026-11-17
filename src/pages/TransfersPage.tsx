@@ -723,7 +723,7 @@ const TransfersPage: React.FC = () => {
                                   {approved == null ? '—' : <>{approved}{manual && l.manual_uom ? ` ${l.manual_uom}` : ''}{!added && adjustment !== 0 && <span style={{ marginLeft: 5, color: adjustment > 0 ? 'var(--success)' : 'var(--accent)', fontSize: 11 }}>({adjustment > 0 ? '+' : ''}{adjustment})</span>}</>}
                                 </td>
                                 <td style={{ textAlign: 'right', fontWeight: 700 }}>{l.received_quantity == null ? '—' : `${l.received_quantity}${manual && l.manual_uom ? ` ${l.manual_uom}` : ''}`}</td>
-                                <td style={{ textAlign: 'right', color: diff === 0 ? 'var(--text-muted)' : 'var(--danger)' }}>{l.received_quantity == null ? '—' : `${diff > 0 ? '+' : ''}${diff}`}{l.discrepancy_resolution ? ` · ${l.discrepancy_resolution}` : ''}</td>
+                                <td style={{ textAlign: 'right', color: diff === 0 ? 'var(--text-muted)' : 'var(--danger)' }}>{l.received_quantity == null ? '—' : `${diff > 0 ? '+' : ''}${diff}`}{l.discrepancy_resolution ? ` · ${l.discrepancy_resolution}` : ''}{(l.extra_waiting_quantity ?? 0) > 0 ? ` · ${l.extra_waiting_quantity} waiting for review` : ''}</td>
                               </tr>;
                             })}</tbody>
                           </table>}
@@ -916,7 +916,7 @@ const TransfersPage: React.FC = () => {
         <div className="form-grid">
           <TransferNoteHistory requestId={receiveReq.id} />
           {receiveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{receiveErr}</div></div>}
-          <div className="alert alert-info" style={{ marginBottom: 0 }}><span><Truck size={15} /></span><div>Enter the actual received quantity for every line. Product inventory is added to the destination now. Manual items are recorded as received but never change inventory.</div></div>
+          <div className="alert alert-info" style={{ marginBottom: 0 }}><span><Truck size={15} /></span><div>Enter the actual received quantity for every line. What was sent is added to the destination now. Any extra you type above what was sent is recorded, but waits until an Owner or Manager reviews the difference before it is added to stock. Manual items are recorded as received but never change inventory.</div></div>
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>{receiveReq.source_id ? locName(receiveReq.source_type, receiveReq.source_id) : 'Multiple / non-inventory source'} → <strong>{locName(receiveReq.dest_type, receiveReq.dest_id)}</strong></p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(linesByReq[receiveReq.id] ?? []).filter(l => (l.in_transit_quantity ?? 0) > 0).map(l => {
@@ -933,6 +933,9 @@ const TransfersPage: React.FC = () => {
                   <input type="number" min={0} value={actual} aria-label={`${label}: received`} style={{ width: 90 }} onChange={e => setReceiveQty(q => ({ ...q, [l.id]: Math.max(0, +e.target.value) }))} />
                   {mismatch && <span className="badge badge-danger" style={{ fontSize: 10 }}>{actual > approved ? `+${actual - approved}` : actual - approved}</span>}
                 </div>
+                {/* 510: units above what was sent wait for an Owner or Manager. */}
+                {!manual && actual > (l.in_transit_quantity ?? 0) && <div style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
+                  {actual - (l.in_transit_quantity ?? 0)} above what was sent: recorded now, added to stock only when an Owner or Manager accepts it.</div>}
                 {mismatch && <input value={receiveReason[l.id] ?? ''} aria-label={`${label}: reason`}
                   placeholder="Reason for this line (optional)" onChange={e => setReceiveReason(r => ({ ...r, [l.id]: e.target.value }))} />}
               </div>;
@@ -956,6 +959,9 @@ const TransfersPage: React.FC = () => {
             return <div key={l.id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 10 }}>
               <div style={{ fontSize: 13, marginBottom: 6 }}><strong>{productName(l.product_id, l.manual_item_name)}</strong>{manual && <span className="badge badge-muted" style={{ marginLeft: 5, fontSize: 10 }}>Manual / Non-inventory</span>} <span className="badge badge-danger" style={{ fontSize: 10 }}>{diff > 0 ? `+${diff} extra` : `${Math.abs(diff)} missing`}</span><span style={{ color: 'var(--text-muted)', fontSize: 11.5, marginLeft: 6 }}>approved {l.approved_quantity ?? 0} · received {l.received_quantity ?? 0}</span>
                 {from && <div style={{ color: 'var(--text-muted)', fontSize: 11.5, marginTop: 2 }}>{from}</div>}
+                {/* 510: the extra typed at receipt was not added; resolving adds it first. */}
+                {!manual && (l.extra_waiting_quantity ?? 0) > 0 && <div style={{ color: 'var(--text-muted)', fontSize: 11.5, marginTop: 2 }}>
+                  {l.extra_waiting_quantity} extra not yet in stock: resolving adds {l.extra_waiting_quantity === 1 ? 'it' : 'them'} to {locName(resolveReq.dest_type, resolveReq.dest_id)} first (Return excess and Correct destination then take {l.extra_waiting_quantity === 1 ? 'it' : 'them'} off again).</div>}
                 {place === null && <div style={{ color: 'var(--text-muted)', fontSize: 11.5, marginTop: 2 }}>{(sourcesOf(resolveReq, l.id)?.length ?? 0) > 1
                   ? 'Sent from several places: accept it, or record a stock adjustment at the right place.'
                   : 'No source is recorded for this line: accept it, or record a stock adjustment at the right place.'}</div>}</div>

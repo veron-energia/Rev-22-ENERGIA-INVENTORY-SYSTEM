@@ -30,6 +30,8 @@
 -- did.
 \set ON_ERROR_STOP on
 begin;
+-- 509 (17 Nov 2026): where it is in, the four functions it changes are put back for this run (see the file).
+\ir ../../affiliate-signup/tests/portal-as-before-509.sql
 create function pg_temp.row_counts() returns jsonb language plpgsql as
 $$declare r record; n bigint; v jsonb := '{}'::jsonb;
 begin
@@ -170,8 +172,11 @@ select pg_temp.ev('next', 'record_only', array[pg_temp.d(40)], true, '19:00', '/
 select pg_temp.ev('caps', 'live', array[pg_temp.d(35)], true, '19:00', '/api/app/sync', 'LIVE');
 
 -- ═════ G The md5 and the grant ═════
-select pg_temp.check(md5(pg_get_functiondef('public.affiliate_portal_referral_info()'::regprocedure)) = '42453f972e0349eb1353e231a659fa55',
-  'G1 affiliate_portal_referral_info is 454''s AFTER');
+-- 508 (17 Nov 2026) patches it once more (no referral count before the login's link is proven): where it is in,
+-- 508's AFTER. What 508 adds is checked by scripts/affiliate-signup/tests/unproven-link-portal-508.sql.
+select pg_temp.check(md5(pg_get_functiondef('public.affiliate_portal_referral_info()'::regprocedure))
+                     in ('42453f972e0349eb1353e231a659fa55', '7f20a8bfbdc31905266852edda2f5def'),
+  'G1 affiliate_portal_referral_info is 454''s AFTER (or 508''s, 454''s patched)');
 select pg_temp.check(has_function_privilege('authenticated', 'public.affiliate_portal_referral_info()', 'execute')
     and has_function_privilege('service_role', 'public.affiliate_portal_referral_info()', 'execute')
     and not has_function_privilege('anon', 'public.affiliate_portal_referral_info()', 'execute'),

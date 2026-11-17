@@ -256,13 +256,16 @@ select pg_temp.check(not exists (
 -- (494's waiting list, where it is in, is read as 458's: it only leaves out a
 -- sale a supplier has been told to send. 495's refund, where it is in, is read as
 -- 458's: it only asks no stock question of a service. 496's refund and plan, where it is
--- in, are read as 458's too: they only ask about, and return, a released special sale's unit.)
-select pg_temp.check((select replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- in, are read as 458's too: they only ask about, and return, a released special sale's unit.
+-- 507's update_invoice_internal, where it is in, is read as 457's: it only refuses a free
+-- voucher or therapy line to someone who is not an Owner or Manager.)
+select pg_temp.check((select replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
                                      '=fdaf5aca81c63cc99f8fddcfcf10564c', '=aed7e3b24ff192cbe09935c5e7488881'),
                                      '=3280f4ed6afb93aed7366eaf100c6383', '=804ecd829cfecf713783a09a05d93c7e'),
                                      '=49f6880e4e6395b1468f32e4126472eb', '=804ecd829cfecf713783a09a05d93c7e'),
                                      '=3fb10ac55903b9346c4898d988b808ce', '=804ecd829cfecf713783a09a05d93c7e'),
-                                     '=d8bf5ea6c92c49be3b53547e6f407278', '=383d618edb28c3c9a360242d038a022c') from pg_temp.fn_md5s()
+                                     '=d8bf5ea6c92c49be3b53547e6f407278', '=383d618edb28c3c9a360242d038a022c'),
+                                     '=09e1d77e450d50fc6195773f92e770e5', '=1f034561a461bdb46a1e6274e0d04606') from pg_temp.fn_md5s()
                        where fn in ('cancel_invoice_rentals(uuid,text)', 'receive_returned_rental(uuid,uuid,text,text,uuid)',
                                     'invoice_rentals_awaiting_return(uuid)', 'refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)',
                                     'invoice_action_plan(uuid,text,jsonb)', 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)',
@@ -275,7 +278,7 @@ select pg_temp.check((select replace(replace(replace(replace(replace(string_agg(
  || 'special_doc_invoice_problem(uuid,uuid)=be2b8ec5a4003a1dca34e17a82f89932, '
  || 'special_docs_awaiting_fulfilment()=aed7e3b24ff192cbe09935c5e7488881, '
  || 'update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)=1f034561a461bdb46a1e6274e0d04606',
-  'G4 Cancel, the receive step, refund_invoice_recorded, invoice_action_plan, update_invoice_internal, 393''s release check and the waiting list are unchanged (the waiting list: or 494''s; the refund: or 495''s)');
+  'G4 Cancel, the receive step, refund_invoice_recorded, invoice_action_plan, update_invoice_internal, 393''s release check and the waiting list are unchanged (the waiting list: or 494''s; the refund: or 495''s; update_invoice_internal: or 507''s)');
 
 -- ═════ C Cancel unchanged ═════
 do $$

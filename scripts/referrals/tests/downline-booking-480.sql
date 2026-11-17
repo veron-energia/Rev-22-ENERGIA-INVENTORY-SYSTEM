@@ -84,6 +84,8 @@
 begin;
 -- Where 492 is in, My Network is 484's for this run (rolled back with it).
 \ir my-network-as-484.sql
+-- 509 (17 Nov 2026): where it is in, the four functions it changes are put back for this run (see the file).
+\ir ../../affiliate-signup/tests/portal-as-before-509.sql
 create function pg_temp.row_counts() returns jsonb language plpgsql as
 $$declare r record; n bigint; v jsonb := '{}'::jsonb;
 begin

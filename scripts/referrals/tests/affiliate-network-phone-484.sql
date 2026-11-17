@@ -75,6 +75,37 @@ begin;
 \ir my-network-as-484.sql
 -- Where 491 is in, confirm_affiliate_email is the version 484 pinned, for this run (rolled back with it).
 \ir confirm-email-as-484.sql
+-- 509 (17 Nov 2026): where it is in, the four functions it changes are put back for this run (see the file).
+\ir ../../affiliate-signup/tests/portal-as-before-509.sql
+-- 508 (17 Nov 2026) patches the sign-up (complete_affiliate_onboarding: every login joined to a record that was there
+-- before is listed for staff). 484's file, run again below, relies on 469's text (1b9dfc81...), so where 508 is in the
+-- sign-up is put back to it for the run, which is rolled back: 508's one replacement there, reversed. Anywhere else this
+-- changes nothing. What 508 adds is checked by scripts/affiliate-signup/tests/unproven-link-portal-508.sql.
+do $onb484$
+declare v_path text := current_setting('search_path'); d text;
+begin
+  perform set_config('search_path', 'public', true);
+  d := pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure);
+  if md5(d) = '0dd12d4c9cef8b86bb1bcc02a5344927' then  -- 508's AFTER
+    execute replace(d, $n$  elsif v_rule is distinct from 'phone_and_email' then
+    -- 508: every login joined to a record that was there before is listed,
+    -- on the phone alone or on the phone and the name, whatever name was
+    -- typed. Until an Owner or Manager says Same person the portal shows that
+    -- login nothing of the record (affiliate_portal_record_id). One joined on
+    -- the phone and the record's email is not listed: it proves itself when
+    -- it verifies that email. Before 508 only a different name was listed:$n$, $a$  elsif v_rule = 'phone'
+        and not exists (select 1 from public.customers c
+                         where c.id = v_cust
+                           and ((public.normalize_customer_match_name(v_name) <> ''
+                                 and public.normalize_customer_match_name(c.full_name) = public.normalize_customer_match_name(v_name))
+                                or public.customer_names_match(c.full_name, v_name))) then$a$);
+    if md5(pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure)) <> '1b9dfc819b860dcb19244063a4628f47' then
+      raise exception 'affiliate-network-phone-484: the sign-up is not 469''s after putting it back';
+    end if;
+    raise notice '508 is in: the sign-up is 469''s for this run (rolled back at the end)';
+  end if;
+  perform set_config('search_path', v_path, true);
+end $onb484$;
 create function pg_temp.row_counts() returns jsonb language plpgsql as
 $$declare r record; n bigint; v jsonb := '{}'::jsonb;
 begin

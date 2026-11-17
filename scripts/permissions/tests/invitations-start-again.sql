@@ -380,7 +380,11 @@ select pg_temp.check((select string_agg(x.sig || '=' || md5(pg_get_functiondef(t
                                           'invite_user_begin(text,text,text,user_role,text,text,text,uuid[])']) x(sig))
                      = 'invite_user_accept(uuid,text)=04eb29a50699f8f9f41d7ba591af3480 '
                        || 'invite_user_begin(text,text,text,user_role,text,text,text,uuid[])=eda7f730fd83891146265adb06eca132 '
-                       || 'invite_user_cancel(uuid,text)=e9e97c330ed7189415e2f67cef9716c5 '
+                       || 'invite_user_cancel(uuid,text)='
+                       || case md5(pg_get_functiondef('public.invite_user_cancel(uuid,text)'::regprocedure))
+                            -- 505 (17 Nov 2026): the role guard's flag is set around its own update only
+                            when '957be434e8753a2c0151ee718e63c3b7' then '957be434e8753a2c0151ee718e63c3b7'
+                            else 'e9e97c330ed7189415e2f67cef9716c5' end || ' '
                        || 'invite_user_provisioned(uuid,uuid)='
                        || case md5(pg_get_functiondef('public.invite_user_provisioned(uuid,uuid)'::regprocedure))
                             -- 437: a login the affiliate sign-up made is never an invitee's
@@ -388,7 +392,7 @@ select pg_temp.check((select string_agg(x.sig || '=' || md5(pg_get_functiondef(t
                             else '7219cae03a5a758402e79762baf46f42' end || ' '
                        || 'invite_user_reusable_login(uuid)=340580cff28c74eb1b1b8bde967dc8fc '
                        || 'staff_login_sync(uuid)=9259111deccca8c66e95469acfdd250f',
-  'catalogue: the functions tested are 429''s (invite_user_provisioned 429''s or 437''s)');
+  'catalogue: the functions tested are 429''s (invite_user_provisioned 429''s or 437''s; invite_user_cancel 429''s or 505''s)');
 select pg_temp.check(not exists (select 1 from auth.users u join fx on fx.id = u.id
                                   where u.banned_until is not null and not isfinite(u.banned_until)),
   'no login was ever given an infinite ban');

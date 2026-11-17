@@ -79,7 +79,7 @@ const AffiliateAccountPage: React.FC = () => {
   };
 
   return (
-    <AffiliateLayout verifyEmailBanner={false}>
+    <AffiliateLayout verifyEmailBanner={false} shows="own">
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Account</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>Your affiliate account details.</p>
       {err ? <PortalError message={err} onRetry={retry} /> : !me ? <p style={{ color: 'var(--text-muted)' }}>Loading…</p> : (

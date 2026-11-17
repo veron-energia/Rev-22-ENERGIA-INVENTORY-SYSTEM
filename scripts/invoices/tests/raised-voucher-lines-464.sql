@@ -264,9 +264,13 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                ('deduct_invoice_stock(uuid,text)', '32183fe9e7c15ed0b11307c48289831a'),
                ('invoice_discounted_line_value(uuid)', 'ead4a430c3abd1e3f953912867ca4fe6'),
                ('snapshot_therapy_voucher_issue(uuid,boolean)', '12ba32611ad001781862d82b1ae13c8e'),
-               ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '1f034561a461bdb46a1e6274e0d04606'),
+               -- (507's AFTER where it is in, 17 Nov 2026: only an Owner or Manager
+               -- makes a credit package, bundle, voucher or therapy line free)
+               ('update_invoice_internal(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text,boolean)', '1f034561a461bdb46a1e6274e0d04606|09e1d77e450d50fc6195773f92e770e5'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
-               ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b'),
+               -- (504's AFTER where it is in, 17 Nov 2026: a deleted
+               -- invoice takes no payment)
+               ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b|40b3f45fa283bd54b0f6422363f0e3a2'),
                ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855')) x(fn, md5);
 

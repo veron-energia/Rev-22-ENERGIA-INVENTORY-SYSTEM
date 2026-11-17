@@ -130,6 +130,11 @@
 --   M  437 installs here twice; the second run changes nothing; it left no
 --      self-test row.
 --
+-- 508 (17 Nov 2026) lists every login joined to a record that was
+-- there before, also under the record's own name or its words in another
+-- order. Where it is in, J2, L and FJ expect Bea's and Sam's joins listed
+-- 'phone_other_name'; where it is not, not listed, as 437 has it.
+--
 -- Disposable database only; everything is rolled back. Needs 430 (437
 -- refuses to run before it). Run from the repository root:
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/affiliate-signup/tests/straight-in-437.sql
@@ -203,6 +208,12 @@ $$ select c from jsonb_array_elements(pg_temp.listed(list, login)->'candidates')
 create function pg_temp.ans(login text) returns jsonb language sql as
 $$ select case when pg_temp.tx('onb:' || login) like 'ERROR:%' then jsonb_build_object('error', pg_temp.tx('onb:' || login))
                else pg_temp.tx('onb:' || login)::jsonb end $$;
+-- 508 (17 Nov 2026): where it is in, every login joined to a record that was there before is listed
+-- 'phone_other_name' for an Owner or Manager, whatever name it typed (437 listed it only under a name that is not
+-- the record's). J2, L and FJ's "same words" checks follow whichever rule the database has.
+create function pg_temp.has508() returns boolean language sql stable as
+$$ select position('508:' in (select prosrc from pg_proc
+                               where oid = to_regprocedure('public.complete_affiliate_onboarding(text,text,text,boolean)'))) > 0 $$;
 
 select pg_temp.check(position('437:' in (select prosrc from pg_proc where oid = to_regprocedure('public.complete_affiliate_onboarding(text,text,text,boolean)'))) > 0
     and to_regclass('public.affiliate_signup_matches') is not null
@@ -368,8 +379,13 @@ select pg_temp.check(pg_temp.claimed('lSolo')->>'rule' = 'phone' and not (pg_tem
 -- ═════ J2 Two share the phone; the name with the same words is joined ═════
 select pg_temp.onboard('lBea', 'Testshare', 'Bea Lin', '+61491572983');
 select pg_temp.check(pg_temp.ans('lBea')->>'status' = 'active' and pg_temp.linked_to('lBea') = pg_temp.fx('cBea')
-    and pg_temp.claimed('lBea')->>'rule' = 'phone_and_same_words' and pg_temp.entry('lBea') is null,
-  'J2 two customers share the phone: the one whose name has the same words is joined: ' || pg_temp.ans('lBea')::text);
+    and pg_temp.claimed('lBea')->>'rule' = 'phone_and_same_words'
+    and case when pg_temp.has508()
+             then (pg_temp.entry('lBea')).reason = 'phone_other_name' and (pg_temp.entry('lBea')).status = 'open'
+                  and (pg_temp.entry('lBea')).fresh_customer_id = pg_temp.fx('cBea') and (pg_temp.entry('lBea')).candidate_ids = '{}'::uuid[]
+             else pg_temp.entry('lBea') is null end,
+  'J2 two customers share the phone: the one whose name has the same words is joined'
+  || case when pg_temp.has508() then ', and listed for staff to confirm (508)' else '' end || ': ' || pg_temp.ans('lBea')::text);
 
 -- ═════ J3 Two share it, another name: fresh, listed ═════
 select pg_temp.onboard('lDan', 'Dan', 'Testshare', '+61491572983');
@@ -601,10 +617,15 @@ select pg_temp.check((select bool_or(c->'matched_by' ? 'name') from jsonb_array_
                         jsonb_array_elements(e->'candidates') c where (e->>'match_id')::uuid = (pg_temp.entry('lPat')).id)
     and (select bool_or(c->'matched_by' ? 'email') from jsonb_array_elements(pg_temp.tx('list_m')::jsonb) e,
                         jsonb_array_elements(e->'candidates') c where (e->>'match_id')::uuid = (pg_temp.entry('lMia')).id)
-    and not exists (select 1 from jsonb_array_elements(pg_temp.tx('list_m')::jsonb) e where (e->>'customer_id')::uuid = pg_temp.fx('cBea'))
+    and case when pg_temp.has508()
+             then (select e->>'kind' = 'may_be_someone_else' and e->'candidates' = '[]'::jsonb
+                     from jsonb_array_elements(pg_temp.tx('list_m')::jsonb) e where (e->>'customer_id')::uuid = pg_temp.fx('cBea'))
+             else not exists (select 1 from jsonb_array_elements(pg_temp.tx('list_m')::jsonb) e where (e->>'customer_id')::uuid = pg_temp.fx('cBea')) end
     and (select e->>'kind' = 'may_be_someone_else' and e->'candidates' = '[]'::jsonb
            from jsonb_array_elements(pg_temp.tx('list_m')::jsonb) e where (e->>'customer_id')::uuid = pg_temp.fx('cSolo')),
-  'L the name, email and protected flags show; a customer joined under a name of the same words (Bea) is not listed, and one joined under another name (Ada) only as "may be someone else", with no one to link');
+  'L the name, email and protected flags show; a customer joined under a name of the same words (Bea) is '
+  || case when pg_temp.has508() then 'listed the same way (508) as' else 'not listed, and' end
+  || ' one joined under another name (Ada)' || case when pg_temp.has508() then ':' else '' end || ' only as "may be someone else", with no one to link');
 -- Refusals.
 select pg_temp.check(public.link_affiliate_signup((pg_temp.entry('lDan')).id, pg_temp.fx('cBea'), null, gen_random_uuid())->>'message'
       = 'This customer already has an affiliate login.',
@@ -1510,8 +1531,13 @@ select pg_temp.check((pg_temp.entry('lFam')).reason = 'phone_other_name' and (pg
   'FJ the typed name is not the record''s: an entry ''phone_other_name'' names the customer joined and the name typed; the audit row says so');
 select pg_temp.onboard('lSam', 'Testsame', 'Sam Lee', '+61491578420');
 select pg_temp.check(pg_temp.linked_to('lSam') = pg_temp.fx('cSam') and pg_temp.claimed('lSam')->>'rule' = 'phone'
-    and pg_temp.entry('lSam') is null and pg_temp.claimed('lSam')->>'listed_for_staff' is null,
-  'FJ the same words in another order (Sam): joined on the phone, not listed');
+    and case when pg_temp.has508()
+             then (pg_temp.entry('lSam')).reason = 'phone_other_name' and (pg_temp.entry('lSam')).status = 'open'
+                  and (pg_temp.entry('lSam')).fresh_customer_id = pg_temp.fx('cSam')
+                  and pg_temp.claimed('lSam')->>'listed_for_staff' = 'phone_other_name'
+             else pg_temp.entry('lSam') is null and pg_temp.claimed('lSam')->>'listed_for_staff' is null end,
+  'FJ the same words in another order (Sam): joined on the phone, '
+  || case when pg_temp.has508() then 'listed for staff to confirm all the same (508)' else 'not listed' end);
 select pg_temp.onboard('lFam2', 'Ravi', 'Testson', '+61491578421');
 select pg_temp.as_user('m');
 insert into tx values ('list_f', public.affiliate_signup_matches_open()::text);

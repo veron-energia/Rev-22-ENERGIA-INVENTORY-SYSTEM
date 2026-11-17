@@ -224,7 +224,8 @@ select pg_temp.check(not has_function_privilege('anon', 'public.create_items_exc
   'G2 create_items_exchange is the server''s alone; the page''s two keep staff''s grant and not anon''s');
 select pg_temp.check(not exists (
     select 1 from (values
-      ('create_product_exchange(uuid,uuid,jsonb,jsonb,jsonb,text,text,boolean,uuid,text)', '48679d09a214c9dcf8850be51110d8bc'),
+      -- (506's AFTER where it is in, 17 Nov 2026: a returned line listed twice is refused)
+      ('create_product_exchange(uuid,uuid,jsonb,jsonb,jsonb,text,text,boolean,uuid,text)', '48679d09a214c9dcf8850be51110d8bc|116b779dde65d974c0b4db8a8a658e12'),
       ('create_bundle_component_exchange(uuid,uuid,uuid,uuid,integer,jsonb,jsonb,text,text)', '8d588d7f856fca85356e293a8af3ecef'),
       ('create_bundle_exchange(uuid,uuid,uuid,uuid,jsonb,text,text)', 'c552d1734cd4e8052b113a6026d8a6b2'),
       ('create_exchange_invoice(uuid)', '6392abd80baad4b1a2a5069654c994c1'),
@@ -237,7 +238,7 @@ select pg_temp.check(not exists (
       ('exchange_invoice_hold(uuid,uuid[])', 'd55f4696593447039aa45eeeae9b66d7'),
       ('trg_stock_return_exchange_hold()', '6f9af8dd208b7203565ed1f5f90d781a'),
       ('exchange_bundle_quote(uuid,uuid,uuid,uuid)', '447b48555da3e278bf2adb4cde3c155b')) x(fn, m)
-     where md5(pg_get_functiondef(to_regprocedure('public.' || x.fn))) is distinct from x.m),
+     where coalesce(md5(pg_get_functiondef(to_regprocedure('public.' || x.fn))), 'missing') <> all (string_to_array(x.m, '|'))),
   'G3 the creators, the replacement invoice, the credit, the holds and the whole-bundle quote are as on production (s450)');
 
 -- ═════ B Two items of one bundle ═════

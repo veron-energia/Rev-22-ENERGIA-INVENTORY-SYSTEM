@@ -55,7 +55,7 @@ $$ select coalesce((select current_qty from public.store_inventory where store_i
 -- id is kept as fx('<name>').
 create function pg_temp.sent(name text, src_type text, src_key text, dest_type text, dest_key text, qty int,
                              sources jsonb, rcv int, kind text default 'product') returns uuid language plpgsql as $$
-declare r uuid; l uuid; s jsonb := '[]'::jsonb; e jsonb;
+declare r uuid; l uuid; s jsonb := '[]'::jsonb; e jsonb; w int;
 begin
   perform pg_temp.as_user('owner');
   r := (public.create_transfer_request(src_type || '_to_' || dest_type, src_type, pg_temp.fx(src_key), dest_type, pg_temp.fx(dest_key),
@@ -71,6 +71,26 @@ begin
     'sources', case when kind = 'manual' then '[]'::jsonb else s end)), 'DSX dispatch');
   perform public.receive_transfer(r, jsonb_build_array(jsonb_build_object('line_id', l, 'received_quantity', rcv)),
     case when rcv <> qty then 'DSX count differs' end, false);
+  -- 510 (17 Nov 2026), where it is in: units received above what was sent wait for an
+  -- Owner or Manager. The rules below are about extra units that are at the destination,
+  -- as every transfer received before 510 left them, and 510 resolves such a line exactly
+  -- as before. So a line holding units back is checked to hold back exactly the extra,
+  -- then put as a receipt before 510 left it: the units added at the destination, none
+  -- waiting. The waiting itself is extra-waits-510.sql's.
+  if kind <> 'manual' and exists (select 1 from pg_attribute where attrelid = 'public.transfer_request_lines'::regclass
+                                    and attname = 'extra_waiting_quantity' and not attisdropped) then
+    execute 'select extra_waiting_quantity from public.transfer_request_lines where id = $1' into w using l;
+    if w is distinct from greatest(rcv - qty, 0) then
+      raise exception 'FAIL: 510 held back % on %, not the % received above what was sent', w, name, greatest(rcv - qty, 0); end if;
+    if w > 0 then
+      if dest_type = 'store' then
+        update public.store_inventory set current_qty = current_qty + w where store_id = pg_temp.fx(dest_key) and product_id = pg_temp.fx('p');
+      else
+        update public.warehouse_inventory set current_qty = current_qty + w where warehouse_id = pg_temp.fx(dest_key) and product_id = pg_temp.fx('p');
+      end if;
+      execute 'update public.transfer_request_lines set extra_waiting_quantity = 0 where id = $1' using l;
+    end if;
+  end if;
   insert into fx values (name, r) on conflict (k) do update set v = excluded.v;
   return l;
 end $$;

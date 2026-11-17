@@ -35,7 +35,7 @@ import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProble
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { singaporeToday, invoiceDate, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes,
-  hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
+  hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canGiveFocOn, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
 import { copyMoneyRows, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml,
   PRINT_NOTE_MAX, printedNote, exchangeNote, noteHtml } from '../lib/invoices/customerCopy';
 import { correctionFingerprint, REVIEW_AGAIN_MESSAGE } from '../lib/invoices/correctionReview';
@@ -980,7 +980,8 @@ const InvoicesPage: React.FC = () => {
     + (voucherCategory(v) === 'birthday' && v.birthday_rule ? ` · ${BIRTHDAY_RULE_LABELS[v.birthday_rule].toLowerCase()}` : '');
   // The discounts a line may carry (owner, 3 Oct 2026): see discountChoicesFor.
   const discountChoicesOf = (l: LineDraft): DiscountChoice[] => discountChoicesFor(l.kind,
-    { thirdParty: l.kind === 'product' && !!l.product_id && isThirdParty(l.product_id), inventoryManager: profile?.role === 'inventory_manager' });
+    { thirdParty: l.kind === 'product' && !!l.product_id && isThirdParty(l.product_id), inventoryManager: profile?.role === 'inventory_manager',
+      notOwnerOrManager: !isOwnerOrManager(profile?.role) });
   // What the line's Discount select lists: those, less a voucher category
   // with nothing on offer today, unless the line already has it.
   const discountOptionsOf = (l: LineDraft): DiscountChoice[] => discountChoicesOf(l)
@@ -1151,6 +1152,11 @@ const InvoicesPage: React.FC = () => {
     // say (the birthday rules among them).
     for (const l of activeLines) {
       const i = cLines.indexOf(l);
+      // 507: a voucher or therapy line given free is an Owner's or Manager's
+      // to give; a saved one left as it is goes back as saved.
+      if (l.discount === 'foc' && !unchangedDraft(l) && !canGiveFocOn(profile?.role, l.kind)) {
+        setCErr(`Line ${i + 1}: only an Owner or Manager can make a voucher or therapy line free of charge. Choose another discount, or ask an Owner or Manager.`); return;
+      }
       const problem = lineDiscountProblem(l, { valueCents: linePreview[i]?.charged ?? 0, changed: !unchangedDraft(l),
         allowed: discountChoicesOf(l), quantity: l.quantity, saved: savedDraftOf(l) });
       if (problem) { setCErr(`Line ${i + 1}: ${problem}`); return; }
@@ -5108,12 +5114,18 @@ const InvoicesPage: React.FC = () => {
                                 ("Invoice is locked"): its FOC changes through Correct Invoice. */}
                             {Number(it.foc_quantity ?? 0) === 0 && !lineHasDiscount(it) && it.line_kind !== 'late_fee' && detail.status !== 'paid' && detail.status !== 'completed_foc'
                               && detail.status !== 'cancelled' && detail.status !== 'refunded' && Number(detail.paid_amount) === 0 && !detail.locked_at && canGiveFoc(profile?.role) && (
+                              // 507: a credit package, premium bundle, voucher or therapy line is
+                              // made FOC by an Owner or Manager only; Staff are told so instead.
+                              canGiveFocOn(profile?.role, it.line_kind) ? (
                               <div style={{ fontSize: 11 }}>
                                 <button className="btn btn-secondary btn-sm" style={{ padding: '1px 7px', fontSize: 10.5 }}
                                   onClick={() => { setFocLine(it); setFocQty(it.quantity); setFocReasonId(''); setFocNote(''); setFocErr(null); }}>
                                   Make FOC
                                 </button>
                               </div>
+                              ) : (
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>FOC on this line: Owner or Manager only</div>
+                              )
                             )}
                             {Number(it.foc_quantity ?? 0) > 0 && (
                               <div style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>

@@ -5,11 +5,14 @@
 -- Network is put back to 484's text (md5 070d1b48...), as 492's UNDO does. 492's own suite
 -- (affiliate-network-phone-492.sql, N5) checks that every key but 'phone', every value and the order are what 484's
 -- text answers. Anywhere else (492 not in) this changes nothing.
+-- 508 (17 Nov 2026) patches 492's text (the record My Network reads); where it is in, its AFTER md5
+-- (74ab1592...) is put back to 484's text the same way.
 do $as484$
 declare v_path text := current_setting('search_path');
 begin
   perform set_config('search_path', 'public', true);
-  if md5(pg_get_functiondef('public.affiliate_portal_network()'::regprocedure)) = '5506f7291146534551a25e52a1e7820b' then
+  if md5(pg_get_functiondef('public.affiliate_portal_network()'::regprocedure))
+       in ('5506f7291146534551a25e52a1e7820b', '74ab159218853fcf22e1ccd9d75dcded') then  -- 492's, or 492's patched by 508
     execute $n484$CREATE OR REPLACE FUNCTION public.affiliate_portal_network()
  RETURNS jsonb
  LANGUAGE plpgsql

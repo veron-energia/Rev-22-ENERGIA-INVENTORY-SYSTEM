@@ -326,6 +326,9 @@ export interface TransferRequestLine {
   discrepancy_reason?: string | null;
   discrepancy_resolution?: string | null;
   discrepancy_resolved_at?: string | null;
+  // 510: units typed at receipt above what was sent, not yet added to stock
+  // (an Owner or Manager resolving the discrepancy adds them).
+  extra_waiting_quantity?: number | null;
 }
 
 // ── Phase 3: Sales types ─────────────────────────────────────────────────────

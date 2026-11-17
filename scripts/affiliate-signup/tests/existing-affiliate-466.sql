@@ -40,7 +40,9 @@
 --      request id; Owners see it on the Audit Log page (module affiliate).
 --      None when nothing is told.
 --   Z  Nothing is made by any call: no login, customer, affiliate record,
---      account, claim, list entry or copy; only Audit Log rows.
+--      account, claim, list entry or copy; only Audit Log rows. (Where 508, of
+--      17 Nov 2026, is in, the three sign-ups this suite runs itself,
+--      Nia's, Ed's and Jo's, are each listed for staff; H5 and Z1 count those.)
 --   G  Grants: the service role's alone; a signed-in or signed-out caller is
 --      refused.
 --   M  466 twice changes nothing; its self-test left no row (when this suite
@@ -144,6 +146,12 @@ $$ select jsonb_build_object('users', (select count(*) from auth.users), 'custom
      'affiliates', (select count(*) from public.customer_affiliates), 'accounts', (select count(*) from public.affiliate_accounts),
      'claims', (select count(*) from public.affiliate_account_claims), 'matches', (select count(*) from public.affiliate_signup_matches),
      'copies', (select count(*) from public.affiliate_signup_identities)) $$;
+-- 508 (17 Nov 2026): where it is in, a login joined to a record that was there before is listed for an
+-- Owner or Manager whatever name it typed (before it, only under a name that is not the record's). 466 itself is
+-- not changed by it. H5 and Z1 count the sign-ups' list entries by whichever rule the database has.
+create function pg_temp.has508() returns boolean language sql stable as
+$$ select position('508:' in (select prosrc from pg_proc
+                               where oid = to_regprocedure('public.complete_affiliate_onboarding(text,text,text,boolean)'))) > 0 $$;
 
 -- ═════ P0, and 466 ═════
 do $$ begin insert into tx values ('sfx', lower(substr(md5(random()::text || clock_timestamp()::text), 1, 6))); end $$;
@@ -435,8 +443,13 @@ select pg_temp.login('lJo', pg_temp.mail('new-jo'));
 select pg_temp.onboard('lJo', 'Jo Ann', 'Testhome', '+61491570483');
 select pg_temp.check(pg_temp.cust('lJo') = pg_temp.fx('cJo') and not (pg_temp.ans('lJo')->>'new_customer')::boolean
     and pg_temp.cust('lJo') <> pg_temp.cust('lIvy')
-    and not exists (select 1 from affiliate_signup_matches m where m.auth_user_id = pg_temp.fx('lJo')),
-  'H5 Jo then signs up as before: joined to her own record (437''s 8), nothing listed for staff: ' || pg_temp.tx('onb:lJo'));
+    and case when pg_temp.has508()
+             then (select count(*) = 1 and count(*) filter (where m.reason = 'phone_other_name' and m.status = 'open'
+                                                              and m.fresh_customer_id = pg_temp.fx('cJo')) = 1
+                     from affiliate_signup_matches m where m.auth_user_id = pg_temp.fx('lJo'))
+             else not exists (select 1 from affiliate_signup_matches m where m.auth_user_id = pg_temp.fx('lJo')) end,
+  'H5 Jo then signs up as before: joined to her own record (437''s 8), '
+  || case when pg_temp.has508() then 'listed for staff to confirm (508)' else 'nothing listed for staff' end || ': ' || pg_temp.tx('onb:lJo'));
 select pg_temp.ex('h6', '+61491570483', pg_temp.mail('new-h6'), 'Jo Ann Testhome');
 select pg_temp.check(pg_temp.is('h6', 'phone', false, null, 2) and pg_temp.logs('h6') = 2,
   'H6 once Jo is an affiliate, her name on the phone is an affiliate''s too: phone, two affiliates, no hint');
@@ -481,14 +494,20 @@ select pg_temp.check((select (public.audit_log_page(p_module => 'affiliate', p_t
   'A3 an Owner sees the rows on the Audit Log page (module affiliate), as System');
 
 -- ═════ Z Nothing is made ═════
-select pg_temp.check((select m from made0) - 'users' - 'customers' - 'accounts' - 'copies' - 'affiliates'
-      = pg_temp.made() - 'users' - 'customers' - 'accounts' - 'copies' - 'affiliates'
+select pg_temp.check((select m from made0) - 'users' - 'customers' - 'accounts' - 'copies' - 'affiliates' - 'matches'
+      = pg_temp.made() - 'users' - 'customers' - 'accounts' - 'copies' - 'affiliates' - 'matches'
     and ((pg_temp.made()->>'users')::int - ((select m from made0)->>'users')::int) = 3
     and ((pg_temp.made()->>'accounts')::int - ((select m from made0)->>'accounts')::int) = 3
     and ((pg_temp.made()->>'copies')::int - ((select m from made0)->>'copies')::int) = 3
     and ((pg_temp.made()->>'customers')::int - ((select m from made0)->>'customers')::int) = 0
-    and ((pg_temp.made()->>'affiliates')::int - ((select m from made0)->>'affiliates')::int) = 2,
-  'Z1 the calls made nothing: since the fixtures, only Nia''s, Ed''s and Jo''s own sign-ups (3 logins, 3 accounts, 3 copies, Nia''s and Jo''s affiliate records; no customer, claim or list entry): '
+    and ((pg_temp.made()->>'affiliates')::int - ((select m from made0)->>'affiliates')::int) = 2
+    -- List entries: none before 508. With 508 in, one for each of the three sign-ups (each joined a record that
+    -- was there before), and no other.
+    and ((pg_temp.made()->>'matches')::int - ((select m from made0)->>'matches')::int) = case when pg_temp.has508() then 3 else 0 end
+    and (select count(*) from public.affiliate_signup_matches m
+          where m.auth_user_id in (pg_temp.fx('lNia'), pg_temp.fx('lEd'), pg_temp.fx('lJo'))) = case when pg_temp.has508() then 3 else 0 end,
+  'Z1 the calls made nothing: since the fixtures, only Nia''s, Ed''s and Jo''s own sign-ups (3 logins, 3 accounts, 3 copies, Nia''s and Jo''s affiliate records; no customer or claim; '
+  || case when pg_temp.has508() then 'the three sign-ups'' own list entries and no other (508)' else 'no list entry' end || '): '
   || (select m::text from made0) || ' -> ' || pg_temp.made()::text);
 
 -- ═════ G Grants ═════

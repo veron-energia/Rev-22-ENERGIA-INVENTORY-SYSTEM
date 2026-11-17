@@ -195,10 +195,11 @@ test('W2: the warning is above every portal page but Account, which keeps its ow
   // every portal page leaves the warning on but the Account page.
   for (const page of ['Dashboard', 'Network', 'Earnings', 'Payouts', 'Referral']) {
     const src = readFileSync(`${REPO}src/pages/Affiliate${page}Page.tsx`, 'utf8');
-    assert.match(src, /<AffiliateLayout>/, page);
+    // 508/509 (17 Nov 2026): My Referral QR is shell 'own' (the "checking" notice above it, not instead of it)
+    assert.match(src, /<AffiliateLayout( shows="own")?>/, page);
     assert.doesNotMatch(src, /verifyEmailBanner/, page);
   }
-  assert.match(readFileSync(`${REPO}src/pages/AffiliateAccountPage.tsx`, 'utf8'), /<AffiliateLayout verifyEmailBanner=\{false\}>/);
+  assert.match(readFileSync(`${REPO}src/pages/AffiliateAccountPage.tsx`, 'utf8'), /<AffiliateLayout verifyEmailBanner=\{false\}( shows="own")?>/);
 });
 
 test('W3: no warning for a verified email, before 437 is on the server, or when the status cannot be read', async () => {

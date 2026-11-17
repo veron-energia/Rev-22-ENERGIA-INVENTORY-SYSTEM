@@ -10,7 +10,9 @@
 --   E4 The staff route: codes, then it waits; only an active Owner or
 --      Manager decides; a rejection needs a note; an approval applies.
 --   E5 What the portal reads: the details and the latest request, never a
---      code or its hash; the staff list for an Owner or Manager only.
+--      code or its hash; the staff list for an Owner or Manager only. Where
+--      508 (17 Nov 2026) is in, a login whose link to its record
+--      is not proven reads the details it typed at sign-up, not the record's.
 --   E6 An email another login or customer has is refused.
 --   E7 The phone flag: shown until a payout is recorded after the change.
 --   E8 The login's email put back while 'applying' keeps its verification.
@@ -180,12 +182,22 @@ end $$;
 -- ═════ E5 What the portal and staff read ═════
 do $$
 declare r jsonb; e text;
+  -- 508 (17 Nov 2026): B's link to its record is not proven (the record was made a month before, under
+  -- another email). Where 508 is in, the portal gives such a login the details it typed at sign-up (none in this
+  -- fixture), never the record's, and says link_proven false. Before 508 it gave the record's.
+  has508 boolean := position('508:' in (select prosrc from pg_proc where oid = 'public.affiliate_portal_details()'::regprocedure)) > 0;
 begin
   perform pg_temp.as_user(pg_temp.fx('b'));
   r := public.affiliate_portal_details();
-  perform pg_temp.check(r->>'route' = 'staff' and r->>'first_name' = 'Ben' and r->'request'->>'status' = 'rejected'
-      and r->'request'->>'decision_note' = 'Not the same person', 'E5 the portal sees its details and the rejection with its note');
+  perform pg_temp.check(r->>'route' = 'staff'
+      and case when has508 then r->>'first_name' is null and r->>'phone' is null and r->'link_proven' = 'false'::jsonb
+               else r->>'first_name' = 'Ben' end
+      and r->'request'->>'status' = 'rejected' and r->'request'->>'decision_note' = 'Not the same person',
+    case when has508 then 'E5 the portal sees the rejection with its note, and nothing of a record its login is not proven for (508)'
+         else 'E5 the portal sees its details and the rejection with its note' end);
   perform pg_temp.check(r::text !~ 'code_hash' and r->'request' ? 'code_for' and not (r::text ~ '"[0-9]{6}"'), 'E5 never a code or its hash');
+  perform pg_temp.as_user(pg_temp.fx('a'));
+  perform pg_temp.check(public.affiliate_portal_details()->>'first_name' = 'Ann', 'E5 a login on the record its own sign-up made sees that record''s details');
   perform pg_temp.as_user(pg_temp.fx('staff'));
   begin perform public.affiliate_detail_change_requests(); exception when others then e := sqlstate; end;
   perform pg_temp.check(e = '42501', 'E5 a Staff member cannot list requests');

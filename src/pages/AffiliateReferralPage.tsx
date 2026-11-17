@@ -17,7 +17,7 @@ const AffiliateReferralPage: React.FC = () => {
         && all.findIndex((o: any) => o?.url === l.url) === i) : [];
 
   return (
-    <AffiliateLayout>
+    <AffiliateLayout shows="own">
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>My Referral QR</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13.5, marginBottom: 20 }}>
         Share your personal Energia referral QR or link. Friends and family who register through it will be placed directly under you as a referral.

@@ -62,11 +62,14 @@ export function voucherCategory(v: DiscountVoucher | null | undefined): VoucherD
  * on offer are listed. Manual and Percentage on every other line. An
  * Inventory Manager gives neither FOC nor a voucher, as before (the server
  * refuses both); Manual and Percentage are open to everyone who invoices.
+ * Someone who is not an Owner or Manager (`notOwnerOrManager`) gives no FOC
+ * on a voucher or therapy line (507, the Owner, 17 Nov 2026): the server
+ * refuses it, as made free each still gives the voucher or the sessions.
  */
-export function discountChoicesFor(kind: LineKind, o: { thirdParty?: boolean; categories?: Iterable<VoucherDiscountCategory>; inventoryManager?: boolean } = {}): DiscountChoice[] {
+export function discountChoicesFor(kind: LineKind, o: { thirdParty?: boolean; categories?: Iterable<VoucherDiscountCategory>; inventoryManager?: boolean; notOwnerOrManager?: boolean } = {}): DiscountChoice[] {
   if (kind === 'credit_package' || kind === 'premium_bundle') return [];
   if (o.inventoryManager) return ['', 'manual', 'percentage'];
-  const out: DiscountChoice[] = ['', 'foc'];
+  const out: DiscountChoice[] = o.notOwnerOrManager && (kind === 'voucher' || kind === 'therapy') ? [''] : ['', 'foc'];
   if (kind === 'product' && !o.thirdParty) {
     const have = new Set(o.categories ?? VOUCHER_CATEGORIES);
     for (const c of VOUCHER_CATEGORIES) if (have.has(c)) out.push(c);
