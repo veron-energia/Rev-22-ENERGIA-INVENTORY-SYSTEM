@@ -82,6 +82,14 @@ create function pg_temp.sof_502_revoked() returns text[] language sql immutable 
                'legacy_reward_options_diagnostic(uuid)', 'legacy_setup_status()',
                'therapy_map_entitlement_tier(uuid,text,text)', 'therapy_reward_mapping_preview()',
                'upsert_legacy_rule(uuid,uuid,text,numeric,text,integer,integer,integer,boolean,date,text)'] $f$;
+-- Whether 513 is in, and the old invoice routes it closed to signed-in logins (the
+-- security audit of 17 Nov 2026, L2). repair_create_invoice_package_branches() is in no
+-- list (it runs with the caller's rights), so only the two named here are listed.
+create function pg_temp.has_513() returns boolean language sql stable as
+  $f$ select position('513:' in pg_get_functiondef('public.create_transfer_request(text,text,uuid,text,uuid,jsonb,text)'::regprocedure)) > 0 $f$;
+create function pg_temp.sof_513_revoked() returns text[] language sql immutable as $f$
+  select array['create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)',
+               'update_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text)'] $f$;
 
 -- Run p_sql as one of the fixture's logins and say what happened:
 --   'ok' and the result as text, or the SQLSTATE and the message.
@@ -443,12 +451,22 @@ begin
      from unnest(v_named) x
     where (to_regprocedure('public.' || x) is null
            or not has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute'))
-      and not (pg_temp.has_502() and x = any (pg_temp.sof_502_revoked()));
+      and not (pg_temp.has_502() and x = any (pg_temp.sof_502_revoked()))
+      and not (pg_temp.has_513() and x = any (pg_temp.sof_513_revoked()));
   -- 502: none of the 13 is callable by a signed-in login or a signed-out
   -- visitor; the service role keeps them all.
   if pg_temp.has_502() then
     perform pg_temp.sof_fail('1: 502 revoked it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
        from unnest(pg_temp.sof_502_revoked()) x
+      where to_regprocedure('public.' || x) is null
+         or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
+         or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
+         or not has_function_privilege('service_role', to_regprocedure('public.' || x), 'execute');
+  end if;
+  -- 513: the old invoice routes are the service role's and the server's alone.
+  if pg_temp.has_513() then
+    perform pg_temp.sof_fail('1: 513 closed it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
+       from unnest(pg_temp.sof_513_revoked() || array['repair_create_invoice_package_branches()']) x
       where to_regprocedure('public.' || x) is null
          or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
          or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')

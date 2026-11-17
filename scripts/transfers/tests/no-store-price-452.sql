@@ -165,10 +165,11 @@ select pg_temp.check((select array_agg(x::text order by x::text) from pg_proc p,
     and has_function_privilege('service_role', 'public.assert_transfer_prices_ok(uuid,uuid[])', 'execute'),
   'G2 it is still the service role''s alone (not anon''s, not signed-in staff''s)');
 -- (receive_transfer: or 510's AFTER, 17 Nov 2026: what is typed above what was sent waits for an
--- Owner or Manager; create_invoice: or 507's, only an Owner or Manager makes a credit line free.
--- Neither touches the price check.)
+-- Owner or Manager; create_invoice: or 507's, only an Owner or Manager makes a credit line free;
+-- create_transfer_request: or 513's, 17 Nov 2026: it refuses Staff, who ask with
+-- create_staff_transfer_request. None of them touches the price check.)
 select pg_temp.check((select bool_and(pg_temp.md5_of(x.f) = any (string_to_array(x.m, '|'))) from (values
-      ('create_transfer_request(text,text,uuid,text,uuid,jsonb,text)', '99d7e65385165464fb6e4395f4d4c25f'),
+      ('create_transfer_request(text,text,uuid,text,uuid,jsonb,text)', '99d7e65385165464fb6e4395f4d4c25f|ab4312ec8850847b9058d07776cb1d15'),
       ('create_staff_transfer_request(jsonb,text,uuid)', 'cc32ec91b2e223c67da957dd792af12e'),
       ('edit_transfer_request(uuid,integer,text,location_type,uuid,location_type,uuid,jsonb,text)', 'd9cec0b343afaea0171952cbcda80b61'),
       ('review_and_dispatch_transfer(uuid,jsonb,text)', '6db84d9ecca1d40b4858b4291401fbc0'),
@@ -310,7 +311,10 @@ select pg_temp.put('k4', pg_temp.err(format(
 select pg_temp.check(pg_temp.tx('k1') like 'Insufficient available stock at source for "NPX Pillow"%'
     and pg_temp.tx('k2') = 'The same product cannot appear twice in one transfer'
     and pg_temp.tx('k3') = 'You are not assigned to that store.'
-    and pg_temp.tx('k4') = 'Staff can only transfer from their assigned store',
+    -- 513 (17 Nov 2026): Staff can no longer use create_transfer_request at all
+    and pg_temp.tx('k4') = case when position('513:' in pg_get_functiondef('public.create_transfer_request(text,text,uuid,text,uuid,jsonb,text)'::regprocedure)) > 0
+                                then 'Staff ask for stock with New Transfer on the Transfers page; an Owner or Manager chooses where it comes from.'
+                                else 'Staff can only transfer from their assigned store' end,
   format('K1 still refused: too little stock (%s), the same product twice (%s), Staff into a store not theirs (%s), Staff from one (%s)',
          pg_temp.tx('k1'), pg_temp.tx('k2'), pg_temp.tx('k3'), pg_temp.tx('k4')));
 
