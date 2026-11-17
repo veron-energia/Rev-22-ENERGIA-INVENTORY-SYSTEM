@@ -18,8 +18,13 @@ select position('513:' in pg_get_functiondef('public.create_transfer_request(tex
 \else
 \ir ../../../supabase/513_old_invoice_and_transfer_routes_are_closed.sql
 \endif
--- A second run changes nothing.
+-- A second run changes nothing, while what 513 relies on is as it found it. 516 (17 Nov
+-- 2026) changes create_invoice_with_details, and 513 then rightly refuses to run again.
+select md5(pg_get_functiondef('public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)'::regprocedure))
+       = '0ac29c7aa909dd756ec572645ca86448' as m513_rerun \gset
+\if :m513_rerun
 \ir ../../../supabase/513_old_invoice_and_transfer_routes_are_closed.sql
+\endif
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end $f$;
@@ -145,8 +150,9 @@ select pg_temp.check(v like '%"success": true%', '4f ' || w || ' still sends sto
 -- 5. The functions
 select pg_temp.check(md5(pg_get_functiondef('public.create_transfer_request(text,text,uuid,text,uuid,jsonb,text)'::regprocedure)) = 'ab4312ec8850847b9058d07776cb1d15',
   '5a create_transfer_request is 513''s');
-select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = x.m, '5b unchanged: ' || x.f)
-  from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '0ac29c7aa909dd756ec572645ca86448'),
+-- (create_invoice_with_details: or 516's AFTER, 17 Nov 2026: it refuses a negative manual discount)
+select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (string_to_array(x.m, '|')), '5b unchanged: ' || x.f)
+  from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead'),
                ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52'),
                ('create_staff_transfer_request(jsonb,text,uuid)', 'cc32ec91b2e223c67da957dd792af12e'),
                ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '42f00d595a40df157d28a7ea88fbe7ad'),

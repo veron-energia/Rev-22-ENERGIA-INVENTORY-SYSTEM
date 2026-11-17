@@ -1109,7 +1109,9 @@ create function pg_temp.t463_at(p_col text) returns boolean language sql as $f$
                                                   or md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
                        else to_regprocedure('public.' || m.sig) is not null
                             and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
-                                = case when m.sig = 'preview_invoice_correction(uuid,jsonb)' and pg_get_functiondef(to_regprocedure('public.' || m.sig)) like '%500: only when the save would ask%' then '23c180873b6545bd83fb20d21708aa9e'
+                                = case when m.sig = 'create_invoice_with_details(uuid,uuid,jsonb,jsonb)'
+                                            and pg_get_functiondef(to_regprocedure('public.' || m.sig)) like '%516: never below zero%' then '7c37ac1d841d2c0c2a9cf9b54c563ead'  -- 516, 17 Nov 2026
+                                       when m.sig = 'preview_invoice_correction(uuid,jsonb)' and pg_get_functiondef(to_regprocedure('public.' || m.sig)) like '%500: only when the save would ask%' then '23c180873b6545bd83fb20d21708aa9e'
                                        when m.sig = 'preview_invoice_correction(uuid,jsonb)' and to_regprocedure('public.invoice_special_sales_follow_lines(uuid,jsonb,text,uuid)') is not null then '13b0925c29bd8ca14d8d8b7bd961fef8'
                                        when pg_temp.t463_476_in() and m.sig = 'invoice_transferable_benefits(uuid)' then '1546de1f83d970424d26e65941f4dcb8'
                                        when pg_temp.t463_476_in() and m.sig = 'move_invoice_benefits_to_customer(uuid,uuid,uuid,text)' then '142dd3252911480bd4a17e7c55b488d3'
