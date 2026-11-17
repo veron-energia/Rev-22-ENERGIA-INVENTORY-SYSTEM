@@ -55,14 +55,19 @@ untouched.
 
 | Acting role | May invite | May assign stores | May edit role/activation of |
 |---|---|---|---|
-| Owner | Owner, Admin, Manager, Inventory Manager, Staff | any store | anyone but themselves |
-| Admin | Owner, Admin, Manager, Inventory Manager, Staff | any store | anyone but themselves |
+| Owner | Owner, Manager, Inventory Manager, Staff | any store | anyone but themselves |
+| Admin (no longer given, 429) | Manager, Inventory Manager, Staff | any store | anyone but themselves and Owners (512) |
 | Manager | Inventory Manager, Staff | **only stores they are assigned to** | Inventory Managers and Staff only |
 | Inventory Manager, Staff | nothing | — | nobody |
 
 **Nobody changes their own role or activation**, whatever their role. An Owner
 who needs to step down asks another Owner; that is a smaller inconvenience than
 a self-service route to Owner existing at all.
+
+**There is always an active Owner** (512). Only an Owner gives or takes the
+Owner role, or switches an Owner on or off, and no one (the server included)
+steps down, switches off or removes the last active Owner. Make someone else an
+Owner first.
 
 Authority comes from `user_admin_role()`, which reads the caller's **current**
 profile row and returns a role only when it is one that may administer users. A

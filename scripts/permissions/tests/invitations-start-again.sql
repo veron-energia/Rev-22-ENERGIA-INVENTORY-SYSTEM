@@ -344,7 +344,11 @@ select pg_temp.run('owner', $q$select to_jsonb(public.assignable_roles())$q$, 'o
 select pg_temp.run('manager', $q$select to_jsonb(public.assignable_roles())$q$, 'ok', 'admin: the Manager''s role list', 'roles_manager');
 select pg_temp.run('admin', $q$select to_jsonb(public.assignable_roles())$q$, 'ok', 'admin: an Admin''s role list', 'roles_admin');
 select pg_temp.check(pg_temp.out('roles_owner') = '["owner","manager","inventory_manager","staff"]'::jsonb
-                     and pg_temp.out('roles_admin') = '["owner","manager","inventory_manager","staff"]'::jsonb
+                     and pg_temp.out('roles_admin')
+                       = case when position('512:' in pg_get_functiondef('public.assignable_roles()'::regprocedure)) > 0
+                              -- 512 (17 Nov 2026): an Admin no longer gives the Owner role either
+                              then '["manager","inventory_manager","staff"]'::jsonb
+                              else '["owner","manager","inventory_manager","staff"]'::jsonb end
                      and pg_temp.out('roles_manager') = '["inventory_manager","staff"]'::jsonb,
   'admin: no role list offers Admin; a Manager''s list is unchanged');
 select pg_temp.listed('owner', 'admin');

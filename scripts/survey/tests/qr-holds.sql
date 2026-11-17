@@ -105,6 +105,11 @@ $$ select set_config('request.jwt.claim.sub', coalesce(pg_temp.fx(key)::text, ''
           set_config('request.jwt.claim.role', 'authenticated', true) $$;
 create function pg_temp.err(q text) returns text language plpgsql as
 $$begin execute q; return 'ok'; exception when others then return sqlerrm; end$$;
+-- 511 (17 Nov 2026): a form puts no email on a customer who was there before
+-- it, not even when staff attach it. Whether 511 is in this database.
+create function pg_temp.has511() returns boolean language sql stable as
+$$ select coalesce(position('511:' in (select prosrc from pg_proc
+                                        where oid = to_regprocedure('public.attach_held_health_survey(uuid,uuid,text)'))) > 0, false) $$;
 -- A QR form as the public page sends it; keeps the reply (or the error) under
 -- 'sub:<key>' and the survey under 'hs:<key>'.
 create function pg_temp.submit(key text, name text, phone text, email text) returns void language plpgsql as
@@ -365,9 +370,12 @@ select pg_temp.check(pg_temp.survey_customer('q5') = pg_temp.fx('c5') and (pg_te
   'A the form is the customer''s now, and the hold records who, when and why');
 select pg_temp.check((select full_name = 'Siew Lan (Office) Testchua' and phone = '+6584330105'
                          and date_of_birth = '1980-02-03' and gender = 'female' and occupation = 'Tester'
-                         and source_option_id = pg_temp.fx('src') and email = 's433-siew-' || pg_temp.tx('sfx') || '@tests.invalid'
+                         and source_option_id = pg_temp.fx('src')
+                         -- 511: the email typed is no longer copied onto the customer
+                         and case when pg_temp.has511() then email is null
+                                  else email = 's433-siew-' || pg_temp.tx('sfx') || '@tests.invalid' end
                         from customers where id = pg_temp.fx('c5')),
-  'A the customer''s empty details are filled from the form, never the name or phone');
+  'A the customer''s empty details are filled from the form (the email too before 511, never since), never the name or phone');
 select pg_temp.check((select full_name = 'Siew Lan (Office) Testchua' and phone = '+6584330105'
                          and email = 's433-siew-' || pg_temp.tx('sfx') || '@tests.invalid'
                         from health_surveys where id = pg_temp.fx('hs:q5'))
@@ -546,19 +554,21 @@ select pg_temp.check(not exists (select 1 from m433 m
 -- 468, submit_health_survey is 468's, or 485's; with 485 (2 Nov 2026: a form's
 -- email no longer goes onto a record with a portal login or an affiliate
 -- record, not even when staff attach it) attach_held_health_survey is 485's.
+-- With 511 (17 Nov 2026: nor onto any other customer who was there before the
+-- form) both are 511's.
 -- A row that is not true (a function drifted, or missing) fails: bool_and would
 -- skip a null.
 select pg_temp.check(bool_and(coalesce(md5(pg_get_functiondef(to_regprocedure(fn)))
                                          = case when to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null
                                                 then coalesce(ok419, ok) else ok end
                                        or md5(pg_get_functiondef(to_regprocedure(fn))) = any (string_to_array(ok468, ',')), false)),
-  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s or 485''s and attach_held_health_survey 485''s, once they are)')
+  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s, 485''s or 511''s and attach_held_health_survey 485''s or 511''s, once they are)')
   from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185',
-                                                                         '014a970de2e5dee64e4027459cac5280,860743f4f2e92f669e257121de0a9308'),
+                                                                         '014a970de2e5dee64e4027459cac5280,860743f4f2e92f669e257121de0a9308,ddc02ed5fa82aacde5f031d6d367b300'),
                ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978', null, null),
                ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b', '0487502f033b56452140c81e108a8ebc', null),
                ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249',
-                                                                         '8a66d8e6d7008c79d94c5b20ffecb4df'),
+                                                                         '8a66d8e6d7008c79d94c5b20ffecb4df,55b632c7e9289cb267516a26af97387b'),
                ('public.create_customer_from_held_survey(uuid,text)',   'd503d8b599f90768c8d909b91cd453e1', '733db65d708db7c64b5c4de03493d409', null),
                ('public.close_held_health_survey(uuid,text)',           'ee4789b1d716e4fbf498a5f38e722735', null, null)) t(fn, ok, ok419, ok468);
 

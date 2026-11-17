@@ -172,11 +172,14 @@ test('Attach needs a note, then sends the form, the customer and the note', asyn
   } finally { ui.close(); }
 });
 
-test('485: the Attach window says an affiliate\'s email is not filled from the form', async () => {
+// 511 (17 Nov 2026): no customer's email is filled from the form any more (485 said an affiliate's was not).
+test('511: the Attach window says the email on the form is not copied', async () => {
   const ui = await mount();
   try {
     await ui.click('[data-attach="c-bee"]');
-    assert.match(ui.text().replace(/\s+/g, ' '), /empty details \(email, date of birth, sex, occupation, how they heard about us\) are filled from the form, except the email of an affiliate, even a former one \(add it in Edit customer if it is theirs\)\./);
+    const said = ui.text().replace(/\s+/g, ' ');
+    assert.match(said, /Their name, phone and email stay as they are; empty details \(date of birth, sex, occupation, how they heard about us\) are filled from the form\. The email on the form is not copied: add it in Edit customer if it is theirs\./);
+    assert.doesNotMatch(said, /empty details \(email,/);
   } finally { ui.close(); }
 });
 

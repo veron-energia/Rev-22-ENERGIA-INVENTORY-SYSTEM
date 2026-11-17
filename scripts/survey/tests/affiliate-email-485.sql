@@ -55,6 +55,8 @@
 --   psql -v ON_ERROR_STOP=1 [-v skip_install=1] -f scripts/survey/tests/affiliate-email-485.sql
 \set ON_ERROR_STOP on
 begin;
+-- 511 (17 Nov 2026): where it is in, the three functions it changes are put back for this run (see the file).
+\ir forms-as-before-511.sql
 \if :{?skip_install}
 create temp table m485 as
   select p.oid::regprocedure::text as fn, md5(pg_get_functiondef(p.oid)) as md5

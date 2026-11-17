@@ -250,6 +250,12 @@ create function pg_temp.err(q text) returns text language plpgsql as
 $$begin execute q; return 'ok'; exception when others then return sqlerrm; end$$;
 create function pg_temp.errcode(q text) returns text language plpgsql as
 $$begin execute q; return 'ok'; exception when others then return sqlstate; end$$;
+-- 511 (17 Nov 2026): a registration puts no email on a customer who was there
+-- before it, matched by the website or linked by staff. Whether 511 is in
+-- this database (R2 and F7 below read it).
+create function pg_temp.has511() returns boolean language sql stable as
+$$ select coalesce(position('511:' in (select prosrc from pg_proc
+                                        where oid = to_regprocedure('public.event_web_fill_customer(uuid,uuid)'))) > 0, false) $$;
 create function pg_temp.d(n int) returns date language sql as $$ select public.sg_today() + n $$;
 -- Fictional phones: +61 2 5550 nnnn (ACMA's drama range), one block per run.
 create function pg_temp.ph(n int) returns text language sql as
@@ -602,10 +608,11 @@ select pg_temp.put('r2', pg_temp.register('live', 'r2', jsonb_build_array(
 create function pg_temp.r2(pos int) returns public.event_registration_people language sql as
 $$ select pg_temp.pp(pg_temp.pid(pg_temp.tx('r2')::jsonb, pos)) $$;
 select pg_temp.check((pg_temp.r2(1)).match = 'exact' and (pg_temp.r2(1)).customer_id = pg_temp.fx('c_exact')
-    and (select email from customers where id = pg_temp.fx('c_exact')) = pg_temp.mail('meiling')
+    and (select email from customers where id = pg_temp.fx('c_exact'))
+        is not distinct from case when pg_temp.has511() then null else pg_temp.mail('meiling') end
     and (select (source_option_id, source_details) = (pg_temp.fx('src'), 'Health Seminar (website)') from customers where id = pg_temp.fx('c_exact'))
     and (select full_name from customers where id = pg_temp.fx('c_exact')) = 'Mei Ling Tan',
-  'R2 phone + exact name: linked; the customer''s empty email and source are filled, the name left alone');
+  'R2 phone + exact name: linked; the customer''s empty source is filled (their empty email too before 511, never since), the name left alone');
 select pg_temp.check((pg_temp.r2(2)).match = 'same_words' and (pg_temp.r2(2)).customer_id = pg_temp.fx('c_words')
     and (select email from customers where id = pg_temp.fx('c_words')) = 'old-' || pg_temp.mail('weijie'),
   'R3 the same words in another order: linked; an email already there is kept');
@@ -814,10 +821,11 @@ select pg_temp.check(pg_temp.tx('f7_short') = 'Add a short note on how you confi
     and (pg_temp.f1(5)).match = 'staff_attached' and (pg_temp.f1(5)).customer_id = pg_temp.fx('c_phone')
     and (pg_temp.f1(5)).referral_outcome = 'already_customer'
     and (select referred_by from customers where id = pg_temp.fx('c_phone')) is null
-    and (select email from customers where id = pg_temp.fx('c_phone')) = pg_temp.mail('rosa2')
+    and (select email from customers where id = pg_temp.fx('c_phone'))
+        is not distinct from case when pg_temp.has511() then null else pg_temp.mail('rosa2') end
     and exists (select 1 from audit_logs a where a.record_id = (pg_temp.f1(5)).id and a.action = 'event_registration_matched'
                   and a.old_data @> jsonb_build_object('typed_name', 'Rosa Attachme')),
-  'F7 staff attach a held person (a note needed): the customer''s empty email filled, their referrer untouched, audited with what was typed');
+  'F7 staff attach a held person (a note needed): the customer''s empty email filled before 511 and left empty since, their referrer untouched, audited with what was typed');
 select pg_temp.check(pg_temp.call('live', 'referral_info', jsonb_build_object('code', lower(pg_temp.tx('code_ok'))))
         = '{"ok": true, "test": false, "status": "ok", "valid": true, "first_name": "Aff", "accepting": true}'::jsonb
     and pg_temp.call('live', 'referral_info', jsonb_build_object('code', pg_temp.tx('code_off')))->>'accepting' = 'false'

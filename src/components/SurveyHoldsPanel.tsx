@@ -337,9 +337,9 @@ const SurveyHoldsPanel: React.FC<{
             {action.kind === 'attach' && action.customer && !action.customer.survey_takes_form && (
               <p style={{ margin: 0, fontSize: 13.5 }}>
                 The form <strong>{action.form.full_name}</strong> sent becomes <strong>{action.customer.full_name}</strong>'s
-                health survey. Their name and phone stay as they are; empty details (email, date of birth, sex,
-                occupation, how they heard about us) are filled from the form, except the email of an affiliate, even
-                a former one (add it in Edit customer if it is theirs).
+                health survey. Their name, phone and email stay as they are; empty details (date of birth, sex,
+                occupation, how they heard about us) are filled from the form. The email on the form is not copied:
+                add it in Edit customer if it is theirs.
               </p>
             )}
             {action.kind === 'attach' && action.customer?.survey_takes_form && (

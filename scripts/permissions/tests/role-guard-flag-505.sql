@@ -21,12 +21,15 @@ $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end i
 
 do $$
 declare own uuid := gen_random_uuid(); mgr uuid := gen_random_uuid(); inv_login uuid := gen_random_uuid();
+        own2 uuid := gen_random_uuid();  -- 512: a second Owner, so the last-Owner rule does not answer for check 2
         v_inv uuid; v_out jsonb; v_msg text;
 begin
   insert into auth.users(id, email, email_confirmed_at) values
-    (own, 'g505-owner@example.invalid', now()), (mgr, 'g505-manager@example.invalid', now()), (inv_login, 'g505-invitee@example.invalid', null);
+    (own, 'g505-owner@example.invalid', now()), (mgr, 'g505-manager@example.invalid', now()), (inv_login, 'g505-invitee@example.invalid', null),
+    (own2, 'g505-owner2@example.invalid', now());
   insert into public.profiles(id, full_name, email, role, is_active) values
     (own, 'G505 Owner', 'g505-owner@example.invalid', 'owner', true),
+    (own2, 'G505 Owner Two', 'g505-owner2@example.invalid', 'owner', true),
     (mgr, 'G505 Manager', 'g505-manager@example.invalid', 'manager', true);
   insert into public.profiles(id, full_name, email, role, is_active, invitation_status)
     values (inv_login, 'G505 Invitee', 'g505-invitee@example.invalid', 'staff', false, 'pending');
