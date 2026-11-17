@@ -13,22 +13,33 @@ const sgd = (c: number) => `S$${(c / 100).toFixed(2)}`;
  * AFTER-10: the money paid and given back, from invoice_financial_position.
  * 'Paid' is every receipt (what the payment rows add up to); then, when money
  * went back, 'Refunded' and 'Net paid' (what the invoice still holds); then
- * 'Refund due' when some is still owed back. Nothing paid and nothing
- * refunded: no rows. With no refund, 'Paid' is already the net figure, so it
- * is not said twice. `minus` is the sign the copy can draw ('-' on the PDF,
- * whose built-in fonts have no other).
+ * 'Refund due' when some is still owed back. With no refund, 'Paid' is already
+ * the net figure, so it is not said twice. `minus` is the sign the copy can
+ * draw ('-' on the PDF, whose built-in fonts have no other).
+ *
+ * The user, 17 Nov 2026: every copy also says 'Balance due', right after 'Paid'
+ * (after 'Net paid' when money went back, before 'Refund due'): the figure the
+ * invoice screen shows as 'Balance due' (the position's `outstanding`), even
+ * when it is S$0.00, and the rows are there even when nothing is paid yet
+ * ('Paid S$0.00'). `outstanding` is never negative (the position's own
+ * greatest(...,0), and 0 for a cancelled or refunded invoice), so it is shown
+ * as it is. When the position could not be read (`outstanding` missing), no
+ * 'Balance due' is guessed and the rows are as before: nothing paid and
+ * nothing refunded, no rows.
  */
-export function copyMoneyRows(p: { paid: unknown; refunded?: unknown; netPaid?: unknown; refundDue?: unknown; minus?: string }): CopyRow[] {
+export function copyMoneyRows(p: { paid: unknown; refunded?: unknown; netPaid?: unknown; refundDue?: unknown; outstanding?: unknown; minus?: string }): CopyRow[] {
   const minus = p.minus ?? '−';
   const paid = cents(p.paid), refunded = cents(p.refunded);
   const net = p.netPaid == null ? paid - refunded : cents(p.netPaid);
   const due = cents(p.refundDue);
+  const known = p.outstanding != null && p.outstanding !== '' && Number.isFinite(Number(p.outstanding));
   const rows: CopyRow[] = [];
-  if (paid > 0 || refunded > 0) rows.push(['Paid', sgd(paid)]);
+  if (known || paid > 0 || refunded > 0) rows.push(['Paid', sgd(paid)]);
   if (refunded > 0) {
     rows.push(['Refunded', `${minus}${sgd(refunded)}`]);
     rows.push(['Net paid', sgd(net)]);
   }
+  if (known) rows.push(['Balance due', sgd(cents(p.outstanding))]);
   if (due > 0) rows.push(['Refund due', sgd(due)]);
   return rows;
 }
@@ -137,4 +148,77 @@ export function exchangeNote(ex: { found?: boolean; notes?: unknown } | null | u
 /** A note in the printed copy's HTML: escaped (CREATE-18), its line breaks kept. */
 export function noteHtml(note: string): string {
   return escapeHtml(note).replace(/\n/g, '<br/>');
+}
+
+/**
+ * The user, 17 Nov 2026: what the OFFICE COPY of the paper print adds in one
+ * block, "Office notes (not on the customer copy)", right above the
+ * signatures. THIS HELPER IS OFFICE-ONLY: its lines are internal (staff's own
+ * and the system's notes, the reasons for a discount, an FOC, a price change,
+ * a refund and a payment correction) and must never reach the customer's half,
+ * the PDF, the image, WhatsApp or email. The earlier rules stand for those
+ * copies: an FOC reason (Q7) and a price-change reason are internal.
+ *
+ * Plain text, one entry per line, each only when it has text (the page escapes
+ * them with noteHtml, which keeps a multi-line note's breaks):
+ *   Internal notes: <invoices.notes>, printed as it is (the system writes ids
+ *     and references into it);
+ *   Discount reason: <invoices.manual_discount_reason>;
+ *   per item line, one entry for each, numbered as the copy numbers them
+ *     ("Line 2 · Name · Discount reason: ..."):
+ *     Discount reason, FOC reason (the reason's name, then the text typed with
+ *     it; a saved FOC reason already starts with its name, so it is not said
+ *     twice, and one no longer in the active list still shows by its saved
+ *     text), Price change reason;
+ *   Refund <date> (S$x): <reason>, each refund that has a reason;
+ *   Payment correction <date>: <reason>, each payment row that has one.
+ * Empty array: no block at all.
+ */
+export function officeNoteLines(d: {
+  invoice?: { notes?: unknown; manual_discount_reason?: unknown } | null;
+  items?: { line_discount_reason?: unknown; foc_reason_id?: unknown; foc_reason?: unknown; override_reason?: unknown }[] | null;
+  /** The printed name of item line n (0-based): what the copy shows for it. */
+  lineName?: (index: number) => string;
+  /** An FOC reason's name by id, when it is in the list the page holds. */
+  focReasonName?: (id: string) => string | null | undefined;
+  refunds?: { reason?: unknown; amount?: unknown; created_at?: unknown }[] | null;
+  payments?: { correction_reason?: unknown; effective_at?: unknown; created_at?: unknown }[] | null;
+  /** A stored timestamp as the copy prints a day. */
+  day?: (stamp: unknown) => string;
+}): string[] {
+  const out: string[] = [];
+  const day = d.day ?? ((x: unknown) => String(x ?? ''));
+  const notes = copyNoteText(d.invoice?.notes);
+  if (notes) out.push(`Internal notes: ${notes}`);
+  const discount = copyNoteText(d.invoice?.manual_discount_reason);
+  if (discount) out.push(`Discount reason: ${discount}`);
+  (d.items ?? []).forEach((it, i) => {
+    const parts: string[] = [];
+    const dr = copyNoteText(it.line_discount_reason);
+    if (dr) parts.push(`Discount reason: ${dr}`);
+    const typed = copyNoteText(it.foc_reason);
+    const name = it.foc_reason_id ? copyNoteText(d.focReasonName?.(String(it.foc_reason_id))) : null;
+    const foc = name && typed ? (typed === name || typed.startsWith(`${name} — `) ? typed : `${name} — ${typed}`) : (name ?? typed);
+    if (foc) parts.push(`FOC reason: ${foc}`);
+    const pr = copyNoteText(it.override_reason);
+    if (pr) parts.push(`Price change reason: ${pr}`);
+    const label = copyNoteText(d.lineName?.(i));
+    for (const x of parts) out.push(`Line ${i + 1}${label ? ` · ${label}` : ''} · ${x}`);
+  });
+  for (const r of d.refunds ?? []) {
+    const why = copyNoteText(r.reason);
+    if (why) out.push(`Refund ${day(r.created_at)} (${sgd(cents(r.amount))}): ${why}`);
+  }
+  // One correction writes several payment rows (its reversal and each
+  // replacement), every one with the same reason, at the same moment: dated by
+  // when it was made (not the payment's own date, which the rows may differ
+  // on), each correction says its reason once.
+  const corrections = new Set<string>();
+  for (const p of d.payments ?? []) {
+    const why = copyNoteText(p.correction_reason);
+    if (!why) continue;
+    const line = `Payment correction ${day(p.created_at || p.effective_at)}: ${why}`;
+    if (!corrections.has(line)) { corrections.add(line); out.push(line); }
+  }
+  return out;
 }

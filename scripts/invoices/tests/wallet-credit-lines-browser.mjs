@@ -256,8 +256,10 @@ try {
       JSON.stringify(tableRows(half, 'totals')));
     // The credit balance's breakdown keeps each name with its amount (&nbsp;, creditBalanceLine.mjs).
     const flat = half.replace(/&nbsp;/g, ' ');
-    ok(`print, ${copy}: no PAYMENT METHODS (credit paid everything), and the credit balance stays`,
-      !half.includes('Payment Methods') && !half.includes('Wallet — Credit Package Paid') && flat.includes('Credit balance (as at 13 Nov 2026)')
+    // 17 Nov 2026: the section is there even when credit paid everything: Paid S$0.00, Balance due S$0.00, no payment line.
+    ok(`print, ${copy}: PAYMENT METHODS says Paid S$0.00 and Balance due S$0.00 (credit paid everything), and the credit balance stays`,
+      JSON.stringify(tableRows(half, 'paytbl')) === JSON.stringify(['Paid | S$0.00', 'Balance due | S$0.00'])
+        && !half.includes('Wallet — Credit Package Paid') && flat.includes('Credit balance (as at 13 Nov 2026)')
         && flat.includes('Credit Package S$3381.00 · Premium Bundle S$7636.00') && flat.includes('<strong>S$11017.00</strong>'),
       (flat.match(/Credit balance[\s\S]{0,300}/) || [''])[0].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '));
   }
@@ -269,7 +271,8 @@ try {
   let pdf = pdfText(await download(page, 'PDF', '.invoice-test/browser/wallet-credit.pdf'));
   ok('the PDF: the credit\'s line with an ASCII minus, Total S$0.00, no payment rows',
     pdf.includes('(Wallet — Credit Package)') && pdf.includes('(-S$327.00)') && pdf.includes('(S$0.00)')
-      && !pdf.includes('PAYMENT METHODS') && !pdf.includes('Wallet — Credit Package Paid') && !pdf.includes('(Paid)'));
+      // 17 Nov 2026: Paid S$0.00 and Balance due S$0.00 are rows of the totals, as on the print.
+      && !pdf.includes('PAYMENT METHODS') && !pdf.includes('Wallet — Credit Package Paid') && pdf.includes('(Paid)') && pdf.includes('(Balance due)'));
   await download(page, 'Image', '.invoice-test/browser/wallet-image-credit.png');
   let img = await imageTexts(page);
   ok('the image: the same', img.includes('Wallet — Credit Package') && img.includes('-S$327.00') && img.includes('S$0.00')
@@ -281,7 +284,7 @@ try {
   for (const half of halves(html)) {
     ok('print: Total is what the credit left; PAYMENT METHODS lists the PayNow and Paid counts it alone',
       JSON.stringify(tableRows(half, 'totals')) === JSON.stringify(['Subtotal | S$327.00', 'Discount | −S$0.00', 'Wallet — Credit Package | −S$200.00', 'Total | S$127.00'])
-        && JSON.stringify(tableRows(half, 'paytbl')) === JSON.stringify(['PayNow · 11/11/2026 | S$127.00', 'Paid | S$127.00']),
+        && JSON.stringify(tableRows(half, 'paytbl')) === JSON.stringify(['PayNow · 11/11/2026 | S$127.00', 'Paid | S$127.00', 'Balance due | S$0.00']),
       JSON.stringify([tableRows(half, 'totals'), tableRows(half, 'paytbl')]));
   }
   await printed(page, html, '.invoice-test/browser/wallet-print-mixed.png');
@@ -299,7 +302,7 @@ try {
   html = await print(page);
   ok('print: Credit Package Paid and Bonus are one line, S$350.00; the cash is the payment row',
     halves(html).every(h => JSON.stringify(tableRows(h, 'totals')) === JSON.stringify(['Subtotal | S$400.00', 'Discount | −S$0.00', 'Wallet — Credit Package | −S$350.00', 'Total | S$50.00'])
-      && JSON.stringify(tableRows(h, 'paytbl')) === JSON.stringify(['Cash · 11/11/2026 | S$50.00', 'Paid | S$50.00'])),
+      && JSON.stringify(tableRows(h, 'paytbl')) === JSON.stringify(['Cash · 11/11/2026 | S$50.00', 'Paid | S$50.00', 'Balance due | S$0.00'])),
     JSON.stringify(tableRows(halves(html)[0], 'totals')));
 
   // ---- Credit refunded back into the wallet ---------------------------------
@@ -311,9 +314,11 @@ try {
   }
   html = await print(page);
   for (const half of halves(html)) {
-    ok('print: the note under the credit line; Total S$0.00; no money refunded and no PAYMENT METHODS',
+    ok('print: the note under the credit line; Total S$0.00; no money refunded, PAYMENT METHODS only Paid and Balance due at S$0.00',
       JSON.stringify(tableRows(half, 'totals')) === JSON.stringify(['Subtotal | S$921.00', 'Discount | −S$0.00', 'Wallet — Credit Package | −S$921.00',
-        'S$327.00 returned to wallet 12/11/2026', 'Total | S$0.00']) && !half.includes('Payment Methods') && !half.includes('Refunded'),
+        'S$327.00 returned to wallet 12/11/2026', 'Total | S$0.00'])
+        // 17 Nov 2026: PAYMENT METHODS is there with Paid S$0.00 and Balance due S$0.00, and no money refunded.
+        && JSON.stringify(tableRows(half, 'paytbl')) === JSON.stringify(['Paid | S$0.00', 'Balance due | S$0.00']) && !half.includes('Refunded'),
       JSON.stringify(tableRows(half, 'totals')));
   }
   {
@@ -341,7 +346,7 @@ try {
   ok('print: Paid Credit with its source in brackets, then Legacy Credit, each its own line; cash the payment row',
     halves(html).every(h => JSON.stringify(tableRows(h, 'totals')) === JSON.stringify(['Subtotal | S$500.00', 'Discount | −S$0.00',
       'Wallet — Paid Credit (Premium Bundle) | −S$300.00', 'Wallet — Legacy Credit | −S$100.00', 'Total | S$100.00'])
-      && JSON.stringify(tableRows(h, 'paytbl')) === JSON.stringify(['Cash · 11/11/2026 | S$100.00', 'Paid | S$100.00'])),
+      && JSON.stringify(tableRows(h, 'paytbl')) === JSON.stringify(['Cash · 11/11/2026 | S$100.00', 'Paid | S$100.00', 'Balance due | S$0.00'])),
     JSON.stringify(tableRows(halves(html)[0], 'totals')));
   await printed(page, html, '.invoice-test/browser/wallet-print-kinds.png');
 
@@ -352,7 +357,7 @@ try {
   html = await print(page);
   ok('print without wallet credit is as before: Total the invoice\'s, the cash and Paid under PAYMENT METHODS',
     !html.includes('<tr class="wallet-line">') && halves(html).every(h => JSON.stringify(tableRows(h, 'totals')) === JSON.stringify(['Subtotal | S$100.00', 'Discount | −S$0.00', 'Total | S$100.00'])
-      && JSON.stringify(tableRows(h, 'paytbl')) === JSON.stringify(['Cash · 11/11/2026 | S$100.00', 'Paid | S$100.00'])));
+      && JSON.stringify(tableRows(h, 'paytbl')) === JSON.stringify(['Cash · 11/11/2026 | S$100.00', 'Paid | S$100.00', 'Balance due | S$0.00'])));
 
   ok('no browser errors', page.errors.length === 0, page.errors.join(' | '));
   await page.context().close();

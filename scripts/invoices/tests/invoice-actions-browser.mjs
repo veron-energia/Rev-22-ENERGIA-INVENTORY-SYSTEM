@@ -272,7 +272,7 @@ try {
     ok('Record Payment becomes available once a row is complete',
        !(await page.getByRole('button', { name: 'Record Payment', exact: true }).isDisabled()));
     await page.getByRole('button', { name: 'Record Payment', exact: true }).click();
-    await page.getByText('Remaining balance', { exact: false }).first().waitFor();
+    await page.getByText('Balance due', { exact: false }).first().waitFor();
     ok('the invoice stays open after a part payment',
        await page.getByRole('heading', { name: /Invoice INV-TEST/ }).count() > 0
        || await page.getByText('INV-TEST', { exact: false }).count() > 0);

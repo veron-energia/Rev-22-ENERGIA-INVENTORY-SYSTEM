@@ -476,7 +476,7 @@ try {
 
   await view(page, 'wallet');
   html = await print(page);
-  ok('paid from the wallet with nothing left: the line shows S$0.00', count(html, LABEL) === 2 && count(html, '<strong>S$0.00</strong>') === 2);
+  ok('paid from the wallet with nothing left: the line shows S$0.00', count(html, LABEL) === 2 && count(html, '<strong>S$0.00</strong>') === 4 /* 17 Nov 2026: the credit line's S$0.00 and Balance due S$0.00, on each half */);
   ok('with no kinds listed under it', !html.includes('Paid S$0.00'));
 
   for (const id of ['cancelled', 'refunded']) {
@@ -618,7 +618,7 @@ try {
       && JSON.stringify(await buttonState(page, 'Correct Invoice')) === JSON.stringify({ disabled: false, title: CORRECT_TITLE }));
   html = await print(page);
   ok('and the copy is the invoice as it is now: its wallet payment, S$0.00 left, its own Bill To',
-    count(html, 'Wallet — Paid Credit') === 2 && count(html, LABEL) === 2 && count(html, '<strong>S$0.00</strong>') === 2
+    count(html, 'Wallet — Paid Credit') === 2 && count(html, LABEL) === 2 && count(html, '<strong>S$0.00</strong>') === 6 /* 17 Nov 2026: the credit line, Paid and Balance due, all S$0.00, on each half */
       && count(html, 'Ann Credit (Ann Source)') === 2, (html.match(/Ann Credit \([^)]*\)/) || [''])[0]);
   await page.evaluate(() => {
     window.__paysDelay = 0; window.__billTo = {};
@@ -752,7 +752,7 @@ try {
   await page.getByRole('button', { name: 'Close', exact: true }).first().click();
   await view(page, 'cash');
   await page.waitForTimeout(1500);
-  ok('a slow read for the invoice before never puts its balance on this one\'s PDF', !(await downloadText(page, 'PDF')).includes('Balance'));
+  ok('a slow read for the invoice before never puts its balance on this one\'s PDF (its own Balance due says S$0.00)', /\(Balance due\)[^]*?\(S\$0\.00\) Tj/.test(await downloadText(page, 'PDF')));  // 17 Nov 2026: its own Balance due, S$0.00, never the unpaid invoice's S$100.00
   await page.evaluate(() => { window.__slowFor = {}; });
 
   // The invoice before is closed while its promotion choices are on their way:
@@ -884,7 +884,7 @@ try {
   await view(page, 'old-wallet');
   html = await print(page);
   ok('a payment by a switched-off wallet method still shows the line at S$0.00',
-    count(html, LABEL) === 2 && count(html, '<strong>S$0.00</strong>') === 2);
+    count(html, LABEL) === 2 && count(html, '<strong>S$0.00</strong>') === 4 /* 17 Nov 2026: the credit line's S$0.00 and Balance due S$0.00, on each half */);
   await view(page, 'corrected');
 
   // ---- The PDF and image copies -----------------------------------------------
@@ -1178,8 +1178,11 @@ try {
     ok('staff see a hand-changed price and its internal reason on screen',
       onScreen.includes('Manual price override') && onScreen.includes(`internal reason: ${PRICE_REASON}`), onScreen);
     const printed = await print(pp);
-    ok('the printed copy says "Manual price override" on both halves, never its reason',
-      count(printed, 'Manual price override') === 2 && !printed.includes(PRICE_REASON) && !printed.includes('shelf tag'));
+    // 17 Nov 2026: the reason is internal to the customer's half; the OFFICE half lists it under Office notes.
+    const [custHalf, officeHalf] = printed.split('<div class="cut">');
+    ok('the printed copy says "Manual price override" on both halves, never its reason on the customer half; the office half lists it under Office notes',
+      count(printed, 'Manual price override') === 2 && !custHalf.includes(PRICE_REASON) && !custHalf.includes('shelf tag') && !custHalf.includes('Office notes')
+        && officeHalf.includes('<h2>Office notes (not on the customer copy)</h2>') && officeHalf.includes(`· Price change reason: ${PRICE_REASON}</div>`));
     const pdfCopy = await downloadText(pp, 'PDF');
     ok('nor does the PDF', pdfCopy.includes('Manual price override') && !pdfCopy.includes(PRICE_REASON) && !pdfCopy.includes('shelf tag'));
     await pp.evaluate(() => { window.__imageCanvas = null; });

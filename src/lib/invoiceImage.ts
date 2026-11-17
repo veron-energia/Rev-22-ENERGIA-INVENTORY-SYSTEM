@@ -1,4 +1,4 @@
-import { PdfDoc, PdfLine, CopyDrawing, fitCreditBalanceDrawing, fitAroundCollection, fitAroundPayments, creditBesideTotals, copyTerms,
+import { PdfDoc, PdfLine, type TotalsRow, CopyDrawing, fitCreditBalanceDrawing, fitAroundCollection, fitAroundPayments, creditBesideTotals, copyTerms,
   copyCollectionDrawn, copyPaymentRows, copyNoteLines } from './invoicePdf';
 import { wrapCreditDetail } from './invoices/creditBalanceLine.mjs';
 
@@ -238,33 +238,39 @@ function paintDocumentImage(d: PdfDoc, height: number, rowLimit: number):
   let totalsBottom = -Infinity;
   // A note row (13 Nov 2026: what went back into the wallet, under its credit
   // line) is smaller and sits closer under its row, as on the PDF.
-  const totalsLabelW = Math.max(0, ...d.totals.map(([label, , kind]) => {
+  const afterTotal = d.afterTotal ?? [];
+  const totalsLabelW = Math.max(0, ...[...d.totals, ...afterTotal].map(([label, , kind]) => {
     if (kind !== 'note') return x.measureText(label).width;
     font(2.9); const w = x.measureText(label).width; font(3.64);
     return w;
   }));
-  for (const [label, value, kind] of d.totals) {
+  const totalsRow = ([label, value, kind]: TotalsRow) => {
     if (kind === 'note') {
       y -= 1.2 * MM;
       font(2.9); x.fillStyle = GREY; right(label, cUnit, y); font(3.64);
       totalsBottom = y;
       y += 4.8 * MM;
-      continue;
+      return;
     }
     x.fillStyle = GREY; right(label, cUnit, y);
     x.fillStyle = BLACK; right(value, cTot, y);
     totalsBottom = y;
     y += 4.8 * MM;
-  }
+  };
+  d.totals.forEach(totalsRow);
   if (d.grandTotal) {
     x.strokeStyle = '#969696'; x.lineWidth = 0.3 * MM;
     x.beginPath(); x.moveTo(cUnit - 22 * MM, y - 2.6 * MM); x.lineTo(RIGHT, y - 2.6 * MM); x.stroke();
     font(4.81, 'bold'); x.fillStyle = BLACK;
     right(d.grandTotal[0], cUnit, y + 1.4 * MM);
     right(d.grandTotal[1], cTot, y + 1.4 * MM);
+    font(3.64);
     totalsBottom = y + 1.4 * MM;
     y += 6 * MM;
   }
+  // The user, 17 Nov 2026: Paid and Balance due under the total. The same rows
+  // as before, only moved below it, so the image is exactly as tall as it was.
+  afterTotal.forEach(totalsRow);
 
   // ---- Credit balance beside the totals, where it costs no height -----
   let creditBeside = false;

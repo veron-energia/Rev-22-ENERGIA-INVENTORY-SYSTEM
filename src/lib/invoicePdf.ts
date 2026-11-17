@@ -44,6 +44,10 @@ export interface PdfDoc {
   lines: PdfLine[];
   totals: TotalsRow[];  // label, formatted value
   grandTotal?: [string, string];
+  /** The user, 17 Nov 2026: rows drawn under the grand total, as the totals
+   *  rows are (what was paid, 'Balance due', what was refunded), so the copy
+   *  reads Total, then Paid, then Balance due. */
+  afterTotal?: TotalsRow[];
   payments?: [string, string][];
   /** The customer's credit balance as printed, read fresh for this copy —
    *  see src/lib/invoices/creditBalanceLine.mjs: the total, and under it where
@@ -616,30 +620,35 @@ function drawDocumentPdf(d: PdfDoc): CopyDrawing<jsPDF> {
     doc.setFontSize(noteSize); const w = doc.getTextWidth(label); doc.setFontSize(10);
     return w;
   };
-  const totalsLabelW = Math.max(0, ...d.totals.map(rowLabelW));
-  for (const [label, value, kind] of d.totals) {
+  const afterTotal = d.afterTotal ?? [];
+  const totalsLabelW = Math.max(0, ...d.totals.map(rowLabelW), ...afterTotal.map(rowLabelW));
+  const totalsRow = ([label, value, kind]: TotalsRow) => {
     if (kind === 'note') {
       y -= 1.2;
       doc.setFontSize(noteSize); grey(); doc.text(label, cUnit, y, { align: 'right' }); doc.setFontSize(10);
       totalsBottom = y;
       y += 4.8;
-      continue;
+      return;
     }
     grey(); doc.text(label, cUnit, y, { align: 'right' });
     black(); doc.text(value, cTot, y, { align: 'right' });
     totalsBottom = y;
     y += 4.8;
-  }
+  };
+  d.totals.forEach(totalsRow);
   if (d.grandTotal) {
     doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.3);
     doc.line(cUnit - 22, y - 2.6, RIGHT, y - 2.6);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(13); black();
     doc.text(d.grandTotal[0], cUnit, y + 1.4, { align: 'right' });
     doc.text(d.grandTotal[1], cTot, y + 1.4, { align: 'right' });
-    doc.setFont('helvetica', 'normal');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
     totalsBottom = y + 1.4;
     y += 6;
   }
+  // The user, 17 Nov 2026: Paid and Balance due under the total. The same rows
+  // as before, only moved below it, so the copy is exactly as tall as it was.
+  afterTotal.forEach(totalsRow);
 
   // ---- Credit balance beside the totals, where it costs no height -----
   let creditBeside = false;

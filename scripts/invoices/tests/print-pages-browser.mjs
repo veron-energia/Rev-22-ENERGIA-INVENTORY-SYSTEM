@@ -51,6 +51,8 @@ const NOTE_LINES = Array.from({ length: 45 }, (_, n) => `Note ${String(n + 1).pa
 // lines, and 62 short ones.
 const NOTE_120 = Array.from({ length: 120 }, (_, n) => String(n % 10)).join('\n');
 const NOTE_62 = Array.from({ length: 62 }, (_, n) => `Line ${String(n + 1).padStart(2, '0')}`).join('\n');
+const OFFICE_NOTES_10 = Array.from({ length: 10 }, (_, n) => `Test internal note ${n + 1}`).join('\n');
+const OFFICE_NOTES_30 = Array.from({ length: 30 }, (_, n) => `Test internal note ${String(n + 1).padStart(2, '0')}`).join('\n');
 const NOTE_25 = NOTE_LINES.slice(0, 25).join('\n');
 // An exchange invoice's own details (exchange_invoice_details), with k returned items.
 const exchangeOf = (k, note = null) => ({ found: true, exchange_no: 'EX-T-0009', original_invoice_no: 'INV-T-0', reason: 'Test size', notes: note,
@@ -83,6 +85,12 @@ const SHAPES = [
   ['exch25', 20, 0, 0, 1, { is_exchange: true, exchange_id: 'exch25' }],
   ['exch40', 20, 0, 0, 1, { is_exchange: true, exchange_id: 'exch40' }],
   ['exchnote', 8, 0, 0, 1, { is_exchange: true, exchange_id: 'exchnote' }],
+  // 17 Nov 2026: the office copy alone carries its Office notes block above the signatures; the
+  // customer's half has none, so the halves differ in height and must still page in step.
+  ['office6', 6, 0, 0, 1, { notes: OFFICE_NOTES_10, manual_discount_reason: 'Test loyalty discount' }],
+  ['office16', 16, 0, 0, 1, { notes: OFFICE_NOTES_10, manual_discount_reason: 'Test loyalty discount' }],
+  ['office60', 60, 0, 0, 2, { notes: OFFICE_NOTES_10, manual_discount_reason: 'Test loyalty discount' }],
+  ['office30', 6, 0, 0, 1, { notes: OFFICE_NOTES_30 }],
 ];
 const tables = {
   stores: [{ id: 'store', name: 'Test Store', code: 'TEST', address: '1 Example Road #01-01, Singapore 000001', phone: '+6560000000',
@@ -336,7 +344,7 @@ try {
   const ctx = page.context();
 
   // ---- One sheet: exactly as before ---------------------------------------
-  for (const id of ['five', 'sixteen', 'exch3']) {
+  for (const id of ['five', 'sixteen', 'exch3', 'office6']) {
     const html = prints[id];
     if (id === 'exch3') {
       ok('exch3: each returned item its own body, the returned value with the last, the exchange printed whole on one sheet',
@@ -368,7 +376,7 @@ try {
   }
 
   // ---- Longer than one sheet ----------------------------------------------
-  for (const id of ['seventeen', 'twenty', 'sixty', 'promo', 'tall', 'longnote', 'many', 'bignote', 'note62', 'oneline', 'firstpromo', 'exch25', 'exch40', 'exchnote']) {
+  for (const id of ['seventeen', 'twenty', 'sixty', 'promo', 'tall', 'longnote', 'many', 'bignote', 'note62', 'oneline', 'firstpromo', 'exch25', 'exch40', 'exchnote', 'office16', 'office60', 'office30']) {
     const html = prints[id];
     const sheet = await render(ctx, html, id);
     const sheets = await readSheets(sheet);
@@ -388,6 +396,18 @@ try {
         JSON.stringify([sheets.flatMap(s => s.copies[side].rows).find((r, k) => r !== allRows[k]), allRows.find((r, k) => r !== sheets.flatMap(s => s.copies[side].rows)[k])]));
     }
     const copies = sheets.flatMap(s => s.copies);
+    if (id.startsWith('office')) {
+      // 17 Nov 2026: the Office notes block is on the office copy only, once, above the signatures
+      // on the last page (every sheet but the last has no signatures, so none has the block).
+      const seen = await sheet.evaluate(() => [...document.querySelectorAll('.sheet')].map(sh => [...sh.querySelectorAll('.copy')].map(c => {
+        const o = c.querySelector('[data-testid="print-office-notes"]'), sg = c.querySelector('.signrow');
+        return { has: !!o, above: !!(o && sg && (o.compareDocumentPosition(sg) & Node.DOCUMENT_POSITION_FOLLOWING)), text: o ? o.textContent : '' };
+      })));
+      ok(`${at}: Office notes on the office copy of the last sheet only, above the signatures; never on the customer copy`,
+        seen.every(sh => !sh[0].has) && seen.slice(0, -1).every(sh => !sh[1].has) && seen.at(-1)[1].has && seen.at(-1)[1].above
+          && seen.at(-1)[1].text.startsWith('Office notes (not on the customer copy)') && seen.at(-1)[1].text.includes('Test internal note 1'),
+        JSON.stringify(seen.map(sh => sh.map(c => c.has))));
+    }
     ok(`${at}: nothing on any page runs past its half`, copies.every(c => c.overContent <= 0.5), JSON.stringify(copies.map(c => +c.overContent.toFixed(1))));
     ok(`${at}: a page break after every sheet but the last`, sheets.every((s, k) => (s.breakAfter === 'page') === (k < N - 1)), JSON.stringify(sheets.map(s => s.breakAfter)));
     ok(`${at}: page 1 has the full header, logos and Bill To, and says Page 1 of ${N}`,

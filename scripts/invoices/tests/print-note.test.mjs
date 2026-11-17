@@ -250,7 +250,8 @@ test('the page: two boxes, the printed one sent, restored and cleared; the inter
   assert.match(print, /const printNote = printedNote\(detail\);/);
   // data-p-lines: a note taller than a page goes on between its lines (item 5, printPages.mjs).
   assert.match(print, /<h2>Note<\/h2><div data-testid="print-note" data-p-lines style="flex:0 0 auto;overflow-wrap:anywhere">\$\{noteHtml\(printNote\)\}<\/div>/);
-  assert.match(print, /\$\{collectionBlock\}\s*\$\{noteBlock\}\s*<div class="signrow">/);
+  // 17 Nov 2026: the office copy's own block sits between the note and the signatures.
+  assert.match(print, /\$\{collectionBlock\}\s*\$\{noteBlock\}\s*\$\{copyLabel === 'OFFICE COPY' \? officeBlock : ''\}\s*<div class="signrow">/);
   assert.match(print, /\$\{copyHtml\('CUSTOMER COPY'\)\}[\s\S]*\$\{copyHtml\('OFFICE COPY'\)\}/);
   assert.match(print, /Note: \$\{noteHtml\(exNote\)\}/, 'the exchange note under Exchange Details');
   assert.ok(print.indexOf('<h2>Exchange Details</h2>') < print.indexOf('Note: ${noteHtml(exNote)}')

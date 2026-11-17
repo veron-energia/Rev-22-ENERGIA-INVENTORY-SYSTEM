@@ -36,7 +36,7 @@ import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProble
 import { singaporeToday, invoiceDate, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes,
   hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canGiveFocOn, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
-import { copyMoneyRows, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml,
+import { copyMoneyRows, officeNoteLines, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml,
   PRINT_NOTE_MAX, printedNote, exchangeNote, noteHtml } from '../lib/invoices/customerCopy';
 import { correctionFingerprint, REVIEW_AGAIN_MESSAGE } from '../lib/invoices/correctionReview';
 import { withRentalDueBack, blankDueBackHint, correctionRentalNote, RENTAL_FOLLOWS_HINT, correctionSpecialNote, SPECIAL_FOLLOWS_HINT } from '../lib/special/rentalFollows';
@@ -1853,7 +1853,7 @@ const InvoicesPage: React.FC = () => {
       supabase.rpc('invoice_event_guests', { p_invoice_id: inv.id }),
       // Its refunds: which went back into the wallet, under the wallet
       // credit's line on the copies and the screen (13 Nov 2026).
-      supabase.from('invoice_refunds').select('id,payment_id,amount,credit_returned,created_at').eq('invoice_id', inv.id),
+      supabase.from('invoice_refunds').select('id,payment_id,amount,credit_returned,created_at,reason').eq('invoice_id', inv.id),
     ]);
     if (superseded()) return;
     setDetailEvent(evt.error ? null : (evt.data ?? null));
@@ -2751,7 +2751,6 @@ const InvoicesPage: React.FC = () => {
       creditBalanceNow(detail, detailPayments), goodsForCopy(detail)]);
     const store: any = stores.find(s2 => s2.id === detail.store_id) ?? {};
     const cust = customerOf(detail.customer_id);
-    const bal = Number(detailFinancial?.outstanding ?? 0);
     // AFTER-9: an exchange invoice says so, as the printed copy does.
     const exLabels = exchangeCopyLabels(detailExchange);
     // 13 Nov 2026: wallet credit as lines under Discount, Total what it left,
@@ -2811,16 +2810,18 @@ const InvoicesPage: React.FC = () => {
         ...(wallet?.lines ?? []).flatMap(l => [
           [l.label, `-S$${l.amount.toFixed(2)}`] as TotalsRow,
           ...l.returned.map(n => [n, '', 'note'] as TotalsRow)]),
-        // AFTER-10: what was paid, refunded and is still due back, as the
-        // printed copy says it; with wallet credit shown above, money only.
-        ...copyMoneyRows(wallet
-          ? { paid: wallet.moneyPaid, refunded: wallet.moneyRefunded, netPaid: wallet.moneyPaid - wallet.moneyRefunded,
-              refundDue: detailFinancial?.refund_due, minus: '-' }
-          : { paid: paymentsTotal(detailPayments as any[]), refunded: detailFinancial?.refunded,
-              netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due, minus: '-' }),
-        ...(bal > 0 ? [['Balance', `S$${bal.toFixed(2)}`] as [string, string]] : []),
       ],
       grandTotal: [exLabels.totalLabel, `S$${Number(wallet ? wallet.totalLeft : detail.total_amount ?? 0).toFixed(2)}`],
+      // AFTER-10: what was paid, refunded and is still due back, as the
+      // printed copy says it; with wallet credit shown above, money only.
+      // The user, 17 Nov 2026: under the total, so the copy reads Total, Paid,
+      // Balance due.
+      afterTotal: copyMoneyRows(wallet
+        ? { paid: wallet.moneyPaid, refunded: wallet.moneyRefunded, netPaid: wallet.moneyPaid - wallet.moneyRefunded,
+            refundDue: detailFinancial?.refund_due, outstanding: detailFinancial?.outstanding, minus: '-' }
+        : { paid: paymentsTotal(detailPayments as any[]), refunded: detailFinancial?.refunded,
+            netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due,
+            outstanding: detailFinancial?.outstanding, minus: '-' }),
       payments: shownPayments.map((pm: any) => [
         `${paymentLabel(pm, 'Payment')} · ${displayDay(pm.effective_at || pm.created_at)}${pm.entry_kind === 'correction_reversal' ? ' · Reversal' : pm.entry_kind === 'correction_replacement' ? ' · Replacement' : ''}`,
         `S$${(Number(pm.amount ?? 0) * (pm.entry_kind === 'correction_reversal' ? -1 : 1)).toFixed(2)}`,
@@ -3005,6 +3006,20 @@ const InvoicesPage: React.FC = () => {
     // Item 5: a note taller than a page goes on between its lines (data-p-lines, printPages.mjs).
     const noteBlock = printNote
       ? `<h2>Note</h2><div data-testid="print-note" data-p-lines style="flex:0 0 auto;overflow-wrap:anywhere">${noteHtml(printNote)}</div>` : '';
+    // The user, 17 Nov 2026: the OFFICE COPY alone (never the customer's half,
+    // the PDF, the image, WhatsApp or email) carries one block of the reasons
+    // staff gave and the internal notes, right above the signatures. The lines
+    // are built in officeNoteLines (customerCopy.ts), numbered as the lines
+    // print; escaped, a multi-line note keeps its breaks. No lines, no block.
+    const officeLines = officeNoteLines({
+      invoice: detail, items: detailItems, lineName: i => lineName(detailItems[i]),
+      focReasonName: id => focReasons.find(r => r.id === id)?.label,
+      refunds: detailRefunds, payments: detailPayments as any[],
+      day: x => displayDay(x as string),
+    });
+    // data-p-office: printPages.mjs counts it with the signatures' row, so both halves keep the same rows.
+    const officeBlock = officeLines.length
+      ? `<div data-p-office data-testid="print-office-notes" style="flex:0 0 auto;overflow-wrap:anywhere"><h2>Office notes (not on the customer copy)</h2>${officeLines.map(l => `<div>${noteHtml(l)}</div>`).join('')}</div>` : '';
     const subFor = (it: InvoiceItem) => {
       const fixed = detailPromoItems.filter(p => p.promotion_id === (it as any).promotion_id);
       const chosen = detailSelections.filter(s => s.invoice_item_id === it.id);
@@ -3078,9 +3093,11 @@ const InvoicesPage: React.FC = () => {
     // wallet is the note under its line).
     const moneyRows = wallet
       ? copyMoneyRows({ paid: wallet.moneyPaid, refunded: wallet.moneyRefunded,
-        netPaid: wallet.moneyPaid - wallet.moneyRefunded, refundDue: detailFinancial?.refund_due })
+        netPaid: wallet.moneyPaid - wallet.moneyRefunded, refundDue: detailFinancial?.refund_due,
+        outstanding: detailFinancial?.outstanding })
       : copyMoneyRows({ paid: totalPaid, refunded: detailFinancial?.refunded,
-        netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due });
+        netPaid: detailFinancial?.net_received, refundDue: detailFinancial?.refund_due,
+        outstanding: detailFinancial?.outstanding });
     const moneyRowsHtml = moneyRows.map(([label, value]) =>
       `<tr><td><strong>${esc(label)}</strong></td><td class="r"><strong>${esc(value)}</strong></td></tr>`).join('');
     const ex = detailExchange?.found ? detailExchange : null;
@@ -3176,11 +3193,12 @@ const InvoicesPage: React.FC = () => {
           ${walletRows}
           <tr class="grand"><td>${esc(exLabels.totalLabel)}</td><td class="r">S$${Number(wallet ? wallet.totalLeft : detail.total_amount).toFixed(2)}</td></tr>
         </table>
-        ${payRows || (wallet && moneyRowsHtml) ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}${moneyRowsHtml}</tbody></table>` : ''}
+        ${payRows || moneyRowsHtml ? `<h2>Payment Methods</h2><table class="paytbl"><tbody>${payRows}${moneyRowsHtml}</tbody></table>` : ''}
         ${creditBlock}
         ${authorisedBlock}
         ${collectionBlock}
         ${noteBlock}
+        ${copyLabel === 'OFFICE COPY' ? officeBlock : ''}
         <div class="signrow">
           <div class="sign">
             <div class="signline signed">${esc(signedByName)}</div>Staff Signature
@@ -5326,7 +5344,7 @@ const InvoicesPage: React.FC = () => {
                 )}
 
                 <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Remaining balance</span><strong>{money(Number(detailFinancial?.outstanding ?? 0))}</strong></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Balance due</span><strong>{money(Number(detailFinancial?.outstanding ?? 0))}</strong></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}><span>This payment</span><strong>{money(payTotal)}</strong></div>
                   {payTotal >= Number(detailFinancial?.outstanding ?? 0) - 0.001 && payTotal > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: 'var(--success)', fontWeight: 600 }}>

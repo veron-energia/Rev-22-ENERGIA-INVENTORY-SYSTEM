@@ -237,7 +237,11 @@ try {
     count(html, '<h2>Note</h2>') === 2 && count(html, NOTE_HTML) === 2 && !html.includes('<b>Test Customer</b>'));
   ok('above the signatures and after the payments, on each half', halves(html).every(h =>
     h.indexOf('<h2>Note</h2>') > h.indexOf('Payment Methods') && h.indexOf('<h2>Note</h2>') < h.indexOf('class="signrow"')));
-  ok('the internal notes print on neither half', !html.includes('SECRETONE'));
+  // 17 Nov 2026: the internal notes print on the OFFICE copy only, under "Office notes", above the signatures.
+  ok('the internal notes print on the office half only, under Office notes and above the signatures',
+    !halves(html)[0].includes('SECRETONE') && count(html, 'SECRETONE') === 1
+      && halves(html)[1].includes('<h2>Office notes (not on the customer copy)</h2><div>Internal notes: Website order cs_test_SECRETONE (internal)</div>')
+      && halves(html)[1].indexOf('SECRETONE') < halves(html)[1].indexOf('class="signrow"'));
   {
     // Laid out as printed: the note sits whole above the signatures and each half keeps its footer.
     const sheet = await page.context().newPage();
@@ -293,7 +297,7 @@ try {
   await view(page, 'plain');
   html = await print(page);
   ok('an invoice with no printed note prints no Note, and never its internal notes',
-    !html.includes('<h2>Note</h2>') && !html.includes('SECRETTWO'));
+    !html.includes('<h2>Note</h2>') && !halves(html)[0].includes('SECRETTWO') && count(html, 'Internal notes: Internal only SECRETTWO') === 1);
   pdf = pdfText(await download(page, 'PDF'));
   await download(page, 'Image');
   img = await image(page);
@@ -308,7 +312,8 @@ try {
   ok('both halves print it under Exchange Details, before the returned items, escaped',
     count(html, exNoteHtml) === 2 && halves(html).every(h => h.indexOf('<h2>Exchange Details</h2>') < h.indexOf(exNoteHtml)
       && h.indexOf(exNoteHtml) < h.indexOf('Returned Item')));
-  ok('its own (system) notes print nowhere, and it has no Note of its own', !html.includes('SECRETTHREE') && !html.includes('<h2>Note</h2>'));
+  ok('its own (system) notes print on the office half only, and it has no Note of its own', !halves(html)[0].includes('SECRETTHREE')
+    && count(html, 'SECRETTHREE') === 1 && !html.includes('<h2>Note</h2>'));
   pdf = pdfText(await download(page, 'PDF', '.invoice-test/browser/print-note-exchange.pdf'));
   ok('the PDF draws it under EXCHANGE DETAILS', pdf.includes('(EXCHANGE DETAILS)') && pdf.includes('(Note: Swapped for the larger size <L>)')
     && pdf.includes('(Customer keeps the box)') && !pdf.includes('SECRETTHREE'));

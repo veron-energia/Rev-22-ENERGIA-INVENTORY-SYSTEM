@@ -313,6 +313,10 @@ export function paginatePrintCopies(plan) {
       kd = items ? 1 : (after || (tailWrap && tailWrap.contains(el)) ? 2 : 0);
       if (items) after = true;
       if (el.tagName === 'H2') { pending.push(el); continue; }
+      // The office copy's own block of notes (17 Nov 2026): not a row of its own,
+      // so both halves keep the same rows; it goes with the signatures' row,
+      // which it sits above, and is measured with it.
+      if (el.hasAttribute('data-p-office')) { pending.push(el); continue; }
       if (kd === 2 && el.classList.contains('signrow')) { push(all.slice(j), -1, null); unit++; pending = []; break; }
       var bodies = [];
       if (el.tagName === 'TABLE') {
@@ -391,49 +395,70 @@ export function paginatePrintCopies(plan) {
     }
   }
 
-  // Measured at full length: a copy of the customer copy, its height free.
+  // Measured at full length: a copy of each copy, its height free. The two copies
+  // are the same rows, but the office copy may be taller in one (the block of
+  // office notes, 17 Nov 2026), so each row takes the taller of the two.
   var model = copies[0], mcs = getComputedStyle(model);
   var cap = model.clientHeight - px(mcs.paddingTop) - px(mcs.paddingBottom);
-  var m = model.cloneNode(true);
-  m.style.height = 'auto'; m.style.minHeight = '0'; m.style.maxHeight = 'none'; m.style.overflow = 'visible';
-  m.style.position = 'absolute'; m.style.left = '-100000px'; m.style.top = '0';
-  addPageNo(m, 2);
-  sheet.parentNode.appendChild(m);
-  var measured;
-  try {
-    var mr = rowsOf(m);
-    if (mr.length !== rowCount) return 1;
-    var units = [], theads = [];
-    for (var x = 0; x < mr.length; x++) {
-      var row = mr[x], h = 0;
-      for (var y = 0; y < row.els.length; y++) {
-        var el = row.els[y];
-        if (row.own && y === row.els.length - 1) {
-          // A table's or a note's row: to where the next of its rows starts.
-          var top = el.getBoundingClientRect().top;
-          var nx = x + 1 < mr.length && mr[x + 1].own === row.own ? mr[x + 1].els[mr[x + 1].els.length - 1] : null;
-          h += (nx ? nx.getBoundingClientRect().top : el.getBoundingClientRect().bottom) - top;
-          // The table's head and margins, on every page its rows are on.
-          if (theads[row.table] == null) theads[row.table] = top - outer(row.own).top;
-          if (!nx) theads[row.table] += outer(row.own).bottom - el.getBoundingClientRect().bottom;
-        } else h += height(el);
+  var measureOne = function (copy) {
+    var m = copy.cloneNode(true);
+    m.style.height = 'auto'; m.style.minHeight = '0'; m.style.maxHeight = 'none'; m.style.overflow = 'visible';
+    m.style.position = 'absolute'; m.style.left = '-100000px'; m.style.top = '0';
+    addPageNo(m, 2);
+    sheet.parentNode.appendChild(m);
+    try {
+      var mr = rowsOf(m);
+      if (mr.length !== rowCount) return null;
+      var units = [], theads = [];
+      for (var x = 0; x < mr.length; x++) {
+        var row = mr[x], h = 0;
+        for (var y = 0; y < row.els.length; y++) {
+          var el = row.els[y];
+          if (row.own && y === row.els.length - 1) {
+            // A table's or a note's row: to where the next of its rows starts.
+            var top = el.getBoundingClientRect().top;
+            var nx = x + 1 < mr.length && mr[x + 1].own === row.own ? mr[x + 1].els[mr[x + 1].els.length - 1] : null;
+            h += (nx ? nx.getBoundingClientRect().top : el.getBoundingClientRect().bottom) - top;
+            // The table's head and margins, on every page its rows are on.
+            if (theads[row.table] == null) theads[row.table] = top - outer(row.own).top;
+            if (!nx) theads[row.table] += outer(row.own).bottom - el.getBoundingClientRect().bottom;
+          } else h += height(el);
+        }
+        if (!units.length || units[units.length - 1].id !== row.unit) {
+          units.push({ id: row.unit, kind: row.kind === 1 ? 'line' : (row.kind === 2 ? 'tail' : 'head'), table: row.table, rows: [] });
+        }
+        units[units.length - 1].rows.push(h);
       }
-      if (!units.length || units[units.length - 1].id !== row.unit) {
-        units.push({ id: row.unit, kind: row.kind === 1 ? 'line' : (row.kind === 2 ? 'tail' : 'head'), table: row.table, rows: [] });
-      }
-      units[units.length - 1].rows.push(h);
+      // Page 2 onward: the compact line on top; every page but the last: "Continued".
+      var cl = contLine(m, tagOf(m), 2, 2);
+      m.insertBefore(cl, m.firstChild);
+      var contHead = height(cl);
+      var cf = contFoot(2);
+      m.appendChild(cf);
+      return { contHead: contHead, foot: height(cf), theads: theads, units: units };
+    } finally {
+      m.parentNode.removeChild(m);
     }
-    // Page 2 onward: the compact line on top; every page but the last: "Continued".
-    var cl = contLine(m, tagOf(m), 2, 2);
-    m.insertBefore(cl, m.firstChild);
-    var contHead = height(cl);
-    var cf = contFoot(2);
-    m.appendChild(cf);
-    var foot = height(cf);
-    measured = { cap: cap, contHead: contHead, foot: foot, theads: theads, units: units };
-  } finally {
-    m.parentNode.removeChild(m);
+  };
+  var measured = null;
+  for (k = 0; k < copies.length; k++) {
+    var one = measureOne(copies[k]);
+    if (!one) return 1;
+    if (!measured) { measured = one; continue; }
+    if (one.units.length !== measured.units.length) return 1;
+    for (var u = 0; u < one.units.length; u++) {
+      if (one.units[u].rows.length !== measured.units[u].rows.length) return 1;
+      for (var v = 0; v < one.units[u].rows.length; v++) {
+        measured.units[u].rows[v] = Math.max(measured.units[u].rows[v], one.units[u].rows[v]);
+      }
+    }
+    for (var th = 0; th < one.theads.length; th++) {
+      if (one.theads[th] != null) measured.theads[th] = Math.max(measured.theads[th] || 0, one.theads[th]);
+    }
+    measured.contHead = Math.max(measured.contHead, one.contHead);
+    measured.foot = Math.max(measured.foot, one.foot);
   }
+  measured.cap = cap;
 
   // One copy's page: its rows (and the tables and notes they are in), the
   // compact line or the page number, and "Continued" on all but the last.
