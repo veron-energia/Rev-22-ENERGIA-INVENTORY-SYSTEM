@@ -69,6 +69,11 @@ begin
   return v_id;
 end $function$;
 
+-- 523 (18 Nov 2026) added withdrawn_at and withdrawn_by after 389. This file tests 389, so
+-- they are taken off here, inside the transaction; on a database without 523 this changes
+-- nothing.
+alter table public.document_sends drop column if exists withdrawn_at, drop column if exists withdrawn_by;
+
 -- ── C1: on 93's table, 389 is a no-op ──────────────────────────────────────
 create temp table shape93 as select pg_temp.shape() s;
 create temp table fns93 as select * from pg_temp.fns();

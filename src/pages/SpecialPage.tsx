@@ -22,6 +22,7 @@ import { type TermsForm, type SoldLine, initialTerms, withTermsChange, termsProb
 import { docStore, docInvoiceIds, invoiceLine, waitingButton, toReceive } from '../lib/special/specialDocs';
 import { type ProductSupplierRow, type SupplierRow, suppliersOf, supplierChoice, supplierIdOfChoice, supplierOptionLabel, invoiceTakenBack } from '../lib/special/consignment';
 import { Modal, NoAccess } from '../components/ui';
+import DocumentLinksPanel from '../components/DocumentLinksPanel';
 import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { Plus, Pencil, Trash2, RefreshCw, Boxes, KeyRound, ShoppingBag, CalendarClock, Clock, Printer, MessageCircle, Mail, Truck } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
@@ -235,6 +236,9 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
   // so they get a printable receipt rather than being forced through an invoice.
   // The customer copy as a real A5 PDF, matching the printed receipt.
   const [sendBusy, setSendBusy] = useState<string | null>(null);
+  // "Links sent" (security audit L7): the document whose links are open, and a counter a send changes.
+  const [linksFor, setLinksFor] = useState<{ kind: 'special_sale' | 'rental'; id: string; no: string } | null>(null);
+  const [linksKey, setLinksKey] = useState(0);
   const [fulfilWh, setFulfilWh] = useState<Record<string, string>>({});
   // 494: where the supplier is to send it, typed when a supplier is chosen.
   const [deliverTo, setDeliverTo] = useState<Record<string, string>>({});
@@ -467,6 +471,7 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
       if (win && !handedOver) { try { if (!win.closed) win.close(); } catch { /* gone already */ } }
       sendingRef.current = false;
       setSendBusy(null);
+      setLinksKey(k => k + 1);
     }
   };
 
@@ -902,6 +907,8 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('email', 'sale', s)}
                       disabled={!!sendBusy || !emailAddress(customers.find((c: any) => c.id === s.customer_id)?.email)}
                       title="Email from this device's mail app" aria-label={`Email ${s.sale_no} from this device`}><Mail size={13} /></button>
+                    {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary btn-sm" onClick={() => setLinksFor({ kind: 'special_sale', id: s.id, no: s.sale_no })}
+                      title="See the links sent to the customer, and withdraw one" aria-label={`Links sent for ${s.sale_no}`}>Links</button>}
                   </div></td>
                 </tr>))}
               </tbody>
@@ -944,6 +951,8 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
                     <button className="btn btn-secondary btn-sm" onClick={() => sendReceiptPdf('email', 'rental', r)}
                       disabled={!!sendBusy || !emailAddress(customers.find((c: any) => c.id === r.customer_id)?.email)}
                       title="Email from this device's mail app" aria-label={`Email ${r.rental_no} from this device`}><Mail size={13} /></button>
+                    {isOwnerOrManager(profile?.role) && <button className="btn btn-secondary btn-sm" onClick={() => setLinksFor({ kind: 'rental', id: r.id, no: r.rental_no })}
+                      title="See the links sent to the customer, and withdraw one" aria-label={`Links sent for ${r.rental_no}`}>Links</button>}
                   </div></td>
                 </tr>);
               })}
@@ -1159,6 +1168,13 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
               </div>
             )}
           </div>
+        </Modal>
+      )}
+
+      {linksFor && isOwnerOrManager(profile?.role) && (
+        <Modal title={`Links sent — ${linksFor.no}`} onClose={() => setLinksFor(null)}
+          footer={<button className="btn btn-secondary" onClick={() => setLinksFor(null)}>Close</button>}>
+          <DocumentLinksPanel key={`${linksFor.kind}-${linksFor.id}`} docKind={linksFor.kind} docId={linksFor.id} reloadKey={linksKey} />
         </Modal>
       )}
 

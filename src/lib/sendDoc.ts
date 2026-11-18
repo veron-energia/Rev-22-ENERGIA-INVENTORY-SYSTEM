@@ -152,8 +152,9 @@ import { documentImageBlob } from './invoiceImage';
 export type DocFormat = 'pdf' | 'image';
 
 const BUCKET = 'invoice-pdfs';
-/** Signed links last a year: a customer may open theirs months later. */
-const LINK_SECONDS = 60 * 60 * 24 * 365;
+/** Signed links last 30 days: the user's choice of 18 Nov 2026 (security audit L7). A later request
+ *  gets a fresh send; an Owner or Manager can withdraw one under "Links sent". */
+const LINK_SECONDS = 60 * 60 * 24 * 30;
 
 const safeName = (docNo: string) => docNo.replace(/[^A-Za-z0-9._-]/g, '-');
 
@@ -177,8 +178,10 @@ export async function uploadDocumentPdf(
 ): Promise<{ url: string; path: string }> {
   const blob = documentPdfBlob(pdf);
   const path = documentPdfPath(storeId, docKind, docNo);
+  // Caching off (the user, 18 Nov 2026, security audit L7): once an Owner or Manager
+  // withdraws the link (deletes this copy), no browser or network cache keeps serving it.
   const { error: upErr } = await supabase.storage.from(BUCKET)
-    .upload(path, blob, { contentType: 'application/pdf', upsert: false });
+    .upload(path, blob, { contentType: 'application/pdf', upsert: false, cacheControl: '0' });
   if (upErr) throw new Error(`Could not upload the PDF: ${upErr.message}`);
 
   const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, LINK_SECONDS);

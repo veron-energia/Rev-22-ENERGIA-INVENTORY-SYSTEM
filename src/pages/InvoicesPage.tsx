@@ -11,6 +11,7 @@ import { supabase } from '../lib/supabase';
 import { fetchAllFrom } from '../lib/supabasePaging';
 import type { FocReason, InvoiceRevision } from '../types';
 import { useAuth } from '../context/AuthContext';
+import DocumentLinksPanel from '../components/DocumentLinksPanel';
 import {
   Invoice, InvoiceItem, InvoicePayment, Store, Product,
   PaymentMethod, StoreProductPrice, InvoiceStatus, INVOICE_STATUS_LABELS, Voucher, Promotion, PromotionChoiceGroup, PromotionChoiceOption, isOwnerOrManager, isOwner, Profile, SERVICE_STAFF_ROLES,
@@ -2686,6 +2687,8 @@ const InvoicesPage: React.FC = () => {
 
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [sendBusy, setSendBusy] = useState<'whatsapp' | 'email' | null>(null);
+  // Changes after each send, so "Links sent" shows a link made while the invoice is open.
+  const [linksKey, setLinksKey] = useState(0);
   // One send at a time: a ref, because a fast second tap still sees the
   // state from before the first one.
   const sendingRef = useRef(false);
@@ -2902,6 +2905,7 @@ const InvoicesPage: React.FC = () => {
       if (win && !handedOver) { try { if (!win.closed) win.close(); } catch { /* gone already */ } }
       sendingRef.current = false;
       setSendBusy(null);
+      setLinksKey(k => k + 1);
     }
   };
   /** AFTER-M3: say what the email did, never more: where the PDF or its link
@@ -4891,6 +4895,7 @@ const InvoicesPage: React.FC = () => {
                 }
                 void refreshList({ afterSave: 'The change was saved', changed: [id] });
               }} />
+            {isOwnerOrManager(profile?.role) && <DocumentLinksPanel key={detail.id} docKind="invoice" docId={detail.id} reloadKey={linksKey} />}
             {focErr && <div className="alert alert-danger" style={{ fontSize: 12.5 }}>{focErr}</div>}
             {detailExchange?.found && (
               <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', background: 'var(--surface-2)', fontSize: 12.5 }}>
