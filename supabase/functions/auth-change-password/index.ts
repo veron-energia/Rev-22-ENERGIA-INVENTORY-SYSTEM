@@ -35,7 +35,7 @@
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/auth-email/config.ts';
 import { adminClient } from '../_shared/auth-email/admin.ts';
-import { guardRequest, json } from '../_shared/auth-email/http.ts';
+import { guardRequest, json, notConfigured } from '../_shared/auth-email/http.ts';
 import { bearerToken, changeOwnPassword, checkCurrentPassword, readOwnAccount } from '../_shared/auth-email/password.ts';
 import { changeOwnPasswordRequest } from '../_shared/auth-email/change.ts';
 import { renderPasswordChanged } from '../_shared/auth-email/templates.ts';
@@ -53,7 +53,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     if (error instanceof MissingConfigError) {
       logEvent('auth_email.config_missing', { action: 'password_change', request_id: requestId, names: error.names.join(' ') });
-      return json({ error: 'not_configured', missing: error.names }, 503, origin, loadAllowedOrigins());
+      return notConfigured(requestId, origin, loadAllowedOrigins());
     }
     throw error;
   }

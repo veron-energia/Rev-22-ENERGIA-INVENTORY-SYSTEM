@@ -12,8 +12,9 @@ export interface ExistingAffiliate {
   /** The email typed is that affiliate's own login email (today's email_in_use). */
   loginEmail: boolean;
   // No email hint (security audit of 17 Nov 2026, L9; the user, 18 Nov 2026):
-  // the database still returns a masked `email_hint`, but it is ignored here,
-  // so no part of anyone's email can reach a response, a log line or a page.
+  // the database's `email_hint` has been null since migration 525 (live 18 Nov
+  // 2026); it is ignored here either way, so no part of anyone's email can
+  // reach a response, a log line or a page.
 }
 
 export const NO_EXISTING_AFFILIATE: ExistingAffiliate = { matched: null, loginEmail: false };

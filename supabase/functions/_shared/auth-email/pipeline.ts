@@ -22,7 +22,7 @@
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError, type AuthEmailConfig } from './config.ts';
 import { adminClient } from './admin.ts';
-import { guardRequest, json, trustedClientIp } from './http.ts';
+import { guardRequest, json, notConfigured, trustedClientIp } from './http.ts';
 import { hashKey, rateLimitMessage, reserve, RateLimiterUnavailableError, type LimitedAction } from './ratelimit.ts';
 import { logEvent, newRequestId, recordOutcome, safeDetail } from './diagnostics.ts';
 import { definitelyNotSent } from './pabbly.ts';
@@ -98,9 +98,10 @@ export async function handlePublicRequest<T>(
   } catch (error) {
     if (error instanceof MissingConfigError) {
       logEvent('auth_email.config_missing', { action: endpoint.action, request_id: requestId, names: error.names.join(' ') });
-      // Names only — a missing-secret error must never quote a value — but with
-      // real CORS headers, so the browser lets the page read which names.
-      return json({ error: 'not_configured', missing: error.names }, 503, origin, loadAllowedOrigins());
+      // The names stay in the log above; the reply carries none (security audit
+      // of 17 Nov 2026, L10). Real CORS headers, so the browser lets the page
+      // read the 503.
+      return notConfigured(requestId, origin, loadAllowedOrigins());
     }
     throw error;
   }

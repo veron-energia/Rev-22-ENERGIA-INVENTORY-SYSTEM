@@ -61,7 +61,9 @@ console.log(`Checking ${BASE}/functions/v1/…\n`);
     process.exit(1);
   }
   if (r.status === 503 && r.json.error === 'not_configured') {
-    check('secrets are set', false, `missing: ${(r.json.missing ?? []).join(', ')}`);
+    // The reply names no secret (security audit of 17 Nov 2026, L10): the names
+    // are in the function's auth_email.config_missing log line for this request.
+    check('secrets are set', false, `see the auth_email.config_missing log line for request ${r.json.request_id ?? '(none)'}`);
     process.exit(1);
   }
   if (r.status === 401) {

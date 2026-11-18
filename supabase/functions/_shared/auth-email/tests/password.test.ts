@@ -71,6 +71,27 @@ Deno.test("Supabase's own refusal wording reaches the account holder", async () 
   if (result.status === 'rejected') assertStringIncludes(result.message, 'different from the old password');
 });
 
+// (security audit of 17 Nov 2026, L10)
+Deno.test("a 5xx from Auth is an error, so its internal text never reaches the account holder", async () => {
+  const fake: typeof fetch = () => Promise.resolve(new Response(
+    '{"msg":"connection to db.internal:5432 refused"}',
+    { status: 500, headers: { 'Content-Type': 'application/json' } },
+  ));
+  const result = await changeOwnPassword({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT, password: 'x'.repeat(12) }, fake);
+  assertEquals(result.status, 'error');
+  if (result.status === 'error') assertStringIncludes(result.message, 'auth 500');
+});
+
+Deno.test("a 422 policy refusal from Auth is still rejected, in Supabase's words", async () => {
+  const fake: typeof fetch = () => Promise.resolve(new Response(
+    '{"msg":"Password should contain at least one number."}',
+    { status: 422, headers: { 'Content-Type': 'application/json' } },
+  ));
+  const result = await changeOwnPassword({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT, password: 'x'.repeat(12) }, fake);
+  assertEquals(result.status, 'rejected');
+  if (result.status === 'rejected') assertStringIncludes(result.message, 'at least one number');
+});
+
 Deno.test('an unreachable Auth service is an error, not a silent success', async () => {
   const fake: typeof fetch = () => Promise.reject(new TypeError('network down'));
   const result = await changeOwnPassword({ supabaseUrl: SUPABASE_URL, apiKey: 'k', accessToken: JWT, password: 'x'.repeat(12) }, fake);

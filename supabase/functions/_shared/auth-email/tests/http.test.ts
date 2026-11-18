@@ -1,7 +1,7 @@
 // The request envelope, CORS, and where the client IP is allowed to come from.
 
 import { assert, assertEquals, assertFalse } from 'jsr:@std/assert@1';
-import { corsHeaders, guardRequest, json, trustedClientIp, MAX_BODY_BYTES } from '../http.ts';
+import { corsHeaders, guardRequest, json, notConfigured, NOT_CONFIGURED_MESSAGE, trustedClientIp, MAX_BODY_BYTES } from '../http.ts';
 import { APP_URL } from './support.ts';
 
 const allowed = [APP_URL];
@@ -107,4 +107,15 @@ Deno.test('an unusable forwarded-for yields no IP, never a fabricated one', () =
   assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '203.0.113.7' } }), 3), null);
   // Headers we have not verified as platform-written are not consulted at all.
   assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-real-ip': '203.0.113.7', 'true-client-ip': '203.0.113.7' } }), 1), null);
+});
+
+// (security audit of 17 Nov 2026, L10)
+Deno.test('the not-configured reply carries a fixed sentence and a request id, and no secret name', async () => {
+  const response = notConfigured('req-123', APP_URL, allowed);
+  assertEquals(response.status, 503);
+  assertEquals(response.headers.get('Access-Control-Allow-Origin'), APP_URL);
+  const text = await response.text();
+  const body = JSON.parse(text);
+  assertEquals(body, { error: 'not_configured', message: NOT_CONFIGURED_MESSAGE, request_id: 'req-123' });
+  assertFalse('missing' in body);
 });

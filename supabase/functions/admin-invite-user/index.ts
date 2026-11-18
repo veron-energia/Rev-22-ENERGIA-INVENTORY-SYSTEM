@@ -18,7 +18,7 @@
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/auth-email/config.ts';
 import { adminClient, generateInviteLink, generateRecoveryLink, regenerateSignupLink } from '../_shared/auth-email/admin.ts';
-import { guardRequest, json } from '../_shared/auth-email/http.ts';
+import { guardRequest, json, notConfigured } from '../_shared/auth-email/http.ts';
 import { bearerToken } from '../_shared/auth-email/password.ts';
 import { callbackUrl } from '../_shared/auth-email/redirects.ts';
 import { deliver } from '../_shared/auth-email/pabbly.ts';
@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     if (error instanceof MissingConfigError) {
       logEvent('auth_email.config_missing', { action: 'invite', request_id: requestId, names: error.names.join(' ') });
-      return json({ error: 'not_configured', missing: error.names }, 503, origin, loadAllowedOrigins());
+      return notConfigured(requestId, origin, loadAllowedOrigins());
     }
     throw error;
   }
@@ -106,6 +106,8 @@ Deno.serve(async (req) => {
         request_id: requestId, outcome: result.kind,
         // The address is not logged, and neither is the link.
         role: parsed.value.role,
+        // The failure's own text, logged and never replied (L10).
+        detail: (result as { detail?: string }).detail ?? null,
       });
 
       switch (result.kind) {
@@ -135,7 +137,7 @@ Deno.serve(async (req) => {
         return json({ error: 'invalid_request', message: 'An invitation is required.' }, 400, origin, allowed);
       }
       const result = await resendInvitation(deps, config, invitationId, redirectTo, requestId, invitedByName);
-      logEvent('user_invitation.resend', { request_id: requestId, outcome: result.kind });
+      logEvent('user_invitation.resend', { request_id: requestId, outcome: result.kind, detail: (result as { detail?: string }).detail ?? null });
 
       if (result.kind === 'created') {
         return json({ ok: true, invitation_id: result.invitationId, delivery: result.delivery, detail: result.detail }, 200, origin, allowed);
@@ -155,7 +157,7 @@ Deno.serve(async (req) => {
       }
       const reason = String(body.reason ?? '').slice(0, 300);
       const result = await cancelInvitation(deps, invitationId, reason);
-      logEvent('user_invitation.cancel', { request_id: requestId, outcome: result.kind });
+      logEvent('user_invitation.cancel', { request_id: requestId, outcome: result.kind, detail: result.detail ?? null });
 
       if (result.kind === 'cancelled') return json({ ok: true }, 200, origin, allowed);
       if (result.kind === 'forbidden') return json({ error: 'forbidden', message: result.message }, 403, origin, allowed);

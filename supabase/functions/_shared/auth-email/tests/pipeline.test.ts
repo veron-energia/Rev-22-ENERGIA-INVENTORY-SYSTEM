@@ -628,7 +628,8 @@ Deno.test('a limiter that cannot answer fails closed', async () => {
   assertFalse((await response.text()).includes('connection refused'));
 });
 
-Deno.test('missing configuration reports names, never values — and the browser can read it', async () => {
+// (security audit of 17 Nov 2026, L10)
+Deno.test('missing configuration names no secret in the reply — and the browser can read it', async () => {
   const saved = Deno.env.get('PUBLIC_APP_URL');
   Deno.env.set('PUBLIC_APP_URL', APP_URL);
   try {
@@ -637,14 +638,35 @@ Deno.test('missing configuration reports names, never values — and the browser
       makeAdmin: () => fakeAdmin(allowAll),
     });
     assertEquals(response.status, 503);
-    const body = await bodyOf(response);
+    const text = await response.text();
+    const body = JSON.parse(text);
     assertEquals(body.error, 'not_configured');
-    assertEquals(body.missing, ['PABBLY_AUTH_EMAIL_SHARED_SECRET', 'AUTH_EMAIL_FROM_ADDRESS']);
+    assertFalse('missing' in body);
+    assertFalse(text.includes('PABBLY_AUTH_EMAIL_SHARED_SECRET'));
+    assertFalse(text.includes('AUTH_EMAIL_FROM_ADDRESS'));
+    assert(typeof body.request_id === 'string' && body.request_id.length > 0);
     // Without this header the page sees an opaque CORS failure instead of the
-    // list of names, and a missing secret gets mistaken for a network problem.
+    // 503, and a missing secret gets mistaken for a network problem.
     assertEquals(response.headers.get('Access-Control-Allow-Origin'), APP_URL);
   } finally {
     if (saved === undefined) Deno.env.delete('PUBLIC_APP_URL'); else Deno.env.set('PUBLIC_APP_URL', saved);
+  }
+});
+
+// (security audit of 17 Nov 2026, L10) An exception inside the endpoint ends in
+// a fixed reply; nothing of its text reaches the caller.
+Deno.test('an exception inside the endpoint replies a fixed 503 with none of its text', async () => {
+  const endpoint = signupEndpoint(flowDeps());
+  const throwing = {
+    ...endpoint,
+    run: () => Promise.reject(new Error('connection to db.internal:5432 refused; made-up key FAKE-KEY-0000')),
+  };
+  const response = await run(postRequest(validSignupBody), throwing as typeof endpoint);
+  assertEquals(response.status, 503);
+  const text = await response.text();
+  assertEquals(JSON.parse(text).error, 'temporarily_unavailable');
+  for (const leaked of ['connection to', 'db.internal', 'FAKE-KEY-0000']) {
+    assertFalse(text.includes(leaked), leaked);
   }
 });
 

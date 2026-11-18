@@ -15,6 +15,8 @@
 // The new password passes through this function to Supabase and is never
 // logged, never stored, and never included in the notification.
 
+import { safeDetail } from './diagnostics.ts';
+
 export type PasswordChange =
   | { status: 'ok'; userId: string; email: string; displayName: string; changedAt: string }
   | { status: 'unauthorized' }
@@ -50,13 +52,17 @@ export async function changeOwnPassword(
 
   if (response.status === 401 || response.status === 403) return { status: 'unauthorized' };
   if (!response.ok) {
-    // Supabase's own wording, passed through. The caller is the account holder,
-    // so "New password should be different from the old password" or a policy
-    // failure is exactly what they need to read.
+    // Supabase's own wording, passed through for a 4xx only. The caller is the
+    // account holder, so "New password should be different from the old
+    // password" or a policy failure is exactly what they need to read. A 5xx is
+    // the provider failing, not the password, and its text is internal: it
+    // becomes an 'error', which the callers log and answer with a fixed
+    // sentence (security audit of 17 Nov 2026, L10).
     const message = typeof answer?.msg === 'string' ? answer.msg
       : typeof answer?.message === 'string' ? answer.message
         : typeof answer?.error_description === 'string' ? answer.error_description
           : 'Could not update the password.';
+    if (response.status >= 500) return { status: 'error', message: `auth ${response.status}: ${safeDetail(message)}` };
     return { status: 'rejected', message };
   }
 

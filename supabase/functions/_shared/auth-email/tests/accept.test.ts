@@ -9,7 +9,7 @@
 // invitation." The pending-invitation refusals still come first.
 // Every name and address is made up.
 
-import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
+import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
   acceptInvitationRequest, invitationsOfLogin, isInvitationCheck, LINK_EXPIRED_REASON, NOT_INVITED_MESSAGE,
   pendingInvitation, profileStateOf, type AcceptDeps, type InvitationRow, type ProfileState, type TableReader,
@@ -219,6 +219,16 @@ Deno.test('the database still has the last word after the password is set', asyn
   assertEquals(answer.status, 403);
   assertEquals(answer.body.reason, 'cancelled');
   assertEquals(w.notices, [], 'no "password changed" email for a refused activation');
+});
+
+// (security audit of 17 Nov 2026, L10)
+Deno.test('an Auth failure replies a fixed sentence without its internal text', async () => {
+  const w = world({ invitations: [pending()], change: { status: 'error', message: 'auth 500: connection to db.internal:5432 refused' } });
+  const answer = await acceptInvitationRequest(linkSession('invite'), PASSWORD, w.deps, NOW);
+  assertEquals(answer.status, 503);
+  assertEquals(answer.body.error, 'temporarily_unavailable');
+  assertFalse(JSON.stringify(answer.body).includes('db.internal'));
+  assert(!w.switchedOn());
 });
 
 Deno.test('a password Supabase refuses leaves the invitation pending', async () => {

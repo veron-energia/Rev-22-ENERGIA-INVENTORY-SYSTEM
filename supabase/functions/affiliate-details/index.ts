@@ -19,7 +19,7 @@
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/auth-email/config.ts';
 import { adminClient } from '../_shared/auth-email/admin.ts';
-import { guardRequest, json } from '../_shared/auth-email/http.ts';
+import { guardRequest, json, notConfigured } from '../_shared/auth-email/http.ts';
 import { bearerToken } from '../_shared/auth-email/password.ts';
 import { handleDetailsRequest } from '../_shared/auth-email/details.ts';
 import { renderDetailsChanged, renderDetailsCode } from '../_shared/auth-email/templates.ts';
@@ -37,7 +37,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     if (error instanceof MissingConfigError) {
       logEvent('auth_email.config_missing', { action: 'affiliate_details', request_id: requestId, names: error.names.join(' ') });
-      return json({ error: 'not_configured', missing: error.names }, 503, origin, loadAllowedOrigins());
+      return notConfigured(requestId, origin, loadAllowedOrigins());
     }
     throw error;
   }

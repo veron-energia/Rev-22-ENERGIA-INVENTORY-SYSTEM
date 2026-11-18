@@ -5,7 +5,7 @@
 // current password, which Supabase Auth checks first. In every refusal
 // nothing is changed and no email is sent. Every name and address is made up.
 
-import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
+import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@std/assert@1';
 import { changeOwnPasswordRequest, type ChangeDeps } from '../change.ts';
 import type { CurrentPasswordCheck, OwnAccount, PasswordChange } from '../password.ts';
 
@@ -191,6 +191,16 @@ Deno.test('Supabase refusing the change: unauthorized 401, its own words 400, an
   const w = world({ change: { status: 'rejected', message: 'New password should be different from the old password.' } });
   const answer = await changeOwnPasswordRequest(FRESH_LINK, NEW, w.deps, NOW);
   assertEquals(answer.body.message, 'New password should be different from the old password.');
+});
+
+// (security audit of 17 Nov 2026, L10)
+Deno.test('an Auth failure on the change replies without its internal text', async () => {
+  const w = world({ change: { status: 'error', message: 'auth 500: connection to db.internal:5432 refused' } });
+  const answer = await changeOwnPasswordRequest(FRESH_LINK, NEW, w.deps, NOW);
+  assertEquals(answer.status, 503);
+  assertEquals(answer.body.error, 'temporarily_unavailable');
+  assertFalse(JSON.stringify(answer.body).includes('db.internal'));
+  assert(!w.emailed());
 });
 
 Deno.test('the email failing does not undo the change: still 200, notified false', async () => {

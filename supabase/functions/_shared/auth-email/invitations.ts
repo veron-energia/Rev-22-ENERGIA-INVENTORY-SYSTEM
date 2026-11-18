@@ -18,6 +18,7 @@ import type { DeliveryRequest, DeliveryResult } from './pabbly.ts';
 import { isTrustedActionLink } from './redirects.ts';
 import { definitelyNotSent } from './pabbly.ts';
 import { renderUserInvitation } from './templates.ts';
+import { safeDetail } from './diagnostics.ts';
 
 // deno-lint-ignore no-explicit-any
 type Admin = any;
@@ -63,7 +64,9 @@ export type InviteResult =
   | { kind: 'email_in_use'; scope: string; message: string }
   | { kind: 'forbidden'; message: string; field?: string }
   | { kind: 'invalid'; field: string; message: string }
-  | { kind: 'provisioning_failed'; invitationId?: string; message: string }
+  // `detail` is the unexpected failure's own text. It is for the log only and is
+  // never put in a reply (security audit of 17 Nov 2026, L10).
+  | { kind: 'provisioning_failed'; invitationId?: string; message: string; detail?: string }
   | { kind: 'rate_limited'; message: string; retryAfterSeconds?: number };
 
 
@@ -246,6 +249,11 @@ async function invitationLink(
   return generated;
 }
 
+// Fixed replies for an unexpected failure (security audit of 17 Nov 2026, L10).
+export const INVITE_SAVE_FAILED = 'The invitation could not be saved just now. Please try again.';
+export const INVITE_RESEND_FAILED = 'The invitation could not be resent just now. Please try again.';
+export const INVITE_CANCEL_FAILED = 'The invitation could not be cancelled just now. Please try again.';
+
 export async function createInvitation(
   deps: InvitationDeps,
   config: AuthEmailConfig,
@@ -265,7 +273,12 @@ export async function createInvitation(
     p_personal_email: input.personalEmail,
     p_store_ids: input.storeIds ?? [],
   });
-  if (begun.error) return { kind: 'provisioning_failed', message: begun.error.message };
+  // (security audit of 17 Nov 2026, L10) `.error` is an unexpected failure
+  // (PostgREST, Postgres, network): a fixed sentence goes out, the text stays
+  // in `detail` for the log. The database's own refusals come back as rows.
+  if (begun.error) {
+    return { kind: 'provisioning_failed', message: INVITE_SAVE_FAILED, detail: safeDetail(begun.error.message) };
+  }
 
   const row = begun.data ?? {};
   switch (row.outcome) {
@@ -370,7 +383,9 @@ export async function resendInvitation(
   invitedByName?: string,
 ): Promise<InviteResult> {
   const prepared = await deps.callerRpc('invite_user_prepare_resend', { p_invitation_id: invitationId });
-  if (prepared.error) return { kind: 'provisioning_failed', message: prepared.error.message };
+  if (prepared.error) {
+    return { kind: 'provisioning_failed', message: INVITE_RESEND_FAILED, detail: safeDetail(prepared.error.message) };
+  }
 
   const row = prepared.data ?? {};
   if (row.outcome === 'forbidden') return { kind: 'forbidden', message: row.message };
@@ -440,7 +455,10 @@ export async function resendInvitation(
   if (still.error || still.data?.outcome !== 'ok') {
     return {
       kind: 'provisioning_failed', invitationId,
-      message: `${still.data?.message ?? still.error?.message ?? 'This invitation can no longer be resent.'} No email was sent.`,
+      // The database function's own words stay; a failure's text does not, and a
+      // failure is not told as "can no longer be resent" (it may work next time).
+      message: `${still.error ? INVITE_RESEND_FAILED : (still.data?.message ?? 'This invitation can no longer be resent.')} No email was sent.`,
+      detail: still.error ? safeDetail(still.error.message) : undefined,
     };
   }
 
@@ -466,11 +484,11 @@ export async function resendInvitation(
 
 export async function cancelInvitation(
   deps: InvitationDeps, invitationId: string, reason: string,
-): Promise<{ kind: 'cancelled' | 'forbidden' | 'error'; message?: string }> {
+): Promise<{ kind: 'cancelled' | 'forbidden' | 'error'; message?: string; detail?: string }> {
   const res = await deps.callerRpc('invite_user_cancel', {
     p_invitation_id: invitationId, p_reason: reason,
   });
-  if (res.error) return { kind: 'error', message: res.error.message };
+  if (res.error) return { kind: 'error', message: INVITE_CANCEL_FAILED, detail: safeDetail(res.error.message) };
   const row = res.data ?? {};
   if (row.outcome === 'cancelled') return { kind: 'cancelled' };
   if (row.outcome === 'forbidden') return { kind: 'forbidden', message: row.message };

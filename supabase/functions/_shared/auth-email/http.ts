@@ -51,6 +51,22 @@ export function json(
 }
 
 /**
+ * The 503 for a function whose secrets are not all set. The names of the missing
+ * secrets go to the log only (security audit of 17 Nov 2026, L10): a caller gets
+ * a fixed sentence and the request id, never which secret is absent. The reply
+ * still carries real CORS headers from the server-side allowlist, so the browser
+ * lets the page read the 503 and show the sentence.
+ */
+export const NOT_CONFIGURED_MESSAGE = 'This service is not available just now. Please try again later.';
+
+export function notConfigured(requestId: string, origin: string | null, allowed: string[]): Response {
+  return json(
+    { error: 'not_configured', message: NOT_CONFIGURED_MESSAGE, request_id: requestId },
+    503, origin, allowed,
+  );
+}
+
+/**
  * Enforce the request envelope and return the parsed JSON body.
  *
  * Rejects anything that is not a POST of a modest JSON object: wrong method,

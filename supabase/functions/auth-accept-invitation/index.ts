@@ -29,7 +29,7 @@
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError } from '../_shared/auth-email/config.ts';
 import { adminClient } from '../_shared/auth-email/admin.ts';
-import { guardRequest, json } from '../_shared/auth-email/http.ts';
+import { guardRequest, json, notConfigured } from '../_shared/auth-email/http.ts';
 import { bearerToken, changeOwnPassword, readOwnAccount } from '../_shared/auth-email/password.ts';
 import {
   acceptInvitationRequest, invitationsOfLogin, LINK_NO_LONGER_VALID, profileStateOf, type TableReader,
@@ -47,7 +47,9 @@ Deno.serve(async (req) => {
     config = loadConfig();
   } catch (error) {
     if (error instanceof MissingConfigError) {
-      return json({ error: 'not_configured', missing: error.names }, 503, origin, loadAllowedOrigins());
+      logEvent('auth_email.config_missing', { action: 'accept_invitation', request_id: requestId, names: error.names.join(' ') });
+      // No names in the reply (security audit of 17 Nov 2026, L10).
+      return notConfigured(requestId, origin, loadAllowedOrigins());
     }
     throw error;
   }

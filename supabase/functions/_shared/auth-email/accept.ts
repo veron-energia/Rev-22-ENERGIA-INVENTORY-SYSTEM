@@ -38,6 +38,7 @@ import {
   ACCEPT_NEEDS_LINK_MESSAGE, INVITATION_LINK_EXPIRED_MESSAGE, invitationLinkState, type OwnAccount, type PasswordChange,
 } from './password.ts';
 import { validatePasswordChange } from './validate.ts';
+import { safeDetail } from './diagnostics.ts';
 
 /** An invitation made for a login: its status and the address it was sent to. */
 export interface InvitationRow { status: string; email: string }
@@ -240,7 +241,7 @@ export async function acceptInvitationRequest(
     return { status: 400, body: { error: 'password_rejected', message: change.message } };
   }
   if (change.status === 'error') {
-    deps.log('user_invitation.accept_password_failed', { kind: 'error' });
+    deps.log('user_invitation.accept_password_failed', { kind: 'error', detail: safeDetail(change.message) });
     return { status: 503, body: {
       error: 'temporarily_unavailable',
       message: 'We could not set your password just now. Please try again shortly.',

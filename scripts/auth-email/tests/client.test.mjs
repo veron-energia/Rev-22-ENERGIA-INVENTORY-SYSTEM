@@ -59,12 +59,18 @@ test('an expired session says so instead of looking like a server fault', () => 
   assert.equal(interpretAuthEmailResponse(403, {}).kind, 'unauthorized');
 });
 
-test('a missing-configuration reply names the secrets, and only their names', () => {
-  const result = interpretAuthEmailResponse(503, {
-    error: 'not_configured', missing: ['PABBLY_AUTH_EMAIL_SHARED_SECRET'],
-  });
-  assert.equal(result.kind, 'unavailable');
-  assert.match(result.message, /PABBLY_AUTH_EMAIL_SHARED_SECRET/);
+test('a missing-configuration reply gives the fixed copy and never a secret name', () => {
+  // (security audit of 17 Nov 2026, L10) Even an older server that still sends
+  // `missing` cannot get a name onto the page.
+  for (const body of [
+    { error: 'not_configured', missing: ['PABBLY_AUTH_EMAIL_SHARED_SECRET'] },
+    { error: 'not_configured', message: 'x', request_id: 'r' },
+  ]) {
+    const result = interpretAuthEmailResponse(503, body);
+    assert.equal(result.kind, 'unavailable');
+    assert.equal(result.message, AUTH_EMAIL_COPY.unavailable);
+    assert.doesNotMatch(result.message, /PABBLY/);
+  }
 });
 
 test('status 0 means the request never landed', () => {

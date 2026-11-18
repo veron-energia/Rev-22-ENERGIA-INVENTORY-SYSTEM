@@ -4,9 +4,9 @@
 // generates but an email that fails, a profile write that fails after the
 // account exists, a second click arriving on a request that is already done.
 
-import { assert, assertEquals, assertStringIncludes } from 'jsr:@std/assert@1';
+import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
-  cancelInvitation, createInvitation, resendInvitation, validateInvite,
+  cancelInvitation, createInvitation, INVITE_CANCEL_FAILED, INVITE_RESEND_FAILED, INVITE_SAVE_FAILED, resendInvitation, validateInvite,
   type InvitationDeps, type InviteInput,
 } from '../invitations.ts';
 import type { AuthEmailConfig } from '../config.ts';
@@ -506,3 +506,56 @@ Deno.test('the login email is normalized and never copied from the personal one'
 });
 
 // Accepting an invitation is tested in accept.test.ts (429).
+
+// (security audit of 17 Nov 2026, L10) An unexpected failure's text is carried
+// in `detail` for the log; the `message` is a fixed sentence.
+const DB_TEXT = 'connection to db.internal:5432 refused';
+
+Deno.test('an unexpected failure on begin replies a fixed sentence and keeps the text in detail', async () => {
+  const d = deps({ callerRpc: () => Promise.resolve({ data: null, error: { message: DB_TEXT } }) });
+  const result = await createInvitation(d, CONFIG, INPUT, REDIRECT) as { kind: string; message: string; detail?: string };
+  assertEquals(result.kind, 'provisioning_failed');
+  assertEquals(result.message, INVITE_SAVE_FAILED);
+  assertFalse(result.message.includes('db.internal'));
+  assertStringIncludes(result.detail ?? '', 'db.internal');
+});
+
+Deno.test('an unexpected failure on prepare-resend replies a fixed sentence and keeps the text in detail', async () => {
+  const d = deps({ callerRpc: () => Promise.resolve({ data: null, error: { message: DB_TEXT } }) });
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-1') as { message: string; detail?: string };
+  assertEquals(result.message, INVITE_RESEND_FAILED);
+  assertFalse(result.message.includes('db.internal'));
+  assertStringIncludes(result.detail ?? '', 'db.internal');
+});
+
+Deno.test('a failed re-check before sending keeps the database words, drops the failure text', async () => {
+  let prepares = 0;
+  const d = deps({
+    callerRpc: (fn) => {
+      if (fn === 'invite_user_prepare_resend') {
+        prepares += 1;
+        return Promise.resolve(prepares === 1
+          ? { data: { outcome: 'ok', email: INPUT.email, full_name: 'New Person', login_id: null }, error: null }
+          : { data: null, error: { message: DB_TEXT } });
+      }
+      return Promise.resolve({ data: {}, error: null });
+    },
+  });
+  const result = await resendInvitation(d, CONFIG, 'inv-1', REDIRECT, 'req-1') as { kind: string; message: string; detail?: string };
+  assertEquals(prepares, 2, 'the re-check before sending was reached');
+  assertEquals(result.kind, 'provisioning_failed');
+  assertFalse(result.message.includes('db.internal'));
+  // A failure is "could not be resent just now", not "can no longer be resent".
+  assertEquals(result.message, `${INVITE_RESEND_FAILED} No email was sent.`);
+  assertStringIncludes(result.detail ?? '', 'db.internal');
+  assertEquals(d.delivered.length, 0);
+});
+
+Deno.test('an unexpected failure on cancel replies a fixed sentence and keeps the text in detail', async () => {
+  const d = deps({ callerRpc: () => Promise.resolve({ data: null, error: { message: DB_TEXT } }) });
+  const result = await cancelInvitation(d, 'inv-1', 'reason');
+  assertEquals(result.kind, 'error');
+  assertEquals(result.message, INVITE_CANCEL_FAILED);
+  assertFalse((result.message ?? '').includes('db.internal'));
+  assertStringIncludes(result.detail ?? '', 'db.internal');
+});

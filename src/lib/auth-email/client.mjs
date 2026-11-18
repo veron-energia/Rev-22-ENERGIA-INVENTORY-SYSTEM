@@ -182,11 +182,11 @@ export function interpretAuthEmailResponse(httpStatus, body) {
   }
 
   if (httpStatus === 503 && data.error === 'not_configured') {
-    // Names of missing secrets, never values. Useful during rollout, harmless after.
-    const names = Array.isArray(data.missing) ? data.missing.join(', ') : '';
+    // Always the fixed copy, and `missing` is never read, even if an older
+    // server still sends it (security audit of 17 Nov 2026, L10).
     return {
       ok: false, kind: 'unavailable',
-      message: names ? `Email delivery is not configured yet (${names}).` : AUTH_EMAIL_COPY.unavailable,
+      message: AUTH_EMAIL_COPY.unavailable,
       fields: {}, requestId, retryAfterSeconds: 0,
     };
   }
