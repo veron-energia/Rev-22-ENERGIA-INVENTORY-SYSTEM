@@ -15,18 +15,23 @@ const config: EventWebsiteConfig = { supabaseUrl: 'https://project.supabase.co',
 
 type RpcReply = { data: unknown; error: { message?: string; code?: string } | null };
 
+/** 526: the key check the function asks before it reads the body (event_web_key_check): a key it knows, by default. */
+const KEY_OK: RpcReply = { data: { ok: true }, error: null };
+
 function fakeClient(answer: (args: Record<string, unknown>) => RpcReply | Promise<RpcReply> = () => ({
   data: { ok: true, test: false, status: 'ok' }, error: null,
-})) {
+}), keyCheck: (args: Record<string, unknown>) => RpcReply | Promise<RpcReply> = () => KEY_OK) {
   const calls: { fn: string; args: Record<string, unknown> }[] = [];
   const client: RpcClient = {
     rpc(fn, args) {
       calls.push({ fn, args });
-      return Promise.resolve(answer(args));
+      return Promise.resolve(fn === 'event_web_key_check' ? keyCheck(args) : answer(args));
     },
   };
   return { calls, client };
 }
+/** The calls of event_web_call alone (the key check comes first on every request that reaches the database). */
+const callsOf = (calls: { fn: string; args: Record<string, unknown> }[]) => calls.filter((c) => c.fn === 'event_web_call');
 
 const run = (req: Request, client: RpcClient = fakeClient().client, load: () => EventWebsiteConfig = () => config) =>
   handleRequest(req, { loadConfig: load, makeClient: () => client, now: () => NOW_MS });
@@ -61,8 +66,10 @@ Deno.test("a message goes to event_web_call with the key's hash, the request id,
   const response = await run(request(m.register), client);
   assertEquals(response.status, 200);
   assertEquals(await response.json(), { ok: true, test: false, status: 'registered', people: [] });
-  assertEquals(calls, [{ fn: 'event_web_call', args: {
-    p_key_hash: await sha256Hex(LIVE_KEY), p_request_id: REQUEST_ID, p_type: 'register', p_body: m.register } }]);
+  assertEquals(calls, [
+    { fn: 'event_web_key_check', args: { p_key_hash: await sha256Hex(LIVE_KEY) } },
+    { fn: 'event_web_call', args: {
+      p_key_hash: await sha256Hex(LIVE_KEY), p_request_id: REQUEST_ID, p_type: 'register', p_body: m.register } }]);
   assertEquals(response.headers.get('Cache-Control'), 'no-store');
 });
 
@@ -70,10 +77,10 @@ Deno.test('a read needs no request id and sends none', async () => {
   const { calls, client } = fakeClient();
   const response = await run(request(messages().event_info, { requestId: null }), client);
   assertEquals(response.status, 200);
-  assertEquals(calls[0].args.p_request_id, null);
+  assertEquals(callsOf(calls)[0].args.p_request_id, null);
   const again = fakeClient();
   await run(request(messages().sync), again.client);
-  assertEquals(again.calls[0].args.p_request_id, null);
+  assertEquals(callsOf(again.calls)[0].args.p_request_id, null);
 });
 
 Deno.test('a write without a request id, or with a malformed one, is refused before the database', async () => {
@@ -83,7 +90,7 @@ Deno.test('a write without a request id, or with a malformed one, is refused bef
     const response = await run(request(body, { requestId: rid }), client);
     assertEquals(response.status, 400);
     assertEquals(await response.json(), { ok: false, error: 'invalid_request', field: 'x-energia-request-id' });
-    assertEquals(calls.length, 0);
+    assertEquals(callsOf(calls).length, 0);
   }
 });
 
@@ -123,7 +130,7 @@ Deno.test("a body outside the contract is invalid_request with the field's path"
   const { calls, client } = fakeClient();
   const response = await run(request({ ...messages().person, upgrade_token: 'nope' }), client);
   assertEquals([response.status, await response.json()], [400, { ok: false, error: 'invalid_request', field: 'upgrade_token' }]);
-  assertEquals(calls.length, 0);
+  assertEquals(callsOf(calls).length, 0);
 });
 
 Deno.test("the database's refusals map to the contract's status codes", async () => {
@@ -200,11 +207,11 @@ Deno.test('planning_answers is a write: without a request id it is refused befor
   const none = fakeClient();
   const refused = await run(request(m.planning_answers, { requestId: null }), none.client);
   assertEquals([refused.status, await refused.json()], [400, { ok: false, error: 'invalid_request', field: 'x-energia-request-id' }]);
-  assertEquals(none.calls.length, 0);
+  assertEquals(callsOf(none.calls).length, 0);
   const { calls, client } = fakeClient(() => ({ data: { ok: true, test: false, status: 'ok', people: [] }, error: null }));
   const response = await run(request(m.planning_answers), client);
   assertEquals(response.status, 200);
-  assertEquals(calls, [{ fn: 'event_web_call', args: {
+  assertEquals(callsOf(calls), [{ fn: 'event_web_call', args: {
     p_key_hash: await sha256Hex(LIVE_KEY), p_request_id: REQUEST_ID, p_type: 'planning_answers', p_body: m.planning_answers } }]);
 });
 
@@ -244,4 +251,63 @@ Deno.test("the database's per-person answer passes through as 200; closed too", 
     const response = await run(request(m.planning_answers), client);
     assertEquals([response.status, await response.json()], [200, data]);
   }
+});
+
+// 526 (security audit of 17 Nov 2026, L11; the user, 18 Nov 2026): the key is checked before the body is read.
+Deno.test('a key the database does not know is bad_key (401) before the body is read: a malformed body or one outside the contract says nothing else', async () => {
+  const refused = () => ({ data: { ok: false, error: 'bad_key' }, error: null });
+  for (const body of ['{"type": "event_info"', '{not json at all', { ...messages().person, upgrade_token: 'nope' }, { type: 'nonsense' }]) {
+    const { calls, client } = fakeClient(undefined, refused);
+    const response = await run(request(body), client);
+    assertEquals([response.status, await response.json()], [401, { ok: false, error: 'bad_key' }]);
+    assertEquals(calls, [{ fn: 'event_web_key_check', args: { p_key_hash: await sha256Hex(LIVE_KEY) } }]);
+  }
+  // A write without its request id, with an unknown key: bad_key too (the body is never read to learn its type).
+  const { calls, client } = fakeClient(undefined, refused);
+  const response = await run(request(messages().vip_paid, { requestId: null }), client);
+  assertEquals([response.status, await response.json()], [401, { ok: false, error: 'bad_key' }]);
+  assertEquals(callsOf(calls).length, 0);
+});
+
+Deno.test('a known key with a malformed body is still invalid_json, after the key check and with no event_web_call', async () => {
+  const { calls, client } = fakeClient();
+  const response = await run(request('{"type": "event_info"'), client);
+  assertEquals([response.status, (await response.json()).error], [400, 'invalid_json']);
+  assertEquals(calls.map((c) => c.fn), ['event_web_key_check']);
+});
+
+Deno.test('the key check failing (a database error, an odd answer, the network) is 503 retry, and the message goes no further', async () => {
+  for (const keyCheck of [() => ({ data: null, error: { code: 'PGRST202', message: 'Could not find the function' } }),
+    () => ({ data: null, error: { code: '57014' } }), () => ({ data: 'nonsense', error: null }), () => ({ data: { ok: 'yes' }, error: null })]) {
+    const { calls, client } = fakeClient(undefined, keyCheck as () => RpcReply);
+    const response = await run(request(messages().register), client);
+    assertEquals([response.status, await response.json()], [503, { ok: false, error: 'retry' }]);
+    assertEquals(callsOf(calls).length, 0);
+  }
+  const thrown: RpcClient = { rpc() { return Promise.reject(new Error('network down')); } };
+  const response = await run(request(messages().register), thrown);
+  assertEquals([response.status, await response.json()], [503, { ok: false, error: 'retry' }]);
+});
+
+Deno.test('a body larger than allowed whose Content-Length lies is still 413, read only after the key check', async () => {
+  const big = JSON.stringify({ ...messages().event_info, pad: 'x'.repeat(MAX_BODY_BYTES) });
+  const known = fakeClient();
+  const r = await run(request(big, { headers: { 'Content-Length': '10' } }), known.client);
+  assertEquals(r.status, 413);
+  assertEquals(known.calls.map((c) => c.fn), ['event_web_key_check']);
+  const unknown = fakeClient(undefined, () => ({ data: { ok: false, error: 'bad_key' }, error: null }));
+  const u = await run(request(big, { headers: { 'Content-Length': '10' } }), unknown.client);
+  assertEquals([u.status, await u.json()], [401, { ok: false, error: 'bad_key' }]);
+});
+
+Deno.test('the key check logs no key and no hash', async () => {
+  const hash = await sha256Hex(LIVE_KEY);
+  const log = await logsOf(async () => {
+    await run(request(messages().event_info), fakeClient(undefined, () => ({ data: { ok: false, error: 'bad_key' }, error: null })).client);
+    await run(request(messages().event_info), fakeClient(undefined, () => ({ data: null, error: { code: '57014', message: hash } })).client);
+  });
+  assertFalse(log.includes(LIVE_KEY), 'logged the key');
+  assertFalse(log.includes(hash), 'logged the hash');
+  assert(log.includes('event_website.bad_key'));
+  assert(log.includes('"step":"key_check"'));
 });

@@ -243,13 +243,14 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
                                      ('public.event_web_guest_extras(uuid)', true)) x(f, page)),
   'G1 the four changed functions keep their grants (the three page functions signed-in staff''s, vip_paid the service role''s)');
 -- (449, where it is applied, added the signed-up-again holds to event_registration_close and event_web_guest_extras:
--- 444's or 449's; 450, where it is applied, a hold's Close refused while their payment waits: 450's for the close.)
+-- 444's or 449's; 450, where it is applied, a hold's Close refused while their payment waits: 450's for the close.
+-- 526, where it is applied, took the VIP link tokens out of event_web_guest_extras: 526's for the guest extras.)
 select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_registration_close(uuid,text)', 'ae3df7387a2057281778258ead3aa4df 60f3dde4dc9f7d8cc33f5517e54eeed8 39436dab86aa00d5884fceab88cb2d09'),
                                      ('public.event_vip_order_dismiss(uuid,text,boolean)', 'd1b16a09f2376591688feb42585c8146'),
                                      ('public.event_web_vip_paid(uuid,jsonb)', '1e1e48047b36af39495ef767a37237c2'),
-                                     ('public.event_web_guest_extras(uuid)', '369914bd689e9aa1d34e8e2d887b1d43 03358fda2da1b4fda082e3f29b512a38')) x(f, m)),
-  'G2 the four functions have 444''s AFTER md5s (449''s or 450''s for the close and 449''s for the guest extras, where applied)');
+                                     ('public.event_web_guest_extras(uuid)', '369914bd689e9aa1d34e8e2d887b1d43 03358fda2da1b4fda082e3f29b512a38 1e1af232acf928680d5f630c63541002')) x(f, m)),
+  'G2 the four functions have 444''s AFTER md5s (449''s or 450''s for the close and 449''s or 526''s for the guest extras, where applied)');
 select pg_temp.check((select bool_and(pg_get_functiondef(x.f::regprocedure) ~ E'\nbegin\n  perform public\\.require_active_staff\\(')
                         from (values ('public.event_registration_close(uuid,text)'), ('public.event_vip_order_dismiss(uuid,text,boolean)'),
                                      ('public.event_web_guest_extras(uuid)')) x(f)),
@@ -257,8 +258,10 @@ select pg_temp.check((select bool_and(pg_get_functiondef(x.f::regprocedure) ~ E'
 select pg_temp.check(to_regprocedure('public.event_vip_order_close_checkout(uuid,text)') is null
     and (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
            and (p.proname like 'event\_web\_%' or p.proname like 'event\_vip\_%' or p.proname like 'event\_registration\_%')
-           and has_function_privilege('authenticated', p.oid, 'execute')) = 17,
-  'G4 no new function: the page reaches the same 17 event_web / event_vip / event_registration functions as before');
+           and has_function_privilege('authenticated', p.oid, 'execute'))
+        -- 526 (security audit of 17 Nov 2026, L11), where it is applied, gave the page one more: event_web_vip_link.
+        = 17 + (to_regprocedure('public.event_web_vip_link(uuid,uuid)') is not null)::int,
+  'G4 no new function: the page reaches the same 17 event_web / event_vip / event_registration functions as before (18 with 526''s VIP link)');
 
 -- ═════ S and C: held under To match with an open checkout (the production case) ═════
 -- One form: Ann on the holder's phone under another name (held), Ben on a new phone (a new customer).

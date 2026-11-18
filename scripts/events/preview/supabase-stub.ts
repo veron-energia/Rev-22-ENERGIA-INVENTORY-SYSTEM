@@ -741,7 +741,7 @@ const rpcs: Record<string, (a: any) => unknown> = {
         venue: null, site_url: 'https://seminar.example.com', gift_store_access: true },
       guests: vip ? [{ guest_id: vip.id, person_id: null, website: false, is_test: false, registration_id: null, position: null, group_size: null,
         parked: false, vip: 'paid', vip_guest: true, vip_invoice_no: null, vip_waiting: null, hold: null, closed: false, match: null,
-        referral: null, upgrade_token: null, gift: previewGifts[vip.id] ?? null }] : [],
+        referral: null, upgrade_token: null, vip_link_ready: false, gift: previewGifts[vip.id] ?? null }] : [],
       holds: [{ person_id: 'pp-held', guest_id: null, registration_id: 'REG-20261020-PREV0001', position: 1, group_size: 1,
         held_at: new Date().toISOString(), reason: 'phone_in_use', full_name: 'Website Person', phone: '+61 491 570 737', email: 'webperson@tests.invalid',
         days: [D1], vip_waiting: true,

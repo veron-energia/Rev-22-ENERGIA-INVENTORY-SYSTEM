@@ -181,6 +181,9 @@ declare
                              'event_vip_holders',
                              -- 439: the record that stands for a customer after a merge
                              'event_web_kept_customer',
+                             -- 526: the website key's check, which the event-website function asks with
+                             -- the service key before it reads a message (security audit of 17 Nov 2026, L11)
+                             'event_web_key_check',
                              -- 409: the retired staff request, which moved the invoice itself
                              -- to refund_requested (staff raise guided requests now), and what a
                              -- cancelled invoice's customer already had (refund_invoice_recorded's)

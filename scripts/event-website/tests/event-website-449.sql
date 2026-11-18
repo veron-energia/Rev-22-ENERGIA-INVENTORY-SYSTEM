@@ -276,10 +276,11 @@ select pg_temp.check((select bool_and(not has_function_privilege('anon', x.f, 'e
   'G1 the five changed functions keep their grants (the three page functions signed-in staff''s, register and the problems the service role''s)');
 -- (450, where it is applied, refused VIP for anyone taken off the list and a hold's Close while their payment waits:
 -- event_vip_person_problems and event_registration_close are 449's or 450's. 469, where it is applied, links by the
--- phone and the email in event_web_register: 449's or 469's.)
+-- phone and the email in event_web_register: 449's or 469's. 526, where it is applied, took the VIP link tokens out of
+-- event_web_guest_extras: 449's or 526's.)
 select pg_temp.check((select bool_and(md5(pg_get_functiondef(x.f::regprocedure)) = any (string_to_array(x.m, ' ')))
                         from (values ('public.event_web_register(uuid,jsonb)', '3aad1ad2a8a91732d330b2ef149bf969 c188a2dc82b9eb08fc9d01f1e5c15e13'),
-                                     ('public.event_web_guest_extras(uuid)', '03358fda2da1b4fda082e3f29b512a38'),
+                                     ('public.event_web_guest_extras(uuid)', '03358fda2da1b4fda082e3f29b512a38 1e1af232acf928680d5f630c63541002'),
                                      ('public.event_set_guest_cancelled(uuid,boolean,text)', 'af22a3fad6232dad1a748b9cc1ddb2ae'),
                                      ('public.event_registration_close(uuid,text)', '60f3dde4dc9f7d8cc33f5517e54eeed8 39436dab86aa00d5884fceab88cb2d09'),
                                      ('public.event_vip_person_problems(uuid)', 'ec2fbe26fa116505cdd56910d17ce9ea add06a8aba39e4259bcf68bab4092027')) x(f, m)),
@@ -302,9 +303,11 @@ select pg_temp.check((select string_agg(a.attname || ' ' || format_type(a.atttyp
   'G4 the three columns (nullable, no default) and their check are there; the table is still no client''s (row level security, no grant)');
 select pg_temp.check((select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
                         and (p.proname like 'event\_web\_%' or p.proname like 'event\_vip\_%' or p.proname like 'event\_registration\_%')
-                        and has_function_privilege('authenticated', p.oid, 'execute')) = 17
+                        and has_function_privilege('authenticated', p.oid, 'execute'))
+                     -- 526 (security audit of 17 Nov 2026, L11), where it is applied, gave the page one more: event_web_vip_link.
+                     = 17 + (to_regprocedure('public.event_web_vip_link(uuid,uuid)') is not null)::int
     and to_regprocedure('public.event_registration_put_back(uuid,text)') is null,
-  'G5 no new function: the page reaches the same 17 event_web / event_vip / event_registration functions as before (Put back is Restore)');
+  'G5 no new function: the page reaches the same 17 event_web / event_vip / event_registration functions as before (Put back is Restore; 18 with 526''s VIP link)');
 select pg_temp.check((select count(*) from public.event_registration_people
                        where signed_up_again_at is not null or signed_up_again_days is not null or signed_up_again_resolved_at is not null) = 0,
   'G6 nothing is held before anyone signs up again (449 fills nothing)');

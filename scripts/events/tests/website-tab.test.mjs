@@ -134,6 +134,8 @@ const addDays = (day, n) => { const [y, m, d] = day.split('-').map(Number); retu
 // The event is on now (today and tomorrow), so the door's day is today.
 const D1 = TODAY, D2 = addDays(TODAY, 1);
 const SITE = 'https://healthtalk.example.com';
+// 526: the VIP link tokens the server gives one at a time (event_web_vip_link), by person; made up.
+const VIP_TOKENS = { 'p-2': 'vip_abcdefghijklmnopqrstuvwxyz', 'p-3': 'vip_bcdefghijklmnopqrstuvwxyz2', 'p-9': 'vip_cdefghijklmnopqrstuvwxyz23' };
 
 // ── fixture ────────────────────────────────────────────────────────────────
 function makeFixture() {
@@ -172,18 +174,19 @@ function makeFixture() {
     guests: [
       { guest_id: 'g-vip', person_id: 'p-1', website: true, is_test: false, registration_id: 'REG-20261020-AAAA0001', position: 1, group_size: 1,
         parked: false, vip: 'paid', vip_guest: true, vip_invoice_no: 'INV-TEST-0001', vip_waiting: null, hold: null, closed: false,
-        match: 'new_customer', referral: null, upgrade_token: null, gift: null },
+        match: 'new_customer', referral: null, upgrade_token: null, vip_link_ready: false, gift: null },
       { guest_id: 'g-vip-free', person_id: 'p-1', website: true, is_test: false, registration_id: 'REG-20261020-AAAA0001', position: 1, group_size: 1,
         parked: true, vip: 'paid', vip_guest: false, vip_invoice_no: 'INV-TEST-0001', vip_waiting: null, hold: null, closed: false,
-        match: 'new_customer', referral: null, upgrade_token: null, gift: null },
+        match: 'new_customer', referral: null, upgrade_token: null, vip_link_ready: false, gift: null },
       { guest_id: 'g-free', person_id: 'p-2', website: true, is_test: false, registration_id: 'REG-20261020-AAAA0002', position: 1, group_size: 2,
         parked: false, vip: 'pending', vip_guest: false, vip_invoice_no: null, vip_waiting: 'paynow', hold: null, closed: false, match: 'exact',
         referral: { code: 'AFF123', state: 'valid', outcome: 'already_customer', affiliate_name: 'Ann Affiliate' },
-        upgrade_token: 'vip_abcdefghijklmnopqrstuvwxyz', gift: null },
+        // 526: the list carries no token; the server says the link may be copied (event_web_vip_link reads it).
+        upgrade_token: null, vip_link_ready: true, gift: null },
       { guest_id: 'g-held', person_id: 'p-3', website: true, is_test: false, registration_id: 'REG-20261020-AAAA0002', position: 2, group_size: 2,
         parked: false, vip: 'none', vip_guest: false, vip_invoice_no: null, vip_waiting: null,
         hold: { reason: 'phone_in_use', held_at: '2026-10-20T03:00:00Z' }, closed: false, match: 'held', referral: null,
-        upgrade_token: 'vip_bcdefghijklmnopqrstuvwxyz2', gift: null },
+        upgrade_token: null, vip_link_ready: true, gift: null },
     ],
     holds: [{ person_id: 'p-3', guest_id: 'g-held', registration_id: 'REG-20261020-AAAA0002', position: 2, group_size: 2,
       held_at: '2026-10-20T03:00:00Z', reason: 'phone_in_use', full_name: 'Hana Held', phone: '+61491573770', phone_norm: '+61491573770',
@@ -293,6 +296,9 @@ function createBackend(fx, role) {
     event_web_key_create: a => ({ key_id: 'k-new', kind: a.p_kind, key_hint: `evk_${a.p_kind}_NeWk…zzzz`,
       key: `evk_${a.p_kind}_NeWkEyNeWkEyNeWkEyNeWkEyNeWkEyNeWkEyNeWkzzzz` }),
     event_web_key_revoke: () => ({ ok: true }),
+    // 526: one person's VIP link token, per click (the server writes an Audit Log row for each).
+    event_web_vip_link: a => (VIP_TOKENS[a.p_person_id] ? { ok: true, upgrade_token: VIP_TOKENS[a.p_person_id] }
+      : { ok: false, reason: 'not_available' }),
     event_web_test_clear: () => ({ registrations: 1, orders: 1, requests: 3 }),
     event_vip_orders_list: () => ({ ...fx.vip, can_close: ['owner', 'manager'].includes(role) }),
     event_vip_order_invoice: () => ({ status: 'invoiced', review_reason: null, invoice_nos: ['INV-TEST-0005', 'INV-TEST-0006'] }),
@@ -430,11 +436,93 @@ test('guests: the filter shows VIPs, website people or those to match', async ()
 
 test('guests: Copy VIP link copies <site>/vip/<token>; a VIP has none', async () => {
   await mount();
+  // 526 (security audit of 17 Nov 2026, L11; the user, 18 Nov 2026): the list carries no token; the link is read
+  // for one person per click (and the server writes an Audit Log row each time).
+  assert.equal(callsOf('event_web_vip_link').length, 0, 'no link is read before a click');
   await click(button('Copy VIP link', row('g-free')));
+  assert.deepEqual(callsOf('event_web_vip_link').map(c => c.args), [{ p_event_id: 'ev-1', p_person_id: 'p-2' }]);
   assert.deepEqual(clipboard, [`${SITE}/vip/vip_abcdefghijklmnopqrstuvwxyz`]);
   assert.ok(text().includes('Fred Free\'s VIP link is copied'));
+  await click(button('Copy VIP link', row('g-free')));
+  assert.equal(callsOf('event_web_vip_link').length, 2, 'each click reads it again');
   assert.ok(!button('Copy VIP link', row('g-vip')), 'a VIP has no VIP link');
   assert.ok(!button('Copy VIP link', row('g-staff')), 'nor does a guest staff added');
+  assert.ok(!document.body.innerHTML.includes('vip_bcdefghijklmnopqrstuvwxyz2'), 'no other token is on the page');
+});
+
+test('guests (526): where the browser takes a pending clipboard value (Safari), the copy starts in the click, before the link is read', async () => {
+  // A ClipboardItem that keeps its pending value, and a clipboard.write that records when it was called.
+  const written = [];
+  let readDone = false;
+  class FakeItem { constructor(parts) { this.parts = parts; } }
+  const saved = navigator.clipboard;
+  Object.defineProperty(dom.window.navigator, 'clipboard', { configurable: true, value: {
+    writeText: async t => { clipboard.push(t); },
+    write: items => { const p = items[0].parts['text/plain']; written.push({ beforeRead: !readDone });
+      return Promise.resolve(p).then(b => b.text()).then(t => { clipboard.push(t); }); },
+  } });
+  globalThis.ClipboardItem = FakeItem;
+  try {
+    await mount({ setup: b => { b.handlers.event_web_vip_link = () => { readDone = true; return { ok: true, upgrade_token: 'vip_abcdefghijklmnopqrstuvwxyz' }; }; } });
+    await click(button('Copy VIP link', row('g-free')));
+    assert.deepEqual(written, [{ beforeRead: true }], 'clipboard.write was called in the click, before the read answered');
+    assert.deepEqual(clipboard, [`${SITE}/vip/vip_abcdefghijklmnopqrstuvwxyz`]);
+    assert.ok(text().includes('Fred Free\'s VIP link is copied'));
+    // No link now: the pending copy fails quietly; nothing is copied and the reason shows.
+    await mount({ setup: b => { b.handlers.event_web_vip_link = () => ({ ok: false, reason: 'not_available' }); } });
+    await click(button('Copy VIP link', row('g-free')));
+    assert.deepEqual(clipboard, []);
+    assert.ok(text().includes('Fred Free has no VIP link now'), text());
+  } finally {
+    delete globalThis.ClipboardItem;
+    Object.defineProperty(dom.window.navigator, 'clipboard', { configurable: true, value: saved });
+  }
+});
+
+test('guests (526): no VIP link now (not_available) or a failed read says so and copies nothing; the button waits while it reads', async () => {
+  await mount({ setup: b => { b.handlers.event_web_vip_link = () => ({ ok: false, reason: 'not_available' }); } });
+  await click(button('Copy VIP link', row('g-free')));
+  assert.deepEqual(clipboard, []);
+  assert.ok(text().includes('Fred Free has no VIP link now'), text());
+  await mount({ setup: b => { b.handlers.event_web_vip_link = () => ({ __error: 'You do not have access to this event', __code: '42501' }); } });
+  await click(button('Copy VIP link', row('g-free')));
+  assert.deepEqual(clipboard, []);
+  assert.ok(text().includes('Could not get Fred Free\'s VIP link: You do not have access to this event'), text());
+  // While one link is read, the buttons wait (one read per click).
+  let release;
+  await mount({ setup: b => { b.handlers.event_web_vip_link = () => ({ ok: true, upgrade_token: 'vip_abcdefghijklmnopqrstuvwxyz' }); } });
+  const gate = new Promise(r => { release = r; });
+  const realRpc = backend.client.rpc;
+  backend.client.rpc = (name, args) => {
+    const q = realRpc(name, args);
+    if (name !== 'event_web_vip_link') return q;
+    return { then: (res, rej) => gate.then(() => q.then(res, rej)) };
+  };
+  await act(async () => { button('Copy VIP link', row('g-free')).click(); });
+  assert.ok(button('Copy VIP link', row('g-free')).disabled, 'disabled while it reads');
+  assert.ok(button('Copy VIP link', row('g-held')).disabled, 'the others too');
+  release();
+  await tick();
+  assert.ok(!button('Copy VIP link', row('g-free')).disabled);
+  assert.deepEqual(clipboard, [`${SITE}/vip/vip_abcdefghijklmnopqrstuvwxyz`]);
+});
+
+test('guests (526): without the website address the button is there but disabled, and reads nothing', async () => {
+  await mount({ setup: b => { b.handlers.event_web_guest_extras = () => {
+    const x = makeFixture().extras; x.settings.site_url = null; return x; }; } });
+  const btn = button('Copy VIP link', row('g-free'));
+  assert.ok(btn && btn.disabled);
+  assert.equal(btn.title, 'Set the website sync URL on the Website tab first');
+  await click(btn);
+  assert.equal(callsOf('event_web_vip_link').length, 0);
+});
+
+test('guests (526): an older list that still sends a token (before 526) and no vip_link_ready shows no button', async () => {
+  await mount({ setup: b => { b.handlers.event_web_guest_extras = () => {
+    const x = makeFixture().extras;
+    for (const g of x.guests) { delete g.vip_link_ready; if (g.guest_id === 'g-free') g.upgrade_token = 'vip_abcdefghijklmnopqrstuvwxyz'; }
+    return x; }; } });
+  assert.ok(!button('Copy VIP link', row('g-free')));
 });
 
 test('guests: To match lists the person with the customers they may be; staff link, make a customer, or close', async () => {
@@ -1071,7 +1159,7 @@ const signedUpAgain = (b, { alsoHeld = false, server449 = true } = {}) => {
     x.guests.push({ guest_id: 'g-again', person_id: 'p-9', website: true, is_test: false, registration_id: 'REG-20261020-AAAA0009', position: 1,
       group_size: 1, parked: false, vip: 'none', vip_guest: false, vip_invoice_no: null, vip_waiting: null, vip_checkout: null, hold: null,
       ...(server449 ? { signed_up_again: { held_at: AGAIN.held_at, days: [D1, D2] } } : {}),
-      closed: false, match: 'new_customer', referral: null, upgrade_token: 'vip_cdefghijklmnopqrstuvwxyz23', gift: null });
+      closed: false, match: 'new_customer', referral: null, upgrade_token: null, vip_link_ready: true, gift: null });
     x.holds.push({ person_id: 'p-9', guest_id: 'g-again', registration_id: 'REG-20261020-AAAA0009', position: 1, group_size: 1,
       held_at: AGAIN.held_at, reason: 'signed_up_again', full_name: 'Rita Returned', phone: '+61491578888', phone_norm: '+61491578888',
       email: 'rita@example.com', days: [D1], vip_waiting: false, vip_payment: false, vip_checkout: null, referral_note: null, candidates: [],

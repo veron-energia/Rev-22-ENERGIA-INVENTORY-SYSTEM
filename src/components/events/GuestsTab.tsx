@@ -8,10 +8,10 @@ import { RegistrationHoldsPanel } from './RegistrationHoldsPanel';
 import { GuestPlanningModal } from './GuestPlanningModal';
 import {
   DayLoad, EventPlanning, EventRow, EventWebExtras, Guest, GuestExtra, ONLINE_PAYMENT_NOT_PAID, PLAN_BADGE_CLASS, PlanningState, SIGNED_UP_AGAIN,
-  StaffOption, VIP_PERKS,
+  StaffOption, VIP_PERKS, type VipLinkAnswer,
   VIP_PROVIDER_LABELS, accessCell, allergyCell, answersUpdatedCell, dayLabel, extraOf, fmtDayMonth, fmtTime, fmtWeekday, foodCell,
   fmtDayList, guestDay, heardFromCell, invoiceStatusLabel, isVipDouble, isVipGuest, normalizeGuestRestored, paymentLabel, paymentTone, planningBadges,
-  planningOf, slug, talksCell, timingCell, vipCheckoutText, vipDoubleText, vipDoubleTitle, vipDoubleVips, vipLink,
+  normalizeVipLinkAnswer, planningOf, slug, talksCell, timingCell, vipCheckoutText, vipDoubleText, vipDoubleTitle, vipDoubleVips, vipLink,
 } from './model';
 
 type TypeFilter = 'all' | 'ticket' | 'free';
@@ -136,6 +136,8 @@ export const GuestsTab: React.FC<{
   const [busyId, setBusyId] = useState<string | null>(null);
   const [webFilter, setWebFilter] = useState<WebFilter>('all');
   const [copied, setCopied] = useState<string | null>(null);
+  // 526: the guest whose VIP link is being read.
+  const [linkBusyId, setLinkBusyId] = useState<string | null>(null);
   const [answering, setAnswering] = useState<Guest | null>(null);
   const [planNotice, setPlanNotice] = useState<string | null>(null);
   const hasWeb = !!extras?.settings;
@@ -173,10 +175,58 @@ export const GuestsTab: React.FC<{
     match: extras?.holds.length ?? 0,
   };
 
-  // 436: the person's link to buy VIP, for WhatsApp.
-  const copyVipLink = async (g: Guest, link: string) => {
+  // 436: the person's link to buy VIP, for WhatsApp. 526 (security audit of 17 Nov 2026, L11; the user, 18 Nov
+  // 2026): the guest list carries no token; each click reads this one person's link from the server, which writes
+  // an Audit Log row (who, which person, when).
+  const copyVipLink = async (g: Guest, personId: string) => {
+    if (!siteUrl || linkBusyId) return;
+    setErr(null); setCopied(null); setLinkBusyId(g.guest_id);
+    const reading = (async (): Promise<VipLinkAnswer | null> => {
+      try {
+        const { data, error } = await supabase.rpc('event_web_vip_link', { p_event_id: event.id, p_person_id: personId });
+        if (error) { setErr(`Could not get ${g.name}'s VIP link: ${error.message}`); return null; }
+        return normalizeVipLinkAnswer(data);
+      } catch {
+        setErr(`Could not get ${g.name}'s VIP link. Check the connection and try again.`);
+        return null;
+      }
+    })();
+    // 526: the link now arrives after a read, and Safari (iPhone, iPad) lets a page write the clipboard only from
+    // the tap itself, not after an await. So where the browser takes a value still to come (ClipboardItem with a
+    // promise), the copy is started here, in the tap; elsewhere, or if that fails, writeText as before.
+    let written: Promise<void> | null = null;
+    const Item = (globalThis as { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
+    if (Item && typeof navigator.clipboard?.write === 'function') {
+      try {
+        const blob = reading.then(a => {
+          const l = a && a.ok ? vipLink(siteUrl, a.token) : null;
+          if (!l) throw new Error('no VIP link');
+          return new Blob([l], { type: 'text/plain' });
+        });
+        blob.catch(() => {});
+        written = navigator.clipboard.write([new Item({ 'text/plain': blob })]);
+        written.catch(() => {});
+      } catch {
+        written = null;
+      }
+    }
+    const answer = await reading;
+    setLinkBusyId(null);
+    if (!answer) return;
+    if (!answer.ok) {
+      setErr(answer.reason === 'not_available'
+        ? `${g.name} has no VIP link now (already VIP, a VIP payment waiting, or closed). Refresh the list.`
+        : `Could not get ${g.name}'s VIP link. Try again.`);
+      return;
+    }
+    const link = vipLink(siteUrl, answer.token);
+    if (!link) return;
     try {
-      await navigator.clipboard.writeText(link);
+      if (written) {
+        try { await written; } catch { await navigator.clipboard.writeText(link); }
+      } else {
+        await navigator.clipboard.writeText(link);
+      }
       setCopied(`${g.name}'s VIP link is copied: ${link}`);
     } catch {
       setCopied(`Copy ${g.name}'s VIP link by hand: ${link}`);
@@ -303,7 +353,6 @@ export const GuestsTab: React.FC<{
                   const x = extraOf(extras, g);
                   const vip = isVipGuest(g, x);
                   const double = isVipDouble(extras, g);
-                  const link = x?.upgrade_token ? vipLink(siteUrl, x.upgrade_token) : null;
                   const plan = planningOf(planning, g);
                   const badges = planningBadges(plan, event, planning?.hours);
                   return (
@@ -409,11 +458,15 @@ export const GuestsTab: React.FC<{
                             <button className="btn btn-secondary btn-sm" disabled={busyId === g.guest_id}
                               onClick={() => void restore(g)}><RotateCcw size={13} /> Restore</button>
                           )}
-                          {x?.upgrade_token && g.status === 'registered' && (
-                            <button className="btn btn-secondary btn-sm" disabled={!link}
-                              title={link ? 'Copy the link where they can buy VIP, to send on WhatsApp' : 'Set the website sync URL on the Website tab first'}
-                              onClick={() => { if (link) void copyVipLink(g, link); }}><Copy size={13} /> Copy VIP link</button>
-                          )}
+                          {x?.vip_link_ready && x.person_id && g.status === 'registered' && (() => {
+                            const personId = x.person_id;
+                            return (
+                              <button className="btn btn-secondary btn-sm" disabled={!siteUrl || linkBusyId !== null}
+                                aria-busy={linkBusyId === g.guest_id || undefined}
+                                title={siteUrl ? 'Copy the link where they can buy VIP, to send on WhatsApp' : 'Set the website sync URL on the Website tab first'}
+                                onClick={() => void copyVipLink(g, personId)}><Copy size={13} /> Copy VIP link</button>
+                            );
+                          })()}
                         </div>
                       )}
                     </td>

@@ -1289,7 +1289,14 @@ select pg_temp.check(pg_temp.hold_of((pg_temp.r2(5)).id) @> jsonb_build_object('
     and pg_temp.extra_of((pg_temp.pp(pg_temp.fx('cara'))).vip_guest_id) @> '{"vip": "paid", "vip_guest": true, "website": true, "upgrade_token": null}'::jsonb
     and pg_temp.extra_of((pg_temp.pp(pg_temp.fx('cara'))).vip_guest_id)->'gift'->>'product_name' = 'HT436 Gloves'
     and pg_temp.extra_of((pg_temp.pp(pg_temp.fx('cara'))).free_guest_id) @> '{"parked": true}'::jsonb
-    and pg_temp.extra_of((pg_temp.pp(pg_temp.fx('p_r1'))).free_guest_id)->>'upgrade_token' = (pg_temp.pp(pg_temp.fx('p_r1'))).upgrade_token
+    -- 526 (security audit of 17 Nov 2026, L11), where it is applied: the list carries no token; vip_link_ready says the
+    -- page may offer "Copy VIP link" (which reads the one link with event_web_vip_link); never for a counter VIP.
+    and case when pg_get_functiondef('public.event_web_guest_extras(uuid)'::regprocedure) like '%-- 526:%'
+             then pg_temp.extra_of((pg_temp.pp(pg_temp.fx('p_r1'))).free_guest_id) @> '{"upgrade_token": null, "vip_link_ready": true}'::jsonb
+                  and pg_temp.extra_of((pg_temp.pp(pg_temp.fx('cara'))).vip_guest_id) @> '{"vip_link_ready": false}'::jsonb
+                  and pg_temp.extra_of((select id from event_guests where invoice_id = pg_temp.fx('counter_inv'))) @> '{"upgrade_token": null, "vip_link_ready": false}'::jsonb
+                  and pg_temp.tx('h1') !~ 'vip_[a-z2-7]{26}'
+             else pg_temp.extra_of((pg_temp.pp(pg_temp.fx('p_r1'))).free_guest_id)->>'upgrade_token' = (pg_temp.pp(pg_temp.fx('p_r1'))).upgrade_token end
     and pg_temp.extra_of((pg_temp.f1(1)).free_guest_id)->'referral' @> jsonb_build_object('code', pg_temp.tx('code_ok'), 'outcome', 'created')
     and pg_temp.extra_of((select id from event_guests where invoice_id = pg_temp.fx('counter_inv'))) @> '{"vip_guest": true, "website": false}'::jsonb
     and (pg_temp.tx('h1')::jsonb)->'gift_choices' = jsonb_build_array(
@@ -4808,8 +4815,11 @@ select pg_temp.check((select array_agg(p.oid::regprocedure::text order by p.oid:
                              'event_vip_order_dismiss(uuid,text,boolean)', 'event_vip_order_invoice(uuid,integer)', 'event_vip_orders_list(uuid)',
                              'event_web_guest_extras(uuid)', 'event_web_key_create(uuid,text,text)', 'event_web_key_revoke(uuid,text)',
                              'event_web_set_talks(uuid,jsonb)', 'event_web_set_venue(uuid,text)', 'event_web_settings_get(uuid)',
-                             'event_web_settings_save(uuid,jsonb)', 'event_web_test_clear(uuid)'],
-  'P2 signed-in staff reach the page''s 20 functions only (each checks the caller); the website''s and the rules are the server''s');
+                             'event_web_settings_save(uuid,jsonb)', 'event_web_test_clear(uuid)']
+                        -- 526 (security audit of 17 Nov 2026, L11), where it is applied: "Copy VIP link" reads one person's link.
+                        || case when to_regprocedure('public.event_web_vip_link(uuid,uuid)') is not null
+                                then array['event_web_vip_link(uuid,uuid)'] else '{}'::text[] end,
+  'P2 signed-in staff reach the page''s 20 functions only (21 with 526''s VIP link; each checks the caller); the website''s and the rules are the server''s');
 select pg_temp.check(not exists (select 1 from unnest(array['event_web_settings', 'event_web_keys', 'event_web_requests', 'event_registrations',
                                    'event_registration_people', 'event_vip_orders', 'event_vip_order_people', 'event_vip_gifts',
                                    'event_planning_answers']) t

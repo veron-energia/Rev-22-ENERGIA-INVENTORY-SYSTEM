@@ -698,8 +698,10 @@ export interface GuestExtra {
    *  (not referred again, their referral stands); someone else on the affiliate's phone or email (held, waiting for an
    *  Owner's or Manager's check, or checked). Null when there is nothing to say. */
   referral: { code: string | null; state: string | null; outcome: string | null; affiliate_name: string | null; note: string | null } | null;
-  /** For "Copy VIP link": set while the person is not VIP. */
-  upgrade_token: string | null;
+  /** 526 (security audit of 17 Nov 2026, L11; the user, 18 Nov 2026): "Copy VIP link" may be offered (not closed,
+   *  not VIP). The list carries no token: the button reads this one person's link with event_web_vip_link, which
+   *  writes an Audit Log row. False before 526 (its list still sent tokens; the page no longer reads them). */
+  vip_link_ready: boolean;
   gift: GuestGift | null;
   /** Round 8 (the owner, 21 Oct 2026: P1): their customer holds two VIP payments for this event (paid or waiting). */
   vip_double: boolean;
@@ -783,7 +785,7 @@ export function normalizeWebExtras(v: any): EventWebExtras {
         code: str(g.referral.code), state: str(g.referral.state), outcome: str(g.referral.outcome),
         affiliate_name: str(g.referral.affiliate_name), note: str(g.referral.note),
       } : null,
-      upgrade_token: str(g.upgrade_token), gift: normalizeGift(g.gift), vip_double: bool(g.vip_double),
+      vip_link_ready: g.vip_link_ready === true, gift: normalizeGift(g.gift), vip_double: bool(g.vip_double),
     };
   }
   return {
@@ -934,6 +936,15 @@ export const extraOf = (extras: EventWebExtras | null, g: Pick<Guest, 'guest_id'
   extras?.guests[g.guest_id] ?? null;
 /** A VIP at the door: their VIP record (website or counter), registered. */
 export const isVipGuest = (g: Guest, x: GuestExtra | null): boolean => !!x?.vip_guest && g.status === 'registered';
+/** 526: event_web_vip_link's answer: the person's token, or why there is none (not_available: closed, VIP, or not
+ *  this event's), or an answer the page does not know (unexpected). */
+export type VipLinkAnswer = { ok: true; token: string } | { ok: false; reason: 'not_available' | 'unexpected' };
+export function normalizeVipLinkAnswer(v: any): VipLinkAnswer {
+  if (v && typeof v === 'object' && v.ok === true && typeof v.upgrade_token === 'string' && v.upgrade_token) {
+    return { ok: true, token: v.upgrade_token };
+  }
+  return { ok: false, reason: v && typeof v === 'object' && v.ok === false && v.reason === 'not_available' ? 'not_available' : 'unexpected' };
+}
 /** The person's link to buy VIP: <site>/vip/<token>, or null without a site address. */
 export function vipLink(siteUrl: string | null | undefined, token: string | null | undefined): string | null {
   if (!siteUrl || !token) return null;

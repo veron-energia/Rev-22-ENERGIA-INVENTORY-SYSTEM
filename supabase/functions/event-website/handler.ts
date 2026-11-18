@@ -1,11 +1,20 @@
 // One message from an event's website in, one database call out (436).
 //
-// Order of checks: configuration, the request envelope (POST, JSON, at most
-// MAX_BODY_BYTES read with a hard ceiling), the key's shape, the timestamp, the
-// request id's shape, UTF-8 JSON, the contract's whitelist, a request id for a
-// write, and only then one RPC: event_web_call(key hash, request id, type,
-// body). The database decides everything else (the key, the event, replays,
-// the rate, the business rules) and its answer is passed back.
+// Order of checks: configuration, the request envelope (POST, JSON, a
+// Content-Length of at most MAX_BODY_BYTES), the key's shape, the timestamp,
+// the request id's shape, then the key itself (event_web_key_check(key hash):
+// unknown, revoked, of an event without website settings or deleted: bad_key),
+// and only then the body: at most MAX_BODY_BYTES read with a hard ceiling,
+// UTF-8 JSON, the contract's whitelist, a request id for a write, and one RPC:
+// event_web_call(key hash, request id, type, body). The database decides
+// everything else (the key again, the event, replays, the rate, the business
+// rules) and its answer is passed back.
+//
+// 526 (security audit of 17 Nov 2026, L11; the user, 18 Nov 2026): the key is
+// checked before the body is read or parsed, so a request without a working
+// key costs no parsing. Signing requests (binding the timestamp to the body)
+// waits until after the Christmas event of 20 Dec 2026: the live website would
+// have to change.
 //
 // Status codes are the website's retry signal (contract ERRORS): 503 means try
 // again (a passing fault: a database error other than class 22, the network);
@@ -83,8 +92,6 @@ export async function handleRequest(req: Request, deps: EventWebsiteDeps): Promi
   const contentType = req.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().split(';')[0].trim().endsWith('application/json')) return fail('unsupported_media_type');
   if (Number(req.headers.get('content-length') ?? '0') > MAX_BODY_BYTES) return fail('payload_too_large');
-  const raw = await readCapped(req, MAX_BODY_BYTES);
-  if (raw === null) return fail('payload_too_large');
 
   const key = req.headers.get(HEADER_KEY);
   if (!keyShaped(key)) {
@@ -100,6 +107,34 @@ export async function handleRequest(req: Request, deps: EventWebsiteDeps): Promi
   if (requestId !== null && !REQUEST_ID_RE.test(requestId)) {
     return fail('invalid_request', { field: HEADER_REQUEST_ID });
   }
+
+  // 526: the key itself, before a byte of the body is read. The same answer as
+  // event_web_call gives for it (bad_key, 401); a database that cannot answer
+  // is a passing fault (503 retry). Nothing of the key is logged.
+  const keyHash = await sha256Hex(key);
+  let admin: RpcClient;
+  try {
+    admin = deps.makeClient(config);
+    const known = await admin.rpc('event_web_key_check', { p_key_hash: keyHash });
+    if (known.error) {
+      logEvent('event_website.retry', { code: safeCode(known.error.code), step: 'key_check', ms: now() - started });
+      return fail('retry');
+    }
+    if (!isObject(known.data) || typeof known.data.ok !== 'boolean') {
+      logEvent('event_website.retry', { code: 'unexpected_result', step: 'key_check', ms: now() - started });
+      return fail('retry');
+    }
+    if (known.data.ok === false) {
+      logEvent('event_website.bad_key', { reason: 'refused' });
+      return fail('bad_key');
+    }
+  } catch {
+    logEvent('event_website.retry', { code: 'network', step: 'key_check', ms: now() - started });
+    return fail('retry');
+  }
+
+  const raw = await readCapped(req, MAX_BODY_BYTES);
+  if (raw === null) return fail('payload_too_large');
 
   let parsed: unknown;
   try {
@@ -121,9 +156,8 @@ export async function handleRequest(req: Request, deps: EventWebsiteDeps): Promi
 
   let data: unknown;
   try {
-    const admin = deps.makeClient(config);
     const answer = await admin.rpc('event_web_call', {
-      p_key_hash: await sha256Hex(key),
+      p_key_hash: keyHash,
       p_request_id: write ? requestId : null,
       p_type: type,
       p_body: request,
