@@ -19,8 +19,13 @@ select position('517:' in pg_get_functiondef('public.correct_invoice_payment(uui
 \else
 \ir ../../../supabase/517_a_payment_is_read_again_once_its_invoice_is_locked.sql
 \endif
--- A second run changes nothing.
+-- A second run changes nothing, while the three are as 517 left them. 518 (18 Nov 2026)
+-- changes two of them again, and 517 then rightly refuses to run again.
+select md5(pg_get_functiondef('public.correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)'::regprocedure))
+       = '29c319b8306a39f940ccb3bb240336b6' as m517_rerun \gset
+\if :m517_rerun
 \ir ../../../supabase/517_a_payment_is_read_again_once_its_invoice_is_locked.sql
+\endif
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end $f$;
@@ -115,10 +120,12 @@ select pg_temp.check(
                ('remove_invoice_payment(uuid,text,uuid)', ' = '),
                ('split_invoice_payment(uuid,jsonb,text,uuid)', ' = ')) x(f, s),
        lateral (select pg_get_functiondef(to_regprocedure('public.' || x.f)) d) y;
-select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = x.m, '3b ' || x.f || ' is as tested')
-  from (values ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '29c319b8306a39f940ccb3bb240336b6'),
+-- (correct_invoice_payment and split_invoice_payment: or 518's, 18 Nov 2026: they also refuse
+-- an amount that is not a number)
+select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (string_to_array(x.m, '|')), '3b ' || x.f || ' is as tested')
+  from (values ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '29c319b8306a39f940ccb3bb240336b6|088e2130d62a1dc4af8cd9417465c0b6'),
                ('remove_invoice_payment(uuid,text,uuid)', '8eb341eb5383430f676940be1de37def'),
-               ('split_invoice_payment(uuid,jsonb,text,uuid)', '07c1b8191e2802e0ca388ab181ae4886'),
+               ('split_invoice_payment(uuid,jsonb,text,uuid)', '07c1b8191e2802e0ca388ab181ae4886|236b86da67f77eb036592e1ce12ec366'),
                ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52'),
                ('correct_invoice_payment_methods(uuid,jsonb,text)', '898afdee6c3cf57893ac81654597dff0')) x(f, m);
 select pg_temp.check(has_function_privilege('authenticated', 'public.correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', 'execute')

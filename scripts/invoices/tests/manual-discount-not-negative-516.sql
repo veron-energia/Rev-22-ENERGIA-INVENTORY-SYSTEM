@@ -16,8 +16,13 @@ select position('516:' in pg_get_functiondef('public.create_invoice_with_details
 \else
 \ir ../../../supabase/516_a_manual_discount_is_never_negative.sql
 \endif
--- A second run changes nothing.
+-- A second run changes nothing, while New Invoice's function is as 516 left it. 518 (18 Nov
+-- 2026) changes it again, and 516 then rightly refuses to run again.
+select md5(pg_get_functiondef('public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)'::regprocedure))
+       = '7c37ac1d841d2c0c2a9cf9b54c563ead' as m516_rerun \gset
+\if :m516_rerun
 \ir ../../../supabase/516_a_manual_discount_is_never_negative.sql
+\endif
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end $f$;
@@ -110,7 +115,8 @@ select pg_temp.check((select convalidated and pg_get_constraintdef(oid) = 'CHECK
   '3b the check is on invoices and holds for every invoice there');
 
 -- 4. The functions
-select pg_temp.check(md5(pg_get_functiondef('public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)'::regprocedure)) = '7c37ac1d841d2c0c2a9cf9b54c563ead'
+-- (or 518's, 18 Nov 2026: it also refuses a manual discount that is not a number)
+select pg_temp.check(md5(pg_get_functiondef('public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)'::regprocedure)) in ('7c37ac1d841d2c0c2a9cf9b54c563ead', '0d60261bf337a1716dab9307b2f52fea')
                      and md5(pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) = 'cea93a5dd73d429f6437f4c9a8fcaa52'
                      and has_function_privilege('authenticated', 'public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)', 'execute')
                      and not has_function_privilege('anon', 'public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)', 'execute'),

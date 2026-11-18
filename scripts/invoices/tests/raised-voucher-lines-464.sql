@@ -271,8 +271,9 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                -- (504's AFTER where it is in, 17 Nov 2026: a deleted
                -- invoice takes no payment)
                ('invoice_record_payments_internal(uuid,jsonb)', '21890d84bcb0b9c00a2bc98aff313d0b|40b3f45fa283bd54b0f6422363f0e3a2'),
-               -- (516's AFTER where it is in, 17 Nov 2026: New Invoice refuses a negative manual discount)
-               ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead'),
+               -- (516's AFTER where it is in, 17 Nov 2026: New Invoice refuses a negative manual discount;
+               -- 518's, 18 Nov 2026: and one that is not a number)
+               ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead|0d60261bf337a1716dab9307b2f52fea'),
                ('write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'c705c733e213a27f0dc32d54322cc855')) x(fn, md5);
 
 -- ═════ A A paid voucher-only invoice, kept paid ═════

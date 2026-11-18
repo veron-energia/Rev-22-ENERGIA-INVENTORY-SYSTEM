@@ -150,9 +150,10 @@ select pg_temp.check(v like '%"success": true%', '4f ' || w || ' still sends sto
 -- 5. The functions
 select pg_temp.check(md5(pg_get_functiondef('public.create_transfer_request(text,text,uuid,text,uuid,jsonb,text)'::regprocedure)) = 'ab4312ec8850847b9058d07776cb1d15',
   '5a create_transfer_request is 513''s');
--- (create_invoice_with_details: or 516's AFTER, 17 Nov 2026: it refuses a negative manual discount)
+-- (create_invoice_with_details: or 516's AFTER, 17 Nov 2026: it refuses a negative manual discount;
+-- or 518's, 18 Nov 2026: and one that is not a number)
 select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (string_to_array(x.m, '|')), '5b unchanged: ' || x.f)
-  from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead'),
+  from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead|0d60261bf337a1716dab9307b2f52fea'),
                ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52'),
                ('create_staff_transfer_request(jsonb,text,uuid)', 'cc32ec91b2e223c67da957dd792af12e'),
                ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '42f00d595a40df157d28a7ea88fbe7ad'),
