@@ -116,6 +116,17 @@ create function pg_temp.submit(p_token text, p_payload jsonb, p_symptoms jsonb d
   returns text language sql as
 $$ select pg_temp.try('anon', format('select public.submit_health_survey(%L, %L::jsonb, %L::jsonb, %L)::text',
                                      p_token, p_payload, p_symptoms, p_pdf)) $$;
+-- 524 (the user, 18 Nov 2026: "Accept and hold for staff"): where 524 is in, a form refused
+-- below as a second survey is accepted with the usual reply, kept with no customer, and waits
+-- for staff with p_reason (scripts/survey/tests/survey-never-refused-524.sql checks it whole).
+-- Before 524: refused, as before. Read in a statement after the one that sent the form.
+create function pg_temp.refused_or_held(v text, p_reason text) returns boolean language sql stable as
+$$ select case when position('524:' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0
+          then pg_temp.state(v) = 'ok'
+               and exists (select 1 from public.health_survey_holds h join public.health_surveys s on s.id = h.survey_id
+                            where h.survey_id = (pg_temp.msg(v)::jsonb->>'survey_id')::uuid and h.reason = p_reason
+                              and h.resolved_at is null and s.customer_id is null)
+          else v like '%HEALTH_SURVEY_ALREADY_EXISTS%' end $$;
 create function pg_temp.visit(p_survey uuid) returns date language sql stable as
 $$ select v.visit_on from public.customer_centre_visit_days() v where v.survey_id = p_survey $$;
 create function pg_temp.audits(p_survey uuid, p_action text) returns int language sql stable as
@@ -438,16 +449,18 @@ select pg_temp.check(pg_temp.state(pg_temp.tx('q2')) = 'ok'
                   and not (new_data->>'record_was_empty')::boolean and old_data->'smokes' = 'false'::jsonb
                   and old_data->'consent_marketing_sms' = 'false'::jsonb and new_data->'consent_marketing_sms' = 'true'::jsonb),
   'Q2 into a record with the consultant''s work: findings, note and file kept, the customer''s answers and consents win, one left blank keeps the record''s, the visit date stays: ' || pg_temp.tx('q2'));
-select pg_temp.check(pg_temp.submit(pg_temp.tx('token'),
-    pg_temp.form('Dina', 'Testfour', '+61491571266', 't419-dina-' || pg_temp.tx('sfx') || '@example.com')) like '%HEALTH_SURVEY_ALREADY_EXISTS%',
-  'Q3 once signed, a second form is refused as before');
+insert into tx values ('q3', pg_temp.submit(pg_temp.tx('token'),
+  pg_temp.form('Dina', 'Testfour', '+61491571266', 't419-dina-' || pg_temp.tx('sfx') || '@example.com')));
+select pg_temp.check(pg_temp.refused_or_held(pg_temp.tx('q3'), 'customer_has_survey'),
+  'Q3 once signed, a second form is refused as before (524: waits for staff, customer_has_survey): ' || pg_temp.tx('q3'));
 -- Q4 A customer whose survey is a signed QR form: refused as before.
 insert into tx values ('q4a', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Esme', 'Testfive', '+61491571491', 't419-esme-' || pg_temp.tx('sfx') || '@example.com')));
+insert into tx values ('q4b', pg_temp.submit(pg_temp.tx('token'),
+  pg_temp.form('Esme', 'Testfive', '+61491571491', 't419-esme-' || pg_temp.tx('sfx') || '@example.com')));
 select pg_temp.check(pg_temp.state(pg_temp.tx('q4a')) = 'ok'
-    and pg_temp.submit(pg_temp.tx('token'),
-          pg_temp.form('Esme', 'Testfive', '+61491571491', 't419-esme-' || pg_temp.tx('sfx') || '@example.com')) like '%HEALTH_SURVEY_ALREADY_EXISTS%',
-  'Q4 a customer with a signed survey is refused a second, as before');
+    and pg_temp.refused_or_held(pg_temp.tx('q4b'), 'customer_has_survey'),
+  'Q4 a customer with a signed survey is refused a second, as before (524: it waits for staff, customer_has_survey): ' || pg_temp.tx('q4b'));
 -- Q5 A new person: the name parts as typed (CUSTOMERS-8).
 insert into tx values ('q5', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Mary Ann', 'Tan Testlee', '+61491573770', 't419-mary-' || pg_temp.tx('sfx') || '@example.com')));
@@ -537,9 +550,10 @@ select pg_temp.check(pg_temp.tx('q10src') ~ '^[0-9]+$' and pg_temp.walkins() = p
     and (select source_option_id from health_surveys where id = pg_temp.fx('hs_heldinto')) = pg_temp.fx('src'),
   'Q10 Customer Sources counts the form once: her record takes its source, the form kept as sent is not counted again: '
     || pg_temp.tx('q10src') || ' -> ' || pg_temp.walkins());
-select pg_temp.check(pg_temp.submit(pg_temp.tx('token'),
-    pg_temp.form('Faye', 'Testsix', '+61491571804', 't419-faye-' || pg_temp.tx('sfx') || '@example.com')) like '%HEALTH_SURVEY_ALREADY_EXISTS%',
-  'Q11 she sends the form again: refused, not held again');
+insert into tx values ('q11', pg_temp.submit(pg_temp.tx('token'),
+  pg_temp.form('Faye', 'Testsix', '+61491571804', 't419-faye-' || pg_temp.tx('sfx') || '@example.com')));
+select pg_temp.check(pg_temp.refused_or_held(pg_temp.tx('q11'), 'repeat_form'),
+  'Q11 she sends the form again: refused, not held again (524: it waits for staff as sent again, repeat_form): ' || pg_temp.tx('q11'));
 -- Q12 Attaching to a customer whose survey is signed: refused as before.
 insert into tx values ('q12a', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Ezme', 'Testfive', '+61491571491', 't419-ezme-' || pg_temp.tx('sfx') || '@example.com')));

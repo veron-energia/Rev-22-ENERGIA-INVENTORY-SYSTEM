@@ -104,10 +104,13 @@ begin
   insert into s511 values ('p:' || p_key, p);
 end $f$;
 
-select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) = 'ddc02ed5fa82aacde5f031d6d367b300'
+-- 524 (18 Nov 2026) changed submit_health_survey again (a form it refused waits for staff); 511's
+-- rule stands in it, so its AFTER is accepted too.
+select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
+                       in ('ddc02ed5fa82aacde5f031d6d367b300', 'a65183cdcb48f2dd883a47c1c7aad7f3')
     and md5(pg_get_functiondef('public.attach_held_health_survey(uuid,uuid,text)'::regprocedure)) = '55b632c7e9289cb267516a26af97387b'
     and md5(pg_get_functiondef('public.event_web_fill_customer(uuid,uuid)'::regprocedure)) = 'ca9957a62467c9f9ea574de86c8fd1bb',
-  'P0 511 is installed (the three functions are its AFTER versions)');
+  'P0 511 is installed (the three functions are its AFTER versions; submit_health_survey 511''s or 524''s)');
 select pg_temp.check(not exists (select 1 from public.customers
                                   where public.normalize_customer_phone(phone) between '+61491570510' and '+61491570529'),
   'P0 no customer uses the test phones +61 491 570 510 to 529 (the checks below assume so)');

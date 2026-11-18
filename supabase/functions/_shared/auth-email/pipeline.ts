@@ -16,8 +16,9 @@
 // login is told so ('email_in_use', 409) so the page can offer Sign in and
 // Reset password. The rate limit is unchanged. Since 466 (the Owner, 24 Oct
 // 2026) the email or phone of an existing affiliate is told so too
-// ('affiliate_exists', 409, with a masked hint of her login email when she is
-// the only one), and the page sends the person to Sign in.
+// ('affiliate_exists', 409, with no part of her login email: security audit
+// of 17 Nov 2026, L9; the user, 18 Nov 2026), and the page sends the person
+// to Sign in.
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError, type AuthEmailConfig } from './config.ts';
 import { adminClient } from './admin.ts';
@@ -58,7 +59,7 @@ export type EndpointResult =
    * 466, sign-up: the email (not her login's) or the phone is an existing
    * affiliate's. Nothing was made; the database logged the try on her record.
    */
-  | { kind: 'affiliate_exists'; matched: 'email' | 'phone'; emailHint: string | null }
+  | { kind: 'affiliate_exists'; matched: 'email' | 'phone' }
   /** 437, sign-up: Supabase Auth refused a value (its password policy, say). */
   | { kind: 'refused'; field: string; message: string }
   /** Something on our side went wrong before a send was attempted. */
@@ -189,15 +190,15 @@ async function finish(
   if (result.kind === 'affiliate_exists') {
     await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: `affiliate_exists:${result.matched}` });
     logEvent('auth_email.affiliate_exists', {
-      action, request_id: requestId, matched: result.matched, hint: result.emailHint !== null, ip_seen: meta.ipSeen,
+      action, request_id: requestId, matched: result.matched, ip_seen: meta.ipSeen,
     });
-    // The message is for a page from before 466, which shows a 409 it does
+    // No email hint, masked or not (security audit of 17 Nov 2026, L9; the
+    // user, 18 Nov 2026). The message is for a page from before 466, which shows a 409 it does
     // not know with the server's words; 466's page words it itself.
     const body: Record<string, unknown> = {
       error: 'affiliate_exists', matched: result.matched,
-      message: affiliateExistsMessage(result.matched, result.emailHint), request_id: requestId,
+      message: affiliateExistsMessage(result.matched), request_id: requestId,
     };
-    if (result.emailHint) body.email_hint = result.emailHint;
     return json(body, 409, origin, allowed);
   }
   if (result.kind === 'refused') {

@@ -43,9 +43,18 @@ insert into public.survey_links(token,store_id) select 'CS-${token}',id from pub
 try {
   const statement=`select public.submit_health_survey('CS-${token}',jsonb_build_object('full_name','Concurrent Identity ${token}','phone','${identityPhone}','email','concurrent@test.invalid','signature_data','sig','source_option_id',(select id from public.customer_source_options where label='CS-${token}')),null,null);`;
   const results=await Promise.allSettled([run('psql',[...args,'-c',statement]),run('psql',[...args,'-c',statement])]);
-  assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
-  const rejected=results.find(r=>r.status==='rejected'); assert.match(rejected.reason.stderr,/HEALTH_SURVEY_ALREADY_EXISTS/);
+  // 524 (18 Nov 2026): the second form is no longer refused; it is kept with no customer and
+  // waits for staff (customer_has_survey). Still one customer, with one survey.
+  const m524=sql("select position('524:' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0;")==='t';
+  if (m524) {
+    assert.equal(results.filter(r=>r.status==='fulfilled').length,2);
+    assert.equal(sql(`select count(*) from public.health_survey_holds h join public.health_surveys s on s.id=h.survey_id where s.full_name='Concurrent Identity ${token}' and s.customer_id is null and h.reason='customer_has_survey';`),'1');
+  } else {
+    assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+    const rejected=results.find(r=>r.status==='rejected'); assert.match(rejected.reason.stderr,/HEALTH_SURVEY_ALREADY_EXISTS/);
+  }
   assert.equal(sql(`select count(*) from public.customers where phone='${identityPhone}';`),'1');
+  assert.equal(sql(`select count(*) from public.health_surveys s join public.customers c on c.id=s.customer_id where c.phone='${identityPhone}';`),'1');
   console.log('PASS: simultaneous identical survey submissions create only one customer and one survey.');
 } finally {
   sql(`delete from public.health_surveys where full_name='Concurrent Identity ${token}';

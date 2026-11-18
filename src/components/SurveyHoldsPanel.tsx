@@ -27,7 +27,15 @@ export interface HeldForm {
   phone: string | null; email: string | null; occupation: string | null; source_label: string | null;
   reason: 'phone_in_use' | 'email_in_use' | 'phone_and_email_in_use' | 'several_name_matches'
     /** 468 (the Owner, 24 Oct 2026): the phone and email are one customer's, who already has a survey. */
-    | 'phone_and_email_customer_has_survey';
+    | 'phone_and_email_customer_has_survey'
+    /**
+     * 524 (the user, 18 Nov 2026): forms the QR page used to refuse, which told anyone with the link
+     * who had sent one: the same phone and name sent a form before (still waiting, or now a
+     * customer's survey); the customer found by phone and name already has a survey; an older
+     * survey with no customer has this phone and name; an old customer of this name has a phone
+     * that cannot be read but could be this one.
+     */
+    | 'repeat_form' | 'customer_has_survey' | 'legacy_survey_same_details' | 'unreadable_phone_same_name';
   held_at: string;
   candidates: HoldCandidate[];
 }
@@ -63,6 +71,27 @@ const reasonText = (f: HeldForm) => {
       return 'Its phone number and email are a customer\'s, under another name, and that customer already has '
         + 'a health survey, so it was not attached. If it is someone else (for example a family member sharing '
         + 'them), make a new customer from it; if it is the same person, an Owner or Manager can close it.';
+    // 524 (the user, 18 Nov 2026): kept for staff instead of refused; the
+    // person was thanked as for any form, so the page tells no one who has
+    // sent one or has a survey.
+    case 'repeat_form':
+      return 'The same phone number and name sent a form before, which is waiting here or is already a customer\'s '
+        + 'survey, so this one was not attached. If it is the same person, attach it where it belongs or an Owner or '
+        + 'Manager can close it; if it is someone else (for example a family member with the same name), make a new '
+        + 'customer from it.';
+    case 'customer_has_survey':
+      return 'Its phone number and name are a customer\'s, and that customer already has a health survey, so it was '
+        + 'not attached. If it is the same person, an Owner or Manager can close it; if it is someone else (for '
+        + 'example a family member sharing the phone), make a new customer from it.';
+    case 'legacy_survey_same_details':
+      return 'An older survey with no customer has the same phone number and name, so it was not attached and no '
+        + 'customer was made. If it is a new person, make a new customer from it; if it is the same person as that '
+        + 'older survey, an Owner or Manager can close it.';
+    case 'unreadable_phone_same_name':
+      return 'An older customer record with the same name has a phone number that cannot be read but could be this '
+        + 'one, so it was not attached and no customer was made. If it is that person, attach it to that record (and '
+        + 'correct its phone number in Edit customer); if it is someone else, make a new customer from it; if it was '
+        + 'sent by mistake, an Owner or Manager can close it.';
     default: return 'It could not be matched to one customer by itself.';
   }
 };
@@ -172,7 +201,10 @@ const SurveyHoldsPanel: React.FC<{
           A QR form waits here instead of making a second customer when only its phone number or only its
           email belongs to a customer under another name, or when more than one customer has both. A form
           whose phone number and email are one customer's is attached to them by itself, unless that customer
-          already has a health survey: then it waits here too. Attach it to the
+          already has a health survey: then it waits here too. So does a form sent again under the same phone
+          number and name, one for a customer (found by phone and name) who already has a health survey, one
+          whose phone number and name only an older survey with no customer has, and one whose name is on an older
+          record with a phone number that cannot be read but could be this one. Attach it to the
           customer it belongs to, or make a new customer from it (for example a family member sharing the
           phone). Until then it counts as no visit and no TikTok attendance, so please match it the same day.
         </div>

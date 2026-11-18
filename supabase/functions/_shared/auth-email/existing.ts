@@ -11,25 +11,12 @@ export interface ExistingAffiliate {
   matched: 'email' | 'phone' | null;
   /** The email typed is that affiliate's own login email (today's email_in_use). */
   loginEmail: boolean;
-  /**
-   * The masked login email ("s•••@rev22.com.sg") when exactly one affiliate
-   * login matched and the email typed is not it; null otherwise.
-   */
-  emailHint: string | null;
+  // No email hint (security audit of 17 Nov 2026, L9; the user, 18 Nov 2026):
+  // the database still returns a masked `email_hint`, but it is ignored here,
+  // so no part of anyone's email can reach a response, a log line or a page.
 }
 
-export const NO_EXISTING_AFFILIATE: ExistingAffiliate = { matched: null, loginEmail: false, emailHint: null };
-
-/**
- * The only shape a hint may have: at most one character before "•••", then
- * "@" and a domain. Anything else (a whole address, markup, spaces) is
- * dropped rather than shown.
- */
-export const EMAIL_HINT_RE = /^[^\s@<>"'`\\•]?•••@[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
-
-export function isEmailHint(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 256 && EMAIL_HINT_RE.test(value);
-}
+export const NO_EXISTING_AFFILIATE: ExistingAffiliate = { matched: null, loginEmail: false };
 
 /**
  * Read the database's answer. A reply that is not the expected shape is an
@@ -41,7 +28,7 @@ export function readExistingAffiliate(data: unknown): ExistingAffiliate {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     throw new Error('existing affiliate lookup returned an unexpected value');
   }
-  const row = data as { matched?: unknown; login_email?: unknown; email_hint?: unknown };
+  const row = data as { matched?: unknown; login_email?: unknown };
   // The key itself must be there (null for no match): {} or { error } is not
   // "no match", and neither is a login_email that is not true or false.
   if (!('matched' in row) || typeof row.login_email !== 'boolean') {
@@ -53,7 +40,7 @@ export function readExistingAffiliate(data: unknown): ExistingAffiliate {
   }
   if (matched === null) return NO_EXISTING_AFFILIATE;
   const loginEmail = matched === 'email' && row.login_email;
-  return { matched, loginEmail, emailHint: !loginEmail && isEmailHint(row.email_hint) ? row.email_hint : null };
+  return { matched, loginEmail };
 }
 
 /**
@@ -62,11 +49,9 @@ export function readExistingAffiliate(data: unknown): ExistingAffiliate {
  * is for a page from before 466, which shows a 409 it does not know with the
  * server's message. A test keeps the two the same.
  */
-export function affiliateExistsMessage(matched: 'email' | 'phone', hint: string | null): string {
+export function affiliateExistsMessage(matched: 'email' | 'phone'): string {
   const what = matched === 'phone'
     ? 'This phone number already has an Energia affiliate account'
     : 'This email is already on an Energia affiliate account';
-  return hint
-    ? `${what}, which signs in with ${hint}. Sign in with that email, or reset your password if you have forgotten it.`
-    : `${what}. Sign in with the email you used for it, or reset your password if you have forgotten it.`;
+  return `${what}. Sign in with the email you used for it, or reset your password if you have forgotten it.`;
 }

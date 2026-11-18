@@ -22,9 +22,9 @@
 // Since 466 (the Owner, 24 Oct 2026), asked before any login is made: 409
 // { error: 'email_in_use', matched: 'email' } for an affiliate's own login
 // email too, and 409 { error: 'affiliate_exists', matched: 'email' | 'phone',
-// email_hint? } for another email or the phone of an existing affiliate (her
-// sign-up's or her record's; the hint is her login email masked, when she is
-// the only one). The page sends the person to Sign in; nothing is made. A
+// } for another email or the phone of an existing affiliate (her sign-up's or
+// her record's; no part of her login email is ever shown: security audit of
+// 17 Nov 2026, L9; the user, 18 Nov 2026). The page sends the person to Sign in; nothing is made. A
 // customer of her own on an affiliate's phone (no login) who types her
 // record's name signs up as before. Needs migration 466
 // (affiliate_signup_existing) first: without it every sign-up answers 503.

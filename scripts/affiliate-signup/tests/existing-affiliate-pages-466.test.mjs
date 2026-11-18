@@ -126,7 +126,7 @@ async function fillJoin(email = EMAIL) {
 const notice = () => document.querySelector('[data-state="signup-existing"]');
 const emailField = () => document.querySelector('input[type="email"]');
 
-test('R: the phone of one existing affiliate: straight to Sign in, with her masked login email, nothing filled in, nothing made', async () => {
+test('R: the phone of one existing affiliate: straight to Sign in, with no part of her login email even if an older server sent one (security audit of 17 Nov 2026, L9), nothing filled in, nothing made', async () => {
   const client = backend(answer(409, { error: 'affiliate_exists', matched: 'phone', email_hint: 's•••@rev22.com.sg',
     message: 'This phone number already has an Energia affiliate account, which signs in with s•••@rev22.com.sg. Sign in with that email, or reset your password if you have forgotten it.',
     request_id: 'r1' }));
@@ -136,7 +136,8 @@ test('R: the phone of one existing affiliate: straight to Sign in, with her mask
   assert.equal(where(), '/affiliate/login');
   assert.equal(notice()?.getAttribute('data-reason'), 'affiliate_phone');
   assert.equal(notice().querySelector('p').textContent,
-    'This phone number already has an Energia affiliate account, which signs in with s•••@rev22.com.sg. Sign in with that email, or reset your password if you have forgotten it.');
+    'This phone number already has an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.');
+  assert.doesNotMatch(d.text(), /s•••|rev22\.com\.sg/, 'the hint an older server sent is not shown anywhere');
   assert.equal(emailField().value, '', 'the email typed is not filled in (it is not her login)');
   assert.ok([...notice().querySelectorAll('a')].some(a => a.textContent.trim() === 'Reset password' && a.getAttribute('href') === '/affiliate/forgot-password'));
   assert.deepEqual(made(client), { signIns: 0, onboarding: 0 });
@@ -225,7 +226,7 @@ test('R: a phone several affiliates share: no hint, sign in with the email they 
   assert.equal(emailField().value, '');
 });
 
-test('R: another email of an affiliate (her record\'s): Sign in, with the hint, nothing filled in', async () => {
+test('R: another email of an affiliate (her record\'s): Sign in, no hint even if sent, nothing filled in', async () => {
   backend(answer(409, { error: 'affiliate_exists', matched: 'email', email_hint: 'a•••@example.com', message: 'x', request_id: 'r3' }));
   await d.mount(app('/affiliate/join'));
   await fillJoin('ava-record-466@example.com');
@@ -233,7 +234,8 @@ test('R: another email of an affiliate (her record\'s): Sign in, with the hint, 
   assert.equal(where(), '/affiliate/login');
   assert.equal(notice()?.getAttribute('data-reason'), 'affiliate_email');
   assert.equal(notice().querySelector('p').textContent,
-    'This email is already on an Energia affiliate account, which signs in with a•••@example.com. Sign in with that email, or reset your password if you have forgotten it.');
+    'This email is already on an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.');
+  assert.doesNotMatch(d.text(), /a•••/);
   assert.equal(emailField().value, '');
 });
 
@@ -261,7 +263,7 @@ test('R: email_in_use (466\'s, and an older sign-up function\'s without "matched
   }
 });
 
-test('W: the Sign in page shows its own words: not the server\'s message, and not a hint that is not the mask', async () => {
+test('W: the Sign in page shows its own words: not the server\'s message, and never a hint', async () => {
   for (const [hint, words] of [
     ['<img src=x onerror=alert(1)>', 'This phone number already has an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.'],
     ['sam@example.com', 'This phone number already has an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.'],
@@ -290,14 +292,14 @@ test('W: the address bar cannot put a message or a hint on the Sign in page; sta
     await d.mount(app({ pathname: '/affiliate/login', state }));
     assert.equal(notice(), null, JSON.stringify(state));
   }
-  // A hint is shown only for an affiliate's email or phone; the email is filled in only for email_in_use.
+  // No hint is ever shown, whatever state says; the email is filled in only for email_in_use.
   await d.mount(app({ pathname: '/affiliate/login', state: { signupRefused: { reason: 'email_in_use', emailHint: 's•••@example.com', email: EMAIL } } }));
   assert.doesNotMatch(notice().textContent, /s•••@example\.com/);
   assert.equal(emailField().value, EMAIL);
   await d.mount(app({ pathname: '/affiliate/login', state: { signupRefused: { reason: 'affiliate_phone', emailHint: 's•••@example.com', email: EMAIL } } }));
-  assert.match(notice().textContent, /which signs in with s•••@example\.com/);
+  assert.doesNotMatch(notice().textContent, /s•••|@/);
   assert.equal(emailField().value, '');
-  await d.mount(app({ pathname: '/affiliate/login', state: { signupRefused: { reason: 'email_in_use', emailHint: null, email: `${'x'.repeat(250)}@example.com` } } }));
+  await d.mount(app({ pathname: '/affiliate/login', state: { signupRefused: { reason: 'email_in_use', email: `${'x'.repeat(250)}@example.com` } } }));
   assert.equal(emailField().value, '', 'an email longer than an address can be is not filled in');
 });
 

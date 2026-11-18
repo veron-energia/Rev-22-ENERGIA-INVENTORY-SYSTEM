@@ -492,3 +492,50 @@ test('468 (D): two namesakes on the phone and one customer of another name with 
     assert.equal(ui.$('[data-attach="c-ida"]').disabled, false, 'staff may still attach it to her');
   } finally { ui.close(); }
 });
+
+// 524 (the user, 18 Nov 2026: "Accept and hold for staff"): forms the QR page
+// used to refuse wait here, each with its reason in plain words; staff deal
+// with them as with any form.
+const NEVER_REFUSED = [
+  { ...FORMS[0], survey_id: 'hs-r', survey_no: 'HS-20261118-r00001', full_name: 'Rhea L524Sample', reason: 'repeat_form',
+    candidates: [cand('c-ola', 'Ola L524Sample', { phone: true })] },
+  { ...FORMS[0], survey_id: 'hs-b', survey_no: 'HS-20261118-b00001', full_name: 'Bea L524Sample', reason: 'customer_has_survey',
+    candidates: [cand('c-bea', 'Bea L524Sample', { phone: true, name: true }, 'HS-20261001-bea000')] },
+  { ...FORMS[0], survey_id: 'hs-e', survey_no: 'HS-20261118-e00001', full_name: 'Eli L524Sample', reason: 'legacy_survey_same_details',
+    candidates: [] },
+  { ...FORMS[0], survey_id: 'hs-u', survey_no: 'HS-20261118-u00001', full_name: 'Uma L524Sample', reason: 'unreadable_phone_same_name',
+    candidates: [cand('c-uma-old', 'Uma L524Sample', { name: true })] },
+];
+
+test('524: a form sent again, one for a customer with a survey, one beside an older survey, one beside an old record whose phone cannot be read: each reason in plain words', async () => {
+  const staff = await mount({ forms: NEVER_REFUSED, canClose: false });
+  try {
+    assert.equal(staff.$('[data-hold="hs-r"] [data-reason]').textContent,
+      'The same phone number and name sent a form before, which is waiting here or is already a customer\'s survey, '
+      + 'so this one was not attached. If it is the same person, attach it where it belongs or an Owner or Manager can '
+      + 'close it; if it is someone else (for example a family member with the same name), make a new customer from it.');
+    assert.equal(staff.$('[data-hold="hs-b"] [data-reason]').textContent,
+      'Its phone number and name are a customer\'s, and that customer already has a health survey, so it was not '
+      + 'attached. If it is the same person, an Owner or Manager can close it; if it is someone else (for example a '
+      + 'family member sharing the phone), make a new customer from it.');
+    assert.equal(staff.$('[data-hold="hs-e"] [data-reason]').textContent,
+      'An older survey with no customer has the same phone number and name, so it was not attached and no customer '
+      + 'was made. If it is a new person, make a new customer from it; if it is the same person as that older survey, '
+      + 'an Owner or Manager can close it.');
+    assert.equal(staff.$('[data-hold="hs-u"] [data-reason]').textContent,
+      'An older customer record with the same name has a phone number that cannot be read but could be this one, so it '
+      + 'was not attached and no customer was made. If it is that person, attach it to that record (and correct its phone '
+      + 'number in Edit customer); if it is someone else, make a new customer from it; if it was sent by mistake, an Owner '
+      + 'or Manager can close it.');
+    assert.equal(staff.$('[data-attach="c-uma-old"]').disabled, false, 'the old record has no survey');
+    assert.equal(staff.$('[data-attach="c-ola"]').disabled, false, 'a form sent again may go to a customer with no survey');
+    assert.equal(staff.$('[data-attach="c-bea"]').disabled, true, 'a customer has only one survey');
+    for (const id of ['hs-r', 'hs-b', 'hs-e', 'hs-u']) assert.ok(staff.$(`[data-create="${id}"]`), `any staff may make a new customer from ${id}`);
+    assert.equal(staff.$('[data-close]'), null, 'staff do not close them');
+    assert.match(staff.text(), /So does a form sent again under the same phone\s+number and name/);
+  } finally { staff.close(); }
+  const owner = await mount({ forms: NEVER_REFUSED, canClose: true });
+  try {
+    for (const id of ['hs-r', 'hs-b', 'hs-e', 'hs-u']) assert.ok(owner.$(`[data-close="${id}"]`), `an Owner or Manager may close ${id}`);
+  } finally { owner.close(); }
+});

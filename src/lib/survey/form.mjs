@@ -156,6 +156,12 @@ export function validateSurvey(input) {
 export function mapServerError(raw) {
   const m = String(raw ?? '');
 
+  // 524 (the user, 18 Nov 2026): the form no longer refuses a form sent again,
+  // one for a customer who has a survey, one beside an older survey with no
+  // customer, or one beside an old record of that name whose phone cannot be
+  // read: each is accepted and waits for staff. These two messages stay for
+  // what can still send the codes: a database before 524, and a consultant's
+  // record signed at the same moment (HEALTH_SURVEY_ALREADY_EXISTS).
   if (m.includes('HEALTH_SURVEY_ALREADY_EXISTS')) {
     // 468 (the Owner, 24 Oct 2026): neutral words; the reply does not say
     // which of the details typed were found.

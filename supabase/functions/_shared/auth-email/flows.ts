@@ -136,14 +136,14 @@ export function signupEndpoint(deps: FlowDeps): PublicEndpoint<SignupInput> {
       if (existing.matched === 'email') {
         return existing.loginEmail
           ? { kind: 'email_in_use' }
-          : { kind: 'affiliate_exists', matched: 'email', emailHint: existing.emailHint };
+          : { kind: 'affiliate_exists', matched: 'email' };
       }
 
       // Any login with this address (an affiliate, a member of staff, or a
       // sign-up from before 437 that was never confirmed) keeps it.
       if (state !== 'none') return { kind: 'email_in_use' };
       if (existing.matched === 'phone') {
-        return { kind: 'affiliate_exists', matched: 'phone', emailHint: existing.emailHint };
+        return { kind: 'affiliate_exists', matched: 'phone' };
       }
 
       const outcome = await deps.createConfirmedSignup(ctx.admin, {

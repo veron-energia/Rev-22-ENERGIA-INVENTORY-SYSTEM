@@ -131,9 +131,15 @@ $$declare r jsonb; q uuid := gen_random_uuid(); begin
 end$$;
 create function pg_temp.e(tag text) returns jsonb language sql as $$ select pg_temp.tx('ex:' || tag)::jsonb $$;
 create function pg_temp.logs(tag text) returns int language sql as $$ select count(*)::int from exlog where exlog.tag = $1 $$;
+-- 525 (security audit of 17 Nov 2026, L9; the user, 18 Nov 2026): once 525 is in, the
+-- function makes no hint of anyone's login email: every hint expected below is then null,
+-- and the Audit Log says none was shown.
+create function pg_temp.m525() returns boolean language sql as
+$$ select position('-- 525 (security audit' in pg_get_functiondef('public.affiliate_signup_existing(text,text,text,uuid)'::regprocedure)) > 0 $$;
 -- The answer the sign-up function reads: what matched, login email or not, the hint, how many.
 create function pg_temp.is(tag text, matched text, login_email boolean, hint text, n int) returns boolean language sql as
-$$ select pg_temp.e(tag) = jsonb_build_object('matched', matched, 'login_email', login_email, 'email_hint', hint, 'affiliates', n) $$;
+$$ select pg_temp.e(tag) = jsonb_build_object('matched', matched, 'login_email', login_email,
+                                              'email_hint', case when pg_temp.m525() then null else hint end, 'affiliates', n) $$;
 create function pg_temp.nothing(tag text) returns boolean language sql as
 $$ select pg_temp.is(tag, null, false, null, 0) and pg_temp.logs(tag) = 0 $$;
 -- The Audit Log row a call wrote on an affiliate's record.
@@ -184,8 +190,9 @@ select pg_temp.check(not exists (select 1 from auth.users where email like 'z466
                       and new_data->>'email' like '%z466-check-%'),
   'M2 466''s self-test left no row');
 \endif
-select pg_temp.check(md5(pg_get_functiondef('public.affiliate_signup_existing(text,text,text,uuid)'::regprocedure)) = '27e3b1ad5a583bc6421d783b5a7db45a',
-  'M3 affiliate_signup_existing has 466''s AFTER md5');
+select pg_temp.check(md5(pg_get_functiondef('public.affiliate_signup_existing(text,text,text,uuid)'::regprocedure))
+                     = case when pg_temp.m525() then '6df6e72e2942db0ea39818666a68bf57' else '27e3b1ad5a583bc6421d783b5a7db45a' end,
+  'M3 affiliate_signup_existing has 466''s AFTER md5 (or 525''s, which makes no hint)');
 
 -- ═════ Fixtures ═════
 -- Staff, and a member of staff's login.
@@ -462,7 +469,7 @@ end $$;
 select pg_temp.ex('k3', '+61491570475', pg_temp.mail('new-k3'));
 select pg_temp.check(pg_temp.is('k3', 'phone', false, '•••@t466-' || pg_temp.tx('sfx') || '.example.com', 1)
     and pg_temp.is('d1', 'phone', false, 'b•••@example.com', 1)
-    and pg_temp.e('p4a')->>'email_hint' = 't•••@example.com',
+    and pg_temp.e('p4a')->>'email_hint' is not distinct from case when pg_temp.m525() then null else 't•••@example.com' end,
   'K1 the mask: a one-character part gives "•••@" and the whole domain (subdomains kept); a login email stored in capitals is shown in lower case; otherwise the first character, •••, @, the domain: '
   || pg_temp.tx('ex:k3'));
 select pg_temp.ex('k4', '+61491570485', pg_temp.mail('new-k4'));
@@ -480,7 +487,7 @@ select pg_temp.check((pg_temp.logrow('p1', 'lAva')).table_name = 'customers'
     and (pg_temp.logrow('p1', 'lAva')).changed_by is null
     and (pg_temp.logrow('p1', 'lAva')).new_data - 'matched' = jsonb_build_object('answered', 'phone',
           'affiliate_account_id', pg_temp.account('lAva'), 'auth_user_id', pg_temp.fx('lAva'), 'phone', '+61491570471',
-          'email', pg_temp.mail('new-p1'), 'name', 'Pat Testnew', 'email_hint_shown', true, 'affiliates_matched', 1,
+          'email', pg_temp.mail('new-p1'), 'name', 'Pat Testnew', 'email_hint_shown', not pg_temp.m525(), 'affiliates_matched', 1,
           'source', 'affiliate_join', 'request_id', pg_temp.tx('req:p1'), 'version', 466),
   'A1 the row: on Ava''s record (customers), module affiliate, as System, with what was answered and matched, her account and login, the phone, email and name typed, the hint shown, the request id: '
   || coalesce((pg_temp.logrow('p1', 'lAva')).new_data::text, 'none'));

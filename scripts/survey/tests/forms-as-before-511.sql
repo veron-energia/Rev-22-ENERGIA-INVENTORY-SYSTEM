@@ -11,6 +11,13 @@
 --
 -- Included by scripts/survey/tests/affiliate-email-485.sql.
 -- Never run it on its own against a real database: it is only for a rolled-back test.
+-- 524 (18 Nov 2026) changed submit_health_survey after 511 (the forms it refused wait for staff).
+-- Where 524 is in, it is first put back as before 524 by its UNDO, scripts/survey/undo-524.sql
+-- (inside the same rolled-back transaction), so that 511's own text is there to put back below.
+select position('524:' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 as as511_m524 \gset
+\if :as511_m524
+\ir ../undo-524.sql
+\endif
 do $as511$
 declare
   v_path text := current_setting('search_path');

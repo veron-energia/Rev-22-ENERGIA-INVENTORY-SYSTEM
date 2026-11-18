@@ -7,23 +7,18 @@ export interface AuthEmailResult {
   retryAfterSeconds: number;
   /** 466: what an existing account has of a sign-up ('email_in_use' and 'affiliate_exists' only). */
   matched?: 'email' | 'phone';
-  /** 466: the masked login email of the one affiliate matched ('affiliate_exists' only). */
-  emailHint?: string | null;
 }
 export type SignupRefusalReason = 'email_in_use' | 'affiliate_email' | 'affiliate_phone';
 export interface SignupRefusalState {
-  signupRefused: { reason: SignupRefusalReason; emailHint: string | null; email: string };
+  signupRefused: { reason: SignupRefusalReason; email: string };
 }
 export interface SignupRefusal {
   reason: SignupRefusalReason;
-  emailHint: string | null;
   email: string;
   message: string;
 }
-export const EMAIL_HINT_RE: RegExp;
 export const SIGNUP_REFUSAL_REASONS: SignupRefusalReason[];
-export function isEmailHint(value: unknown): value is string;
-export function signupExistingMessage(reason: SignupRefusalReason, hint: string | null): string;
+export function signupExistingMessage(reason: SignupRefusalReason): string;
 export function signupRefusalState(result: AuthEmailResult, typedEmail: string): SignupRefusalState | null;
 export function readSignupRefusal(state: unknown): SignupRefusal | null;
 export interface PasswordChangeResult extends AuthEmailResult {

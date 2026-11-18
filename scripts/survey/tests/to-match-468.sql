@@ -54,7 +54,9 @@
 --      survey), can make a new customer from it; a Manager can close it. An
 --      old survey with no customer with the phone and the name typed: waits
 --      too. A phone and name match (also the same words, also a namesake
---      the email picks) is still refused (HEALTH_SURVEY_ALREADY_EXISTS).
+--      the email picks) is still refused (HEALTH_SURVEY_ALREADY_EXISTS); since 524
+--      it waits for staff too (customer_has_survey, or repeat_form when the
+--      same name sent one before); the checks take whichever version is in.
 --      One whose survey is a consultant's record they have not signed: the
 --      form goes into it (419).
 --   O  A stranger's two forms with a phone (or an email, also as Gmail
@@ -130,6 +132,21 @@ exception when others then
 end$$;
 create function pg_temp.reply(key text) returns jsonb language sql as
 $$ select case when pg_temp.tx('sub:' || key) like 'ERROR:%' then null else pg_temp.tx('sub:' || key)::jsonb end $$;
+-- 524 (the user, 18 Nov 2026: "Accept and hold for staff"): where 524 is in, a form refused
+-- below (sent again, or by the phone and name of a customer with a survey) is accepted with the
+-- usual reply, kept with no customer, and waits for staff with p_reason and p_for
+-- (scripts/survey/tests/survey-never-refused-524.sql checks it whole). Before 524: refused, as
+-- before. Read in a statement after the one that sent it.
+create function pg_temp.m524() returns boolean language sql stable as
+$$ select position('524:' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 $$;
+create function pg_temp.refused_or_held(key text, p_reason text, p_for uuid[]) returns boolean language sql stable as
+$$ select case when pg_temp.m524()
+          then pg_temp.tx('sub:' || key) not like 'ERROR:%'
+               and (pg_temp.reply(key) - 'survey_no' - 'survey_id') = '{"success": true}'::jsonb
+               and exists (select 1 from public.health_survey_holds h join public.health_surveys s on s.id = h.survey_id
+                            where h.survey_id = pg_temp.fx('hs:' || key) and h.reason = p_reason
+                              and h.candidate_customer_ids = p_for and h.resolved_at is null and s.customer_id is null)
+          else pg_temp.tx('sub:' || key) like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%' end $$;
 create function pg_temp.survey(key text) returns public.health_surveys language sql as
 $$ select s from public.health_surveys s where s.id = pg_temp.fx('hs:' || key) $$;
 create function pg_temp.survey_customer(key text) returns uuid language sql as
@@ -166,11 +183,13 @@ $$ select pg_temp.err(format('select public.close_held_health_survey(%L, %L)', p
 -- or an affiliate record. Its AFTER is accepted too. So is 511's (17 Nov 2026:
 -- nor the email of any other customer who was there before the form).
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
-                     in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308', 'ddc02ed5fa82aacde5f031d6d367b300')
+                     in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308', 'ddc02ed5fa82aacde5f031d6d367b300',
+                         -- 524 (18 Nov 2026): the forms it refused wait for staff; with its wider reason check.
+                         'a65183cdcb48f2dd883a47c1c7aad7f3')
     and (select md5(pg_get_constraintdef(oid)) from pg_constraint
           where conrelid = 'public.health_survey_holds'::regclass and conname = 'health_survey_holds_reason_check')
-        = '378c1861f7ffacb38d2e6e8c69e45cc8',
-  'P0 468 is installed (submit_health_survey is its AFTER version, 485''s or 511''s, the reason check its AFTER version)');
+        in ('378c1861f7ffacb38d2e6e8c69e45cc8', 'caad66551b1d96a8d4c440c0b41900f1'),
+  'P0 468 is installed (submit_health_survey is its AFTER version, 485''s, 511''s or 524''s, the reason check its AFTER version or 524''s)');
 select pg_temp.check(not exists (select 1 from public.customers where public.normalize_customer_phone(phone) like '+614915705__')
     and not exists (select 1 from public.health_surveys where public.normalize_customer_phone(phone) like '+614915705__'),
   'P0 no customer or survey uses the test phones +61 491 570 5xx (the checks below assume so)');
@@ -420,10 +439,10 @@ select pg_temp.as_server();
 -- waits quietly (A).
 select pg_temp.submit('s3again', 'Jody', 'Testdup', '+61491570507', pg_temp.mail('jo'));
 select pg_temp.submit('s3other', 'Jodie', 'Testother', '+61491570507', pg_temp.mail('jo'));
-select pg_temp.check(pg_temp.tx('sub:s3again') like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%'
+select pg_temp.check(pg_temp.refused_or_held('s3again', 'repeat_form', array[pg_temp.fx('cJo1')])
     and (pg_temp.hold('s3other')).reason = 'phone_and_email_customer_has_survey' and pg_temp.held_for('s3other') = pg_temp.ids('cJo1')
     and (pg_temp.reply('s3other') - 'survey_no' - 'survey_id') = '{"success": true}'::jsonb,
-  'A/433 the attached form sent again under its name: refused as sent before; under another name: waits quietly with Jo: '
+  'A/433 the attached form sent again under its name: refused as sent before (524: waits as sent again, with Jo); under another name: waits quietly with Jo: '
   || pg_temp.tx('sub:s3again') || ' / ' || pg_temp.tx('sub:s3other'));
 
 -- ═════ S4 Only the phone, only the email, neither ═════
@@ -460,14 +479,19 @@ select pg_temp.check(pg_temp.survey_customer('s5') is null and pg_temp.fx('hs:s5
   || pg_temp.tx('sub:s5'));
 select pg_temp.submit('s5own', 'Pia', 'Testsurvey', '+61491570513', pg_temp.mail('pia'));
 select pg_temp.submit('s5words', 'Testsurvey', 'Pia', '+61491570513', 'z468-other-' || pg_temp.tx('sfx') || '@example.invalid');
-select pg_temp.check(pg_temp.tx('sub:s5own') like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%'
-    and pg_temp.tx('sub:s5words') like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%',
-  'A by the phone and Pia''s name (as typed, or the same words in another order, any email): still refused: '
+select pg_temp.check(pg_temp.refused_or_held('s5own', 'customer_has_survey', array[pg_temp.fx('cPia')])
+    and pg_temp.refused_or_held('s5words', 'repeat_form', array[pg_temp.fx('cPia')])
+    and (select count(*) from health_surveys where customer_id = pg_temp.fx('cPia')) = 1
+    and pg_temp.details('cPia') = pg_temp.tx('details_pia'),
+  'A by the phone and Pia''s name (as typed, or the same words in another order, any email): still refused '
+  || '(524: it waits with her, customer_has_survey; then, sent again in another order, repeat_form; her details untouched): '
   || pg_temp.tx('sub:s5own') || ' / ' || pg_temp.tx('sub:s5words'));
 select pg_temp.submit('gw0', 'Gwen', 'Testsame', '+61491570528', pg_temp.mail('gwen'));
 select pg_temp.submit('gw1', 'Gwen', 'Testsame', '+61491570528', pg_temp.mail('gwen'));
-select pg_temp.check(pg_temp.survey_customer('gw0') = pg_temp.fx('cGwen1') and pg_temp.tx('sub:gw1') like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%',
-  'A two Gwens on the phone, the email picks one: her form is hers; sent again by name: refused (a name match): ' || pg_temp.tx('sub:gw1'));
+select pg_temp.check(pg_temp.survey_customer('gw0') = pg_temp.fx('cGwen1')
+    and pg_temp.refused_or_held('gw1', 'customer_has_survey', array[pg_temp.fx('cGwen1')]),
+  'A two Gwens on the phone, the email picks one: her form is hers; sent again by name: refused (a name match; 524: it waits with her, customer_has_survey): '
+  || pg_temp.tx('sub:gw1'));
 select pg_temp.submit('vic', 'Val', 'Testlegacy', '+61491570529', pg_temp.mail('vic'));
 select pg_temp.check(pg_temp.survey_customer('vic') is null and (pg_temp.hold('vic')).reason = 'phone_and_email_customer_has_survey'
     and pg_temp.held_for('vic') = pg_temp.ids('cVic')
@@ -598,11 +622,13 @@ select pg_temp.check(not exists (select 1 from m468 m
 -- or an affiliate record. Its AFTER is accepted too. So is 511's (17 Nov 2026:
 -- nor the email of any other customer who was there before the form).
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
-                     in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308', 'ddc02ed5fa82aacde5f031d6d367b300')
+                     in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308', 'ddc02ed5fa82aacde5f031d6d367b300',
+                         -- 524 (18 Nov 2026): the forms it refused wait for staff; with its wider reason check.
+                         'a65183cdcb48f2dd883a47c1c7aad7f3')
     and (select md5(pg_get_constraintdef(oid)) from pg_constraint
           where conrelid = 'public.health_survey_holds'::regclass and conname = 'health_survey_holds_reason_check')
-        = '378c1861f7ffacb38d2e6e8c69e45cc8',
-  'M submit_health_survey is 468''s AFTER version, 485''s or 511''s, the reason check 468''s AFTER version');
+        in ('378c1861f7ffacb38d2e6e8c69e45cc8', 'caad66551b1d96a8d4c440c0b41900f1'),
+  'M submit_health_survey is 468''s AFTER version, 485''s, 511''s or 524''s, the reason check 468''s AFTER version or 524''s');
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;

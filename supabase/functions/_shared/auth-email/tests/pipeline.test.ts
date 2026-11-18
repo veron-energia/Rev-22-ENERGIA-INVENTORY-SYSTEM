@@ -31,7 +31,7 @@ Deno.test('a new signup makes the login already confirmed, with the details, and
       const { requestId, ...rest } = args;
       assertEquals(rest, { email: 'ada@example.com', phone: '+6591234567', name: 'Ada Lovelace' });
       assert(/^[0-9a-f-]{36}$/.test(requestId), 'the request id goes with it (its Audit Log row links to the delivery row)');
-      return Promise.resolve({ matched: null, loginEmail: false, emailHint: null });
+      return Promise.resolve({ matched: null, loginEmail: false });
     },
     accountState: () => { calls.push('state'); return Promise.resolve('none'); },
     createConfirmedSignup: (_a, args) => {
@@ -128,19 +128,21 @@ function existingDeps(existing: ExistingAffiliate, state: 'none' | 'confirmed' |
   return { deps, seen };
 }
 
-Deno.test('466: an existing affiliate\'s phone (another email typed): 409 affiliate_exists with the masked login email, and nothing is made', async () => {
-  const { deps, seen } = existingDeps({ matched: 'phone', loginEmail: false, emailHint: 's•••@rev22.com.sg' });
+Deno.test('466: an existing affiliate\'s phone (another email typed): 409 affiliate_exists with no part of her login email (security audit of 17 Nov 2026, L9), and nothing is made', async () => {
+  const { deps, seen } = existingDeps({ matched: 'phone', loginEmail: false });
   const admin = fakeAdmin(allowAll);
   const response = await run(postRequest({ ...validSignupBody, email: 'Someone.New@Example.com' }), signupEndpoint(deps), admin);
   assertEquals(response.status, 409);
   const body = await bodyOf(response);
   assertEquals(body.error, 'affiliate_exists');
   assertEquals(body.matched, 'phone');
-  assertEquals(body.email_hint, 's•••@rev22.com.sg');
-  assertEquals(body.message, affiliateExistsMessage('phone', 's•••@rev22.com.sg'));
-  assert(/phone number already has an Energia affiliate account/.test(body.message) && body.message.includes('s•••@rev22.com.sg'));
+  assertFalse('email_hint' in body, 'no hint at all');
+  assertEquals(body.message, 'This phone number already has an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.');
+  assertEquals(body.message, affiliateExistsMessage('phone'));
+  assertFalse(body.message.includes('•••') || body.message.includes('@'), 'no part of an email in the words');
+  assertFalse(JSON.stringify(body).includes('•••') || JSON.stringify(body).includes('@'), 'nor anywhere in the body');
   assert(typeof body.request_id === 'string');
-  assertEquals(Object.keys(body).sort(), ['email_hint', 'error', 'matched', 'message', 'request_id']);
+  assertEquals(Object.keys(body).sort(), ['error', 'matched', 'message', 'request_id']);
   assertEquals(seen.lookups, [{ email: 'someone.new@example.com', phone: '+6591234567', name: 'Ada Lovelace' }],
     'the email, phone and name as validated');
   assertEquals(seen.requestIds, [body.request_id], 'the database gets this request\'s id, for its Audit Log row');
@@ -152,7 +154,7 @@ Deno.test('466: an existing affiliate\'s phone (another email typed): 409 affili
 });
 
 Deno.test('466: a phone several affiliates have: no hint, and words that say to use the email they used', async () => {
-  const { deps, seen } = existingDeps({ matched: 'phone', loginEmail: false, emailHint: null });
+  const { deps, seen } = existingDeps({ matched: 'phone', loginEmail: false });
   const response = await run(postRequest(validSignupBody), signupEndpoint(deps));
   assertEquals(response.status, 409);
   const body = await bodyOf(response);
@@ -164,7 +166,7 @@ Deno.test('466: a phone several affiliates have: no hint, and words that say to 
 });
 
 Deno.test('466: an affiliate\'s own login email: today\'s email_in_use, now with matched, and no login', async () => {
-  const { deps, seen } = existingDeps({ matched: 'email', loginEmail: true, emailHint: null }, 'confirmed');
+  const { deps, seen } = existingDeps({ matched: 'email', loginEmail: true }, 'confirmed');
   const response = await run(postRequest(validSignupBody), signupEndpoint(deps));
   assertEquals(response.status, 409);
   const body = await bodyOf(response);
@@ -176,16 +178,17 @@ Deno.test('466: an affiliate\'s own login email: today\'s email_in_use, now with
   assertEquals(seen.created, 0);
 });
 
-Deno.test('466: another email of an affiliate (her record\'s, her sign-up\'s): affiliate_exists matched email, with the hint', async () => {
-  const { deps, seen } = existingDeps({ matched: 'email', loginEmail: false, emailHint: 'a•••@example.com' });
+Deno.test('466: another email of an affiliate (her record\'s, her sign-up\'s): affiliate_exists matched email, with no hint', async () => {
+  const { deps, seen } = existingDeps({ matched: 'email', loginEmail: false });
   const admin = fakeAdmin(allowAll);
   const response = await run(postRequest(validSignupBody), signupEndpoint(deps), admin);
   assertEquals(response.status, 409);
   const body = await bodyOf(response);
   assertEquals(body.error, 'affiliate_exists');
   assertEquals(body.matched, 'email');
-  assertEquals(body.email_hint, 'a•••@example.com');
-  assertEquals(body.message, 'This email is already on an Energia affiliate account, which signs in with a•••@example.com. Sign in with that email, or reset your password if you have forgotten it.');
+  assertFalse('email_hint' in body, 'no hint at all');
+  assertEquals(body.message, 'This email is already on an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.');
+  assertFalse(JSON.stringify(body).includes('•••') || JSON.stringify(body).includes('@'), 'no part of an email anywhere in the body');
   assertEquals(seen.states, 1, 'asked together with the lookup; the affiliate\'s email is answered first');
   assertEquals(seen.created, 0);
   assertEquals(admin.calls.filter(c => c.fn === 'auth_email_record_outcome').at(-1)?.args.p_detail, 'affiliate_exists:email');
@@ -196,8 +199,8 @@ Deno.test('466: a login\'s email (staff, a sign-up never finished) with an affil
   // nothing of the affiliate is told); a fake that did answer the phone still
   // gets email_in_use, the email first.
   for (const existing of [
-    { matched: null, loginEmail: false, emailHint: null },
-    { matched: 'phone', loginEmail: false, emailHint: 's•••@example.com' },
+    { matched: null, loginEmail: false },
+    { matched: 'phone', loginEmail: false },
   ] as ExistingAffiliate[]) {
     const { deps, seen } = existingDeps(existing, 'confirmed');
     const response = await run(postRequest(validSignupBody), signupEndpoint(deps));
@@ -213,8 +216,8 @@ Deno.test('466: an affiliate\'s login email and staff\'s get the same answer fro
   const answers: Record<string, unknown>[] = [];
   const asked: string[][] = [];
   for (const [existing, state] of [
-    [{ matched: 'email', loginEmail: true, emailHint: null }, 'confirmed'],  // an affiliate's login email
-    [{ matched: null, loginEmail: false, emailHint: null }, 'confirmed'],    // staff's (nothing of an affiliate)
+    [{ matched: 'email', loginEmail: true }, 'confirmed'],  // an affiliate's login email
+    [{ matched: null, loginEmail: false }, 'confirmed'],    // staff's (nothing of an affiliate)
   ] as [ExistingAffiliate, 'confirmed'][]) {
     const order: string[] = [];
     const deps = flowDeps({
@@ -259,7 +262,7 @@ Deno.test('466: the database\'s reply read through the live lookup: one that is 
 Deno.test('466: a login check that fails makes nothing (503), even for an affiliate\'s email', async () => {
   let created = 0;
   const deps = flowDeps({
-    affiliateSignupExisting: () => Promise.resolve({ matched: 'email', loginEmail: false, emailHint: 'a•••@example.com' }),
+    affiliateSignupExisting: () => Promise.resolve({ matched: 'email', loginEmail: false }),
     accountState: () => Promise.reject(new Error('account state lookup failed: down')),
     createConfirmedSignup: () => { created += 1; return Promise.resolve({ status: 'created', userId: 'u' }); },
   });
@@ -269,7 +272,7 @@ Deno.test('466: a login check that fails makes nothing (503), even for an affili
 });
 
 Deno.test('466: a customer who is not an affiliate (no match) signs up as before', async () => {
-  const { deps, seen } = existingDeps({ matched: null, loginEmail: false, emailHint: null });
+  const { deps, seen } = existingDeps({ matched: null, loginEmail: false });
   const response = await run(postRequest(validSignupBody), signupEndpoint(deps));
   assertEquals(response.status, 200);
   assertEquals((await bodyOf(response)).status, 'created');
@@ -285,7 +288,7 @@ Deno.test('466: the lookup gets the name typed as onboarding puts it together (a
     ['  Jo   Ann ', ' Testhome ', 'Jo Ann Testhome'],
     ['Jo', '', 'Jo'],
   ]) {
-    const { deps, seen } = existingDeps({ matched: null, loginEmail: false, emailHint: null });
+    const { deps, seen } = existingDeps({ matched: null, loginEmail: false });
     const response = await run(postRequest({ ...validSignupBody, first_name: first, last_name: last }), signupEndpoint(deps));
     assertEquals(response.status, 200);
     assertEquals(seen.lookups.map(l => l.name), [name]);
@@ -318,7 +321,7 @@ Deno.test('466: every refusal costs a rate-limit slot, and a refused reservation
     auth_email_reserve: () => { order.push('reserve'); return { allowed: true, retry_after_seconds: 0 }; },
     auth_email_record_outcome: () => null,
   });
-  const { deps } = existingDeps({ matched: 'phone', loginEmail: false, emailHint: null });
+  const { deps } = existingDeps({ matched: 'phone', loginEmail: false });
   const wrapped = { ...deps, affiliateSignupExisting: (a: unknown, args: { email: string; phone: string; name: string; requestId: string }) => { order.push('existing'); return deps.affiliateSignupExisting(a, args); } };
   await run(postRequest(validSignupBody), signupEndpoint(wrapped), admin);
   assertEquals(order, ['reserve', 'existing']);
@@ -330,7 +333,7 @@ Deno.test('466: every refusal costs a rate-limit slot, and a refused reservation
     auth_email_record_outcome: () => null,
   });
   const response = await run(postRequest(validSignupBody), signupEndpoint(flowDeps({
-    affiliateSignupExisting: () => { looked += 1; return Promise.resolve({ matched: 'phone', loginEmail: false, emailHint: null }); },
+    affiliateSignupExisting: () => { looked += 1; return Promise.resolve({ matched: 'phone', loginEmail: false }); },
   })), limited);
   assertEquals(response.status, 429);
   assertEquals(looked, 0, 'past the limit, nothing is looked up or logged');
@@ -338,7 +341,7 @@ Deno.test('466: every refusal costs a rate-limit slot, and a refused reservation
 
 Deno.test('466: the refusal never carries the login email itself, a secret or the password', async () => {
   const config = testConfig();
-  const { deps } = existingDeps({ matched: 'phone', loginEmail: false, emailHint: 's•••@example.com' });
+  const { deps } = existingDeps({ matched: 'phone', loginEmail: false });
   const text = await (await run(postRequest(validSignupBody), signupEndpoint(deps), fakeAdmin(allowAll), config)).text();
   for (const secret of ['sam@example.com', config.serviceRoleKey, config.hashSecret, validSignupBody.password]) {
     assertFalse(text.includes(secret), `response leaked: ${secret.slice(0, 40)}`);
@@ -585,7 +588,7 @@ Deno.test('the reservation is claimed before the login is made, and never handed
     auth_email_record_outcome: () => null,
   });
   const deps = flowDeps({
-    affiliateSignupExisting: () => { order.push('existing'); return Promise.resolve({ matched: null, loginEmail: false, emailHint: null }); },
+    affiliateSignupExisting: () => { order.push('existing'); return Promise.resolve({ matched: null, loginEmail: false }); },
     accountState: () => { order.push('state'); return Promise.resolve('none'); },
     createConfirmedSignup: () => { order.push('create'); return Promise.resolve({ status: 'error', message: 'down' }); },
   });

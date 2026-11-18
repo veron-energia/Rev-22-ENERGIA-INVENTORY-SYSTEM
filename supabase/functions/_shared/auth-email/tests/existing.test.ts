@@ -3,26 +3,24 @@
 // does.
 
 import { assertEquals, assertThrows } from 'jsr:@std/assert@1';
-import {
-  affiliateExistsMessage, EMAIL_HINT_RE, isEmailHint, NO_EXISTING_AFFILIATE, readExistingAffiliate,
-} from '../existing.ts';
-// The page's own words and hint rule (plain ESM, no SDK).
-import {
-  EMAIL_HINT_RE as PAGE_HINT_RE, signupExistingMessage,
-} from '../../../../../src/lib/auth-email/client.mjs';
+import { affiliateExistsMessage, NO_EXISTING_AFFILIATE, readExistingAffiliate } from '../existing.ts';
+// The page's own words (plain ESM, no SDK).
+import { signupExistingMessage } from '../../../../../src/lib/auth-email/client.mjs';
 
-Deno.test('466: the database\'s answer is read strictly', () => {
+Deno.test('466: the database\'s answer is read strictly, and its email_hint is ignored (security audit of 17 Nov 2026, L9)', () => {
   assertEquals(readExistingAffiliate({ matched: null, login_email: false, email_hint: null, affiliates: 0 }), NO_EXISTING_AFFILIATE);
-  assertEquals(readExistingAffiliate({ matched: 'phone', login_email: false, email_hint: 's•••@rev22.com.sg', affiliates: 1 }),
-    { matched: 'phone', loginEmail: false, emailHint: 's•••@rev22.com.sg' });
+  // The database still sends a masked hint; the server drops it.
+  assertEquals(readExistingAffiliate({ matched: 'phone', login_email: false, email_hint: 's•••@example.com', affiliates: 1 }),
+    { matched: 'phone', loginEmail: false });
   assertEquals(readExistingAffiliate({ matched: 'phone', login_email: false, email_hint: null, affiliates: 2 }),
-    { matched: 'phone', loginEmail: false, emailHint: null });
+    { matched: 'phone', loginEmail: false });
   assertEquals(readExistingAffiliate({ matched: 'email', login_email: true, email_hint: null, affiliates: 1 }),
-    { matched: 'email', loginEmail: true, emailHint: null });
+    { matched: 'email', loginEmail: true });
   assertEquals(readExistingAffiliate({ matched: 'email', login_email: false, email_hint: '•••@t466.example.com', affiliates: 1 }),
-    { matched: 'email', loginEmail: false, emailHint: '•••@t466.example.com' });
-  // A login email match never carries a hint; a phone never counts as the login email.
-  assertEquals(readExistingAffiliate({ matched: 'email', login_email: true, email_hint: 'a•••@example.com' }).emailHint, null);
+    { matched: 'email', loginEmail: false });
+  assertEquals(readExistingAffiliate({ matched: 'phone', login_email: false, email_hint: 'sam@example.com' }),
+    { matched: 'phone', loginEmail: false }, 'not even a whole address is carried');
+  // A phone never counts as the login email.
   assertEquals(readExistingAffiliate({ matched: 'phone', login_email: true, email_hint: null }).loginEmail, false);
 });
 
@@ -36,28 +34,14 @@ Deno.test('466: an answer of the wrong shape is an error (the sign-up then makes
   }
 });
 
-Deno.test('466: a hint that is not the mask is dropped, never shown', () => {
-  for (const good of ['s•••@rev22.com.sg', '•••@example.com', 'a•••@sub.example.co.uk', '1•••@example.com']) {
-    assertEquals(isEmailHint(good), true, good);
+Deno.test('466: the server and the page word a refusal the same, with no email in it (security audit of 17 Nov 2026, L9)', () => {
+  assertEquals(affiliateExistsMessage('phone'), signupExistingMessage('affiliate_phone'));
+  assertEquals(affiliateExistsMessage('email'), signupExistingMessage('affiliate_email'));
+  assertEquals(affiliateExistsMessage('phone'),
+    'This phone number already has an Energia affiliate account. Sign in with the email you used for it, or reset your password if you have forgotten it.');
+  for (const m of [affiliateExistsMessage('phone'), affiliateExistsMessage('email')]) {
+    assertEquals(/[•@]/.test(m), false, m);
   }
-  for (const bad of [
-    'sam@example.com', 's•••@', '•••', 's••@example.com', 'sa•••@example.com', 's•••@Example.com',
-    '<b>•••@example.com', 's•••@example.com <script>', ' s•••@example.com', 's•••@exa mple.com',
-    '"•••@example.com', 's•••@-example.com', 'x'.repeat(300), null, 7,
-  ]) {
-    assertEquals(isEmailHint(bad), false, String(bad));
-  }
-  assertEquals(readExistingAffiliate({ matched: 'phone', login_email: false, email_hint: 'sam@example.com' }).emailHint, null);
-});
-
-Deno.test('466: the server and the page word a refusal the same, with the same hint rule', () => {
-  assertEquals(EMAIL_HINT_RE.source, PAGE_HINT_RE.source);
-  for (const hint of ['s•••@rev22.com.sg', null]) {
-    assertEquals(affiliateExistsMessage('phone', hint), signupExistingMessage('affiliate_phone', hint));
-    assertEquals(affiliateExistsMessage('email', hint), signupExistingMessage('affiliate_email', hint));
-  }
-  assertEquals(affiliateExistsMessage('phone', 's•••@rev22.com.sg'),
-    'This phone number already has an Energia affiliate account, which signs in with s•••@rev22.com.sg. Sign in with that email, or reset your password if you have forgotten it.');
 });
 
 Deno.test('466: the live lookup asks affiliate_signup_existing with the phone, email, name and request id, and fails on an error', async () => {
@@ -70,7 +54,7 @@ Deno.test('466: the live lookup asks affiliate_signup_existing with the phone, e
   assertEquals(
     await affiliateSignupExisting(admin({ data: { matched: 'phone', login_email: false, email_hint: 's•••@example.com', affiliates: 1 }, error: null }),
       { email: 'ada@example.com', phone: '+6591234567', name: 'Ada Lovelace', requestId: '00000000-0000-4000-8000-000000000466' }),
-    { matched: 'phone', loginEmail: false, emailHint: 's•••@example.com' });
+    { matched: 'phone', loginEmail: false });
   assertEquals(calls, [{ fn: 'affiliate_signup_existing',
     args: { p_phone: '+6591234567', p_email: 'ada@example.com', p_name: 'Ada Lovelace',
             p_request_id: '00000000-0000-4000-8000-000000000466' } }]);
