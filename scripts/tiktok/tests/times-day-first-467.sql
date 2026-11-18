@@ -267,7 +267,9 @@ select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', pg_temp.fx('owner')::text, true);
 
 -- ═════ 465 (production holds it; a shared local database may not) ═════
-select (select md5 from pg_temp.fn_md5s() where fn = 'stage_tiktok_orders(uuid,text,text,jsonb)') = '9cad8a716950fdaab791f6f42cdddf7c' as has_465 \gset
+-- (465's AFTER md5, or 519's: 18 Nov 2026, it reads an amount that is not a number as missing)
+select (select md5 from pg_temp.fn_md5s() where fn = 'stage_tiktok_orders(uuid,text,text,jsonb)')
+       in ('9cad8a716950fdaab791f6f42cdddf7c', 'ac4c840689c50433504377aa63664188') as has_465 \gset
 \if :has_465
 \else
 \ir ../../../supabase/465_tiktok_shipped_then_cancelled_waits_for_return.sql

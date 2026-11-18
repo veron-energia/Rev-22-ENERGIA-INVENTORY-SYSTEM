@@ -148,7 +148,10 @@ select pg_temp.check(bool_and(c.convalidated
                                     where ic.table_schema = 'public' and ic.table_name = c.conrelid::regclass::text and ic.data_type = 'numeric'))
                      and count(*) = 7,
   '5c seven checks, validated, each naming every amount in its table')
-  from pg_constraint c where c.conname like '%\_amounts\_are\_numbers' and c.connamespace = 'public'::regnamespace;
+  from pg_constraint c where c.conname like '%\_amounts\_are\_numbers' and c.connamespace = 'public'::regnamespace
+   -- 518's seven tables (519, 18 Nov 2026, adds the same check to sixteen others)
+   and c.conrelid::regclass::text = any (array['invoices', 'invoice_items', 'invoice_payments', 'invoice_refunds',
+                                              'invoice_line_credit_allocations', 'customer_credit_lots', 'commissions']);
 
 -- 6. The functions
 select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = x.m, '6a ' || x.f || ' is as tested')
