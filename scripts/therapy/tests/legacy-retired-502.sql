@@ -65,6 +65,14 @@
 \set t502_mig `cat supabase/502_legacy_therapy_retired.sql`
 \set t502_undo `cat scripts/therapy/undo-502.sql`
 begin;
+-- 522 (18 Nov 2026) changed dashboard_alerts_summary(), one of the fifteen functions 502 patched,
+-- so 502's UNDO rightly refuses where 522 is in. This suite tests 502, not the Dashboard's TikTok
+-- counts: where 522 is in, 522's UNDO puts back the version 502 left, for this run only
+-- (everything here is rolled back).
+select md5(pg_get_functiondef('public.dashboard_alerts_summary()'::regprocedure)) = 'b614ad8c75f8012e069ec72a5be06aa9' as t502_522_in \gset
+\if :t502_522_in
+\ir ../../dashboard/undo-522.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '900s';
 set local search_path = public;

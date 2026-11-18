@@ -82,6 +82,14 @@
 \set t502g_presale `cat scripts/therapy/credit-package-presale-reward-502.sql`
 \set t502g_preview `cat scripts/therapy/golive-preview-502.sql`
 begin;
+-- 522 (18 Nov 2026) changed dashboard_alerts_summary(), one of the fifteen functions 502 patched,
+-- so 502's UNDO rightly refuses where 522 is in. This suite tests 502, not the Dashboard's TikTok
+-- counts: where 522 is in, 522's UNDO puts back the version 502 left, for this run only
+-- (everything here is rolled back).
+select md5(pg_get_functiondef('public.dashboard_alerts_summary()'::regprocedure)) = 'b614ad8c75f8012e069ec72a5be06aa9' as t502g_522_in \gset
+\if :t502g_522_in
+\ir ../../dashboard/undo-522.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '900s';
 select set_config('t502g.mig', :'t502g_mig', true), set_config('t502g.undo502', :'t502g_undo502', true),
@@ -370,6 +378,8 @@ begin
     -- production's functions at 501 (rc501_live), as undo-502.sql gives them back; with 504-510
     -- in as well (17 Nov 2026: they change none of 502's functions), those at 501 with 504-510;
     -- likewise with 511, 512, both, or 511 to 513, 514, 516 to 521 in too (they change none of them either)
+    -- (522 changes dashboard_alerts_summary; where it is in, its UNDO ran first, at the top, so the
+    -- functions here are those with 521)
     perform pg_temp.setkv('fp_before_502', to_jsonb(case pg_temp.fp()
       when 'f74dea74cee6ed53d2a912a9df8fd231/1427' then '974f4dff7d37a9493a5ac9f6159e9670/1427'  -- 504-510
       when '7fb53ddedcc6a869ea62a81642662ac9/1427' then '112b7d7e6fc396be67aba898cf57825e/1427'  -- and 511

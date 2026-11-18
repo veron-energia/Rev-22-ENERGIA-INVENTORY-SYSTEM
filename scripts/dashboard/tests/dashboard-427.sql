@@ -572,8 +572,15 @@ begin
    where r.confirmed and r.is_current and r.match_status = 'pending'
      and r.store_id not in (pg_temp.fx('store_a'), pg_temp.fx('store_b'));
   j := pg_temp.alerts('staff_a');
-  perform pg_temp.check((j->'tiktok'->>'settled_without_order')::int = 3 + v_other,
-    '6: settled with no imported order: O1 (two lines) and O2 at A, O6 at B; not matched, superseded or unconfirmed lines (3, plus ' || v_other || ' elsewhere): ' || (j->'tiktok')::text);
+  -- 522 (18 Nov 2026): the Dashboard's TikTok counts are the login's stores': Staff of store A
+  -- count O1 (two lines) and O2 at A alone. Before 522 they counted every store's.
+  if position('522:' in pg_get_functiondef('public.dashboard_alerts_summary()'::regprocedure)) > 0 then
+    perform pg_temp.check((j->'tiktok'->>'settled_without_order')::int = 2,
+      '6: settled with no imported order, at Staff A''s store: O1 (two lines) and O2; not matched, superseded or unconfirmed lines, nor B''s O6 (2): ' || (j->'tiktok')::text);
+  else
+    perform pg_temp.check((j->'tiktok'->>'settled_without_order')::int = 3 + v_other,
+      '6: settled with no imported order: O1 (two lines) and O2 at A, O6 at B; not matched, superseded or unconfirmed lines (3, plus ' || v_other || ' elsewhere): ' || (j->'tiktok')::text);
+  end if;
 
   v_nos := (select jsonb_agg('T427-' || pg_temp.tx('sfx') || '-' || x order by 'T427-' || pg_temp.tx('sfx') || '-' || x)
               from unnest(array['h01', 'h03', 'h04', 'h05', 'h06', 'h09', 'h13', 'h14', 'h15', 'h16']) x);
