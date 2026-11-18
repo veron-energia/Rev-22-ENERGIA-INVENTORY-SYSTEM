@@ -167,7 +167,10 @@ const stagedNet = (r: any): number | null => {
 const TikTokImportPage: React.FC = () => {
   const { profile, assignments } = useAuth();
   const canManage = isOwnerOrManager(profile?.role);
-  const isStaff = profile?.role === 'staff';
+  // Staff and (521, the user, 18 Nov 2026) Inventory Managers import into and
+  // see the stores they work at; Owners, Admins and Managers every store. The
+  // server keeps to the same (tiktok_access_check and the TikTok reports).
+  const ownStoresOnly = profile?.role === 'staff' || profile?.role === 'inventory_manager';
   // 427 (the Owner, 18 Oct 2026, rule (a)): a settled line with no imported
   // order may be marked reviewed (no stock to take off) by an Owner at any
   // store, and by a Manager at a store they work at. The server checks the
@@ -178,8 +181,9 @@ const TikTokImportPage: React.FC = () => {
 
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState('');
-  // Staff: every store they are assigned to (my_assigned_stores). A member of
-  // staff at two stores imports into either and sees both. null until loaded.
+  // Staff and Inventory Managers: every store they are assigned to
+  // (my_assigned_stores). One at two stores imports into either and sees both.
+  // null until loaded.
   const [myStores, setMyStores] = useState<{ id: string; name: string }[] | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<any[]>([]);
@@ -270,9 +274,9 @@ const TikTokImportPage: React.FC = () => {
     try {
       const [st, mine, pr, vc, pm, rep, sm, phr] = await Promise.all([
         supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
-        // Staff: every store they work at. Others: the store they were first
-        // assigned to, chosen for them to start with.
-        isStaff ? supabase.rpc('my_assigned_stores') : supabase.rpc('my_assigned_store_id'),
+        // Staff and Inventory Managers: every store they work at. Others: the
+        // store they were first assigned to, chosen for them to start with.
+        ownStoresOnly ? supabase.rpc('my_assigned_stores') : supabase.rpc('my_assigned_store_id'),
         supabase.from('products').select('id,name,sku,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
         supabase.from('vouchers').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
         supabase.from('promotions').select('id,name,is_active').is('deleted_at', null).eq('is_active', true).order('name'),
@@ -293,7 +297,7 @@ const TikTokImportPage: React.FC = () => {
       setBatchesError(rep.error ? rep.error.message : null);
       setStatusMaps(read<any[]>(sm, 'Status mappings', []));
       setPhysReturns(read<any[]>(phr, 'Physical returns', []));
-      if (isStaff) {
+      if (ownStoresOnly) {
         if (mine.error) {
           // Said in the banner. The stores and the choice already on screen
           // stay as they were: a failed read is not "no stores".
@@ -316,28 +320,28 @@ const TikTokImportPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [isStaff]);
+  }, [ownStoresOnly]);
   useEffect(() => { load(); }, [load]);
 
-  // Staff: only a store they are assigned to. Others: any store, or none for
-  // every store.
+  // Staff and Inventory Managers: only a store they are assigned to. Others:
+  // any store, or none for every store.
   const myStoreIds = useMemo(() => (myStores ?? []).map(x => x.id), [myStores]);
-  const effectiveStore = isStaff ? (myStoreIds.includes(storeId) ? storeId : '') : storeId;
-  // What the tabs read when no store is chosen. Staff: their own stores (the
-  // tables themselves are readable by any member of staff, so the page keeps
-  // to them; the report functions already do). Others: every store.
+  const effectiveStore = ownStoresOnly ? (myStoreIds.includes(storeId) ? storeId : '') : storeId;
+  // What the tabs read when no store is chosen. Staff and Inventory Managers:
+  // their own stores (the tables' read rules and the report functions keep to
+  // them as well, since 520 and 521). Others: every store.
   const storeScope = (q: any) => effectiveStore ? q.eq('store_id', effectiveStore)
-    : isStaff ? q.in('store_id', myStoreIds) : q;
+    : ownStoresOnly ? q.in('store_id', myStoreIds) : q;
   // Staff whose stores have never loaded: nothing is read for them, and the
   // tabs say the list failed. That is not the same as having no store.
-  const storesUnknown = isStaff && myStores === null;
-  const noStoreToRead = isStaff && myStores !== null && !effectiveStore && myStoreIds.length === 0;
+  const storesUnknown = ownStoresOnly && myStores === null;
+  const noStoreToRead = ownStoresOnly && myStores !== null && !effectiveStore && myStoreIds.length === 0;
   // The Unmatched SKUs list names its store; its id, when the name is one store's.
   const storeIdByName = (name: unknown): string | null => {
     const ids = new Set(stores.filter(x => x.name === name).map(x => x.id));
     return ids.size === 1 ? [...ids][0] : null;
   };
-  const storeOptions = isStaff ? (myStores ?? []) : stores.map(x => ({ id: x.id, name: x.name }));
+  const storeOptions = ownStoresOnly ? (myStores ?? []) : stores.map(x => ({ id: x.id, name: x.name }));
 
   const loadBatchRows = async (batchId: string) => {
     let b: any; let r: any[];
@@ -555,7 +559,7 @@ const TikTokImportPage: React.FC = () => {
   // and the spinner always stops: a failed read never spins forever, and is
   // never shown as an empty list or as "Fully reconciled".
   // Staff: also whether their stores are known, so the tab reads once they load.
-  const storeScopeKey = isStaff ? `${storesUnknown ? 'unknown' : 'known'}|${effectiveStore}|${myStoreIds.join(',')}` : effectiveStore;
+  const storeScopeKey = ownStoresOnly ? `${storesUnknown ? 'unknown' : 'known'}|${effectiveStore}|${myStoreIds.join(',')}` : effectiveStore;
   useEffect(() => {
     let cancelled = false;
     const rpcRows = async (name: string, args: Record<string, unknown>) => {
@@ -863,17 +867,17 @@ const TikTokImportPage: React.FC = () => {
           <div className="card" style={{ padding: 16, marginBottom: 14 }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div style={{ minWidth: 220 }}>
-                <label>Store {isStaff && <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
+                <label>Store {ownStoresOnly && <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
                   {storeOptions.length === 1 ? '(your assigned store)' : '(a store you are assigned to)'}</span>}</label>
-                <select aria-label="Store" value={effectiveStore} disabled={isStaff && storeOptions.length === 1}
+                <select aria-label="Store" value={effectiveStore} disabled={ownStoresOnly && storeOptions.length === 1}
                   onChange={e => setStoreId(e.target.value)}>
-                  {!(isStaff && storeOptions.length === 1) && <option value="">{isStaff ? '— Choose your store —' : '— Select store —'}</option>}
+                  {!(ownStoresOnly && storeOptions.length === 1) && <option value="">{ownStoresOnly ? '— Choose your store —' : '— Select store —'}</option>}
                   {storeOptions.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
                 </select>
-                {isStaff && myStores !== null && storeOptions.length === 0 && (
+                {ownStoresOnly && myStores !== null && storeOptions.length === 0 && (
                   <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 4 }}>You are not assigned to a store yet. Ask an Owner or Manager.</div>
                 )}
-                {isStaff && storeOptions.length > 1 && !effectiveStore && (
+                {ownStoresOnly && storeOptions.length > 1 && !effectiveStore && (
                   <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>Choose a store to upload. The tabs show all your stores until then.</div>
                 )}
               </div>

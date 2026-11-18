@@ -490,3 +490,24 @@ test('Owners and Managers keep any store, starting from their first one', async 
   assert.equal(card('Imported Orders').querySelectorAll('tbody tr').length, 3);
   assert.deepEqual(globalThis.__renderErrors, []);
 });
+
+// 521 (the user, 18 Nov 2026): an Inventory Manager keeps to their stores, as staff do.
+test('an Inventory Manager chooses only among the stores they work at, and the tabs keep to them', async () => {
+  await mount({ role: 'inventory_manager', setup: b => { b.myStores = [NORTH, SOUTH]; } });
+  assert.equal(callsOf('my_assigned_stores').length, 1, 'every store they work at is read');
+  assert.equal(callsOf('my_assigned_store_id').length, 0);
+  const sel = storeSelect();
+  assert.deepEqual([...sel.options].map(o => o.textContent), ['— Choose your store —', 'North Store', 'South Store'], 'their two stores, not East');
+  assert.equal(sel.value, '', 'nothing chosen for them');
+  assert.ok(buttons().filter(x => x.textContent.includes('Upload .xlsx / .csv')).every(x => x.disabled), 'an upload needs a store');
+  await openTab('Orders');
+  assert.match(callsOf('tiktok_order_state').at(-1).where.join(), new RegExp(`store_id in \\(${NORTH},${SOUTH}\\)`));
+  assert.deepEqual([...card('Imported Orders').querySelectorAll('tbody tr')].map(tr => tr.children[1].textContent).sort(),
+    ['SKU-North Store', 'SKU-South Store']);
+
+  // At one store: it is chosen for them.
+  await mount({ role: 'inventory_manager', setup: b => { b.myStores = [SOUTH]; } });
+  assert.equal(storeSelect().value, SOUTH);
+  assert.equal(storeSelect().disabled, true);
+  assert.deepEqual(globalThis.__renderErrors, []);
+});

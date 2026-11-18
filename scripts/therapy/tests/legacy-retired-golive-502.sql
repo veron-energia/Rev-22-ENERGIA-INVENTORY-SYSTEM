@@ -369,7 +369,7 @@ begin
   elsif d = '7b63da063576a5c952cc5abe6c53f13d' then
     -- production's functions at 501 (rc501_live), as undo-502.sql gives them back; with 504-510
     -- in as well (17 Nov 2026: they change none of 502's functions), those at 501 with 504-510;
-    -- likewise with 511, 512, both, or 511 to 513, 514, 516 to 520 in too (they change none of them either)
+    -- likewise with 511, 512, both, or 511 to 513, 514, 516 to 521 in too (they change none of them either)
     perform pg_temp.setkv('fp_before_502', to_jsonb(case pg_temp.fp()
       when 'f74dea74cee6ed53d2a912a9df8fd231/1427' then '974f4dff7d37a9493a5ac9f6159e9670/1427'  -- 504-510
       when '7fb53ddedcc6a869ea62a81642662ac9/1427' then '112b7d7e6fc396be67aba898cf57825e/1427'  -- and 511
@@ -382,6 +382,7 @@ begin
       when '9945f8915cc57de9eafc385f6afd1f6a/1433' then '4143fe6cae3b6cacce42ba3248a2196c/1433'  -- and 518
       when '16a7aa94d0e3633615b28a4914b40487/1433' then 'af9f658158233c42c9c65e1575a191f2/1433'  -- and 519
       when '5f5c7cbfae2064b8f9c7f754001f908e/1433' then '481d048c5ebb1e6df452438f141e4816/1433'  -- and 520
+      when 'c73886274c55079762ad6271bbdb2e8c/1433' then 'c88bcd5e8d4009f0077cacd6cf100997/1433'  -- and 521
       else '2a58a90a691a37a80b562ad41d546e98/1425' end));
   else
     raise exception 'T502G: trg_create_therapy_on_paid() is neither 502''s nor the one before it (md5 %). Run this on a copy of production at 501, or with 502 in.', d;
