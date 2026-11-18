@@ -180,15 +180,18 @@ export function creditBalanceHtml(line) {
 }
 
 /**
- * Script for the print window, run once the invoice has laid out and before it
- * prints: `fitCreditBalance()`. A credit block the half-page has squeezed
- * would print cut through a line of text, a figure half visible. So a block
- * that does not fit first loses its breakdown; if the total still does not fit,
- * the block is left out. What prints is whole, or not there at all.
+ * Run on the print window's document by the app, once the invoice has laid out
+ * and before it prints: `fitCreditBalance(doc)`. A credit block the half-page
+ * has squeezed would print cut through a line of text, a figure half visible.
+ * So a block that does not fit first loses its breakdown; if the total still
+ * does not fit, the block is left out. What prints is whole, or not there at
+ * all. `doc` defaults to the running window's own document.
+ * Self-contained: CREDIT_BALANCE_FIT_SCRIPT writes it out as text for tests.
  */
-export const CREDIT_BALANCE_FIT_SCRIPT = `function fitCreditBalance() {
+export function fitCreditBalance(doc) {
+  doc = doc || document;
   var cut = function (el) { return el.scrollHeight > el.clientHeight + 0.5; };
-  var blocks = document.querySelectorAll('.credit-balance');
+  var blocks = doc.querySelectorAll('.credit-balance');
   for (var i = 0; i < blocks.length; i++) {
     var block = blocks[i];
     if (!cut(block)) continue;
@@ -196,7 +199,10 @@ export const CREDIT_BALANCE_FIT_SCRIPT = `function fitCreditBalance() {
     if (detail) { detail.style.display = 'none'; if (!cut(block)) continue; }
     block.style.display = 'none';
   }
-}`;
+}
+
+/** fitCreditBalance as script text, defined by that name (for the browser tests). */
+export const CREDIT_BALANCE_FIT_SCRIPT = `var fitCreditBalance = (${fitCreditBalance.toString()});`;
 
 /**
  * customer_credit_balances() refuses a role that may not see credit (admin,

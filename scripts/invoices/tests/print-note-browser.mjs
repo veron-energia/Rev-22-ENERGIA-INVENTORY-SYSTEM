@@ -16,6 +16,7 @@ import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { runAsOpener } from './print-opener.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '/Users/shinthantaungstanley/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 await mkdir('.invoice-test/browser', { recursive: true });
@@ -249,6 +250,7 @@ try {
     await sheet.addInitScript(() => { window.print = () => { window.__printed = true; }; });
     await sheet.route('**/*', route => route.request().url() === 'https://print.test/' ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
     await sheet.goto('https://print.test/');
+    await runAsOpener(sheet);
     await sheet.waitForFunction(() => window.__printed === true);
     await sheet.screenshot({ path: '.invoice-test/browser/print-note.png' });
     const layout = await sheet.evaluate(() => [...document.querySelectorAll('.copy')].map(c => {

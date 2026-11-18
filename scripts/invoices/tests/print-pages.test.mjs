@@ -319,12 +319,67 @@ test('the print markup: head and tail wrapped, each line its own body, the plan 
   const exchanges = readFileSync('src/pages/ExchangesPage.tsx', 'utf8');
   assert.match(exchanges, /\.map\(i => `<tbody class="p-row"><tr><td>\$\{printEsc\(pName\(i\.product_id\)\)\}/);
   assert.match(exchanges, /<h2>Notes<\/h2><div class="mut" data-p-lines>/);
-  assert.match(print, /<script>\$\{CREDIT_BALANCE_FIT_SCRIPT\}\s*\$\{PRINT_PAGES_SCRIPT\}\s*window\.onload=function\(\)\{try\{paginatePrintCopies\(planCopyPages\);\}catch\(e\)\{\}try\{fitCreditBalance\(\);\}catch\(e\)\{\}window\.print\(\);\}<\/script>/,
-    'the pages first, then the credit block, then the print');
+  // The print window holds no script (the app's CSP has no 'unsafe-inline'); the opener runs the steps.
+  assert.doesNotMatch(print, /<script/, 'no script written into the invoice print window');
+  assert.doesNotMatch(print, /CREDIT_BALANCE_FIT_SCRIPT|PRINT_PAGES_SCRIPT/);
+  assert.match(print, /printWhenReady\(w, \[doc => paginatePrintCopies\(planCopyPages, doc\), doc => fitCreditBalance\(doc\)\]\);/,
+    'the pages first, then the credit block, then the print, from the opener');
+  assert.ok(print.indexOf('w.document.write(html)') < print.indexOf('printWhenReady('), 'written first, then laid out and printed');
   // The receipts and the exchange print share it (printA5Document, buildCopy).
   assert.match(printDoc, /\.p-head,\.p-tail\{display:contents;\}/);
   assert.match(printDoc, /<div class="copy" data-doc-no="\$\{esc\(o\.docNo\)\}">\s*<div class="p-head">/);
   assert.match(printDoc, /<table class="p-items"><thead>[\s\S]*?<\/thead>\$\{itemRows\}<\/table>\s*<div class="p-tail">/);
   assert.match(printDoc, /const itemRows = o\.lines\.map\(l => `<tbody class="p-row">/);
-  assert.match(printDoc, /window\.onload=function\(\)\{try\{paginatePrintCopies\(planCopyPages\);\}catch\(e\)\{\}window\.print\(\);\}/);
+  assert.doesNotMatch(printDoc, /<script/, 'no script written into the receipt print window');
+  assert.match(printDoc, /w\.document\.write\(html\); w\.document\.close\(\);[\s\S]*?printWhenReady\(w, \[doc => paginatePrintCopies\(planCopyPages, doc\)\]\);/);
+});
+
+test('printWhenReady: waits for the window\'s images, then steps in order on its document, each in its own try, then focus and print', async () => {
+  const { printWhenReady } = await build({ entryPoints: ['src/lib/printWindow.ts'], bundle: true, write: false, format: 'esm' })
+    .then(r => import('data:text/javascript;base64,' + Buffer.from(r.outputFiles[0].text).toString('base64')));
+  const img = complete => { const l = {}; return { complete, l, addEventListener: (n, f) => { l[n] = f; } }; };
+  const mk = (images, extra = {}) => {
+    const log = [], doc = { id: 'print-doc', images };
+    return { log, doc, w: { closed: false, document: doc, focus: () => log.push('focus'), print: () => log.push('print'), ...extra } };
+  };
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  // No pending images: at once, in order; a throwing step does not stop the rest or the print.
+  let m = mk([img(true)]);
+  printWhenReady(m.w, [d => m.log.push(['a', d.id]), () => { throw new Error('boom'); }, d => m.log.push(['b', d.id])]);
+  assert.deepEqual(m.log, [['a', 'print-doc'], ['b', 'print-doc'], 'focus', 'print']);
+  // No images at all, or a window with no image list: at once.
+  m = mk([]); printWhenReady(m.w, [() => m.log.push('s')]); assert.deepEqual(m.log, ['s', 'focus', 'print']);
+  m = mk(undefined); printWhenReady(m.w, [() => m.log.push('s')]); assert.deepEqual(m.log, ['s', 'focus', 'print']);
+  // Pending images: after each settles; an error counts as settled; only once.
+  const [i1, i2, i3] = [img(false), img(false), img(true)];
+  m = mk([i1, i2, i3]);
+  printWhenReady(m.w, [() => m.log.push('step')], 5000);
+  assert.deepEqual(m.log, []);
+  i1.l.load(); assert.deepEqual(m.log, [], 'one image still pending');
+  i2.l.error(); assert.deepEqual(m.log, ['step', 'focus', 'print']);
+  i2.l.load(); i1.l.error(); await tick(20);
+  assert.deepEqual(m.log, ['step', 'focus', 'print'], 'once');
+  // One image firing both load and error does not count twice.
+  const [j1, j2] = [img(false), img(false)];
+  m = mk([j1, j2]); printWhenReady(m.w, [() => m.log.push('step')], 5000);
+  j1.l.load(); j1.l.error(); assert.deepEqual(m.log, []);
+  j2.l.load(); assert.deepEqual(m.log, ['step', 'focus', 'print']);
+  // An image that completed between the filter and the listener: re-checked, runs at once.
+  const k = img(false); let reads = 0;
+  const doc = { images: { get length() { return 1; }, 0: k, [Symbol.iterator]: function* () { reads++; if (reads > 1) k.complete = true; yield k; } } };
+  const log = []; printWhenReady({ closed: false, document: doc, focus: () => {}, print: () => log.push('print') }, [() => log.push('step')], 5000);
+  assert.deepEqual(log, ['step', 'print']);
+  // Never loads: the fallback timer prints.
+  m = mk([img(false)]); printWhenReady(m.w, [() => m.log.push('step')], 20);
+  await tick(60); assert.deepEqual(m.log, ['step', 'focus', 'print']);
+  // Closed meanwhile: nothing runs, nothing throws.
+  m = mk([img(false)]); printWhenReady(m.w, [() => m.log.push('step')], 20);
+  m.w.closed = true; await tick(60); assert.deepEqual(m.log, []);
+  // A window that throws on every access: no throw out.
+  assert.doesNotThrow(() => printWhenReady({ get closed() { throw new Error('gone'); } }, [() => {}], 10));
+  await tick(30);
+  // print itself throwing is swallowed.
+  m = mk([], { print: () => { throw new Error('no print'); } });
+  assert.doesNotThrow(() => printWhenReady(m.w, [() => m.log.push('step')]));
+  assert.deepEqual(m.log, ['step', 'focus']);
 });

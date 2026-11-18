@@ -35,7 +35,7 @@
 // planCopyPages is the plan, a pure function of measured heights (tested in
 // scripts/invoices/tests/print-pages.test.mjs). paginatePrintCopies measures a
 // print window's copies and lays the sheets out by it. PRINT_PAGES_SCRIPT puts
-// both into the print window, where window.onload runs
+// both as script text for the tests; the app runs the steps from the opener, where it runs
 // `paginatePrintCopies(planCopyPages)` first, before fitCreditBalance and the
 // print (InvoicesPage's print, and printA5Document for the receipts and the
 // exchange document).
@@ -214,7 +214,7 @@ export function planCopyPages(p) {
 
 /**
  * Lays out the print window's sheet as the pages the copies need: run once the
- * page has laid out (window.onload), before fitCreditBalance and the print,
+ * print window has laid out (src/lib/printWindow.ts), before fitCreditBalance and the print,
  * with planCopyPages as `plan`. Does nothing when no half is cut off at its
  * foot, so an invoice that fits one sheet is left exactly as it was. Otherwise
  * it measures the customer copy at its full length, plans its pages, and puts
@@ -230,10 +230,16 @@ export function planCopyPages(p) {
  * pages keep their room. Of the plans tried, the one that runs least past its
  * halves (then on fewer sheets) is kept. Returns how many sheets there are.
  *
- * Self-contained, as it is written into the print window as text.
+ * `doc` is the document to lay out (default: the running window's own): the
+ * app runs this on the print window's document from the opener, as the print
+ * window holds no script (a Content-Security-Policy without 'unsafe-inline').
+ * Every DOM call, and getComputedStyle, go through that document and its window.
+ * Self-contained: PRINT_PAGES_SCRIPT writes it out as text for tests.
  */
-export function paginatePrintCopies(plan) {
-  var sheet = document.querySelector('.sheet');
+export function paginatePrintCopies(plan, doc) {
+  doc = doc || document;
+  var win = doc.defaultView || window;
+  var sheet = doc.querySelector('.sheet');
   if (!sheet || !sheet.parentNode) return 1;
   var copiesOf = function (s) {
     var out = [];
@@ -248,7 +254,7 @@ export function paginatePrintCopies(plan) {
   var boxes = function (el) {
     var out = [];
     for (var c = el.firstElementChild; c; c = c.nextElementSibling) {
-      var d = getComputedStyle(c).display;
+      var d = win.getComputedStyle(c).display;
       if (d === 'contents') out = out.concat(boxes(c));
       else if (d !== 'none') out.push(c);
     }
@@ -283,9 +289,9 @@ export function paginatePrintCopies(plan) {
     }
     if (segs.length > 1 && blank(segs[segs.length - 1])) segs.pop();
     for (var j = 0; j < segs.length; j++) {
-      var d = document.createElement('div');
+      var d = doc.createElement('div');
       d.className = 'p-line';
-      if (blank(segs[j])) d.appendChild(document.createElement('br'));
+      if (blank(segs[j])) d.appendChild(doc.createElement('br'));
       else for (var q = 0; q < segs[j].length; q++) d.appendChild(segs[j][q]);
       el.appendChild(d);
     }
@@ -344,16 +350,16 @@ export function paginatePrintCopies(plan) {
     return out;
   };
 
-  var text = function (el, s) { el.appendChild(document.createTextNode(s)); return el; };
-  var bold = function (s) { return text(document.createElement('b'), s); };
+  var text = function (el, s) { el.appendChild(doc.createTextNode(s)); return el; };
+  var bold = function (s) { return text(doc.createElement('b'), s); };
   var tagOf = function (copy) { var t = copy.querySelector('.copytag'); return t ? t.textContent.trim() : ''; };
   // Page 2 onward: Energia, the number, the copy (continued), Page k of N.
   var contLine = function (copy, tag, k, n) {
-    var d = document.createElement('div');
+    var d = doc.createElement('div');
     d.className = 'p-conthead';
     d.setAttribute('style', 'display:flex;justify-content:space-between;align-items:baseline;gap:8px;'
       + 'border-bottom:1.5px solid #111;padding-bottom:3px;margin-bottom:2px;font-size:10px;');
-    var left = document.createElement('div'), right = document.createElement('div');
+    var left = doc.createElement('div'), right = doc.createElement('div');
     left.appendChild(bold('Energia'));
     var no = copy.getAttribute('data-doc-no') || '';
     if (no) text(left, ' · ' + no);
@@ -363,19 +369,19 @@ export function paginatePrintCopies(plan) {
     return d;
   };
   var contFoot = function (k) {
-    var d = text(document.createElement('div'), 'Continued on page ' + k);
+    var d = text(doc.createElement('div'), 'Continued on page ' + k);
     d.className = 'mut p-cont'; d.setAttribute('style', 'text-align:right;margin-top:3px;');
     return d;
   };
   var addPageNo = function (copy, n) {
     var tag = copy.querySelector('.copytag');
     if (!tag || !tag.parentNode) return;
-    var s = text(document.createElement('span'), 'Page 1 of ' + n);
+    var s = text(doc.createElement('span'), 'Page 1 of ' + n);
     s.className = 'mut p-pageno'; s.setAttribute('style', 'margin-left:6px;');
     tag.parentNode.insertBefore(s, tag.nextSibling);
   };
   var outer = function (el) {
-    var cs = getComputedStyle(el), b = el.getBoundingClientRect();
+    var cs = win.getComputedStyle(el), b = el.getBoundingClientRect();
     return { top: b.top - px(cs.marginTop), bottom: b.bottom + px(cs.marginBottom) };
   };
   var height = function (el) { var o = outer(el); return o.bottom - o.top; };
@@ -398,7 +404,7 @@ export function paginatePrintCopies(plan) {
   // Measured at full length: a copy of each copy, its height free. The two copies
   // are the same rows, but the office copy may be taller in one (the block of
   // office notes, 17 Nov 2026), so each row takes the taller of the two.
-  var model = copies[0], mcs = getComputedStyle(model);
+  var model = copies[0], mcs = win.getComputedStyle(model);
   var cap = model.clientHeight - px(mcs.paddingTop) - px(mcs.paddingBottom);
   var measureOne = function (copy) {
     var m = copy.cloneNode(true);
@@ -518,7 +524,7 @@ export function paginatePrintCopies(plan) {
     var lost = 0, mend = 0;
     for (k = 0; k < made.length; k++) {
       var cs = copiesOf(made[k]), o = 0;
-      for (var c2 = 0; c2 < cs.length; c2++) o = Math.max(o, over(cs[c2], px(getComputedStyle(cs[c2]).paddingBottom)));
+      for (var c2 = 0; c2 < cs.length; c2++) o = Math.max(o, over(cs[c2], px(win.getComputedStyle(cs[c2]).paddingBottom)));
       if (o <= 0.5) continue;
       lost += o;
       if (pages[k].to - pages[k].from > 1) mend = Math.max(mend, o);
@@ -532,9 +538,9 @@ export function paginatePrintCopies(plan) {
 }
 
 /**
- * The two functions above, for the print window's own <script>. Its
- * window.onload runs `paginatePrintCopies(planCopyPages)` first (in a try, so
- * a failure prints the sheet as it is), then fitCreditBalance, then the print.
+ * The two functions above as script text. The print window no longer holds a
+ * script (the app runs the steps from the opener, src/lib/printWindow.ts); this
+ * is for the browser tests, which inject it into a page.
  */
 export const PRINT_PAGES_SCRIPT = `var planCopyPages = (${planCopyPages.toString()});
 var paginatePrintCopies = (${paginatePrintCopies.toString()});`;

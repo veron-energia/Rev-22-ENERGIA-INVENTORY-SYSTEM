@@ -31,6 +31,6 @@ export interface CopyPageHeights {
 export interface CopyPage { from: number; to: number; first: boolean; last: boolean }
 export function planCopyPages(p: CopyPageHeights): CopyPage[];
 /** Lays the print window's sheet out as the pages its copies need; returns how many sheets. */
-export function paginatePrintCopies(plan: typeof planCopyPages): number;
-/** Defines planCopyPages and paginatePrintCopies for the print window. */
+export function paginatePrintCopies(plan: typeof planCopyPages, doc?: Document): number;
+/** Defines planCopyPages and paginatePrintCopies as script text (the browser tests inject it). */
 export const PRINT_PAGES_SCRIPT: string;

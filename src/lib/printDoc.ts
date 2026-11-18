@@ -7,7 +7,8 @@
  * chrome here is what stops the two drifting apart the next time either is
  * touched.
  */
-import { PRINT_PAGES_SCRIPT } from './invoices/printPages.mjs';
+import { planCopyPages, paginatePrintCopies } from './invoices/printPages.mjs';
+import { printWhenReady } from './printWindow';
 
 /**
  * Stored text on its way into HTML.
@@ -231,11 +232,11 @@ export function printA5Document(o: PrintDocOptions): boolean {
       <div class="cut"><span>✂  CUT HERE</span></div>
       ${buildCopy(o, 'OFFICE COPY')}
     </div>
-    <script>${PRINT_PAGES_SCRIPT}
-    window.onload=function(){try{paginatePrintCopies(planCopyPages);}catch(e){}window.print();}</script>
   </body></html>`;
   const w = window.open('', '_blank');
   if (!w) { alert('Please allow pop-ups to print.'); return false; }
   w.document.write(html); w.document.close();
+  // No script in the print window (the app's Content-Security-Policy): the pages are laid out from here.
+  printWhenReady(w, [doc => paginatePrintCopies(planCopyPages, doc)]);
   return true;
 }

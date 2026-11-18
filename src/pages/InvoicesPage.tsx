@@ -51,8 +51,9 @@ import { createRefreshQueue, createStampedWriter, refreshCovers, pageAfterRefres
 import { useInvoiceLiveUpdates, type LiveChange } from '../hooks/useInvoiceLiveUpdates';
 import { okToDiscard } from '../hooks/useChangedSinceOpened';
 import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates';
-import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, CREDIT_BALANCE_FIT_SCRIPT, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
-import { PRINT_PAGES_SCRIPT } from '../lib/invoices/printPages.mjs';
+import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, fitCreditBalance, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
+import { planCopyPages, paginatePrintCopies } from '../lib/invoices/printPages.mjs';
+import { printWhenReady } from '../lib/printWindow';
 import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMethodLabel, type WalletAvailability } from '../lib/invoices/walletSources.mjs';
 import { walletCredit, walletLineLabel, type WalletRefundLike } from '../lib/invoices/walletCreditLines.mjs';
 import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/creditReceivers.mjs';
@@ -3235,13 +3236,12 @@ const InvoicesPage: React.FC = () => {
         <div class="cut"><span>✂  CUT HERE</span></div>
         ${copyHtml('OFFICE COPY')}
       </div>
-      <script>${CREDIT_BALANCE_FIT_SCRIPT}
-      ${PRINT_PAGES_SCRIPT}
-      window.onload=function(){try{paginatePrintCopies(planCopyPages);}catch(e){}try{fitCreditBalance();}catch(e){}window.print();}</script>
     </body></html>`;
     // Closed while the balance was being read: there is nothing to print into.
     if (w.closed) return;
     w.document.write(html); w.document.close();
+    // No script in the print window (the app's Content-Security-Policy): the pages, then the credit block, are laid out from here.
+    printWhenReady(w, [doc => paginatePrintCopies(planCopyPages, doc), doc => fitCreditBalance(doc)]);
     // Written: now say if it went without the credit balance.
     copyWentWithoutCredit(detail.id, 'Printed', credit.unreadable ? 'unreadable' : null);
     // Audit: record that this invoice was printed. The server writes the row

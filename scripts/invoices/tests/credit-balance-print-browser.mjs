@@ -37,6 +37,7 @@ import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { runAsOpener } from './print-opener.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '/Users/shinthantaungstanley/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 await mkdir('.invoice-test/browser', { recursive: true });
@@ -397,7 +398,7 @@ try {
   ok('the line sits under the payment table', html.indexOf(LABEL) > html.indexOf('Total Paid'));
   {
     // Rendered as printed: the real print stylesheet and the print window's own
-    // script, which fits the credit block once the page has laid out and before
+    // opener's steps (print-opener.mjs), which fit the credit block once the page has laid out and before
     // it prints. Then the half-page is filled a little at a time.
     const sheet = await page.context().newPage();
     await sheet.setViewportSize({ width: 1123, height: 794 });
@@ -410,6 +411,7 @@ try {
     let served = html;
     await sheet.route('**/*', route => route.request().url() === 'https://print.test/' ? route.fulfill({ contentType: 'text/html', body: served }) : route.abort());
     await sheet.goto('https://print.test/');
+    await runAsOpener(sheet);
     await sheet.waitForFunction(() => window.__printCalls === 1);
     await sheet.screenshot({ path: '.invoice-test/browser/credit-balance-print.png' });
     const layout = await sheet.evaluate(() => {
@@ -450,6 +452,7 @@ try {
     ok('a squeezed half-page exists to check the print window against', !!squeezed);
     served = html.replaceAll('<div class="credit-balance"', `<div style="flex:0 0 auto;height:${squeezed.h}px"></div><div class="credit-balance"`);
     await sheet.goto('https://print.test/');
+    await runAsOpener(sheet);
     await sheet.waitForFunction(() => window.__printCalls === 1);
     const atPrint = await sheet.evaluate(() => window.__atPrint);
     ok('the print window fits the block before it prints', atPrint.length === 2 && atPrint.every(b => b.whole), JSON.stringify(atPrint));

@@ -31,6 +31,7 @@ import { createRequire } from 'node:module';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { runAsOpener } from './print-opener.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '/Users/shinthantaungstanley/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 await mkdir('.invoice-test/browser', { recursive: true });
@@ -268,6 +269,8 @@ async function render(context, html, name) {
   await sheet.addInitScript(() => { window.__prints = 0; window.print = () => { window.__prints++; window.__sheetsAtPrint = document.querySelectorAll('.sheet').length; }; });
   await sheet.route('**/*', route => route.request().url() === 'https://print.test/' ? route.fulfill({ contentType: 'text/html; charset=utf-8', body: html }) : route.abort());
   await sheet.goto('https://print.test/');
+  // The print window holds no script now: this stands in for the opener (print-opener.mjs).
+  await runAsOpener(sheet);
   await sheet.waitForFunction(() => window.__prints === 1);
   await sheet.screenshot({ path: `.invoice-test/browser/print-pages-${name}.png`, fullPage: true });
   return sheet;

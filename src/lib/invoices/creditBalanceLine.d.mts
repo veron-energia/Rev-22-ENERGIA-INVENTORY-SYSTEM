@@ -25,7 +25,8 @@ export function creditBalanceLine(balance: CreditBalances, now?: Date): CreditBa
 export const CREDIT_KIND_SEPARATOR: string;
 export function wrapCreditDetail(detail: string | null | undefined, maxWidth: number, measure: (text: string) => number): string[];
 export function creditBalanceHtml(line: CreditBalanceLine | null | undefined): string;
-/** Defines fitCreditBalance() for the print window. */
+export function fitCreditBalance(doc?: Document): void;
+/** fitCreditBalance as script text (the browser tests inject it). */
 export const CREDIT_BALANCE_FIT_SCRIPT: string;
 export function isCreditAccessRefusal(error: unknown): boolean;
 export interface CreditBalanceReadArgs {
