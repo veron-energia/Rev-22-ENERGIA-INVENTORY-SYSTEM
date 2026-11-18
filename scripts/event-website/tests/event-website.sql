@@ -357,6 +357,15 @@ begin
     insert into fx values (k, u);
   end loop;
   insert into app_settings(id) values (true) on conflict (id) do nothing;
+  -- The commission amounts checked below (V2, FS7, FA4, FA5, FA7, FA9, FQ2, RQ1) are at the app's
+  -- default rates: tier 1 15% (own lines; 4.5% third-party), tier 2 5% of tier 1. A copy of
+  -- production keeps the rates set there (its tier 2 is not 5%), and those 8 checks failed on such
+  -- a copy (18 Nov 2026), so the rates are set here; the file rolls back, so nothing changes for
+  -- real. No other setting changes these amounts (the machine cut-off is for special products and
+  -- rentals only). The two uplines in this file (Aff Upline, Uma Upline) are not affiliates, so
+  -- their rows read 'blocked' (Affiliate Not Activated) at any rate; the checks compare amounts.
+  update app_settings set commission_tier1_own_rate = 15, commission_tier1_third_rate = 4.5,
+         commission_tier2_own_rate = 5, commission_tier2_third_rate = 5 where id = true;
   perform set_config('request.jwt.claim.sub', pg_temp.fx('owner')::text, true);
   perform set_config('request.jwt.claim.role', 'authenticated', true);
   insert into stores(name, code, country_code) values ('HT436 Van ' || sfx, 'HT436V' || sfx, 'SG') returning id into st;
