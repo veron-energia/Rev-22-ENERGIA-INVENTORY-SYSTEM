@@ -16,6 +16,7 @@ import DownlineModal from '../components/referrals/DownlineModal';
 import { visitFilterArgs, visitFilterActive, sgDate, sgDayOf } from '../lib/referral/campaign.mjs';
 import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
 import { canEditCustomers, canSeeCustomerProfile } from '../lib/customers/customerRoles.mjs';
+import { emailChanged, mayAddReferrer, mayChangeEmail, EMAIL_LOCKED_HINT, REFERRER_LOCKED_HINT } from '../lib/customers/emailReferrerRules.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
 import { walletSourceTiles, purchasesBySource } from '../lib/invoices/walletSources.mjs';
 
@@ -141,6 +142,12 @@ const CustomersPage: React.FC = () => {
   // saved (there is no updated_at to check against) until Retry reads them.
   const [editLoadErr, setEditLoadErr] = useState<string | null>(null);
   const [editReason, setEditReason] = useState('');
+  // 528 (the user, 19 Nov 2026): when the customer was made (Staff add a
+  // missing referrer only on that Singapore day), and whether they are an
+  // affiliate or have a portal login (then only an Owner or Manager changes
+  // their email). Asked when Edit opens; the database checks both again.
+  const [editCreatedAt, setEditCreatedAt] = useState<string | null>(null);
+  const [affiliateOrPortal, setAffiliateOrPortal] = useState<boolean | null>(null);
   const editIdRef = useRef<string | null>(null);
   const editCustomerRef = useRef<Customer | null>(null);
   // First Name takes the cursor once the latest details are in (the fields
@@ -321,6 +328,7 @@ const CustomersPage: React.FC = () => {
     addRequestId.current = crypto.randomUUID();
     const f = blank();
     setForm(f); setOriginalForm(f); setEditId(null); setEditAt(null); setEditLoading(false); setEditLoadErr(null); setEditReason('');
+    setEditCreatedAt(null); setAffiliateOrPortal(null);
     setOrigReferrer(''); setErr(null); resetPhoneCheck(); setModalOpen(true);
   };
   // The row is read again when Edit opens: the list may be minutes old, and
@@ -332,8 +340,18 @@ const CustomersPage: React.FC = () => {
     const f = blank(c);
     setForm(f); setOriginalForm(f); setEditId(c.id); setEditAt(null); setEditLoadErr(null); setEditReason('');
     setOrigReferrer(c.referred_by ?? ''); setErr(null); resetPhoneCheck(); setEditLoading(true); setModalOpen(true);
+    setEditCreatedAt((c as any).created_at ?? null); setAffiliateOrPortal(null);
+    // 528: an Owner or Manager changes any email, so only the others ask.
+    const lockAsked = canComplete ? null
+      : Promise.resolve(supabase.rpc('customer_is_affiliate_or_portal_login', { p_customer_id: c.id }));
     const { data, error } = await supabase.from('customers').select('*').eq('id', c.id).maybeSingle();
+    const lock = lockAsked ? await lockAsked : null;
     if (editIdRef.current !== c.id) return;
+    if (lock) {
+      // Not known (an error): the field stays open and the database decides.
+      if (lock.error) console.error(lock.error.message);
+      setAffiliateOrPortal(lock.error ? null : lock.data === true);
+    }
     setEditLoading(false);
     if (error || !data) {
       setEditLoadErr(error ? plainLoadError(error) : 'This customer is no longer on the list.');
@@ -341,6 +359,7 @@ const CustomersPage: React.FC = () => {
     }
     const fresh = blank(data as Customer);
     setForm(fresh); setOriginalForm(fresh); setOrigReferrer((data as any).referred_by ?? '');
+    setEditCreatedAt((data as any).created_at ?? null);
     setEditAt((data as any).updated_at ?? null);
     focusAfterLoad.current = true;
   };
@@ -402,7 +421,13 @@ const CustomersPage: React.FC = () => {
   const phoneChanged = !!editId && form.phone !== originalForm.phone;
   const dobLocked = !!editId && !!originalForm.date_of_birth && !canComplete;
   const dobChanged = !!editId && !!originalForm.date_of_birth && form.date_of_birth !== originalForm.date_of_birth;
-  const needsReason = phoneChanged || dobChanged;
+  // 528: every change of the email needs a reason too; an affiliate's or a
+  // portal login's email is locked for anyone but an Owner or Manager.
+  const emailChange = !!editId && emailChanged(originalForm.email, form.email);
+  const emailLocked = !!editId && !mayChangeEmail(profile?.role, affiliateOrPortal);
+  // 528: Staff add a missing referrer on the day the customer is made only.
+  const referrerLocked = !!editId && !origReferrer && !mayAddReferrer(profile?.role, editCreatedAt);
+  const needsReason = phoneChanged || dobChanged || emailChange;
 
   // Add: who already uses this phone (as on the Invoices page's Add a customer).
   useEffect(() => {
@@ -438,7 +463,8 @@ const CustomersPage: React.FC = () => {
       const changes = changedFields(originalForm, form);
       if (Object.keys(changes).length === 0) { closeForm(); return; }
       if (needsReason && !editReason.trim()) {
-        setErr(phoneChanged ? 'Give a reason for the new phone number.' : 'Give a reason for changing the date of birth.');
+        setErr(phoneChanged ? 'Give a reason for the new phone number.'
+          : emailChange ? 'Give a reason for changing the email.' : 'Give a reason for changing the date of birth.');
         return;
       }
       setSaving(true); setErr(null);
@@ -731,7 +757,12 @@ const CustomersPage: React.FC = () => {
               </div>
             </div>
             <div className="form-grid-2">
-              <div className="form-group"><label>Email</label><input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" /></div>
+              <div className="form-group"><label>Email</label><input type="email" value={form.email} disabled={emailLocked}
+                aria-describedby={emailLocked ? 'email-locked' : undefined}
+                onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Optional" />
+                {/* 528: the record's email can prove a portal login. */}
+                {emailLocked && <span id="email-locked" style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'block', marginTop: 4 }}>{EMAIL_LOCKED_HINT}</span>}
+              </div>
               <div className="form-group"><label>Date of Birth</label><input type="date" value={form.date_of_birth} disabled={dobLocked}
                 aria-describedby={dobLocked ? 'dob-locked' : undefined}
                 onChange={e => setForm(f => ({ ...f, date_of_birth: e.target.value }))} />
@@ -781,8 +812,11 @@ const CustomersPage: React.FC = () => {
                     value={form.referred_by}
                     onChange={v => setForm(f => ({ ...f, referred_by: v }))}
                     placeholder="Search name, phone or email…"
+                    disabled={referrerLocked}
                     excludeId={editId ?? undefined} />
-                  <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>The customer who introduced this customer. Drives Tier 1 / Tier 2 commission.</span>
+                  <span data-referrer-hint style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
+                    {referrerLocked ? REFERRER_LOCKED_HINT : 'The customer who introduced this customer. Drives Tier 1 / Tier 2 commission.'}
+                  </span>
                 </>
               )}
             </div>
@@ -797,7 +831,7 @@ const CustomersPage: React.FC = () => {
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label htmlFor="edit-reason">Reason for this change *</label>
                 <input id="edit-reason" value={editReason} onChange={e => setEditReason(e.target.value)}
-                  placeholder={phoneChanged ? 'Why is the number changing?' : 'Why is the date of birth changing?'} />
+                  placeholder={phoneChanged ? 'Why is the number changing?' : emailChange ? 'Why is the email changing?' : 'Why is the date of birth changing?'} />
                 <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, display: 'block' }}>
                   Kept in the history with the old and the new value.
                 </span>

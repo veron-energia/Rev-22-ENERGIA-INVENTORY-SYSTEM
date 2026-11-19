@@ -20,6 +20,7 @@ import { DISCOUNT_CHOICE_LABELS, discountChoicesFor, voucherCategory, isVoucherC
   lineDiscountPayload, lineDiscountProblem, restoreLineDiscount, switchDiscount, withQuantity, printedLineDiscount, birthdayProblem, formatPercent,
   toCents, fromCents, type DiscountChoice, type LineMoney } from '../lib/invoices/lineDiscounts';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
+import { mayChangeInvoiceAffiliate, INVOICE_AFFILIATE_LOCKED_HINT } from '../lib/customers/emailReferrerRules.mjs';
 import { QuickCustomerModal } from '../components/customers/QuickCustomerModal';
 import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
 import { PremiumBundleSplitPanel } from '../components/PremiumBundleSplitPanel';
@@ -1302,7 +1303,9 @@ const InvoicesPage: React.FC = () => {
       // positive discount without one and clears it when the discount goes.
       manual_discount_reason: (cDiscount || 0) > 0 ? cDiscountReason.trim() : null,
       ...(editingInvoiceId ? { expected_edit_count: expectedEditCount } : {}),
-      ...(affTouched ? { affiliate_id: cAffiliate || null } : {}),
+      // 528 (the user, 19 Nov 2026): the affiliate is an Owner's or Manager's to
+      // change in a correction too; it is never sent for anyone else.
+      ...(affTouched && mayChangeInvoiceAffiliate(profile?.role) ? { affiliate_id: cAffiliate || null } : {}),
       ...(cCreatedBy && cCreatedBy !== createdByBeforeEdit ? { created_by: cCreatedBy } : {}),
       ...paymentChanges(),
     };
@@ -3690,6 +3693,8 @@ const InvoicesPage: React.FC = () => {
                 {/* Referrer: add one that was missed, change it, or clear it. */}
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label>Referrer / affiliate</label>
+                  {/* 528: Staff see it read only (correct_invoice refuses them a change). */}
+                  {mayChangeInvoiceAffiliate(profile?.role) ? (<>
                   <SearchSelect placeholder="None — search name, phone or email…"
                     emptyLabel="No affiliate matches"
                     value={cAffiliate}
@@ -3704,6 +3709,14 @@ const InvoicesPage: React.FC = () => {
                     Changing this reverses the affiliate commission and re-earns it for whoever is
                     selected here.
                   </div>
+                  </>) : (<>
+                  <div data-correction-affiliate-readonly style={{ fontSize: 13 }}>
+                    {cAffiliate
+                      ? (affiliateOptions.find((a: any) => a.affiliate_id === cAffiliate)?.full_name ?? 'An affiliate who is no longer active')
+                      : 'None chosen for this invoice'}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>{INVOICE_AFFILIATE_LOCKED_HINT}</div>
+                  </>)}
                 </div>
 
                 {/* Who raised it. Owner only: this changes what the printed
@@ -4975,6 +4988,10 @@ const InvoicesPage: React.FC = () => {
               && !(detail as any).is_topup && !(detail as any).is_exchange && detailPayments.length === 0 && (
               <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Affiliate</div>
+                {/* 528 (the user, 19 Nov 2026): only an Owner or Manager changes the
+                    affiliate on an invoice already made (set_invoice_affiliate refuses
+                    anyone else); Staff see it read only. */}
+                {mayChangeInvoiceAffiliate(profile?.role) ? (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <SearchSelect style={{ maxWidth: 300, flex: 1 }}
                     placeholder="Search affiliate name, phone or email…"
@@ -4989,6 +5006,11 @@ const InvoicesPage: React.FC = () => {
                     }))} />
                   {affiliateBusy && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving…</span>}
                 </div>
+                ) : (
+                  <div data-invoice-affiliate-readonly style={{ fontSize: 13 }}>
+                    {effAffiliate?.has_affiliate && effAffiliate.source === 'invoice' ? effAffiliate.full_name : 'None chosen for this invoice'}
+                  </div>
+                )}
                 {affiliateErr && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{affiliateErr}</div>}
                 {effAffiliate?.has_affiliate ? (
                   <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>
@@ -5004,11 +5026,13 @@ const InvoicesPage: React.FC = () => {
                   </div>
                 ) : (
                   <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 5 }}>
-                    This customer has no referrer, so no affiliate is credited unless you choose one.
+                    This customer has no referrer, so no affiliate is credited unless {mayChangeInvoiceAffiliate(profile?.role) ? 'you choose one' : 'an Owner or Manager chooses one'}.
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  Choose a different affiliate to credit this sale instead. This can be changed until the invoice is paid.
+                  {mayChangeInvoiceAffiliate(profile?.role)
+                    ? 'Choose a different affiliate to credit this sale instead. This can be changed until the invoice is paid.'
+                    : INVOICE_AFFILIATE_LOCKED_HINT}
                 </div>
               </div>
             )}

@@ -14,6 +14,7 @@ import {
   type ParticularsDraft,
 } from '../lib/survey/particulars.mjs';
 import { savedReview, reviewState } from '../lib/survey/review.mjs';
+import { mayChangeEmail, EMAIL_LOCKED_HINT } from '../lib/customers/emailReferrerRules.mjs';
 
 const ACIDITY: { v: 'red' | 'green' | 'blue'; label: string; color: string }[] = [
   { v: 'red', label: 'Red', color: '#dc2626' },
@@ -134,8 +135,9 @@ const SurveyDetailModal: React.FC<{
     if (survey?.customer_id) {
       // The customer's own date of birth: changing one already filled in is
       // an Owner's or Manager's (Q9), whatever the survey shows.
+      // 528: and their email (a new one for them needs a reason).
       const { data: c } = await supabase.from('customers')
-        .select('id, date_of_birth').eq('id', survey.customer_id).maybeSingle();
+        .select('id, date_of_birth, email').eq('id', survey.customer_id).maybeSingle();
       setCust(c ?? null);
     }
     setLoading(false);
@@ -249,6 +251,10 @@ const SurveyDetailModal: React.FC<{
   const [reason, setReason] = useState('');
   const [edBusy, setEdBusy] = useState(false);
   const [edErr, setEdErr] = useState<string | null>(null);
+  // 528 (the user, 19 Nov 2026): the customer is an affiliate or has a portal
+  // login, so only an Owner or Manager changes their email (null: not known,
+  // and the database decides).
+  const [affiliateOrPortal, setAffiliateOrPortal] = useState<boolean | null>(null);
   const openEdit = () => {
     // A survey is edited from what it holds; a customer with no survey yet
     // from their own details, which is what the new survey starts with.
@@ -266,11 +272,22 @@ const SurveyDetailModal: React.FC<{
       dob_d: dob ? String(Number(dob.slice(8, 10))) : '',
     });
     setReason(''); setEdErr(null);
+    setAffiliateOrPortal(null);
+    if (customerId && !isOwnerOrManager(profile?.role)) {
+      const askedFor = customerId;
+      void Promise.resolve(supabase.rpc('customer_is_affiliate_or_portal_login', { p_customer_id: askedFor }))
+        .then(({ data: yes, error }) => {
+          if (error) { console.error(error.message); return; }
+          if (askedFor === customerId) setAffiliateOrPortal(yes === true);
+        });
+    }
     setEditing(true);
   };
   const changes = editing && seed ? particularsChanges(seed, ed) : {};
   const hasCustomer = !!customerId;
-  const needReason = editing && particularsNeedReason(changes, { hasCustomer, customerDob: cust?.date_of_birth ?? null });
+  const needReason = editing && particularsNeedReason(changes,
+    { hasCustomer, customerDob: cust?.date_of_birth ?? null, customerEmail: cust?.email ?? null });
+  const emailLocked = editing && hasCustomer && !mayChangeEmail(profile?.role, affiliateOrPortal);
   const saveEdit = async () => {
     setEdErr(null);
     if (('first_name' in changes || 'last_name' in changes) && !String(ed.first_name ?? '').trim()) {
@@ -408,7 +425,10 @@ const SurveyDetailModal: React.FC<{
                 <div className="form-group" style={{ marginBottom: 0 }}><label>HP No.</label>
                   <PhoneInput value={ed.phone} onChange={phone => setEd((x: any) => ({ ...x, phone }))} /></div>
                 <div className="form-group" style={{ marginBottom: 0 }}><label>Email</label>
-                  <input value={ed.email} onChange={e => setEd({ ...ed, email: e.target.value })} /></div>
+                  <input value={ed.email} disabled={emailLocked} aria-describedby={emailLocked ? 'survey-email-locked' : undefined}
+                    onChange={e => setEd({ ...ed, email: e.target.value })} />
+                  {emailLocked && <div id="survey-email-locked" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{EMAIL_LOCKED_HINT}</div>}
+                </div>
               </div>
               <div className="form-grid-2">
                 <div className="form-group" style={{ marginBottom: 0 }}><label>Date of Birth</label>
@@ -512,7 +532,7 @@ const SurveyDetailModal: React.FC<{
                   <input id="survey-edit-reason" data-edit-reason value={reason} onChange={e => setReason(e.target.value)}
                     placeholder="e.g. Checked her IC at the counter" />
                   <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
-                    A new phone number or a changed date of birth goes onto the customer, and the reason is kept in the history.
+                    A new phone number, email or a changed date of birth goes onto the customer, and the reason is kept in the history.
                   </div>
                 </div>
               )}

@@ -115,9 +115,10 @@ select pg_temp.check((select convalidated and pg_get_constraintdef(oid) = 'CHECK
   '3b the check is on invoices and holds for every invoice there');
 
 -- 4. The functions
--- (or 518's, 18 Nov 2026: it also refuses a manual discount that is not a number)
+-- (or 518's, 18 Nov 2026: it also refuses a manual discount that is not a number; correct_invoice
+-- unchanged by 516, or 528's, 19 Nov 2026: only an Owner or Manager changes the affiliate)
 select pg_temp.check(md5(pg_get_functiondef('public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)'::regprocedure)) in ('7c37ac1d841d2c0c2a9cf9b54c563ead', '0d60261bf337a1716dab9307b2f52fea')
-                     and md5(pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) = 'cea93a5dd73d429f6437f4c9a8fcaa52'
+                     and md5(pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) in ('cea93a5dd73d429f6437f4c9a8fcaa52', 'aaf592490eb5d13ca2ccb0544f48f647')
                      and has_function_privilege('authenticated', 'public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)', 'execute')
                      and not has_function_privilege('anon', 'public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)', 'execute'),
   '4a New Invoice''s function is 516''s, Edit Invoice''s is unchanged, the rights as before');

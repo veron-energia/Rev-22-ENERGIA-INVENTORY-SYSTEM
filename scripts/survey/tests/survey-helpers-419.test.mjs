@@ -82,6 +82,15 @@ test('Q9: a filled-in date of birth needs an Owner or Manager and a reason; a mi
   // A new phone goes onto the customer: a reason is asked for.
   assert.equal(particularsNeedReason({ phone: '+61491573087' }, filled), true);
   assert.equal(particularsNeedReason({ occupation: 'Baker' }, filled), false);
+  // 528: a new email goes onto the customer: a reason, unless the customer has
+  // it already; an email cleared on the survey is not taken off the customer;
+  // a survey with no customer needs none.
+  const withEmail = { ...filled, customerEmail: 'bea@example.com' };
+  assert.equal(particularsNeedReason({ email: 'bea.new@example.com' }, withEmail), true);
+  assert.equal(particularsNeedReason({ email: 'bea.new@example.com' }, filled), true, 'the customer had none');
+  assert.equal(particularsNeedReason({ email: ' bea@example.com ' }, withEmail), false, 'the customer has it already');
+  assert.equal(particularsNeedReason({ email: null }, withEmail), false, 'cleared on the survey only');
+  assert.equal(particularsNeedReason({ email: 'bea.new@example.com' }, { hasCustomer: false }), false);
 });
 
 test('declarations read Yes, No or Not answered', () => {

@@ -11,6 +11,10 @@
 //     at the store chosen when the person has more than one (CUSTOMERS-5, M1).
 //   - A survey that cannot be opened says why; the signed PDF of another
 //     store is explained, not offered (CUSTOMERS-14); Sex shows Other.
+//   - 528 (the user, 19 Nov 2026): a new email for the customer asks for a
+//     reason, as a phone does; for Staff an affiliate's or a portal login's
+//     email is read only (customer_is_affiliate_or_portal_login; an Owner or
+//     Manager does not ask).
 //
 // JSDOM tests with the database stubbed; invented data only.
 // Run: node --test scripts/survey/tests/survey-window-419.test.mjs
@@ -96,7 +100,8 @@ const SURVEY = () => ({
 });
 
 /** The database, stubbed: health_survey_detail answers state.survey; every call is kept. */
-function makeDb({ survey = SURVEY(), detailError = null, customer = { id: 'c-1', date_of_birth: '1981-05-06' }, extra = {}, v2Error = null } = {}) {
+function makeDb({ survey = SURVEY(), detailError = null, customer = { id: 'c-1', date_of_birth: '1981-05-06' }, extra = {}, v2Error = null,
+                  affiliate = null } = {}) {
   const state = { survey, calls: [], customer };
   const chain = table => {
     const c = {
@@ -114,6 +119,7 @@ function makeDb({ survey = SURVEY(), detailError = null, customer = { id: 'c-1',
         return { data: { found: true, survey: state.survey, symptoms: [], attachments: [], has_pdf: false, reviewer: 'Owner', ...extra }, error: null };
       }
       if (name === 'consultant_notes_for') return { data: [], error: null };
+      if (name === 'customer_is_affiliate_or_portal_login') return { data: affiliate, error: null };
       if (name === 'update_survey_particulars_v2' && v2Error) return { data: null, error: { message: v2Error } };
       if (name === 'review_health_survey') {
         state.survey = { ...state.survey, acidity_result: args.p_acidity, health_goals: args.p_health_goals,
@@ -386,3 +392,56 @@ test('CUSTOMERS-14: another store\'s signed PDF is explained, not offered', asyn
 });
 
 test.after(async () => { dom.window.close(); await rm(dir, { recursive: true, force: true }); });
+
+// ── 528: the email the customer gets ─────────────────────────────────────
+const emailBox = ui => [...ui.node.querySelectorAll('.form-group')]
+  .find(g => g.querySelector('label')?.textContent === 'Email').querySelector('input');
+
+test('528: a new email for the customer asks for a reason, which is sent with it', async () => {
+  const db = makeDb({ customer: { id: 'c-1', date_of_birth: '1981-05-06', email: 'bea@example.com' } });
+  const ui = await mount('staff', { surveyId: 'hs-1' }, db);
+  try {
+    await ui.click('[data-edit-details]');
+    assert.equal(ui.$('[data-edit-reason]'), null, 'no reason before a change');
+    await ui.change(emailBox(ui), 'bea.new@example.com');
+    assert.ok(ui.$('[data-edit-reason]'), 'a reason is asked for');
+    await ui.click('[data-save-details]');
+    assert.match(ui.text(), /Give a reason for this change/);
+    assert.equal(ui.calls('update_survey_particulars_v2').length, 0);
+    await ui.change('[data-edit-reason]', 'Typo on the form');
+    await ui.click('[data-save-details]');
+    assert.deepEqual(ui.calls('update_survey_particulars_v2')[0].args,
+      { p_survey_id: 'hs-1', p_changes: { email: 'bea.new@example.com' }, p_reason: 'Typo on the form' });
+  } finally { ui.close(); }
+});
+
+test('528: the survey\'s email set to the one the customer has already asks for no reason', async () => {
+  const db = makeDb({ customer: { id: 'c-1', date_of_birth: '1981-05-06', email: 'bea.cust@example.com' } });
+  const ui = await mount('staff', { surveyId: 'hs-1' }, db);
+  try {
+    await ui.click('[data-edit-details]');
+    await ui.change(emailBox(ui), 'bea.cust@example.com');
+    assert.equal(ui.$('[data-edit-reason]'), null);
+    await ui.click('[data-save-details]');
+    assert.deepEqual(ui.calls('update_survey_particulars_v2')[0].args,
+      { p_survey_id: 'hs-1', p_changes: { email: 'bea.cust@example.com' }, p_reason: null });
+  } finally { ui.close(); }
+});
+
+test('528: for Staff an affiliate\'s or portal login\'s email is read only, with why; an Owner does not ask', async () => {
+  const db = makeDb({ affiliate: true, customer: { id: 'c-1', date_of_birth: '1981-05-06', email: 'bea@example.com' } });
+  const ui = await mount('staff', { surveyId: 'hs-1' }, db);
+  try {
+    await ui.click('[data-edit-details]');
+    assert.deepEqual(ui.calls('customer_is_affiliate_or_portal_login').map(c => c.args), [{ p_customer_id: 'c-1' }]);
+    assert.equal(emailBox(ui).disabled, true);
+    assert.match(ui.text(), /Only an Owner or Manager can change this email/);
+  } finally { ui.close(); }
+  const db2 = makeDb({ affiliate: true });
+  const ui2 = await mount('owner', { surveyId: 'hs-1' }, db2);
+  try {
+    await ui2.click('[data-edit-details]');
+    assert.equal(ui2.calls('customer_is_affiliate_or_portal_login').length, 0);
+    assert.equal(emailBox(ui2).disabled, false);
+  } finally { ui2.close(); }
+});

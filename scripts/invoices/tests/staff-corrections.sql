@@ -5,7 +5,9 @@
 --      quantity, the customer, the referrer, the service staff, a payment's
 --      method, the business date, the notes and the instalment details. Each
 --      is audited like an Owner's correction: a revision with the reason and
---      an audit row, both by the staff member.
+--      an audit row, both by the staff member. (528, where it is applied: the
+--      referrer, the invoice's affiliate, is an Owner's or Manager's to
+--      change, the user, 19 Nov 2026: Staff are refused and nothing changes.)
 --   S2 And a part-paid invoice, and under today's unpaid-invoice rules a
 --      manual discount (with its reason), FOC (with its reason) and a
 --      discount voucher.
@@ -275,11 +277,21 @@ begin
   -- The referrer: added where there was none, then changed.
   inv := pg_temp.sale('A', 1);
   perform pg_temp.as_user('s');
-  e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('affiliate_id', pg_temp.fx('aff1')), 'Referrer missed at the till');
-  e := coalesce(e, pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('affiliate_id', pg_temp.fx('aff2')), 'Wrong referrer'));
-  perform pg_temp.check(e is null and (select affiliate_id from public.invoices where id = inv) = pg_temp.fx('aff2')
-      and (select count(*) from public.invoice_revisions r where r.invoice_id = inv and r.edited_by = pg_temp.fx('s')) = 2,
-    'S1 staff add and change the referrer (two revisions), got ' || coalesce(e, 'saved'));
+  if position('-- 528 (security audit' in pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0 then
+    -- 528 (security audit of 17 Nov 2026, M11; the user, 19 Nov 2026: "Owner/Manager for every
+    -- change"): Staff may not add or change it in a correction; nothing changes.
+    e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('affiliate_id', pg_temp.fx('aff1')), 'Referrer missed at the till');
+    perform pg_temp.check(e = 'Only an Owner or Manager can change the affiliate on an invoice after it is made'
+        and (select affiliate_id from public.invoices where id = inv) is null
+        and not exists (select 1 from public.invoice_revisions r where r.invoice_id = inv and r.edited_by = pg_temp.fx('s')),
+      'S1 (528) staff may not add the referrer, and nothing changes, got ' || coalesce(e, 'saved'));
+  else
+    e := pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('affiliate_id', pg_temp.fx('aff1')), 'Referrer missed at the till');
+    e := coalesce(e, pg_temp.try(inv, pg_temp.lines(inv), jsonb_build_object('affiliate_id', pg_temp.fx('aff2')), 'Wrong referrer'));
+    perform pg_temp.check(e is null and (select affiliate_id from public.invoices where id = inv) = pg_temp.fx('aff2')
+        and (select count(*) from public.invoice_revisions r where r.invoice_id = inv and r.edited_by = pg_temp.fx('s')) = 2,
+      'S1 staff add and change the referrer (two revisions), got ' || coalesce(e, 'saved'));
+  end if;
 
   -- The service staff.
   inv := pg_temp.sale('A', 1);

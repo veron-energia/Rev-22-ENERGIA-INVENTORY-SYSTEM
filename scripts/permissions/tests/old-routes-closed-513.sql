@@ -154,7 +154,7 @@ select pg_temp.check(md5(pg_get_functiondef('public.create_transfer_request(text
 -- or 518's, 18 Nov 2026: and one that is not a number)
 select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (string_to_array(x.m, '|')), '5b unchanged: ' || x.f)
   from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead|0d60261bf337a1716dab9307b2f52fea'),
-               ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52'),
+               ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52|aaf592490eb5d13ca2ccb0544f48f647'),  -- or 528's (19 Nov 2026)
                ('create_staff_transfer_request(jsonb,text,uuid)', 'cc32ec91b2e223c67da957dd792af12e'),
                ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '42f00d595a40df157d28a7ea88fbe7ad'),
                ('update_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb,text)', '62734e08fe4de2d3af0e1e1dfa268f5b')) x(f, m);

@@ -260,7 +260,14 @@ begin
   perform pg_temp.check(v like 'P0001%not a valid date%', '2d a bad date was taken: ' || v);
   v := pg_temp.edit('staff', 'plain', '{"is_active": "no"}');
   perform pg_temp.check(v like 'P0001%Active must be true or false%', '2d a bad Active was taken: ' || v);
-  v := pg_temp.edit('staff', 'plain', '{"is_active": false, "occupation": " T418 Teacher ", "email": "t418-plain@sig.invalid"}');
+  -- 528 (security audit of 17 Nov 2026, M11), where it is applied: a changed email needs a
+  -- reason (before 528 the reason given below is simply kept).
+  if position('-- 528 (security audit' in pg_get_functiondef('public.update_customer(uuid,jsonb,text,timestamptz)'::regprocedure)) > 0 then
+    v := pg_temp.edit('staff', 'plain', '{"email": "t418-plain@sig.invalid"}');
+    perform pg_temp.check(v like 'P0001%A reason is required to change a customer''s email%', '2d (528) an email was changed with no reason: ' || v);
+  end if;
+  v := pg_temp.edit('staff', 'plain', '{"is_active": false, "occupation": " T418 Teacher ", "email": "t418-plain@sig.invalid"}',
+                    'T418 email given at the counter');
   perform pg_temp.check(v like 'ok%' and (select not is_active and occupation = 'T418 Teacher' from public.customers where id = pg_temp.id('plain')),
                         '2d Active and occupation were not saved: ' || v);
   -- A stale copy is refused, and nothing is saved.

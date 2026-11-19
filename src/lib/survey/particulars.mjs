@@ -51,12 +51,14 @@ export function particularsChanges(seed, draft) {
 /**
  * Whether the save needs a reason: a date of birth already filled in is
  * changed or cleared (the Owner's rule, Q9), or the phone is changed (it
- * goes onto the customer). customerDob is the customer's own date of birth
- * when the survey has a customer.
+ * goes onto the customer), or (528) a new email goes onto the customer: one
+ * other than the customer's own (customerEmail). customerDob is the
+ * customer's own date of birth when the survey has a customer.
  */
-export function particularsNeedReason(changes, { hasCustomer = false, customerDob = null } = {}) {
+export function particularsNeedReason(changes, { hasCustomer = false, customerDob = null, customerEmail = null } = {}) {
   if (!hasCustomer) return false;
   if ('phone' in changes && changes.phone) return true;
+  if ('email' in changes && tidy(changes.email) !== null && tidy(changes.email) !== tidy(customerEmail)) return true;
   if ('date_of_birth' in changes) {
     const old = tidy(customerDob);
     return old !== null && old.slice(0, 10) !== (changes.date_of_birth ?? null);

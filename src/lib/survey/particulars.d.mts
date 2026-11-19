@@ -19,7 +19,7 @@ export function particularsChanges(seed: ParticularsDraft, draft: ParticularsDra
 
 export function particularsNeedReason(
   changes: Record<string, any>,
-  opts?: { hasCustomer?: boolean; customerDob?: string | null },
+  opts?: { hasCustomer?: boolean; customerDob?: string | null; customerEmail?: string | null },
 ): boolean;
 
 export function dobChangeAllowed(

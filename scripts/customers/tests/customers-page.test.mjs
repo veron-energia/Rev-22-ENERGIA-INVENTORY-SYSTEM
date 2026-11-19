@@ -41,7 +41,8 @@
 //     Limited view and asks for none of it.
 //   * 468 (the Owner, 24 Oct 2026): Edit shows who referred the customer
 //     (name and phone ending), read only for staff; Correct Referrer stays
-//     Owner/Manager; with no referrer yet staff still pick the first. Delete
+//     Owner/Manager; with no referrer yet staff still pick the first (528:
+//     on the day the customer is made). Delete
 //     (the window Health Surveys → To match shares) needs the name typed and
 //     goes through delete_customer.
 //   * 502 (the user, 10 Nov 2026): View lists the vouchers the customer is
@@ -49,6 +50,12 @@
 //     collect-by date, a passed date or the closed sale; the old same-day
 //     rewards are never listed, even from a server that still sends them,
 //     and the wallet's Legacy credit is untouched.
+//   * 528 (the user, 19 Nov 2026): a changed email asks for a reason, as a
+//     phone does; for Staff and the old Admin role an affiliate's or a portal
+//     login's email is read only (customer_is_affiliate_or_portal_login, asked
+//     when Edit opens; Owners and Managers do not ask), and the referrer of a
+//     customer made before today (Singapore date) cannot be added. The
+//     database's refusal is shown as it comes.
 //
 // Run: node --test scripts/customers/tests/customers-page.test.mjs
 import { test, after } from 'node:test';
@@ -781,8 +788,8 @@ test('468: an Owner or Manager sees the referrer\'s name too, with Correct Refer
   }
 });
 
-test('468: a customer with no referrer yet: staff may still pick the first one, as on Add', async () => {
-  await mount('staff');
+test('468: a customer with no referrer yet: staff may still pick the first one, as on Add (528: made today)', async () => {
+  await mount('staff', b => { b.fx.customers[1].created_at = new Date().toISOString(); });
   await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
   await tick();
   const g = referrerGroup();
@@ -813,4 +820,104 @@ test('468: Delete (the window To match shares) needs the name typed, sends delet
   assert.ok(!modal(), 'the window closes');
   assert.ok(callsOf('search_customers').length > listLoads, 'the list reloads');
   assert.deepEqual(writes(), [], 'the customers table is never written');
+});
+
+// ── 528: the email and the referrer (the user, 19 Nov 2026) ───────────────
+const emailField = () => field('Email');
+
+test('528: a changed email asks for a reason, as a phone does, and the reason is sent', async () => {
+  await mount('staff');
+  await click(row('Ada Tan').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  assert.ok(!modal().textContent.includes('Reason for this change'), 'no reason asked before a change');
+  await setValue(emailField(), 'ada.new@example.invalid');
+  assert.ok(modal().textContent.includes('Reason for this change'), 'a reason is asked');
+  assert.equal(modal().querySelector('#edit-reason').placeholder, 'Why is the email changing?');
+  await click(button('Save', modal()));
+  assert.equal(callsOf('update_customer').length, 0, 'not sent without a reason');
+  assert.ok(modal().textContent.includes('Give a reason for changing the email.'));
+  await setValue(modal().querySelector('#edit-reason'), 'Customer gave a new address');
+  await click(button('Save', modal()));
+  const args = callsOf('update_customer').pop().args;
+  assert.deepEqual(args.p_changes, { email: 'ada.new@example.invalid' });
+  assert.equal(args.p_reason, 'Customer gave a new address');
+});
+
+test('528: an affiliate\'s or portal login\'s email is read only for Staff and the old Admin role, with why', async () => {
+  for (const role of ['staff', 'admin']) {
+    await mount(role, b => {
+      b.fx.customers[0].email = 'ada@example.invalid';
+      b.handlers.customer_is_affiliate_or_portal_login = a => a.p_customer_id === 'c-1';
+    });
+    await click(row('Ada Tan').querySelector('button[aria-label="Edit customer"]'));
+    await tick();
+    assert.deepEqual(callsOf('customer_is_affiliate_or_portal_login').map(c => c.args), [{ p_customer_id: 'c-1' }], role);
+    assert.equal(emailField().disabled, true, role + ': the email is read only');
+    assert.equal(emailField().value, 'ada@example.invalid');
+    assert.ok(modal().textContent.includes('Only an Owner or Manager can change this email'), role);
+    // The other details stay theirs.
+    await setValue(field('Notes'), 'Prefers mornings');
+    await click(button('Save', modal()));
+    assert.deepEqual(callsOf('update_customer').pop().args.p_changes, { notes: 'Prefers mornings' }, role);
+  }
+  // A plain customer's email stays open for Staff.
+  await mount('staff', b => { b.handlers.customer_is_affiliate_or_portal_login = () => false; });
+  await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  assert.equal(emailField().disabled, false);
+  assert.ok(!modal().textContent.includes('Only an Owner or Manager can change this email'));
+});
+
+test('528: an Owner or Manager changes an affiliate\'s email (with a reason) and does not need to ask', async () => {
+  for (const role of ['owner', 'manager']) {
+    await mount(role, b => { b.handlers.customer_is_affiliate_or_portal_login = () => true; });
+    await click(row('Ada Tan').querySelector('button[aria-label="Edit customer"]'));
+    await tick();
+    assert.equal(callsOf('customer_is_affiliate_or_portal_login').length, 0, role + ': not asked');
+    assert.equal(emailField().disabled, false, role);
+    await setValue(emailField(), 'ada.portal@example.invalid');
+    await setValue(modal().querySelector('#edit-reason'), 'Checked with the affiliate');
+    await click(button('Save', modal()));
+    assert.equal(callsOf('update_customer').pop().args.p_reason, 'Checked with the affiliate', role);
+  }
+});
+
+test('528: if it cannot be told whether the customer is an affiliate, the email stays open and the database decides; its refusal is shown', async () => {
+  const refusal = 'Only an Owner or Manager can change the email of an affiliate or a customer with a portal login';
+  await mount('staff', b => {
+    b.failures.set('customer_is_affiliate_or_portal_login', 'could not answer (fixture)');
+    b.failures.set('update_customer', { message: refusal, code: '42501' });
+  });
+  await click(row('Ada Tan').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  assert.equal(emailField().disabled, false);
+  await setValue(emailField(), 'ada.other@example.invalid');
+  await setValue(modal().querySelector('#edit-reason'), 'Asked by phone');
+  await click(button('Save', modal()));
+  assert.equal(callsOf('update_customer').length, 1);
+  assert.ok(modal().textContent.includes(refusal), 'the refusal is shown in the window');
+});
+
+test('528: Staff cannot add the first referrer to a customer made before today (Singapore date); an Owner or Manager can', async () => {
+  const yesterdaySg = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  for (const [role, locked] of [['staff', true], ['admin', true], ['manager', false], ['owner', false]]) {
+    await mount(role, b => { b.fx.customers[1].created_at = yesterdaySg; });
+    await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+    await tick();
+    const g = referrerGroup();
+    assert.equal(g.querySelector('[data-referrer-locked]'), null, role);
+    assert.equal(g.querySelector('button').disabled, locked, role + ': the picker');
+    assert.equal(g.textContent.includes('only an Owner or Manager can add their referrer'), locked, role + ': the hint');
+  }
+  // The server's refusal, if it comes (a window opened before midnight), is shown.
+  const refusal = 'Only an Owner or Manager can add a referrer to a customer created before today. Use Correct Referrer.';
+  await mount('staff', b => {
+    b.fx.customers[1].created_at = new Date().toISOString();
+    b.failures.set('update_customer', { message: refusal, code: '42501' });
+  });
+  await click(row('Ben Lee').querySelector('button[aria-label="Edit customer"]'));
+  await tick();
+  await setValue(field('Notes'), 'x');
+  await click(button('Save', modal()));
+  assert.ok(modal().textContent.includes(refusal));
 });

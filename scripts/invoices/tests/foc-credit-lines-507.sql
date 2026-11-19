@@ -10,7 +10,8 @@
 --   4 New Invoice (create_invoice): Staff are refused a voucher or therapy line
 --     sent free (by foc_quantity or is_foc); a product line free is saved; a
 --     Manager saves a voucher line free.
---   5 Edit Invoice (update_invoice, so update_invoice_internal): on the
+--   5 Edit Invoice (update_invoice, so update_invoice_internal; where 528 is in,
+--     correct_invoice without the affiliate, as the page calls it): on the
 --     Manager's invoice with a free voucher line, Staff change the product line
 --     and the free voucher line is kept as it is; Staff are refused adding a new
 --     free voucher line or changing the free voucher line; a Manager may.
@@ -151,6 +152,20 @@ insert into f507 select 'inv5', i.id from public.invoices i join public.invoice_
 create function pg_temp.edit(p_who text, p_items jsonb) returns text language plpgsql as $f$
 begin
   perform pg_temp.as_user(p_who);
+  -- 528 (security audit of 17 Nov 2026, M11; the user, 19 Nov 2026): update_invoice always hands
+  -- correct_invoice an affiliate_id (here none), which 528 counts as changing who earns on an
+  -- invoice whose customer's referrer earns, and refuses for Staff. Edit Invoice on the page calls
+  -- correct_invoice without the affiliate, so where 528 is in this does the same: the same lines
+  -- and header as update_invoice's, without 'affiliate_id'. What part 5 tests (the free voucher
+  -- line) is unchanged.
+  if position('-- 528 (security audit' in
+              pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0 then
+    return pg_temp.try(format('select public.correct_invoice(%L, %L::jsonb, %L::jsonb, %L)',
+      pg_temp.fx('inv5'), p_items,
+      jsonb_build_object('customer_id', pg_temp.fx('cust'), 'manual_discount', 0, 'notes', null,
+                         'discount_voucher_id', null, 'service_staff', '[]'::jsonb),
+      'F507 edit'));
+  end if;
   return pg_temp.try(format('select public.update_invoice(%L, %L, null, %L::jsonb, 0, null, null, %L::jsonb, %L)',
     pg_temp.fx('inv5'), pg_temp.fx('cust'), p_items, '[]', 'F507 edit'));
 end $f$;

@@ -16,8 +16,14 @@ select position('518:' in pg_get_functiondef('public.correct_invoice_payment(uui
 \else
 \ir ../../../supabase/518_an_amount_is_always_a_number.sql
 \endif
--- A second run changes nothing.
+-- A second run changes nothing. (528, security audit of 17 Nov 2026, M11, changes
+-- correct_invoice, which 518 pins as relied on: where 528 is in, 518 rightly refuses to run
+-- again, so it is not run again there.)
+select position('-- 528 (security audit' in pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0 as m518_528_in \gset
+\if :m518_528_in
+\else
 \ir ../../../supabase/518_an_amount_is_always_a_number.sql
+\endif
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end $f$;
@@ -154,9 +160,10 @@ select pg_temp.check(bool_and(c.convalidated
                                               'invoice_line_credit_allocations', 'customer_credit_lots', 'commissions']);
 
 -- 6. The functions
-select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = x.m, '6a ' || x.f || ' is as tested')
-  from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '0d60261bf337a1716dab9307b2f52fea'),
-               ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '088e2130d62a1dc4af8cd9417465c0b6'),
-               ('split_invoice_payment(uuid,jsonb,text,uuid)', '236b86da67f77eb036592e1ce12ec366'),
-               ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52')) x(f, m);
+-- (correct_invoice: or 528's, which adds who may change the affiliate.)
+select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (x.m), '6a ' || x.f || ' is as tested')
+  from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', array['0d60261bf337a1716dab9307b2f52fea']),
+               ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', array['088e2130d62a1dc4af8cd9417465c0b6']),
+               ('split_invoice_payment(uuid,jsonb,text,uuid)', array['236b86da67f77eb036592e1ce12ec366']),
+               ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', array['cea93a5dd73d429f6437f4c9a8fcaa52', 'aaf592490eb5d13ca2ccb0544f48f647'])) x(f, m);
 rollback;
