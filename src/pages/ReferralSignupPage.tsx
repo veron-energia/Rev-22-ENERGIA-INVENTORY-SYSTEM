@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import PhoneInput from '../components/PhoneInput';
 import { referralBookingUrl } from '../lib/referral/bookingLink.mjs';
 import { REFERRAL_NOTICE_VERSION, referralNotice } from '../lib/referral/notice.mjs';
+import { EMAIL_MAX, NAME_MAX, signupInputProblem } from '../lib/referral/signupInput.mjs';
 import '../styles/referral-landing.css';
 
 // Public /r/:referralCode — creates a CUSTOMER under the affiliate. It does NOT
@@ -31,6 +32,13 @@ import '../styles/referral-landing.css';
 // database records that they were told. Only then does their phone number
 // show in that affiliate's My Network. It is a notice, not consent: no tick
 // box and no "agree".
+//
+// 529 (security audit of 17 Nov 2026, M3; the user, 19 Nov 2026): the database refuses a name
+// longer than 100 characters (first and last together) or with a web address, '<', '>' or control
+// characters, and an email that does not look like name@domain.tld or is longer than 254
+// characters. The page checks the same rule (signupInput.mjs) before it calls, so the person is
+// told at once what to fix; the database stays the judge, and its own refusals (these, and the
+// limits per connection, per phone and for all links together) show as its message.
 
 const HERO_IMG = 'https://energia.sg/wp-content/uploads/2025/01/6719068c50fcd_mockup-1024x758.png.webp';
 const LOGO_IMG = 'https://energia.sg/wp-content/uploads/2021/03/Energia-Logo-Rectangle-Two.png.webp';
@@ -110,11 +118,14 @@ const ReferralSignupPage: React.FC = () => {
     setErr(null);
     if (!f.first.trim()) { setErr('Please enter your name.'); return; }
     if (!f.phone || !phoneValid) { setErr('Please enter a valid mobile/phone number.'); return; }
-    setBusy(true);
     const args = {
       p_code: referralCode, p_first_name: f.first.trim(), p_last_name: f.last.trim(),
       p_phone: f.phone.trim(), p_email: f.email.trim() || null, p_honeypot: hp || null,
     };
+    // 529: what the database would refuse, checked on what is sent.
+    const problem = signupInputProblem(args.p_first_name, args.p_last_name, args.p_email);
+    if (problem) { setErr(problem); return; }
+    setBusy(true);
     // 484: the same six keys and the version of the notice above the button.
     // A database without this function (484 not applied yet, or undone)
     // answers PGRST202; then, and only then, the six keys go to
@@ -196,16 +207,16 @@ const ReferralSignupPage: React.FC = () => {
       <div className="rl-row2">
         <div className="rl-field">
           <label className="rl-label" htmlFor={`${idp}-first`}>First Name <span className="rl-req">*</span></label>
-          <input id={`${idp}-first`} value={f.first} onChange={on('first')} autoComplete="given-name" />
+          <input id={`${idp}-first`} value={f.first} onChange={on('first')} autoComplete="given-name" maxLength={NAME_MAX} />
         </div>
         <div className="rl-field">
           <label className="rl-label" htmlFor={`${idp}-last`}>Last Name</label>
-          <input id={`${idp}-last`} value={f.last} onChange={on('last')} autoComplete="family-name" />
+          <input id={`${idp}-last`} value={f.last} onChange={on('last')} autoComplete="family-name" maxLength={NAME_MAX} />
         </div>
       </div>
       <div className="rl-field">
         <label className="rl-label" htmlFor={`${idp}-email`}>Email</label>
-        <input id={`${idp}-email`} type="email" value={f.email} onChange={on('email')} autoComplete="email" />
+        <input id={`${idp}-email`} type="email" value={f.email} onChange={on('email')} autoComplete="email" maxLength={EMAIL_MAX} />
       </div>
       <div className="rl-field">
         <label className="rl-label">Phone <span className="rl-req">*</span></label>

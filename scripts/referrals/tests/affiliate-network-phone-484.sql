@@ -727,6 +727,9 @@ insert into e_in values
   -- a number typed with spaces, and with dashes
   ('spaced',       'anon', pg_temp.code('a'), 'T484', 'E Spaced',    '+61 2 5550 ' || right(pg_temp.ph(84), 4), null, null, null, 'registered', 1),
   ('dashed',       'anon', pg_temp.code('a'), 'T484', 'E Dashed',    '+61-2-5550-' || right(pg_temp.ph(85), 4), null, null, null, 'registered', 1);
+-- 529 is in when the sign-up has its marker (section G puts the text before 529 back, as 484 pins it).
+create function pg_temp.has529() returns boolean language sql as
+$$ select position('-- 529 (security audit' in pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure)) > 0 $$;
 create temp table e_out as
 select i.k, i.outcome, i.marks,
        pg_temp.e_run('old', i.who, i.code, i.first, i.last, i.phone, i.email, null, i.hp, i.setup) as o,
@@ -749,15 +752,22 @@ select pg_temp.check((e.o -> 'changes') - 'counts' = (e.w -> 'changes') - 'count
 select pg_temp.check((select string_agg(e.k || '=' || coalesce(e.o -> 'answer' ->> 'outcome', e.o -> 'answer' ->> 'error', e.o -> 'answer' ->> 'message'), ' ' order by e.k)
                         from e_out e
                        where e.k in ('phone_review', 'no_name', 'ambiguous', 'phone_limit', 'phone_tries', 'link_limit', 'unknown_code', 'suspended', 'inactive'))
-                     = 'ambiguous=P0001 inactive=This referral link is not accepting new registrations right now. Please contact Energia. '
+                     = 'ambiguous=' || case when pg_temp.has529()
+                                            then 'More than one customer has this phone number and name. Ask staff to verify and select the correct customer record.'
+                                            else 'P0001' end
+                       || ' inactive=This referral link is not accepting new registrations right now. Please contact Energia. '
                        || 'link_limit=This referral link has had many registrations in the last hour. Please try again later or contact Energia. '
-                       || 'no_name=P0001 phone_limit=P0001 '
+                       || 'no_name=P0001 phone_limit=' || case when pg_temp.has529()
+                                            then 'This phone number already belongs to 3 non-deleted customers across Energia. Enter a different valid number.'
+                                            else 'P0001' end || ' '
                        || 'phone_review=P0001 phone_tries=Too many registration attempts for this phone number. Please wait 10 minutes or contact Energia. '
                        || 'suspended=This referral link is not accepting new registrations right now. Please contact Energia. '
                        || 'unknown_code=This referral link is not accepting new registrations right now. Please contact Energia.'
     and (select e.o -> 'answer' ->> 'message' from e_out e where e.k = 'phone_review') like 'CUSTOMER_PHONE_REVIEW%'
-    and (select e.o -> 'answer' ->> 'message' from e_out e where e.k = 'ambiguous') = 'AMBIGUOUS_CUSTOMER_MATCH'
-    and (select e.o -> 'answer' ->> 'message' from e_out e where e.k = 'phone_limit') like 'CUSTOMER_PHONE_LIMIT%'
+    -- 529 (19 Nov 2026, "Yes, count every try"): where it is in, these two are recorded answers in the words the
+    -- page showed for the errors (phoneErrorMessage), not raised errors.
+    and (pg_temp.has529() or (select e.o -> 'answer' ->> 'message' from e_out e where e.k = 'ambiguous') = 'AMBIGUOUS_CUSTOMER_MATCH')
+    and (pg_temp.has529() or (select e.o -> 'answer' ->> 'message' from e_out e where e.k = 'phone_limit') like 'CUSTOMER_PHONE_LIMIT%')
     and (select e.o -> 'answer' ->> 'message' from e_out e where e.k = 'no_name') = 'Please enter your name'
     and (select (e.o -> 'changes' -> 'events') @> jsonb_build_array(jsonb_build_array(pg_temp.code('a'), pg_temp.fx('a'), pg_temp.ph(52), 'self', false))
            from e_out e where e.k = 'self')
@@ -1150,6 +1160,9 @@ select pg_temp.check(pg_temp.try_as('service', 'select count(*)::text from publi
   'X3 the service role reads the marks and calls the proof; it cannot change a mark');
 
 -- ═════ G md5s, 484 twice, NUMBERS OFF, refusals ═════
+-- 484 pins affiliate_referral_signup at 469's text as relied on, so where 529 is in, it is put back to that text
+-- for the rest of this run (rolled back); the sign-ups above ran on whatever the database has.
+\ir ../../affiliate-signup/tests/signup-as-before-529.sql
 select pg_temp.check(pg_temp.md5_of('affiliate_portal_network()') = '070d1b485d32cec99fa627b816a91b4a'
     and pg_temp.md5_of('affiliate_login_link_proof(uuid,uuid)') = '2484fb464733c124213b96152837a660'
     and pg_temp.md5_of('affiliate_referral_signup_with_notice(text,text,text,text,text,text,text)') = 'f64347f2ccc993438f0cdb1655c7cc0f'

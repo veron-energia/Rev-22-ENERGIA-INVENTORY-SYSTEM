@@ -278,6 +278,12 @@ select pg_temp.check(pg_temp.fx('c2') is not null, 'C3 another link still regist
 -- Spaces typed around the code reach the same link, so they count for it:
 -- 20 sign-ups, each with the code padded differently, fill a new link; the
 -- 21st (padded another way), the plain code and a leading space are refused.
+-- (Since 529 all links together make at most 30 new customers an hour; the
+-- new customers above, through Rita's and Ravi's links, are put two hours
+-- back first, so the 20 here are the only ones this hour. The per-link
+-- limit tested here counts each link's own, so nothing below changes.)
+update public.referral_signup_events set created_at = created_at - interval '2 hours'
+ where referrer_customer_id in (pg_temp.fx('ref'), pg_temp.fx('ref2')) and created_at > now() - interval '1 hour';
 insert into fx values ('cap', gen_random_uuid());
 insert into public.customers(id, full_name, phone) values (pg_temp.fx('cap'), 'T425 Cora Pang', '+61491579455');
 insert into public.customer_affiliates(customer_id, status, activated_at, referral_code)

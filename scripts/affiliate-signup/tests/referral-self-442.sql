@@ -115,7 +115,14 @@ $$ select md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,tex
 -- login). Wherever a try below types a phone a customer has, the name finds them first or none of them has the email
 -- typed, so every check holds on it unchanged; phone-and-email-469.sql checks that path.
 create function pg_temp.signup469() returns boolean language sql as
-$$ select pg_temp.md5_now() = '2942e3d4d0e8c76600c3e0ad5e15cc2b' $$;
+$$ select pg_temp.md5_now() in ('2942e3d4d0e8c76600c3e0ad5e15cc2b', '00d528c6f4cc9240b2cf2f82ea2bd487') $$;
+-- 529 (security audit of 17 Nov 2026, M3; the user, 19 Nov 2026: "Yes, count every try") is in when
+-- the function has its marker (its AFTER, 00d528c6..., built on 469's, which signup469() also
+-- accepts). It replaces 442's "never limited" for tries on details already on file: the phone's
+-- limit (3 tries in 10 minutes) now comes before "already registered", with the same answer as for
+-- a number not on file. The checks below that relied on "never limited" expect that answer there.
+create function pg_temp.has529() returns boolean language sql as
+$$ select position('-- 529 (security audit' in pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure)) > 0 $$;
 -- A login, as the sign-up function makes it (confirmed, marked unverified).
 create function pg_temp.login(key text) returns uuid language plpgsql as
 $$declare u uuid := gen_random_uuid(); begin
@@ -187,7 +194,7 @@ insert into m442 select pg_get_functiondef('public.affiliate_referral_signup(tex
                         (select proacl::text from pg_proc where oid = 'public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure),
                         pg_temp.fp(), (select count(*) from public.referral_signup_events), (select count(*) from public.audit_logs),
                         (select count(*) from auth.users), (select count(*) from public.customers);
--- 442 is in already (its AFTER, or 469's built on it): run as with -v nomig=1.
+-- 442 is in already (its AFTER, or 469's built on it, or 529's on 469's): run as with -v nomig=1.
 select pg_temp.md5_now() = 'c76573912de0a4ded29e81e5c56c96d3' or pg_temp.signup469() as m442_in \gset
 \if :m442_in
 \set nomig 1
@@ -195,7 +202,7 @@ do $$ begin raise notice 'NOTE  442 is in (affiliate_referral_signup md5 %): its
 \endif
 \if :{?nomig}
 select pg_temp.check(pg_temp.md5_now() = 'c76573912de0a4ded29e81e5c56c96d3' or pg_temp.signup469(),
-  'M0 442 is installed (its AFTER; or 469''s, built on it: the same phone and email are on file): ' || pg_temp.md5_now());
+  'M0 442 is installed (its AFTER; or 469''s, built on it: the same phone and email are on file; or 529''s on 469''s): ' || pg_temp.md5_now());
 \else
 select pg_temp.check(pg_temp.md5_now() = 'a3deac154f5144cffb34fab871f076c6',
   'M0 affiliate_referral_signup is 440''s AFTER (this suite installs 442 on it; 442''s and 469''s are seen and not installed over): ' || pg_temp.md5_now());
@@ -505,8 +512,12 @@ select pg_temp.ref('l1d', pg_temp.tx('code_g'), 'Gina', 'Testlogin', '+614915706
 select pg_temp.ref('l1e', pg_temp.tx('code_g'), 'Sam', 'Testnewcomer', '+61491570620', null);
 select pg_temp.ref('l1f', pg_temp.tx('code_g'), 'Sam', 'Testnewcomer', '+61491570621', null);
 select pg_temp.check(pg_temp.r('l1a') = pg_temp.known() and pg_temp.r('l1b') = pg_temp.known() and pg_temp.r('l1c') = pg_temp.known()
-    and pg_temp.r('l1d') = pg_temp.too_many() and pg_temp.events('+61491570620') = 3,
-  'L1 three self tries on one phone: each told "already registered"; the fourth is refused by the phone''s limit, writing nothing: ' || pg_temp.r('l1d')::text);
+    and pg_temp.r('l1d') = pg_temp.too_many()
+    and case when pg_temp.has529()
+             then pg_temp.events('+61491570620', 'self') = 3 and pg_temp.events('+61491570620', 'phone_limit') = 2
+                  and pg_temp.events('+61491570620') = 5  -- l1d's and l1e's refusals
+             else pg_temp.events('+61491570620') = 3 end,
+  'L1 three self tries on one phone: each told "already registered"; the fourth is refused by the phone''s limit, writing nothing (since 529: its refusal is recorded, as phone_limit, which the phone''s limit does not count): ' || pg_temp.r('l1d')::text);
 select pg_temp.check(pg_temp.r('l1e') = pg_temp.r('l1d') and pg_temp.on_phone('+61491570620') = 0
     and pg_temp.r('l1f')->>'outcome' = 'registered',
   'L1 a genuine sign-up on that phone is refused too, with the very same answer, and nothing is made (before 442 her tries wrote nothing, so it was registered); on another phone it registers');
@@ -523,10 +534,21 @@ do $$ begin insert into customers(full_name, phone) values ('Ola Testonfile', '+
 select pg_temp.ref('l1k', pg_temp.tx('code_g'), 'Ola', 'Testonfile', '+61491570622', null);
 select pg_temp.ref('l1l', pg_temp.tx('code_g'), 'Xd', 'Testprobe', '+61491570622', pg_temp.mail('lG'));
 select pg_temp.check(pg_temp.r('l1h') = pg_temp.known() and pg_temp.r('l1j') = pg_temp.known()
-    and pg_temp.r('l1k') = pg_temp.known() and pg_temp.r('l1l') = pg_temp.too_many(),
-  'L1 someone on file on that phone is still told "already registered" (never limited, as before); a fourth self try is refused');
+    and pg_temp.r('l1k') = case when pg_temp.has529() then pg_temp.too_many() else pg_temp.known() end
+    and pg_temp.r('l1l') = pg_temp.too_many(),
+  'L1 someone on file on that phone is still told "already registered" (never limited, as before; since 529 the phone''s limit comes first, so the 4th try, hers too, gets "Too many", as on a number not on file); a fourth self try is refused');
 
 -- L2 The link's: twenty self tries through Quinn's link in an hour refuse the next new friend.
+-- (Since 529 all links together make at most 30 new customers and self tries an hour; this
+-- suite's earlier ones are put two hours back first, so the link's limit is what L2 and L3 meet.
+-- L3 fills Gina's link to 19 whatever it counts.)
+do $$ begin
+  if pg_temp.has529() then
+    update referral_signup_events set created_at = created_at - interval '2 hours'
+     where outcome in ('created', 'phone_shared', 'self') and created_at > now() - interval '1 hour'
+       and referrer_customer_id in (pg_temp.fx('cG'), pg_temp.fx('cP'), pg_temp.fx('cQ'), pg_temp.fx('cR'), pg_temp.fx('cV'));
+  end if;
+end $$;
 do $$
 declare i int; r jsonb; n int := 0;
 begin
@@ -550,6 +572,13 @@ select pg_temp.check(pg_temp.r('l2b') = pg_temp.r('l2a') and pg_temp.events('+61
     and pg_temp.events('+61491570721', 'self') = 0 and pg_temp.audits(pg_temp.fx('cQ')) = 20,
   'L2 and so is the next self try, with the very same answer (a ''link_limit'' event, no ''self'' event, no entry)');
 -- At the link's limit: someone on file (Ann) typed with Quinn's login email, and with another email.
+-- (Ann's phone has had three tries already, A7 and G3; since 529 the phone's limit comes before
+-- "already registered", so they are put 11 minutes back first: what is tested here is the link's.)
+do $$ begin
+  if pg_temp.has529() then
+    update referral_signup_events set created_at = created_at - interval '11 minutes' where normalized_phone = '+61491570603';
+  end if;
+end $$;
 select pg_temp.ref('l2e', pg_temp.tx('code_q'), 'Ann', 'Testknown', '+61491570603', pg_temp.mail('lQ'));
 select pg_temp.ref('l2f', pg_temp.tx('code_q'), 'Ann', 'Testknown', '+61491570603', pg_temp.mail('l2f'));
 select pg_temp.check(pg_temp.r('l2e') = pg_temp.known() and pg_temp.r('l2f') = pg_temp.known()
@@ -594,29 +623,41 @@ select pg_temp.ref('d3', pg_temp.tx('code_v'), 'Dora', 'Testonfile', '+614915706
 select pg_temp.ref('d4', pg_temp.tx('code_v'), 'Dora', 'Testonfile', '+61491570665', pg_temp.mail('lV'));
 select pg_temp.ref('d5', pg_temp.tx('code_v'), 'Testonfile', 'Dora', '+61491570665', upper(pg_temp.mail('lV')));
 select pg_temp.ref('d6', pg_temp.tx('code_v'), 'Dora', 'Testonfile', '+61491570665', pg_temp.mail('d6'));
-select pg_temp.check((select bool_and(pg_temp.r(t) = pg_temp.known()) from unnest(array['d1', 'd2', 'd3', 'd4', 'd5', 'd6']) t),
-  'D1 someone on file typed with her login''s email, and with other emails, in turn: each the very same "already registered", the 4th to 6th too (past the phone''s three tries; before the review hers got "Too many" there): '
+select pg_temp.check(case when pg_temp.has529()
+                          then (select bool_and(pg_temp.r(t) = pg_temp.known()) from unnest(array['d1', 'd2', 'd3']) t)
+                               and (select bool_and(pg_temp.r(t) = pg_temp.too_many()) from unnest(array['d4', 'd5', 'd6']) t)
+                          else (select bool_and(pg_temp.r(t) = pg_temp.known()) from unnest(array['d1', 'd2', 'd3', 'd4', 'd5', 'd6']) t) end,
+  'D1 someone on file typed with her login''s email, and with other emails, in turn: each the very same "already registered", the 4th to 6th too (past the phone''s three tries; before the review hers got "Too many" there; since 529 the 4th to 6th get "Too many", hers and the others alike, as on a number not on file): '
   || pg_temp.r('d4')::text);
-select pg_temp.check(pg_temp.events('+61491570665', 'self_known') = 3 and pg_temp.events('+61491570665', 'duplicate') = 3
+select pg_temp.check(case when pg_temp.has529()
+                          then pg_temp.events('+61491570665', 'self_known') = 1 and pg_temp.events('+61491570665', 'duplicate') = 2
+                               and pg_temp.events('+61491570665', 'phone_limit') = 3
+                          else pg_temp.events('+61491570665', 'self_known') = 3 and pg_temp.events('+61491570665', 'duplicate') = 3 end
     and pg_temp.events('+61491570665') = 6
     and (select count(*) from audit_logs l where l.action = 'referral_self_signup_refused' and l.record_id = pg_temp.fx('cV')
            and l.new_data->>'phone' = '+61491570665' and l.new_data->>'outcome' = 'self_known'
-           and l.new_data->'matched' = '["login_email"]') = 3
-    and (select count(*) from audit_logs l where l.action = 'referral_self_signup_refused' and l.new_data->>'phone' = '+61491570665') = 3
+           and l.new_data->'matched' = '["login_email"]') = case when pg_temp.has529() then 1 else 3 end
+    and (select count(*) from audit_logs l where l.action = 'referral_self_signup_refused' and l.new_data->>'phone' = '+61491570665')
+        = case when pg_temp.has529() then 1 else 3 end
     and pg_temp.vera_link() = 0
     and (select referred_by from customers where phone = '+61491570665') is null,
-  'D2 hers are recorded (''self_known'', each with its entry), the others are ''duplicate'' (no entry); the link''s count is untouched, Dora''s referrer too');
+  'D2 hers are recorded (''self_known'', each with its entry), the others are ''duplicate'' (no entry); the link''s count is untouched, Dora''s referrer too (since 529 the three past the phone''s limit are ''phone_limit'', with no entry)');
 -- Vera's own record (her name and phone, which her login also signed up with), four times.
 select pg_temp.ref('d7a', pg_temp.tx('code_v'), 'Vera', 'Testvault', '+61491570607', null);
 select pg_temp.ref('d7b', pg_temp.tx('code_v'), 'Testvault', 'Vera', '+61491570607', null);
 select pg_temp.ref('d7c', pg_temp.tx('code_v'), 'Vera', 'Testvault', '+61491570607', null);
 select pg_temp.ref('d7d', pg_temp.tx('code_v'), 'Vera', 'Testvault', '+61491570607', null);
-select pg_temp.check((select bool_and(pg_temp.r(t) = pg_temp.known()) from unnest(array['d7a', 'd7b', 'd7c', 'd7d']) t)
-    and pg_temp.events('+61491570607', 'self_known') = 4 and pg_temp.events('+61491570607') = 4
+select pg_temp.check(case when pg_temp.has529()
+                          then (select bool_and(pg_temp.r(t) = pg_temp.known()) from unnest(array['d7a', 'd7b', 'd7c']) t)
+                               and pg_temp.r('d7d') = pg_temp.too_many()
+                               and pg_temp.events('+61491570607', 'self_known') = 3 and pg_temp.events('+61491570607', 'phone_limit') = 1
+                          else (select bool_and(pg_temp.r(t) = pg_temp.known()) from unnest(array['d7a', 'd7b', 'd7c', 'd7d']) t)
+                               and pg_temp.events('+61491570607', 'self_known') = 4 end
+    and pg_temp.events('+61491570607') = 4
     and (select bool_and(l.new_data->'matched' = '["record", "login_name", "login_phone"]')
            from audit_logs l where l.action = 'referral_self_signup_refused' and l.new_data->>'phone' = '+61491570607')
     and pg_temp.vera_link() = 0,
-  'D3 her own record, four times: each "already registered" (never limited, as anyone on file), ''self_known'', recorded');
+  'D3 her own record, four times: each "already registered" (never limited, as anyone on file), ''self_known'', recorded (since 529 the 4th gets "Too many", as anyone on file past the phone''s three tries, recorded as ''phone_limit'')');
 
 -- ═════ C A phone 3 customers have ═════
 do $$ begin
@@ -633,20 +674,37 @@ declare i int; n int := 0;
 begin
   for i in 1 .. 30 loop
     if pg_temp.ref('c5_' || i, pg_temp.tx('code_v'), 'Probe', 'Testperson', '+61491570660',
-                   case when i % 10 = 0 then pg_temp.mail('lV') else pg_temp.mail('c5-' || i) end) = pg_temp.r('c2') then
+                   case when i % 10 = 0 then pg_temp.mail('lV') else pg_temp.mail('c5-' || i) end) = pg_temp.r('c4') then
       n := n + 1; end if;
   end loop;
   insert into tx values ('c5_same', n::text);
 end $$;
-select pg_temp.check(pg_temp.r('c1')->>'error' like 'P0001 CUSTOMER_PHONE_LIMIT:%'
-    and pg_temp.r('c1') = pg_temp.r('c2') and pg_temp.r('c3') = pg_temp.r('c2') and pg_temp.r('c4') = pg_temp.r('c2')
+-- (529, "Yes, count every try": where it is in, a phone 3 customers have is answered in the words the page showed
+-- for CUSTOMER_PHONE_LIMIT and recorded, so the phone's limit counts it: the first three get that answer, the 4th and
+-- the 30 more the phone's "Too many"; still the very same answer for hers and the others at each step.)
+select pg_temp.check(case when pg_temp.has529()
+                          then pg_temp.r('c1') = jsonb_build_object('ok', false, 'message',
+                                 'This phone number already belongs to 3 non-deleted customers across Energia. Enter a different valid number.')
+                               and pg_temp.r('c1') = pg_temp.r('c2') and pg_temp.r('c3') = pg_temp.r('c2')
+                               and pg_temp.r('c4') = pg_temp.too_many()
+                          else pg_temp.r('c1')->>'error' like 'P0001 CUSTOMER_PHONE_LIMIT:%'
+                               and pg_temp.r('c1') = pg_temp.r('c2') and pg_temp.r('c3') = pg_temp.r('c2') and pg_temp.r('c4') = pg_temp.r('c2') end
     and pg_temp.tx('c5_same') = '30',
   'C1 her login''s email, her login''s name, and other guesses, under names not on file there: the very same error, every time (30 more, 3 of them hers; before the review hers got "already registered"): '
   || coalesce(pg_temp.r('c1')->>'error', pg_temp.r('c1')::text, 'no answer'));
-select pg_temp.check(pg_temp.events('+61491570660') = 0
+select pg_temp.check(case when pg_temp.has529()
+                          then pg_temp.events('+61491570660', 'phone_full') = 3 and pg_temp.events('+61491570660', 'phone_limit') = 31
+                               and pg_temp.events('+61491570660') = 34
+                          else pg_temp.events('+61491570660') = 0 end
     and not exists (select 1 from audit_logs l where l.action = 'referral_self_signup_refused' and l.new_data->>'phone' = '+61491570660')
     and pg_temp.on_phone('+61491570660') = 3 and pg_temp.vera_link() = 0,
-  'C2 none of them wrote anything: no event, no Audit Log entry, no customer; the link''s count is untouched');
+  'C2 none of them wrote anything: no event, no Audit Log entry, no customer; the link''s count is untouched (since 529 each is an event: 3 phone_full, then 31 phone_limit; still no entry, no customer)');
+-- (Since 529 those tries keep the phone shut for 10 minutes: they are put 11 minutes back first.)
+do $$ begin
+  if pg_temp.has529() then
+    update referral_signup_events set created_at = created_at - interval '11 minutes' where normalized_phone = '+61491570660';
+  end if;
+end $$;
 select pg_temp.ref('c6', pg_temp.tx('code_v'), 'Cora', 'Testfull', '+61491570660', pg_temp.mail('lV'));
 select pg_temp.check(pg_temp.r('c6') = pg_temp.known() and pg_temp.events('+61491570660', 'self_known') = 1,
   'C3 someone on file there typed with her login''s email: "already registered", as anyone on file, ''self_known''');

@@ -294,7 +294,15 @@ insert into want values
 create function pg_temp.later(p_fn text) returns text[] language sql immutable as
 $$ select case p_fn when 'complete_affiliate_onboarding(text,text,text,boolean)'
                     then array['0dd12d4c9cef8b86bb1bcc02a5344927']  -- 508's AFTER (17 Nov 2026; 469's, patched)
+                    when 'affiliate_referral_signup(text,text,text,text,text,text)'
+                    then array['00d528c6f4cc9240b2cf2f82ea2bd487']  -- 529's AFTER (19 Nov 2026; 469's, patched)
                     else '{}'::text[] end $$;
+-- 529 (security audit of 17 Nov 2026, M3; the user, 19 Nov 2026: "Yes, count every try") is in when
+-- the sign-up has its marker: the phone's limit (3 tries in 10 minutes) then comes before "already
+-- registered" (442's "never limited" is replaced), so R7 and R7b expect that where it is; and a phone 3 customers have
+-- (R7) and namesakes (R9) are answered in the page's words for those errors and recorded, not raised.
+create function pg_temp.has529() returns boolean language sql as
+$$ select position('-- 529 (security audit' in pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure)) > 0 $$;
 create temp table c469(k text primary key, v text);
 insert into c469 values
   ('before', 'CHECK ((match = ANY (ARRAY[''exact''::text, ''same_words''::text, ''new_customer''::text, ''held''::text, ''staff_attached''::text, ''staff_created''::text, ''closed''::text, ''test''::text])))'),
@@ -460,25 +468,38 @@ select pg_temp.cust('fc', 'Fox Testfull', pg_temp.ph(15), pg_temp.mail('fox'));
 select pg_temp.refer('r7e', pg_temp.tx('code_rhea'), 'Foxy', 'Nickname', pg_temp.ph(15), pg_temp.mail('fox'));
 select pg_temp.refer('r7f', pg_temp.tx('code_rhea'), 'Foxy', 'Nickname', pg_temp.ph(15), pg_temp.mail('r7f-other'));
 select pg_temp.check(pg_temp.r('r7a') = (select v from known) and pg_temp.r('r7b') = (select v from known)
-    and pg_temp.r('r7c') = (select v from known)
+    and pg_temp.r('r7c') = case when pg_temp.has529()
+                                then '{"ok": false, "message": "Too many registration attempts for this phone number. Please wait 10 minutes or contact Energia."}'::jsonb
+                                else (select v from known) end
     and pg_temp.r('r7d') = '{"ok": false, "message": "Too many registration attempts for this phone number. Please wait 10 minutes or contact Energia."}'::jsonb
     and pg_temp.on_phone(pg_temp.ph(12)) = 2
     and (select count(*) from pg_temp.several('jo')) = 1 and (select count(*) from pg_temp.several('jen')) = 1
-    and pg_temp.events(pg_temp.ph(12), 'duplicate') = 4
+    and case when pg_temp.has529()
+             then pg_temp.events(pg_temp.ph(12), 'duplicate') = 3 and pg_temp.events(pg_temp.ph(12), 'phone_limit') = 2
+             else pg_temp.events(pg_temp.ph(12), 'duplicate') = 4 end
     and pg_temp.r('r7e') = (select v from known) and pg_temp.on_phone(pg_temp.ph(15)) = 3
-    and pg_temp.r('r7f')->>'error' like 'CUSTOMER_PHONE_LIMIT:%'
+    and case when pg_temp.has529()
+             then pg_temp.r('r7f') = '{"ok": false, "message": "This phone number already belongs to 3 non-deleted customers across Energia. Enter a different valid number."}'::jsonb
+                  and pg_temp.events(pg_temp.ph(15), 'phone_full') = 1
+             else pg_temp.r('r7f')->>'error' like 'CUSTOMER_PHONE_LIMIT:%' end
     and (select count(*) from referral_signup_events e where e.referrer_customer_id = pg_temp.fx('rhea')
            and e.outcome in ('created', 'phone_shared', 'self')) = 4,
-  'R7 "already registered" is never limited but counts in the phone''s 10 minutes (each try its duplicate event; R2''s records no second entry within the hour); a phone 3 customers have, with one''s email: on file (another email: the phone''s limit, as before); the link''s hour counts only the 4 customers made: '
+  'R7 "already registered" is never limited but counts in the phone''s 10 minutes (each try its duplicate event; R2''s records no second entry within the hour; since 529 the phone''s limit comes first, so the 3rd try here, the 4th on the phone, gets "Too many" and is recorded as phone_limit); a phone 3 customers have, with one''s email: on file (another email: the phone''s limit, as before); the link''s hour counts only the 4 customers made: '
   || pg_temp.r('r7d')::text || ' ' || pg_temp.r('r7f')::text);
 -- R7b: an hour after the entries (moved back 61 minutes here), a try again writes one more on each record.
 update audit_logs set created_at = created_at - interval '61 minutes'
  where action = 'referral_signup_several_records' and record_id in (pg_temp.fx('jo'), pg_temp.fx('jen'));
+-- (Since 529 the phone's tries above would refuse it first: they are put 61 minutes back too.)
+do $$ begin
+  if pg_temp.has529() then
+    update referral_signup_events set created_at = created_at - interval '61 minutes' where normalized_phone = pg_temp.ph(12);
+  end if;
+end $$;
 select pg_temp.refer('r7g', pg_temp.tx('code_rhea'), 'Jojo', 'Nickname', pg_temp.ph(12), pg_temp.mail('jo-family'));
 select pg_temp.check(pg_temp.r('r7g') = (select v from known)
     and (select count(*) from pg_temp.several('jo')) = 2 and (select count(*) from pg_temp.several('jen')) = 2
     and (select count(*) from pg_temp.several('jo') l where l.created_at > now() - interval '1 hour') = 1
-    and pg_temp.events(pg_temp.ph(12), 'duplicate') = 5,
+    and pg_temp.events(pg_temp.ph(12), 'duplicate') = case when pg_temp.has529() then 4 else 5 end,
   'R7b an hour after the last entries, a try again writes one more on each record (the same answer)');
 -- R8: Lena's record has an old 8-digit number that could be the phone typed (as Singapore).
 do $$ begin perform pg_temp.put('l8a', pg_temp.legacy8()); end $$;
@@ -508,7 +529,11 @@ select pg_temp.refer('r9a', pg_temp.tx('code_rhea'), 'Nia', 'Testsame', pg_temp.
 select pg_temp.refer('r9b', pg_temp.tx('code_rhea'), 'OmaTestsame', null, pg_temp.ph(71), pg_temp.mail('r9b'));
 select pg_temp.refer('r9c', pg_temp.tx('code_rhea'), 'Pam', 'Testsame', pg_temp.ph(72), pg_temp.mail('r9c'));
 select pg_temp.refer('r9d', pg_temp.tx('code_rhea'), 'RueTestsame', null, pg_temp.ph(73), pg_temp.mail('r9d'));
-select pg_temp.check(pg_temp.r('r9a')->>'error' = 'AMBIGUOUS_CUSTOMER_MATCH' and pg_temp.r('r9c')->>'error' = 'AMBIGUOUS_CUSTOMER_MATCH'
+select pg_temp.check(case when pg_temp.has529()  -- 529: answered in the page's words for that error, and recorded
+                          then pg_temp.r('r9a') = '{"ok": false, "message": "More than one customer has this phone number and name. Ask staff to verify and select the correct customer record."}'::jsonb
+                               and pg_temp.r('r9c') = pg_temp.r('r9a')
+                               and pg_temp.events(pg_temp.ph(70), 'ambiguous') = 1 and pg_temp.events(pg_temp.ph(72), 'ambiguous') = 1
+                          else pg_temp.r('r9a')->>'error' = 'AMBIGUOUS_CUSTOMER_MATCH' and pg_temp.r('r9c')->>'error' = 'AMBIGUOUS_CUSTOMER_MATCH' end
     and pg_temp.r('r9b') = (select v from known) and pg_temp.r('r9d') = (select v from known)
     and pg_temp.on_phone(pg_temp.ph(70)) = 3 and pg_temp.on_phone(pg_temp.ph(71)) = 3
     and pg_temp.on_phone(pg_temp.ph(72)) = 3 and pg_temp.on_phone(pg_temp.ph(73)) = 3

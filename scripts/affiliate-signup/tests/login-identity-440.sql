@@ -780,10 +780,11 @@ select pg_temp.check(md5(pg_get_functiondef('public.complete_affiliate_onboardin
           in ('43084deab54968eacaf1793c470fd08f', '1b9dfc819b860dcb19244063a4628f47',
               '0dd12d4c9cef8b86bb1bcc02a5344927')  -- 508's AFTER (17 Nov 2026; 469's, patched)
     and md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure))
-          in ('a3deac154f5144cffb34fab871f076c6', 'c76573912de0a4ded29e81e5c56c96d3', '2942e3d4d0e8c76600c3e0ad5e15cc2b')
+          in ('a3deac154f5144cffb34fab871f076c6', 'c76573912de0a4ded29e81e5c56c96d3', '2942e3d4d0e8c76600c3e0ad5e15cc2b',
+              '00d528c6f4cc9240b2cf2f82ea2bd487')  -- 529's AFTER (19 Nov 2026; 469's, patched)
     and md5(pg_get_functiondef('public.affiliate_login_signup_details(uuid)'::regprocedure)) = '71e6d6f9ab2b474450b5c00f60f14bb4'
     and md5(pg_get_functiondef('public.trg_affiliate_signup_identity_kept()'::regprocedure)) = 'b8c77a682d1a99783bfa708471c9f27e',
-  'G3 the functions have 440''s AFTER md5s (affiliate_referral_signup: 440''s, or 442''s built on it; both, or 469''s built on them; complete_affiliate_onboarding: or 508''s built on 469''s)');
+  'G3 the functions have 440''s AFTER md5s (affiliate_referral_signup: 440''s, or 442''s built on it; both, or 469''s built on them, or 529''s on 469''s; complete_affiliate_onboarding: or 508''s built on 469''s)');
 select pg_temp.check((select relrowsecurity from pg_class where oid = 'public.affiliate_signup_identities'::regclass)
     and not exists (select 1 from pg_policy where polrelid = 'public.affiliate_signup_identities'::regclass)
     and (select relacl::text from pg_class where oid = 'public.affiliate_signup_identities'::regclass) = '{postgres=arwdDxtm/postgres,service_role=r/postgres}'
