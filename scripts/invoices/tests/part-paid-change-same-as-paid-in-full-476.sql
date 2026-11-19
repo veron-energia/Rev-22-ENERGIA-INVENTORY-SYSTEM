@@ -742,11 +742,18 @@ begin
        and created_at = now();
   -- 476 (answer B): referrers on the case's customers (A's RA, B's RB, C's
   -- RC), set as the customer form records a referrer; and the part-payment
-  -- commission layer registered (357's Register; undone after the case)
+  -- commission layer registered (357's Register; undone after the case).
+  -- Each referrer is an active affiliate, so the commission it follows is
+  -- earned (from 527, security audit of 17 Nov 2026, M2, a referrer who is
+  -- not an eligible affiliate has package and bundle commission blocked).
   when 'refs' then
     for i in 1 .. 3 loop
       x := pg_temp.t476_role(p_pre, (array['A', 'B', 'C'])[i]);
       update customers set referred_by = pg_temp.t476_role(p_pre, 'R' || (array['A', 'B', 'C'])[i]) where id = x;
+      insert into customer_affiliates(customer_id, status, activated_at)
+      select pg_temp.t476_role(p_pre, 'R' || (array['A', 'B', 'C'])[i]), 'active', now()
+       where not exists (select 1 from customer_affiliates a
+                          where a.customer_id = pg_temp.t476_role(p_pre, 'R' || (array['A', 'B', 'C'])[i]));
     end loop;
   when 'layer' then
     update app_settings set instalment_commission_from = sg_today() - 30 where id = true;
@@ -1000,7 +1007,11 @@ begin
                          case when m.before is null then to_regprocedure('public.' || m.sig) is null
                               else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before end
                        else to_regprocedure('public.' || m.sig) is not null
-                            and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after end) into v
+                            and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig)))
+                                in (m.after,
+                                    -- 527 (security audit of 17 Nov 2026, M2) changes the preview after 476:
+                                    -- a referrer who may not earn is 'blocked' there (-v nomig=1 where it is in)
+                                    case when m.sig = 'invoice_package_commission_preview(uuid)' then '966e8b7166607aa1d986f20fbbbc1e52' end) end) into v
     from t476_md5 m;
   perform set_config('search_path', p, true);
   return v;

@@ -101,7 +101,8 @@
 --      the Link day (not the day paid); a credit package, a premium bundle,
 --      and a product with a package earn in full, exactly what payment
 --      earns on the same sale to a customer with that referrer (the package
---      and bundle functions too), dated the Link day; one already
+--      and bundle functions too; from 527 their tier 2 for that upline is
+--      blocked as well), dated the Link day; one already
 --      commissioned (another affiliate's code) is left alone; one through
 --      her own code, and a package whose invoice names no affiliate on
 --      purpose, earn nothing (none due); one the engine refuses keeps no
@@ -1342,12 +1343,17 @@ select pg_temp.check((select status::text from invoices where id = pg_temp.fx('i
   || 'the package, bundle and package-with-product invoices are paid, X with its affiliate taken off on purpose');
 -- What payment earns on the same sales to Cora, whom Una referred: tier 1
 -- 4.5% of the package (S$45.00) or bundle (S$90.00) for Una and tier 2 5% of
--- it for Ula (the package and bundle functions write tier 2 as earned), and
+-- it for Ula (before 527 the package and bundle functions wrote tier 2 as
+-- earned; from 527 (security audit of 17 Nov 2026, M2) blocked, 'Affiliate
+-- Not Activated', as a product line's: Ula has no affiliate record), and
 -- for the product with a package also the product's S$15.00 and S$0.75
 -- (blocked).
+select position('-- 527 (security audit' in pg_get_functiondef('public.earn_credit_package_commission(uuid)'::regprocedure)) > 0 as t437_m527_in \gset
 select pg_temp.check(pg_temp.crows('ctlP') @> jsonb_build_array(
         jsonb_build_object('tier', 'tier1', 'referrer', pg_temp.fx('cRef'), 'amount', 45.00, 'line_amount', 1000.00, 'status', 'earned'),
-        jsonb_build_object('tier', 'tier2', 'referrer', pg_temp.fx('cUp'), 'amount', 2.25, 'status', 'earned'))
+        jsonb_build_object('tier', 'tier2', 'referrer', pg_temp.fx('cUp'), 'amount', 2.25,
+                           'status', case when :'t437_m527_in'::boolean then 'blocked' else 'earned' end,
+                           'block_reason', case when :'t437_m527_in'::boolean then 'Affiliate Not Activated' end))
     and jsonb_array_length(pg_temp.crows('ctlP')) = 2
     and pg_temp.crows('ctlR') @> jsonb_build_array(
         jsonb_build_object('tier', 'tier1', 'referrer', pg_temp.fx('cRef'), 'amount', 90.00, 'line_amount', 2000.00, 'status', 'earned'))
