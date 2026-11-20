@@ -55,6 +55,7 @@ import { calendarDate, displayDay, displayDateTime } from '../lib/calendarDates'
 import { readCreditBalanceForInvoice, creditBalanceHtml, paymentsTotal, fitCreditBalance, type CreditBalanceLine } from '../lib/invoices/creditBalanceLine.mjs';
 import { planCopyPages, paginatePrintCopies } from '../lib/invoices/printPages.mjs';
 import { printWhenReady } from '../lib/printWindow';
+import { shownPhone } from '../lib/customers/shownPhone.mjs';
 import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMethodLabel, type WalletAvailability } from '../lib/invoices/walletSources.mjs';
 import { walletCredit, walletLineLabel, type WalletRefundLike } from '../lib/invoices/walletCreditLines.mjs';
 import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/creditReceivers.mjs';
@@ -172,6 +173,10 @@ const InvoicesPage: React.FC = () => {
   // request at all. Kept apart from customerById, which holds whole records —
   // a name here must never be mistaken for a customer whose phone is missing.
   const [nameById, setNameById] = useState<Record<string, string>>({});
+  // The phone under each listed customer's name (the user, 20 Nov 2026). The
+  // list query carries no phone, so each page reads its own customers' phones
+  // by id: one small request per page, never the customers table end to end.
+  const [phoneById, setPhoneById] = useState<Record<string, string | null>>({});
   const rememberNames = useCallback((rows: { customer_id?: string | null; customer_name?: string | null }[]) => {
     setNameById(prev => {
       const next = { ...prev };
@@ -687,6 +692,10 @@ const InvoicesPage: React.FC = () => {
   // carried. Either way the row is never left showing a dash for a customer
   // the database just named.
   const custName = (id: string) => customerOf(id)?.full_name ?? nameById[id] ?? '—';
+  // The phone shown with the name: the page's own read first (the freshest),
+  // else a whole record already fetched; never a "LEGACY-…" placeholder.
+  const phoneOf = (id: string | null | undefined): string | null =>
+    id ? shownPhone(phoneById[id] ?? customerOf(id)?.phone) : null;
   const isStaff = profile?.role === 'staff';
   // Staff choose among their assigned stores; with only one, it behaves as
   // before. Owners and Managers use the full store list.
@@ -2287,6 +2296,23 @@ const InvoicesPage: React.FC = () => {
     setGoodsOutByInvoice(prev => ({ ...prev, ...out }));
   }, []);
 
+  // The phones of a page's customers, read by id each time the page loads, so
+  // a number changed elsewhere shows on the next refresh. A failure leaves the
+  // names without a phone, as before.
+  const loadPhonesFor = useCallback(async (ids: (string | null | undefined)[]) => {
+    const wanted = Array.from(new Set(ids.filter(Boolean) as string[]));
+    if (wanted.length === 0) return;
+    const found: Record<string, string | null> = {};
+    for (let i = 0; i < wanted.length; i += 200) {
+      const slice = wanted.slice(i, i + 200);
+      const { data, error } = await supabase.from('customers').select('id, phone').in('id', slice);
+      if (error) { console.warn(`Customer phones not read for ${slice.length} customer(s): ${error.message}`); continue; }
+      for (const c of (data as any[]) ?? []) found[c.id] = c.phone ?? null;
+    }
+    if (!mountedRef.current || Object.keys(found).length === 0) return;
+    setPhoneById(prev => ({ ...prev, ...found }));
+  }, []);
+
   // AFTER-6: the names come back from the read itself (fetchPaymentMethodNames),
   // and a batch that could not be read leaves its rows as they were, never
   // blank as if they had no payment. The export reads its own (withPaymentLabels).
@@ -2339,6 +2365,7 @@ const InvoicesPage: React.FC = () => {
       setPageCount(res.pages); setPageSummary(res.summary);
       setPageError(null); setRefreshError(null);
       rememberNames(res.rows as any[]);
+      void loadPhonesFor(res.rows.map(r => r.customer_id));
       void loadPaymentMethodsFor(res.rows.map(r => r.id));
       void loadEventsFor(res.rows.map(r => r.id));
       void loadGoodsOutFor(res.rows.filter(r => ['draft', 'unpaid', 'partially_paid'].includes(String(r.status))).map(r => r.id));
@@ -2357,7 +2384,7 @@ const InvoicesPage: React.FC = () => {
         else if (ticket === foregroundTicketRef.current) setPageLoading(false);
       }
     }
-  }, [listQuery, pageSize, loadPaymentMethodsFor, rememberNames]);
+  }, [listQuery, pageSize, loadPaymentMethodsFor, loadPhonesFor, rememberNames]);
 
   // Any change to what is being asked for goes back to page one.
   useEffect(() => { setPage(1); }, [listQuery, pageSize]);
@@ -3527,7 +3554,12 @@ const InvoicesPage: React.FC = () => {
                       })()}</td>
                     <td style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>{displayInvoiceDate(inv)}</td>
                     <td style={{ fontSize: 12.5 }}>{storeName(inv.store_id)}</td>
-                    <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}</td>
+                    <td style={{ fontSize: 13 }}>{custName(inv.customer_id)}
+                      {(() => {
+                        const phone = phoneOf(inv.customer_id);
+                        return phone ? <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}
+                          data-testid="invoice-row-customer-phone">{phone}</div> : null;
+                      })()}</td>
                     <td style={{ textAlign: 'right', fontWeight: 700 }}>{money(inv.total_amount)}</td>
                     {/* 409: a cancelled, refunded or FOC invoice owes nothing, as on the invoice itself. */}
                     <td style={{ textAlign: 'right', color: invoiceListOutstanding(inv) > 0 ? 'var(--accent)' : 'var(--success)' }}
@@ -4939,7 +4971,11 @@ const InvoicesPage: React.FC = () => {
             {/* Summary */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{stores.find(s => s.id === detail.store_id)?.name ?? (txt(detailNames?.store_name) || '—')} · {custName(detail.customer_id)}</div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{stores.find(s => s.id === detail.store_id)?.name ?? (txt(detailNames?.store_name) || '—')} · {custName(detail.customer_id)}
+                  {(() => {
+                    const phone = phoneOf(detail.customer_id);
+                    return phone ? <> · <span data-testid="invoice-detail-customer-phone">{phone}</span></> : null;
+                  })()}</div>
                 <div style={{ marginTop: 4 }}><StatusBadge s={detail.status} /></div>
               </div>
               <div style={{ textAlign: 'right' }}>

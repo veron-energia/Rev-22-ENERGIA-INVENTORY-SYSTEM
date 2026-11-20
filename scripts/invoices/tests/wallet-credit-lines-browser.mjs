@@ -15,6 +15,7 @@ import { build } from 'esbuild';
 import { createRequire } from 'node:module';
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { runAsOpener } from './print-opener.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || '/Users/shinthantaungstanley/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 await mkdir('.invoice-test/browser', { recursive: true });
@@ -220,6 +221,9 @@ async function printed(page, html, picture) {
   await sheet.addInitScript(() => { window.print = () => { window.__printed = true; }; });
   await sheet.route('**/*', route => route.request().url() === 'https://print.test/' ? route.fulfill({ contentType: 'text/html; charset=utf-8', body: html }) : route.abort());
   await sheet.goto('https://print.test/');
+  // The print window holds no script since the Content-Security-Policy (18 Nov 2026): the app lays
+  // the sheet out from the opener, then prints (print-opener.mjs stands in for it).
+  await runAsOpener(sheet);
   await sheet.waitForFunction(() => window.__printed === true);
   await sheet.screenshot({ path: picture });
   const layout = await sheet.evaluate(() => [...document.querySelectorAll('.copy')].map(c => {

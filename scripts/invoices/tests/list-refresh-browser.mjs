@@ -296,6 +296,29 @@ try {
     console.log(`\n== width ${width} ==`);
     const context = await browser.newContext();
 
+    // ---- the customer's phone: under the name in the list, after it on the invoice (the user, 20 Nov 2026) ----
+    {
+      const seed = everyday();
+      seed.customers = [...seed.customers, { id: 'c3', full_name: 'Cal Legacy', phone: 'LEGACY-NO-PHONE-CUST-000003', ...common }];
+      seed.invoices = seed.invoices.map(i => i.id === 'inv2' ? { ...i, customer_id: 'c2' } : i.id === 'inv3' ? { ...i, customer_id: 'c3' } : i);
+      const page = await openTab(context, { seed, width });
+      const phoneIn = no => row(page, no).getByTestId('invoice-row-customer-phone');
+      await phoneIn('INV-0001').waitFor();
+      ok('a listed customer\'s phone shows under their name', (await phoneIn('INV-0001').textContent()).trim() === '+6591234567'
+        && (await cell(page, 'INV-0001', 3)).startsWith('Ann Buyer'), await cell(page, 'INV-0001', 3));
+      ok('each row shows its own customer\'s phone', (await phoneIn('INV-0002').textContent()).trim() === '+6591234568');
+      ok('a placeholder phone is never shown', await phoneIn('INV-0003').count() === 0
+        && (await cell(page, 'INV-0003', 3)) === 'Cal Legacy', await cell(page, 'INV-0003', 3));
+      await row(page, 'INV-0001').getByRole('button', { name: 'View', exact: true }).click();
+      const detailPhone = page.getByTestId('invoice-detail-customer-phone');
+      await detailPhone.waitFor();
+      const line = (await detailPhone.locator('..').textContent()).trim();
+      ok('the invoice shows the phone after the name', /· Ann Buyer · \+6591234567$/.test(line), line);
+      ok('no page errors', page.errors.length === 0, page.errors.join('; '));
+      await page.screenshot({ path: `.invoice-test/browser/list-customer-phone-${width}.png` });
+      await page.close();
+    }
+
     // ---- a paid invoice cancelled: All shows Cancelled, without a reload ----
     {
       const page = await openTab(context, { seed: everyday(), width });
@@ -403,7 +426,9 @@ try {
       await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByPlaceholder('e.g. Wrong quantity keyed at the till').fill('Wrong date and customer keyed');
       await page.getByRole('dialog', { name: 'Audited invoice correction' }).getByRole('button', { name: 'Save correction', exact: true }).click();
       await page.waitForFunction(() => { const tr = Array.from(document.querySelectorAll('tbody tr')).find(r => r.textContent.includes('INV-0007')); return tr && tr.querySelectorAll('td')[6].textContent.trim() === 'Bank Transfer'; });
-      ok('after a correction the list shows the new customer', await cell(page, 'INV-0007', 3) === 'Ben Buyer');
+      // The cell is the name, then the phone under it (20 Nov 2026): both follow the new customer.
+      const custCell = await cell(page, 'INV-0007', 3);
+      ok('after a correction the list shows the new customer, with their phone', custCell === 'Ben Buyer+6591234568', custCell);
       ok('the new invoice date', /15\/09\/2026/.test(await cell(page, 'INV-0007', 1)));
       ok('and the changed payment-method label', true);
       ok('the correction was sent exactly once', await rpcCalls(page, 'correct_invoice') === 1);

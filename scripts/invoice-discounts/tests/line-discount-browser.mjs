@@ -535,7 +535,13 @@ try {
     for (const text of ['Birthday 20% (Actual Date) −S$20.00', 'Discount −S$15.00', 'Discount 10% −S$50.00', 'Staff 10% −S$10.00']) {
       ok(`the print shows "${text}" on both copies`, html.split(text).length - 1 === 2);
     }
-    ok('the print never shows a reason', !html.includes(REASON) && !html.includes('internal reason'));
+    // The user, 17 Nov 2026: a line's discount reason is printed on the OFFICE copy only, in its
+    // "Office notes" block above the signatures; the customer copy never shows one.
+    const [customerCopy, officeCopy = ''] = html.split('<div class="cut">');
+    ok('the customer copy never shows a reason', !customerCopy.includes(REASON) && !customerCopy.includes('internal reason'));
+    ok('the office copy gives each discounted line\'s reason once, in its office notes',
+      officeCopy.split(`Discount reason: ${REASON}`).length - 1 === 2 && officeCopy.includes('data-testid="print-office-notes"'));
+    ok('neither copy carries the screen\'s "internal reason" label', !html.includes('· internal reason:'));
     ok('nor a line for exchange credit (the totals name it)', !html.includes('−S$7.00'));
 
     const pdfText = bytes => Buffer.from(bytes).toString('latin1').replace(/\\([()\\])/g, '$1');
