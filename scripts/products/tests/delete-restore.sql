@@ -143,7 +143,9 @@ begin
   insert into public.rentals (rental_no, special_product_id, customer_id, quantity, rate_type, periods, start_date,
                               expected_return_date, status, warehouse_id)
     values ('PRDX-R2', sp, cust, 1, 'day', 1, current_date, current_date + 7, 'active', w_rent) returning id into rt_w;
-  perform pg_temp.expect(pg_temp.try_as(own, format($q$select public.request_inventory_adjustment('store', %L, %L, 1, 'Found one')::text$q$, s_adj, p_adj)),
+  -- (Through the page's request_inventory_adjustments: 533 closed the old single-line
+  -- request_inventory_adjustment to signed-in logins.)
+  perform pg_temp.expect(pg_temp.try_as(own, format($q$select public.request_inventory_adjustments('store', %L, jsonb_build_array(jsonb_build_object('product_id', %L, 'new_qty', 1)), 'Found one', null, gen_random_uuid())::text$q$, s_adj, p_adj)),
     'ok:%', 'a pending correction for the fixture');
 
   -- ── 1. Who edits products (Q13) ─────────────────────────────────────────

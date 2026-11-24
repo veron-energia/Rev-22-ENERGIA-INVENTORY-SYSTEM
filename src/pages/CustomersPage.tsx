@@ -3,6 +3,7 @@ import { ExcelExportButton } from '../components/ExcelExport';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Customer, CustomerGender, isOwnerOrManager } from '../types';
+import { canAdjustCreditByHand } from '../lib/permissions/approvals';
 import { Modal } from '../components/ui';
 import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import DeletedCustomersModal from '../components/DeletedCustomersModal';
@@ -877,7 +878,8 @@ const CustomersPage: React.FC = () => {
                 <section>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                     <div style={{ fontWeight: 700 }}>Credit wallet</div>
-                    {isOwnerOrManager(profile?.role) && (
+                    {/* 533 (M9, 20 Nov 2026): adding or removing credit by hand is an Owner's alone; a Manager still sees the wallet. */}
+                    {canAdjustCreditByHand(profile?.role) && (
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'legacy', category: 'legacy', amount: '', purchase_date: '', store_id: '', reference_no: '', note: '', effective_date: '', request_id: crypto.randomUUID() }); }}>Opening balance</button>
                         <button className="btn btn-secondary btn-sm" onClick={() => { setCreditErr(null); setCreditForm({ mode: 'adjust', category: 'paid', direction: 'increase', amount: '', reason: '', reference_no: '', note: '', effective_date: '', store_id: '', request_id: crypto.randomUUID() }); }}>Adjust</button>

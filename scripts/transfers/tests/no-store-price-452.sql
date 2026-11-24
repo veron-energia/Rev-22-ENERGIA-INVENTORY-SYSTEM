@@ -167,12 +167,14 @@ select pg_temp.check((select array_agg(x::text order by x::text) from pg_proc p,
 -- (receive_transfer: or 510's AFTER, 17 Nov 2026: what is typed above what was sent waits for an
 -- Owner or Manager; create_invoice: or 507's, only an Owner or Manager makes a credit line free;
 -- create_transfer_request: or 513's, 17 Nov 2026: it refuses Staff, who ask with
--- create_staff_transfer_request. None of them touches the price check.)
+-- create_staff_transfer_request; review_and_dispatch_transfer: or 533's, 20 Nov 2026: a Manager
+-- approves neither their own or edited request nor for another store, and adds or raises nothing.
+-- None of them touches the price check.)
 select pg_temp.check((select bool_and(pg_temp.md5_of(x.f) = any (string_to_array(x.m, '|'))) from (values
       ('create_transfer_request(text,text,uuid,text,uuid,jsonb,text)', '99d7e65385165464fb6e4395f4d4c25f|ab4312ec8850847b9058d07776cb1d15'),
       ('create_staff_transfer_request(jsonb,text,uuid)', 'cc32ec91b2e223c67da957dd792af12e'),
       ('edit_transfer_request(uuid,integer,text,location_type,uuid,location_type,uuid,jsonb,text)', 'd9cec0b343afaea0171952cbcda80b61'),
-      ('review_and_dispatch_transfer(uuid,jsonb,text)', '6db84d9ecca1d40b4858b4291401fbc0'),
+      ('review_and_dispatch_transfer(uuid,jsonb,text)', '6db84d9ecca1d40b4858b4291401fbc0|d1fe2d8b84895951f6f86fc1a89436d7'),
       ('create_deferred_transfer_request(location_type,uuid,jsonb,text)', '17a3ab718ac521d0fbd89e73c00d3f9e'),
       ('receive_transfer(uuid,jsonb,text,boolean)', '04be775f33e550da46a7ed8054b359ce|9abfa008ba3ff2525f28bff56592d9e0'),
       ('create_invoice(uuid,uuid,uuid,jsonb,numeric,text,uuid,jsonb)', '80c80d386a5241e63b353e35e13ef250|42f00d595a40df157d28a7ea88fbe7ad'),

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useBackdropClose } from '../../hooks/useBackdropClose';
+import { APPROVAL_MESSAGES, APPROVAL_NOTES, isOwnRequest, loweredPaymentsTotal, refundWithinRole } from '../../lib/permissions/approvals';
+import type { UserRole } from '../../types';
 // The popup's own styles. Approvals opens it from a separate page bundle, so it
 // cannot rely on the invoices page having loaded them first.
 import './invoice-controls.css';
@@ -135,8 +137,13 @@ function overrideText(o: { code: string; message: string; entitlements?: unknown
  * the request being submitted, the request being approved, money going back,
  * and goods coming back.
  */
-export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, requestId: reviewRequestId, paymentLabel }: {
-  invoiceId: string; canApprove: boolean; onDone: () => Promise<void> | void; onClose: () => void;
+export function InvoiceGuidedAction({ invoiceId, canApprove, role, viewerId, onDone, onClose, requestId: reviewRequestId, paymentLabel }: {
+  invoiceId: string; canApprove: boolean;
+  /** 533 (M9, 20 Nov 2026): the signed-in role and id. A Manager does not approve a request they
+   *  made (the window then only raises it), and approves a refund only while the invoice's total
+   *  refunded, this one included, stays at or under S$1,000. Left out, none of this is applied
+   *  here (the database still applies it). */
+  role?: UserRole; viewerId?: string; onDone: () => Promise<void> | void; onClose: () => void;
   /** Approval mode: review an existing request instead of raising a new one.
    *  The same steps, plan, stock confirmation and override fields are reused,
    *  so an approval from Approvals and one from the invoice cannot diverge. */
@@ -230,6 +237,11 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
   const reviewingRef = useRef(reviewing);
   reviewingRef.current = reviewing;
   const [detail, setDetail] = useState<any>(null);
+  // 533 (M9, 20 Nov 2026): who raised the request under review, and what the invoice has had
+  // refunded so far; read only for a Manager, the one role these two rules limit here.
+  const isManager = role === 'manager';
+  const [requesterId, setRequesterId] = useState<string | null>(null);
+  const [refundedSoFar, setRefundedSoFar] = useState<number | null>(null);
   const [rejecting, setRejecting] = useState(false);
   // 417 (AFTER-14): the approver's own note, empty until they write one. It is
   // the reason given for a rejection and the note kept with an approval. The
@@ -385,6 +397,41 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     return () => { cancelled = true; };
   }, [activeReviewId, invoiceId]);
 
+  // 533 (M9, 20 Nov 2026): the two reads a Manager's limits need. Neither is a new call: the
+  // request row is read as Approvals reads it, the refunded total from the figures the invoice
+  // panel reads. A read that fails leaves the answer to the server.
+  useEffect(() => {
+    if (!isManager || !activeReviewId) { setRequesterId(null); return; }
+    let cancelled = false;
+    void Promise.resolve(supabase.from('approval_requests').select('requested_by').eq('id', activeReviewId).maybeSingle())
+      .then(({ data }) => { if (!cancelled) setRequesterId((data as { requested_by?: string } | null)?.requested_by ?? null); });
+    return () => { cancelled = true; };
+  }, [isManager, activeReviewId]);
+  useEffect(() => {
+    if (!isManager) return;
+    let cancelled = false;
+    // The cap is shared with payments lowered by corrections, so those are read too.
+    void Promise.all([
+      Promise.resolve(supabase.rpc('invoice_refund_options', { p_invoice_id: invoiceId })),
+      Promise.resolve(supabase.from('invoice_payments').select('id,amount,entry_kind,corrects_payment_id').eq('invoice_id', invoiceId)),
+    ]).then(([opt, pay]) => {
+      if (cancelled || opt.error) return;
+      const n = Number((opt.data as any)?.financial?.refunded);
+      setRefundedSoFar(Number.isFinite(n) ? n + (pay.error ? 0 : loweredPaymentsTotal(pay.data as any[])) : null);
+    });
+    return () => { cancelled = true; };
+  }, [isManager, invoiceId]);
+  // A Manager's own request is only raised here, never approved by them; their approval of
+  // another's request stops at the S$1,000 total. What would be refunded now: a refund's figure,
+  // 
+  const sendsOnly = !canApprove || (isManager && !reviewing);
+  const ownReview = isManager && reviewing && isOwnRequest(requesterId, viewerId);
+  const refundNow = statedRefund;
+  // A cancellation records no money (only refund_invoice_recorded does, and it is capped), so
+  // the cap applies to refund requests alone, whatever a cancellation leaves owed.
+  const overCap = isManager && reviewing && planAction !== 'cancel' && refundedSoFar !== null && !refundWithinRole(role, refundedSoFar, refundNow);
+  const approveBlock = ownReview ? APPROVAL_NOTES.ownRequest : overCap ? APPROVAL_MESSAGES.refundCap : null;
+
   const chooseAction = async (next: Action) => {
     setAction(next); setOwedText(null);
     if (next === 'refund_partial') { setStep(2); return; }
@@ -454,8 +501,8 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
     });
     setBusy(false);
     if (error) { setError(error.message); return; }
-    if (!canApprove) {
-      setDone(`Request submitted for approval. Nothing has changed on ${plan?.invoice_no ?? 'this invoice'} yet — no money has moved and no stock has been returned.`);
+    if (sendsOnly) {
+      setDone(`Request submitted for approval.${canApprove ? ' An Owner or another Manager approves it: a Manager cannot approve their own request.' : ''} Nothing has changed on ${plan?.invoice_no ?? 'this invoice'} yet — no money has moved and no stock has been returned.`);
       await onDone();
       return;
     }
@@ -1015,7 +1062,9 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             {reviewing && rejecting && (
               <p className="muted">The invoice shows that this request was rejected, with this reason, to the staff of its store.</p>
             )}
+            {approveBlock && reviewing && !rejecting && <p className="invoice-guided-warn" role="note" data-testid="approve-blocked">{approveBlock}{ownReview ? ' You can still reject it.' : ''}</p>}
             {!canApprove && <p className="muted">This will be sent to an Owner or Manager. Nothing changes until they approve it.</p>}
+            {canApprove && sendsOnly && <p className="muted">This will be sent to an Owner or another Manager. A Manager cannot approve their own request.</p>}
           </div>
         )}
         {error && step !== 4 && <p className="invoice-guided-warn" role="alert">{error}</p>}
@@ -1049,12 +1098,12 @@ export function InvoiceGuidedAction({ invoiceId, canApprove, onDone, onClose, re
             {reviewing && rejecting
               ? <button className="btn btn-danger" disabled={busy || !approverNote.trim()} onClick={reject}>Confirm rejection</button>
               : <button className="btn btn-primary"
-                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending')
+                  disabled={busy || plan.blocked || (reviewing && detail?.status !== 'pending') || !!approveBlock
                     || (canApprove && (!!amountProblem || !!owedProblem))} onClick={submit}>
                   {(() => {
                     // The amount an Owner/Manager stated for an override is what is refunded.
                     const amount = canApprove ? statedRefund : Number(plan.refund_amount ?? 0);
-                    if (!canApprove && !reviewing) {
+                    if (sendsOnly && !reviewing) {
                       return planAction === 'cancel' ? 'Submit cancellation request' : 'Submit refund request';
                     }
                     if (planAction === 'cancel') {

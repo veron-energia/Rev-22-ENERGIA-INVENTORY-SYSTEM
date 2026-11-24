@@ -23,8 +23,13 @@ const lib = await import('data:text/javascript;base64,' + Buffer.from(built.outp
 const page = readFileSync('src/pages/InvoicesPage.tsx', 'utf8');
 
 test('who may make which line FOC', () => {
-  const kinds = ['credit_package', 'premium_bundle', 'voucher', 'therapy'];
+  // 533 (M9, 20 Nov 2026): a credit package or premium bundle line is the Owner's alone now.
+  const kinds = ['voucher', 'therapy'];
   assert.deepEqual([...lib.FOC_OWNER_OR_MANAGER_KINDS], kinds);
+  for (const kind of ['credit_package', 'premium_bundle']) {
+    assert.equal(lib.canGiveFocOn('owner', kind), true, `owner: ${kind}`);
+    for (const role of ['manager', 'staff', 'admin', 'inventory_manager']) assert.equal(lib.canGiveFocOn(role, kind), false, `${role}: ${kind}`);
+  }
   for (const kind of kinds) {
     assert.equal(lib.canGiveFocOn('owner', kind), true, `owner: ${kind}`);
     assert.equal(lib.canGiveFocOn('manager', kind), true, `manager: ${kind}`);

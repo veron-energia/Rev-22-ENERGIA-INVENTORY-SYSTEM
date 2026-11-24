@@ -37,7 +37,8 @@ import { InstalmentPortionFields, INSTALMENT_METHOD, emptyPortion, portionProble
          type InstalmentPortion } from '../components/invoices/InstalmentPortionFields';
 import { singaporeToday, invoiceDate, displayInvoiceDate, instalmentText, validateInstalment, type InstalmentDetails, INVOICE_SORT_FIELDS, isInvoiceSortField,
   type InvoiceSortField, type SortDirection, invoiceListOutstanding, usedValueCodes,
-  hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canGiveFocOn, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
+  hasAtMostTwoDecimals, TWO_DECIMALS_MESSAGE, businessDateProblem, liveOnDay, canGiveFoc, canGiveFocOn, FOC_OWNER_ONLY_KINDS, canDeleteInvoice, canAddCustomer } from '../lib/invoices/business';
+import { APPROVAL_MESSAGES, loweredPaymentsTotal, paymentDropOf, refundWithinRole } from '../lib/permissions/approvals';
 import { copyMoneyRows, officeNoteLines, focCopyNote, priceOverrideCopyNote, promotionCopyNotes, exchangeCopyLabels, escapeHtml,
   PRINT_NOTE_MAX, printedNote, exchangeNote, noteHtml } from '../lib/invoices/customerCopy';
 import { correctionFingerprint, REVIEW_AGAIN_MESSAGE } from '../lib/invoices/correctionReview';
@@ -1167,7 +1168,7 @@ const InvoicesPage: React.FC = () => {
       // 507: a voucher or therapy line given free is an Owner's or Manager's
       // to give; a saved one left as it is goes back as saved.
       if (l.discount === 'foc' && !unchangedDraft(l) && !canGiveFocOn(profile?.role, l.kind)) {
-        setCErr(`Line ${i + 1}: only an Owner or Manager can make a voucher or therapy line free of charge. Choose another discount, or ask an Owner or Manager.`); return;
+        setCErr(`Line ${i + 1}: ${FOC_OWNER_ONLY_KINDS.includes(l.kind) ? APPROVAL_MESSAGES.focOwnerOnly : 'only an Owner or Manager can make a voucher or therapy line free of charge.'} Choose another discount, or ask an ${FOC_OWNER_ONLY_KINDS.includes(l.kind) ? 'Owner' : 'Owner or Manager'}.`); return;
       }
       const problem = lineDiscountProblem(l, { valueCents: linePreview[i]?.charged ?? 0, changed: !unchangedDraft(l),
         allowed: discountChoicesOf(l), quantity: l.quantity, saved: savedDraftOf(l) });
@@ -1318,6 +1319,17 @@ const InvoicesPage: React.FC = () => {
       ...(cCreatedBy && cCreatedBy !== createdByBeforeEdit ? { created_by: cCreatedBy } : {}),
       ...paymentChanges(),
     };
+    // 533 (M9, 20 Nov 2026): a Manager's edit that removes or splits payments counts toward the
+    // S$1,000 a Manager takes back on one invoice, with its refunds and payments lowered before.
+    if (editingInvoiceId && profile?.role === 'manager') {
+      const drop = paymentDropOf(paymentsBeforeEdit, payEdits);
+      if (drop > 0) {
+        const { data: ro } = await supabase.rpc('invoice_refund_options', { p_invoice_id: editingInvoiceId });
+        if (ro && !refundWithinRole('manager', Number((ro as any).financial?.refunded ?? 0) + loweredPaymentsTotal(paymentsBeforeEdit), drop)) {
+          setCSaving(false); setCErr(APPROVAL_MESSAGES.refundCap); return;
+        }
+      }
+    }
     // Show what the correction will do before doing it. Confirming from the
     // summary calls back in with the preview already shown.
     // CREATE-5: the summary describes the form as it was when it was asked
@@ -4923,7 +4935,7 @@ const InvoicesPage: React.FC = () => {
                 <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{printedNote(detail)}</div>
               </div>
             )}
-            <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} payments={detailPayments} methods={methods} stores={stores}
+            <InvoiceFinancePanel invoiceId={detail.id} canManage={isOwnerOrManager(profile?.role)} role={profile?.role} payments={detailPayments} methods={methods} stores={stores}
               paymentLabel={(paymentId, fallback) => paymentLabel(detailPayments.find(x => x.id === paymentId) ?? { id: paymentId }, fallback)}
               usedValue={detailUsedValue}
               requestedMode={financeRequest?.mode ?? null} requestedPaymentId={financeRequest?.paymentId ?? null}
@@ -5207,7 +5219,7 @@ const InvoicesPage: React.FC = () => {
                                 </button>
                               </div>
                               ) : (
-                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>FOC on this line: Owner or Manager only</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{FOC_OWNER_ONLY_KINDS.includes(String(it.line_kind)) ? APPROVAL_MESSAGES.focOwnerOnly : 'FOC on this line: Owner or Manager only'}</div>
                               )
                             )}
                             {Number(it.foc_quantity ?? 0) > 0 && (
@@ -5474,6 +5486,7 @@ const InvoicesPage: React.FC = () => {
         <InvoiceGuidedAction
           invoiceId={detail.id}
           canApprove={isOwnerOrManager(profile?.role)}
+          role={profile?.role} viewerId={profile?.id}
           paymentLabel={(paymentId, fallback) => paymentLabel(detailPayments.find(x => x.id === paymentId) ?? { id: paymentId }, fallback)}
           onClose={() => setGuidedOpen(false)}
           onDone={async () => {

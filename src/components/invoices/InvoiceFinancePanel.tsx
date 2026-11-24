@@ -11,6 +11,8 @@ import { stillOutAfter } from '../../lib/special/rentalFollows';
 import { calendarDate } from '../../lib/calendarDates';
 import { type AwaitingRental, type ReceiveChoice, NOT_BACK_YET, receiveHomeLabel, receiveRpcArgs,
   receivedText } from '../../lib/special/rentalReturn';
+import { APPROVAL_MESSAGES, canMoveUnusedCredit, loweredPaymentsTotal, methodsAllowedForPayment, refundWithinRole } from '../../lib/permissions/approvals';
+import type { UserRole } from '../../types';
 import { reopenVoucherLine, reopenRewardUnitsLine, settlingPaymentLine, settlingVouchersLine, reopenReceiverNotes } from '../../lib/invoices/reopenReceivers.mjs';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
@@ -49,9 +51,13 @@ type Options = { financial: Record<string, any>; sources: Source[]; benefits: Be
 
 /** All amounts are proposals: the locked database transaction rechecks capacity,
  * source ownership, benefit use and stock evidence before recording anything. */
-export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, stores = [], onChanged,
+export function InvoiceFinancePanel({ invoiceId, canManage, role, payments, methods, stores = [], onChanged,
   requestedMode = null, requestedPaymentId = null, onRequestHandled, onActiveChange, usedValue = null, paymentLabel }: {
-  invoiceId: string; canManage: boolean; payments: any[]; methods: any[]; stores?: { id: string; name: string }[]; onChanged: () => Promise<void>;
+  invoiceId: string; canManage: boolean;
+  /** 533 (M9, 20 Nov 2026): the signed-in role. A Manager records a refund only while the invoice's
+   *  total refunded, this one included, stays at or under S$1,000; an Owner has no cap. Left out,
+   *  the panel does not apply the cap itself (the database still does). */
+  role?: UserRole; payments: any[]; methods: any[]; stores?: { id: string; name: string }[]; onChanged: () => Promise<void>;
   /** 443: a payment's method as the invoice shows it, with where a wallet
    *  payment's credit came from, e.g. 'Wallet — Paid Credit (Premium Bundle)'.
    *  Without it, the method's name. */
@@ -277,6 +283,13 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
   // 409: the refund still due on a cancelled or refunded invoice.
   const refundDue = Number(f?.refund_due ?? 0);
   const dueTotal = cents(sourceTotal);
+  // 533 (M9, 20 Nov 2026): a Manager's refund that would take the invoice over S$1,000 in total.
+  // The cap is shared by refunds and lowered payments (a payment correction that lowers one).
+  const correctedPayment = mode === 'payment' ? currentPayments.find(p => p.id === paymentId) : null;
+  const refundNow = mode === 'refund' ? total : mode === 'refund_due' ? dueTotal
+    : correctedPayment ? Math.max(0, Number(correctedPayment.amount) - Number(amount || 0)) : 0;
+  const overManagerCap = role === 'manager' && (mode === 'refund' || mode === 'refund_due' || mode === 'payment')
+    && !refundWithinRole(role, Number(f?.refunded ?? 0) + loweredPaymentsTotal(payments), refundNow);
   const dueProblem = dueTotal <= 0 ? 'Enter how much went back through each payment.'
     : dueTotal > cents(refundDue) ? `That is more than the ${money(refundDue)} still due.`
     : !confirmed ? `Confirm that the ${money(dueTotal)} has actually gone back to the customer.` : '';
@@ -311,7 +324,10 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         sits with the payments it corrects. Only what has no other home remains. */}
     {canManage && !mode && <div className="invoice-finance-actions">
       {!!options?.benefits.some(b => Number(b.remaining_value) > 0) && !['cancelled', 'refunded', 'cancellation_requested', 'refund_requested'].includes(f?.status) &&
-        <button className="btn btn-secondary" onClick={() => open('transfer')}>Correct unused benefit recipient</button>}
+        (role === undefined || canMoveUnusedCredit(role)
+          ? <button className="btn btn-secondary" onClick={() => open('transfer')}>Correct unused benefit recipient</button>
+          // 533 (M9, 20 Nov 2026): moving unused credit or vouchers to another customer is an Owner's alone.
+          : <p role="note" data-testid="move-credit-owner-only">{APPROVAL_MESSAGES.moveCreditOwnerOnly}</p>)}
       {/* The footer's "Record refund paid" leaves out a cancelled invoice whose
           customer had part of it; with the amount owed back stated, it is here. */}
       {f?.status === 'cancelled' && owedStated && (usedValue?.length ?? 0) > 0 && Number(f?.refund_due) > 0.005 &&
@@ -417,7 +433,9 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         <label>Correct amount<input type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(Number(e.target.value))} /></label>
         {/* 417 (AFTER-16): a payment is never dated in the future (Singapore). */}
         <label>Actual payment date<input type="date" value={date} max={singaporeToday()} onChange={e => setDate(e.target.value)} /></label>
-        <InvoiceSearchSelect value={methodId} onChange={setMethodId} options={methods.filter(m => m.is_active && !m.deleted_at).map(m => ({ value: m.id, label: m.name }))} />
+        <InvoiceSearchSelect value={methodId} onChange={setMethodId} options={methodsAllowedForPayment(role, methods.filter(m => m.is_active && !m.deleted_at),
+          currentPayments.find(p => p.id === paymentId)?.payment_method_id).map(m => ({ value: m.id, label: m.name }))} />
+        {role === 'manager' && <p role="note" data-testid="wallet-change-owner-only" style={{ fontSize: 12 }}>{APPROVAL_MESSAGES.walletChangeOwnerOnly}</p>}
       </>}
       {mode === 'reopen' && (preview ? <>
         <p>{preview.explanation}</p>
@@ -444,9 +462,10 @@ export function InvoiceFinancePanel({ invoiceId, canManage, payments, methods, s
         {preview.stock_to_issue?.map((s: any, idx: number) => <p key={idx}>Stock to issue: {s.quantity} × {s.item_name || s.item_id || s.product_id}</p>)}
       </> : <p>Loading reconciliation preview…</p>)}
       <label>Reason (required)<textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} /></label>
+      {overManagerCap && <p role="alert" data-testid="refund-cap">{APPROVAL_MESSAGES.refundCap}</p>}
       <div className="invoice-finance-actions">
         <button className="btn btn-secondary" disabled={busy} onClick={close}>Back</button>
-        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0)) || (mode === 'refund_due' && !!dueProblem) || (mode === 'receive' && !receiveChoice.outcome)} onClick={submit}>
+        <button className="btn btn-primary" disabled={busy || !reason.trim() || (mode === 'transfer' && (!confirmed || !transferBenefit || !transferCustomer || !transferStore)) || (mode === 'reopen' && !preview?.can_reopen) || (mode === 'refund' && (!confirmed || options?.review_required || total <= 0 || Math.abs(total - sourceTotal) > 0.001 || waitingLeft.length > 0)) || (mode === 'refund_due' && !!dueProblem) || (mode === 'receive' && !receiveChoice.outcome) || overManagerCap} onClick={submit}>
           {busy ? 'Recording…' : mode === 'reopen' ? 'Confirm reopening' : mode === 'refund_due' ? `Record ${money(dueTotal)} refund paid` : mode === 'receive' ? 'Record what came back' : 'Record with audit history'}
         </button>
       </div>

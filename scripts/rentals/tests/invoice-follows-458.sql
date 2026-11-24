@@ -261,7 +261,10 @@ select pg_temp.check(not exists (
 -- in, are read as 458's too: they only ask about, and return, a released special sale's unit.
 -- 507's update_invoice_internal, where it is in, is read as 457's: it only refuses a free
 -- voucher or therapy line to someone who is not an Owner or Manager.)
-select pg_temp.check((select replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+-- (533's refund_invoice_recorded, where it is in, is read as 495's too: it only adds the S$1,000
+-- limit for a Manager.)
+select pg_temp.check((select replace(replace(replace(replace(replace(replace(replace(string_agg(fn || '=' || md5, ', ' order by fn),
+                                     '=4f81d244db8f8c5b6d35143456fa8cc7', '=804ecd829cfecf713783a09a05d93c7e'),
                                      '=fdaf5aca81c63cc99f8fddcfcf10564c', '=aed7e3b24ff192cbe09935c5e7488881'),
                                      '=3280f4ed6afb93aed7366eaf100c6383', '=804ecd829cfecf713783a09a05d93c7e'),
                                      '=49f6880e4e6395b1468f32e4126472eb', '=804ecd829cfecf713783a09a05d93c7e'),

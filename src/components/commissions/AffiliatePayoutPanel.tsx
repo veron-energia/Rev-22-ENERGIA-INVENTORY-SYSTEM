@@ -1,3 +1,4 @@
+import { APPROVAL_MESSAGES } from '../../lib/permissions/approvals';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SelfPhoneChangeNote from './SelfPhoneChangeNote';
 import { supabase } from '../../lib/supabase';
@@ -26,7 +27,12 @@ const SETTLED_MONTHS_NOTE = 'A settlement is shown against the oldest months sti
 // rather than squeezing the column to a few letters a line.
 const noteCell: React.CSSProperties = { maxWidth: 300, minWidth: 180, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' };
 
-export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 'earned' | 'payouts'; canPay: boolean; userId: string; onSaved: () => void }) {
+export function AffiliatePayoutPanel({ mode, canPay, canRecord = canPay, userId, onSaved }: { mode: 'earned' | 'payouts'; canPay: boolean;
+  /** 533 (security audit of 17 Nov 2026, M9; the user's decision of 20 Nov 2026): recording or
+   *  correcting a payout is an Owner's alone, so the buttons show for an Owner only. A Manager
+   *  still sees every payout and repayment. The same goes for recording or voiding an affiliate
+   *  repayment (a deduction settlement; the user, 20 Nov 2026). Defaults to `canPay`. */
+  canRecord?: boolean; userId: string; onSaved: () => void }) {
   const [groups, setGroups] = useState<Balance[]>([]), [payouts, setPayouts] = useState<Payout[]>([]), [methods, setMethods] = useState<Method[]>([]);
   // 410: each affiliate's months netted. A database without 410 sends none;
   // they are then worked out from the months the same way.
@@ -210,6 +216,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
   const field = (label: string, key: 'amount' | 'date' | 'reference' | 'notes' | 'reason', type = 'text') => <label className="form-group">{label}<input type={type} step={key === 'amount' ? '0.01' : undefined} min={key === 'amount' ? '0.01' : undefined} max={key === 'date' ? singaporeToday() : undefined} value={form?.[key] || ''} onChange={e => update(key, e.target.value)} /></label>;
   const recordValues = (r: any) => r ? <dl><dt>Amount</dt><dd>{money(r.total_amount)}</dd><dt>Payment date / method</dt><dd>{r.payment_date || r.paid_at?.slice(0, 10)} · {r.payment_method_name || methods.find(m => m.id === r.payment_method_id)?.name || 'Historical method unavailable'}</dd><dt>Reference / notes</dt><dd style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{r.reference || '—'} / {r.notes || '—'}</dd></dl> : null;
   return <div>
+    {canPay && !canRecord && <p role="note" data-testid="owner-only-note" style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{`${APPROVAL_MESSAGES.payoutOwnerOnly} ${APPROVAL_MESSAGES.repaymentOwnerOnly}`}</p>}
     {success && <div className="alert alert-success" role="status">{success}</div>}
     {loadError && <div className="alert alert-danger" role="alert">{loadError}</div>}
     {nameError && <div className="alert alert-danger" role="alert"><div>{nameError}<button className="btn btn-secondary btn-sm" onClick={() => lookupNames(ids)}>Retry names</button></div></div>}
@@ -253,15 +260,15 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
         {visibleBalances.map(g => { const payable = payableOf(g), ref = refs.get(g.referrer); return <tr key={`${g.referrer}/${g.month}`}><td>{g.month?.slice(0, 7) || 'Date needs review'}</td><td title={g.referrer}>{name(g.referrer)}</td>
           <td>{money(g.earned)}</td><td>{money(g.adjustments)}</td><td>{money(g.paid)}</td><td>{money(Math.max(Number(g.balance), 0))}{Number(g.balance) < 0 && <div>Owed back: {money(-Number(g.balance))}</div>}{Number(g.settled ?? 0) > 0 && <div title={SETTLED_MONTHS_NOTE}>Settled: {money(Number(g.settled))}</div>}</td>
           <td>{money(payable)}{ref && ref.deduction > 0
-            ? <div style={{ color: 'var(--danger)' }}>Affiliate owes {money(ref.deduction)} back; recovered from later commission first.{canPay && <div style={{ marginTop: 6 }}><button className="btn btn-secondary btn-sm" disabled={frozen} onClick={() => openSettle(g.referrer)}>Mark as settled</button></div>}</div>
+            ? <div style={{ color: 'var(--danger)' }}>Affiliate owes {money(ref.deduction)} back; recovered from later commission first.{canRecord && <div style={{ marginTop: 6 }}><button className="btn btn-secondary btn-sm" disabled={frozen} onClick={() => openSettle(g.referrer)}>Mark as settled</button></div>}</div>
             : !g.review_reason && payable < Math.max(Number(g.balance), 0) && <div>Limited by the affiliate's other months ({money(ref?.payable ?? 0)} payable in all).</div>}</td>
-          <td>{g.review_reason && <p role="status">{g.review_reason}</p>}{canPay && <button className="btn btn-primary btn-sm" disabled={frozen || !g.month || !!g.review_reason || payable <= 0} onClick={() => open(g.referrer, g.month!, payable)}>Record payout</button>}</td></tr>; })}
+          <td>{g.review_reason && <p role="status">{g.review_reason}</p>}{canRecord && <button className="btn btn-primary btn-sm" disabled={frozen || !g.month || !!g.review_reason || payable <= 0} onClick={() => open(g.referrer, g.month!, payable)}>Record payout</button>}</td></tr>; })}
         {!groups.length && <tr><td colSpan={8}>{loading ? 'Loading balances…' : 'No commission balances.'}</td></tr>}
         {!!groups.length && !visibleBalances.length && <tr><td colSpan={8}>No balances match these filters.</td></tr>}
       </tbody></table> : <table><thead><tr><th>Payment date / month</th><th>Affiliate</th><th>Amount</th><th>Tier 1 / Tier 2</th><th>Method / reference / notes</th><th>Actions</th></tr></thead><tbody>
         {visiblePayouts.map(p => <tr key={p.id}><td>{p.payment_date}<div>{p.payout_month.slice(0, 7)} · {p.status}</div></td><td title={p.referrer_customer_id}>{name(p.referrer_customer_id)}</td><td>{money(p.total_amount)}</td><td>{money(p.total_tier1)} / {money(p.total_tier2)}</td>
           <td style={noteCell}>{p.payment_method_name || 'Historical method unavailable'}<div>{p.reference}</div><div>{p.notes}</div>{p.allocation_review_reason && <p>{p.allocation_review_reason}</p>}</td>
-          <td><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button className="btn btn-secondary btn-sm" onClick={() => loadHistory(p)}>History & allocations</button>{canPay && <button className="btn btn-secondary btn-sm" disabled={frozen || p.status !== 'paid'} onClick={() => open(p.referrer_customer_id, p.payout_month, 0, p)}>Edit payout</button>}</div></td></tr>)}
+          <td><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button className="btn btn-secondary btn-sm" onClick={() => loadHistory(p)}>History & allocations</button>{canRecord && <button className="btn btn-secondary btn-sm" disabled={frozen || p.status !== 'paid'} onClick={() => open(p.referrer_customer_id, p.payout_month, 0, p)}>Edit payout</button>}</div></td></tr>)}
         {!visiblePayouts.length && <tr><td colSpan={6}>{loading ? 'Loading payouts…' : 'No payouts in this date range.'}</td></tr>}
       </tbody></table>}
     </div>
@@ -278,7 +285,7 @@ export function AffiliatePayoutPanel({ mode, canPay, userId, onSaved }: { mode: 
           <td>{x.voided_at ? <s>{money(x.amount)}</s> : money(x.amount)}</td><td>{settlementMethodLabel(x.method)}</td>
           <td style={noteCell}>{x.note}{x.voided_at && <div style={{ color: 'var(--danger)' }}>Voided {new Date(x.voided_at).toLocaleDateString('en-SG', { timeZone: 'Asia/Singapore' })} by {x.voided_by_name || 'Unavailable'}: {x.void_reason}</div>}</td>
           <td>{x.created_by_name || 'Unavailable'}<div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{new Date(x.created_at).toLocaleString('en-SG', { timeZone: 'Asia/Singapore' })} SGT</div></td>
-          <td>{canPay && !x.voided_at && <button className="btn btn-secondary btn-sm" disabled={frozen} onClick={() => openVoid(x)}>Void</button>}</td></tr>)}
+          <td>{canRecord && !x.voided_at && <button className="btn btn-secondary btn-sm" disabled={frozen} onClick={() => openVoid(x)}>Void</button>}</td></tr>)}
         {!visibleSettlements.length && <tr><td colSpan={7}>{loading ? 'Loading…' : 'No deductions marked as settled with a date settled in this range.'}</td></tr>}
       </tbody></table></div>
     </div>}

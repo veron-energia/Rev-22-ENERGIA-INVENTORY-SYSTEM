@@ -9,6 +9,7 @@ import {
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Check, X, ClipboardCheck, RotateCcw, XCircle, SlidersHorizontal } from 'lucide-react';
 import { adjustmentPlace, liveNote } from '../lib/stock/stockPages';
+import { APPROVAL_MESSAGES, APPROVAL_NOTES, adjustmentStoreIds, canApproveOwnRequest, worksAtStores } from '../lib/permissions/approvals';
 
 /** Today's stock beside a pending correction (pending_adjustments_live, 420). */
 interface LiveRow { request_id: string; live_qty: number; product_live: boolean; place_open: boolean }
@@ -33,7 +34,7 @@ function invoiceRequestSummary(p: AdjustmentRequest['payload']): string {
 }
 
 const ApprovalsPage: React.FC = () => {
-  const { profile } = useAuth();
+  const { profile, assignments } = useAuth();
   // Access is checked AFTER the hooks below. Returning early here would call
   // no hooks on the first render and every hook on the next, which React
   // treats as a fatal error and blanks the whole app.
@@ -77,6 +78,21 @@ const ApprovalsPage: React.FC = () => {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // 533 (security audit of 17 Nov 2026, M9; the user's decisions of 20 Nov
+  // 2026): what a Manager may approve here. Rejecting is always offered.
+  // Why Approve is off for this request, or null when it is offered.
+  const approveBlock = (req: AdjustmentRequest): string | null => {
+    const role = profile?.role;
+    if (!canApproveOwnRequest(role, req.requested_by, profile?.id)) {
+      return req.request_type === 'adjustment' ? APPROVAL_MESSAGES.ownCorrection : APPROVAL_NOTES.ownRequest;
+    }
+    if (req.request_type === 'adjustment'
+        && !worksAtStores(role, adjustmentStoreIds(req.payload), (assignments ?? []).map(a => a.store_id))) {
+      return APPROVAL_MESSAGES.otherStore;
+    }
+    return null;
+  };
 
   const pName = (id?: string) => products.find(p => p.id === id)?.name ?? '—';
   const pSku = (id?: string) => products.find(p => p.id === id)?.sku ?? '';
@@ -137,6 +153,7 @@ const ApprovalsPage: React.FC = () => {
         <InvoiceGuidedAction
           invoiceId={reviewing.invoiceId}
           requestId={reviewing.requestId}
+          role={profile?.role} viewerId={profile?.id}
           canApprove
           onClose={() => setReviewing(null)}
           onDone={async () => { load(); }} />
@@ -178,6 +195,7 @@ const ApprovalsPage: React.FC = () => {
                 {requests.map(req => {
                   const meta = TYPE_META[req.request_type];
                   const p = req.payload;
+                  const blocked = approveBlock(req);
                   return (
                     <tr key={req.id}>
                       <td><span className={`badge ${meta.cls}`}>{meta.icon} {meta.label}</span></td>
@@ -195,9 +213,10 @@ const ApprovalsPage: React.FC = () => {
                       <td style={{ fontSize: 12.5 }}>{uName(req.requested_by)}</td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-primary btn-sm" onClick={() => approve(req)} disabled={busy === req.id}><Check size={13} /> {req.request_type === 'invoice_refund' || req.request_type === 'invoice_cancel' ? 'Review' : 'Approve'}</button>
+                          <button className="btn btn-primary btn-sm" onClick={() => approve(req)} disabled={busy === req.id || !!blocked} title={blocked ?? undefined}><Check size={13} /> {req.request_type === 'invoice_refund' || req.request_type === 'invoice_cancel' ? 'Review' : 'Approve'}</button>
                           <button className="btn btn-danger btn-sm" onClick={() => { setRejectFor(req); setRejectNote(''); }} disabled={busy === req.id}><X size={13} /> Reject</button>
                         </div>
+                        {blocked && <div role="note" data-testid="approve-blocked" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, maxWidth: 220 }}>{blocked}</div>}
                       </td>
                     </tr>
                   );

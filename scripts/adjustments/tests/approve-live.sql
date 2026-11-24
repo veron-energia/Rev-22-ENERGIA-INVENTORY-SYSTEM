@@ -40,7 +40,12 @@ begin
       perform set_config('request.jwt.claims', '', true);
     else
       perform set_config('request.jwt.claims', json_build_object('sub', p_who, 'role', 'authenticated')::text, true);
-      execute 'set local role authenticated';
+      -- 533 closed the old single-line request_inventory_adjustment to signed-in logins (no page
+      -- calls it; the page's request_inventory_adjustments does). Its rules are still tried here,
+      -- as the server would call it: the database owner with the login's claims, the same answers.
+      if p_sql !~ 'request_inventory_adjustment\(' then
+        execute 'set local role authenticated';
+      end if;
     end if;
     execute p_sql into v;
     execute 'reset role';
@@ -287,7 +292,9 @@ begin
   alter table public.stores enable trigger stores_retire_check;
   perform pg_temp.expect(pg_temp.try_as(mgr, format($q$select live_qty || '/' || product_live || '/' || place_open from public.pending_adjustments_live() where request_id = %L$q$, req)),
     'ok:3/true/false', 'the Approvals card says the place is closed');
-  perform pg_temp.expect(pg_temp.try_as(mgr, format($q$select public.resolve_inventory_adjustment(%L, true, null)::text$q$, req)),
+  -- Approved by the Owner: since 533 a Manager approves only at the stores they work at, and
+  -- this Manager does not work at Store C.
+  perform pg_temp.expect(pg_temp.try_as(own, format($q$select public.resolve_inventory_adjustment(%L, true, null)::text$q$, req)),
     'P0001:This store was closed or deleted after the count. Reject this request.', 'a store closed after the count is not corrected');
   if (select current_qty from public.store_inventory where store_id = sc and product_id = p1) <> 3
      or (select status::text from public.approval_requests where id = req) <> 'pending' then

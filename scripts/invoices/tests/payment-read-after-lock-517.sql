@@ -121,11 +121,12 @@ select pg_temp.check(
                ('split_invoice_payment(uuid,jsonb,text,uuid)', ' = ')) x(f, s),
        lateral (select pg_get_functiondef(to_regprocedure('public.' || x.f)) d) y;
 -- (correct_invoice_payment and split_invoice_payment: or 518's, 18 Nov 2026: they also refuse
--- an amount that is not a number)
+-- an amount that is not a number; the three payment functions: or 533's, 20 Nov 2026: they add the
+-- S$1,000 limit for a Manager)
 select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (string_to_array(x.m, '|')), '3b ' || x.f || ' is as tested')
-  from (values ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '29c319b8306a39f940ccb3bb240336b6|088e2130d62a1dc4af8cd9417465c0b6'),
-               ('remove_invoice_payment(uuid,text,uuid)', '8eb341eb5383430f676940be1de37def'),
-               ('split_invoice_payment(uuid,jsonb,text,uuid)', '07c1b8191e2802e0ca388ab181ae4886|236b86da67f77eb036592e1ce12ec366'),
+  from (values ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', '29c319b8306a39f940ccb3bb240336b6|088e2130d62a1dc4af8cd9417465c0b6|5ac4a3ac99f5e5cbda370fcd8c9f9cd0'),
+               ('remove_invoice_payment(uuid,text,uuid)', '8eb341eb5383430f676940be1de37def|ab2940828dffdd7aff007d036e88820b'),
+               ('split_invoice_payment(uuid,jsonb,text,uuid)', '07c1b8191e2802e0ca388ab181ae4886|236b86da67f77eb036592e1ce12ec366|f66d4ba00406e50171afcf6b4b79c969'),
                ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', 'cea93a5dd73d429f6437f4c9a8fcaa52|aaf592490eb5d13ca2ccb0544f48f647'),  -- or 528's (19 Nov 2026)
                ('correct_invoice_payment_methods(uuid,jsonb,text)', '898afdee6c3cf57893ac81654597dff0')) x(f, m);
 select pg_temp.check(has_function_privilege('authenticated', 'public.correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', 'execute')

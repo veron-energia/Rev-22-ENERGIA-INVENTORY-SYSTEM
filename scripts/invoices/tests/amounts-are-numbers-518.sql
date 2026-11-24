@@ -160,10 +160,11 @@ select pg_temp.check(bool_and(c.convalidated
                                               'invoice_line_credit_allocations', 'customer_credit_lots', 'commissions']);
 
 -- 6. The functions
--- (correct_invoice: or 528's, which adds who may change the affiliate.)
+-- (correct_invoice: or 528's, which adds who may change the affiliate. correct_invoice_payment and
+-- split_invoice_payment: or 533's, which add the S$1,000 limit for a Manager.)
 select pg_temp.check(md5(pg_get_functiondef(to_regprocedure('public.' || x.f))) = any (x.m), '6a ' || x.f || ' is as tested')
   from (values ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', array['0d60261bf337a1716dab9307b2f52fea']),
-               ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', array['088e2130d62a1dc4af8cd9417465c0b6']),
-               ('split_invoice_payment(uuid,jsonb,text,uuid)', array['236b86da67f77eb036592e1ce12ec366']),
+               ('correct_invoice_payment(uuid,numeric,date,uuid,text,uuid)', array['088e2130d62a1dc4af8cd9417465c0b6', '5ac4a3ac99f5e5cbda370fcd8c9f9cd0']),
+               ('split_invoice_payment(uuid,jsonb,text,uuid)', array['236b86da67f77eb036592e1ce12ec366', 'f66d4ba00406e50171afcf6b4b79c969']),
                ('correct_invoice(uuid,jsonb,jsonb,text,uuid)', array['cea93a5dd73d429f6437f4c9a8fcaa52', 'aaf592490eb5d13ca2ccb0544f48f647'])) x(f, m);
 rollback;

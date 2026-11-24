@@ -301,7 +301,11 @@ begin
     raise exception 'FAIL 4A: the plan does not ask for the amount owed back: %', plan->'refund_owed'; end if;
   if invoice_action_plan(inv, 'refund_full', '[]')->'refund_owed' <> 'null'::jsonb then
     raise exception 'FAIL 4A: a refund asks for an amount owed back'; end if;
+  -- Raised by Staff of the store, approved by the Manager: since 533 (security audit of 17 Nov
+  -- 2026, M9) a Manager does not approve a request they raised themselves.
+  perform pg_temp.t417_as('stf3');
   req := (request_invoice_action_v2(inv, 'cancel', '[]', 'Customer moving away', null, gen_random_uuid())->>'request_id')::uuid;
+  perform pg_temp.t417_as('mgr');
   res := resolve_invoice_action_v2(req, true, 'Cancel; money later', plan->>'plan_hash',
     jsonb_build_array(jsonb_build_object('code', 'session_used', 'reason', 'One session delivered'),
                       jsonb_build_object('code', 'refund_owed', 'amount', 50, 'reason', 'Agreed with the customer')), null, false);

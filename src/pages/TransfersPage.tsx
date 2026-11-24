@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
 import { isService } from '../lib/stock/stockPages';
+import { APPROVAL_MESSAGES, APPROVAL_NOTES, canApproveEditedTransfer, canApproveOwnRequest, reviewRaisesRequest, canResolveReceivedTransfer, transferStoreIds, worksAtStores } from '../lib/permissions/approvals';
 
 const RESOLUTION_OPTIONS: { value: string; label: string }[] = [
   { value: 'accept_loss', label: 'Accept missing as loss' },
@@ -125,8 +126,16 @@ const newManualLine = (): TransferLine => ({
 const clientKey = () => `new-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const TransfersPage: React.FC = () => {
-  const { profile } = useAuth();
+  const { profile, assignments } = useAuth();
   const canApprove = isOwnerOrManager(profile?.role);
+  // 533 (security audit of 17 Nov 2026, M9; the user's decisions of 20 Nov
+  // 2026): a Manager decides a transfer only at the stores they work at (a
+  // warehouse is open to every Manager), never approves their own request and
+  // never resolves a discrepancy on a transfer they received. The database
+  // checks again; these only keep the buttons honest.
+  const worksAt = (assignments ?? []).map(a => a.store_id);
+  const isManagerRole = profile?.role === 'manager';
+  const atMyStores = (req: TransferRequest) => worksAtStores(profile?.role, transferStoreIds(req), worksAt);
   const isStaff = profile?.role === 'staff';
 
   const [myStores, setMyStores] = useState<StaffStore[]>([]);
@@ -465,9 +474,11 @@ const TransfersPage: React.FC = () => {
   });
 
   const updateReviewQty = (key: string, raw: number) => {
-    const q = Math.max(0, Math.floor(Number(raw) || 0));
-    setReviewLines(ls => ls.map(l => l.key === key ? { ...l, approved_quantity: q } : l));
     const line = reviewLines.find(l => l.key === key);
+    // 533 (M9, 20 Nov 2026): a Manager lowers a quantity but does not raise it above the request.
+    const cap = isManagerRole && line?.line_id && !line.added_by_approver ? line.requested_quantity : Infinity;
+    const q = Math.min(cap, Math.max(0, Math.floor(Number(raw) || 0)));
+    setReviewLines(ls => ls.map(l => l.key === key ? { ...l, approved_quantity: q } : l));
     if (line?.line_kind === 'product') seedAllocation(key, q, reviewSources[key] ?? []);
   };
 
@@ -513,6 +524,22 @@ const TransfersPage: React.FC = () => {
     setApproveReq(null); void loadAll();
   };
 
+  // 533 (M9, 20 Nov 2026): why Resolve is off for this transfer, or null.
+  const resolveBlock = (req: TransferRequest): string | null =>
+    !canResolveReceivedTransfer(profile?.role, req.received_by, profile?.id) ? APPROVAL_NOTES.ownReceipt
+      : !atMyStores(req) ? APPROVAL_MESSAGES.otherStore : null;
+  // 533 (M9, 20 Nov 2026): why Approve & Dispatch is off in the review window
+  // (Reject stays), or null. The stores the stock is taken from count too.
+  const approveBlock = (req: TransferRequest): string | null => {
+    if (!canApproveOwnRequest(profile?.role, req.requested_by, profile?.id)) return APPROVAL_NOTES.ownRequest;
+    if (!canApproveEditedTransfer(profile?.role, req.edited_by, profile?.id)) return APPROVAL_MESSAGES.editedTransfer;
+    if (profile?.role === 'manager' && reviewRaisesRequest(reviewLines)) return APPROVAL_MESSAGES.raisedTransfer;
+    const taken = Object.values(alloc).flatMap(m => Object.entries(m ?? {}))
+      .filter(([k, q]) => k.startsWith('store:') && Number(q) > 0).map(([k]) => k.slice(6));
+    if (!worksAtStores(profile?.role, [...transferStoreIds(req), ...taken], worksAt)) return APPROVAL_MESSAGES.otherStore;
+    return null;
+  };
+
   const canReceive = (req: TransferRequest) => req.status === 'in_transit' && (
     canApprove || (req.dest_type === 'store' && myStores.some(s => s.store_id === req.dest_id))
   );
@@ -532,6 +559,14 @@ const TransfersPage: React.FC = () => {
   };
   const sourcesOf = (req: TransferRequest, lineId: string) =>
     lineSources?.requestId === req.id ? (lineSources.byLine[lineId] ?? []) : undefined;
+  // 533 (M9, 20 Nov 2026): resolving also checks the stores the lines were sent from. The details
+  // name each source, so a store is matched by its name; a warehouse of the same name is not told apart.
+  const resolveSourcesBlock = (req: TransferRequest): string | null => {
+    if (profile?.role !== 'manager' || lineSources?.requestId !== req.id) return null;
+    const theirs = new Set(stores.filter(st => worksAt.includes(st.id)).map(st => st.name));
+    const other = new Set(stores.filter(st => !worksAt.includes(st.id)).map(st => st.name));
+    return Object.values(lineSources.byLine).flat().some(x => other.has(x.name) && !theirs.has(x.name)) ? APPROVAL_MESSAGES.otherStore : null;
+  };
   const sourceText = (req: TransferRequest, lineId: string) => {
     const src = sourcesOf(req, lineId);
     if (!src) return null;
@@ -679,7 +714,7 @@ const TransfersPage: React.FC = () => {
                     const reqLines = linesByReq[req.id] ?? [];
                     const isOpen = expanded === req.id;
                     return <React.Fragment key={req.id}>
-                      <tr>
+                      <tr data-request-id={req.id}>
                         <td><button className="btn btn-secondary btn-sm btn-icon" onClick={() => setExpanded(isOpen ? null : req.id)}>{isOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</button></td>
                         <td style={{ whiteSpace: 'nowrap', fontSize: 12.5 }}>{new Date(req.created_at).toLocaleDateString()}</td>
                         <td style={{ fontSize: 12.5 }}>{transferTypeLabel(req)}</td>
@@ -692,13 +727,16 @@ const TransfersPage: React.FC = () => {
                         </td>
                         <td style={{ fontSize: 12.5 }}>{userName(req.requested_by)}</td>
                         <td><div style={{ display: 'flex', gap: 4 }}>
-                          {req.status === 'pending' && canApprove && <button className="btn btn-primary btn-sm" onClick={() => void openApprove(req)}><Check size={13} /> Review</button>}
+                          {req.status === 'pending' && canApprove && atMyStores(req) && <button className="btn btn-primary btn-sm" onClick={() => void openApprove(req)}><Check size={13} /> Review</button>}
                           {canReceive(req) && <button className="btn btn-primary btn-sm" onClick={() => openReceive(req)}><PackageCheck size={13} /> Receive</button>}
-                          {req.status === 'received_with_discrepancy' && canApprove && <button className="btn btn-danger btn-sm" onClick={() => openResolve(req)}><AlertTriangle size={13} /> Resolve</button>}
+                          {req.status === 'received_with_discrepancy' && canApprove && <button className="btn btn-danger btn-sm" onClick={() => openResolve(req)}
+                            disabled={!!resolveBlock(req)} title={resolveBlock(req) ?? undefined}><AlertTriangle size={13} /> Resolve</button>}
                           {canEditReq(req) && <button className="btn btn-secondary btn-sm" onClick={() => openEdit(req)}><Pencil size={13} /> Edit</button>}
                           {(req.edit_count ?? 0) > 0 && <button className="btn btn-secondary btn-sm btn-icon" title="Edit history" onClick={() => void openHistory(req)}><History size={13} /></button>}
                           {canCancelReq(req) && <button className="btn btn-secondary btn-sm btn-icon" title="Cancel request" aria-label="Cancel request" onClick={() => void handleCancel(req)}><Trash2 size={13} /></button>}
-                        </div></td>
+                        </div>
+                        {req.status === 'pending' && canApprove && !atMyStores(req) && <div role="note" data-testid="review-blocked" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, maxWidth: 220 }}>{APPROVAL_NOTES.otherStore}</div>}
+                        {req.status === 'received_with_discrepancy' && canApprove && resolveBlock(req) && <div role="note" data-testid="resolve-blocked" style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, maxWidth: 220 }}>{resolveBlock(req)}</div>}</td>
                       </tr>
                       {isOpen && <tr><td></td><td colSpan={7} style={{ background: 'var(--surface-2)' }}>
                         <div style={{ padding: '4px 0' }}>
@@ -790,8 +828,9 @@ const TransfersPage: React.FC = () => {
       </Modal>}
 
       {approveReq && <Modal title="Review Transfer Request" maxWidth={780} onClose={() => setApproveReq(null)} confirmClose={reviewChanged}
-        footer={<><button className="btn btn-danger" onClick={() => void handleReject()} disabled={approveBusy}><X size={15} /> Reject</button><button className="btn btn-primary" onClick={() => void handleApprove()} disabled={approveBusy}><Check size={15} /> Approve & Dispatch</button></>}>
+        footer={<><button className="btn btn-danger" onClick={() => void handleReject()} disabled={approveBusy}><X size={15} /> Reject</button><button className="btn btn-primary" onClick={() => void handleApprove()} disabled={approveBusy || !!approveBlock(approveReq)} title={approveBlock(approveReq) ?? undefined}><Check size={15} /> Approve & Dispatch</button></>}>
         <div className="form-grid">
+          {approveBlock(approveReq) && <div className="alert alert-info" role="note" data-testid="approve-blocked" style={{ marginBottom: 0 }}><span>ℹ️</span><div>{approveBlock(approveReq)}{' You can still reject it.'}</div></div>}
           {approveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{approveErr}</div></div>}
           {approveReq.dest_type === 'store' && pricesUnreadNote}
           <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
@@ -831,7 +870,7 @@ const TransfersPage: React.FC = () => {
                       {adjustment !== 0 && <span style={{ fontSize: 11.5, fontWeight: 600, color: adjustment > 0 ? 'var(--success)' : 'var(--accent)' }}>Adjustment: {adjustment > 0 ? '+' : ''}{adjustment}</span>}
                     </div>
                   </div>
-                  <div><label style={{ fontSize: 11.5 }}>Approved</label><input type="number" min={0} value={line.approved_quantity} onChange={e => updateReviewQty(line.key, +e.target.value)} style={{ width: 90 }} /></div>
+                  <div><label style={{ fontSize: 11.5 }}>Approved</label><input type="number" min={0} max={isManagerRole && line.line_id && !line.added_by_approver ? line.requested_quantity : undefined} value={line.approved_quantity} onChange={e => updateReviewQty(line.key, +e.target.value)} style={{ width: 90 }} /></div>
                   {!line.line_id && <button className="btn btn-secondary btn-sm btn-icon" onClick={() => {
                     setReviewLines(ls => ls.filter(x => x.key !== line.key));
                     setReviewSources(s => { const n = { ...s }; delete n[line.key]; return n; });
@@ -867,8 +906,9 @@ const TransfersPage: React.FC = () => {
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-secondary btn-sm" onClick={() => setReviewLines(ls => [...ls, { key: clientKey(), line_id: null, line_kind: 'product', product_id: '', manual_item_name: '', manual_uom: '', requested_quantity: 0, approved_quantity: 1, added_by_approver: true }])}><Plus size={13} /> Add Product</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => setReviewLines(ls => [...ls, { key: clientKey(), line_id: null, line_kind: 'manual', product_id: null, manual_item_name: '', manual_uom: '', requested_quantity: 0, approved_quantity: 1, added_by_approver: true }])}><Plus size={13} /> Add Manual Item</button>
+            {isManagerRole && <span role="note" data-testid="manager-no-add" style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>A Manager chooses sources and lowers quantities here; an Owner or another Manager adds lines or raises a quantity.</span>}
+            {!isManagerRole && <button className="btn btn-secondary btn-sm" onClick={() => setReviewLines(ls => [...ls, { key: clientKey(), line_id: null, line_kind: 'product', product_id: '', manual_item_name: '', manual_uom: '', requested_quantity: 0, approved_quantity: 1, added_by_approver: true }])}><Plus size={13} /> Add Product</button>}
+            {!isManagerRole && <button className="btn btn-secondary btn-sm" onClick={() => setReviewLines(ls => [...ls, { key: clientKey(), line_id: null, line_kind: 'manual', product_id: null, manual_item_name: '', manual_uom: '', requested_quantity: 0, approved_quantity: 1, added_by_approver: true }])}><Plus size={13} /> Add Manual Item</button>}
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Automatic allocation uses the locations with the largest Available quantity first. You can change the split manually. Approved quantity may be lower than, equal to, or greater than the Staff request.</div>
           <div className="form-group"><label>Approval note (optional)</label><input value={approveNote} onChange={e => setApproveNote(e.target.value)} /></div>
@@ -946,11 +986,12 @@ const TransfersPage: React.FC = () => {
         </div>
       </Modal>}
 
-      {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} confirmClose={resolveChanged} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy || sourcesLoading}
-          title={sourcesLoading ? 'Loading where each line was sent from…' : undefined}>{resolveBusy ? 'Saving…' : 'Resolve & Complete'}</button></>}>
+      {resolveReq && <Modal title="Resolve Discrepancy" maxWidth={640} onClose={() => setResolveReq(null)} confirmClose={resolveChanged} footer={<><button className="btn btn-secondary" onClick={() => setResolveReq(null)}>Cancel</button><button className="btn btn-primary" onClick={() => void saveResolve()} disabled={resolveBusy || sourcesLoading || !!resolveSourcesBlock(resolveReq)}
+          title={sourcesLoading ? 'Loading where each line was sent from…' : resolveSourcesBlock(resolveReq) ?? undefined}>{resolveBusy ? 'Saving…' : 'Resolve & Complete'}</button></>}>
         <div className="form-grid">
           <TransferNoteHistory requestId={resolveReq.id} />
           {resolveErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{resolveErr}</div></div>}
+          {resolveSourcesBlock(resolveReq) && <div className="alert alert-info" role="note" data-testid="resolve-sources-blocked" style={{ marginBottom: 0 }}><span>ℹ️</span><div>{resolveSourcesBlock(resolveReq)}</div></div>}
           <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Manual-item discrepancies are acknowledgement-only. Inventory correction options are available only for real Product lines.</div></div>
           {(linesByReq[resolveReq.id] ?? []).filter(l => (l.discrepancy_quantity ?? 0) !== 0 && !l.discrepancy_resolved_at).map(l => {
             const { diff, manual, place, opts, resolution } = resolveChoices(resolveReq, l);

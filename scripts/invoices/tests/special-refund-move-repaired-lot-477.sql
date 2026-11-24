@@ -1254,9 +1254,13 @@ insert into t477_md5 values
    '{authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}'),
   ('credit_given_back_follows(uuid)', 'f2a7a4d1ca28f0865b14e3f1e5e02bbb', 'a0f2f5ece30be439049dca275802237a',
    '{postgres=X/postgres,service_role=X/postgres}');
+-- (AFTER: or, for the Move, 533's AFTER where 533 is in, 20 Nov 2026: an Owner alone moves unused
+-- credit or vouchers, the security audit of 17 Nov 2026, M9; built on 477's.)
 create function pg_temp.t477_at(p_col text) returns boolean language sql as $f$
   select bool_and(case when p_col = 'before' then md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.before
-                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after end)
+                       else md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = m.after
+                            or (m.sig = 'transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'
+                                and md5(pg_get_functiondef(to_regprocedure('public.' || m.sig))) = '9e108d79e6212474397b7c9cacf0dc27') end)
     from t477_md5 m $f$;
 -- Their texts as found (9 puts one back to make a mix).
 create temp table t477_saved(sig text primary key, def text);

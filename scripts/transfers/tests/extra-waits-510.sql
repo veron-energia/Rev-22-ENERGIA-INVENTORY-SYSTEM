@@ -98,6 +98,9 @@ begin
   insert into public.products(name, sku, product_type) values ('X510 Pillow', 'X510-P', 'own') returning id into v; insert into fx values ('p', v);
   insert into public.store_product_prices(store_id, product_id, selling_price) values (pg_temp.fx('sa'), pg_temp.fx('p'), 10);
   insert into public.user_store_assignments(user_id, store_id) values (pg_temp.fx('staff'), pg_temp.fx('sa'));
+  -- The Manager works at store A: since 533 (security audit of 17 Nov 2026, M9) a Manager resolves
+  -- only for the stores they work at.
+  insert into public.user_store_assignments(user_id, store_id) values (pg_temp.fx('manager'), pg_temp.fx('sa'));
   insert into public.warehouse_inventory(warehouse_id, product_id, current_qty)
   values (pg_temp.fx('w1'), pg_temp.fx('p'), 100), (pg_temp.fx('w2'), pg_temp.fx('p'), 100);
 end $$;

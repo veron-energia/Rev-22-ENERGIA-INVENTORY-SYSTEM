@@ -460,7 +460,7 @@ const overviewWith = extra => b => {
 const OLD_REWARD_LIST = [{ no: 'LEG-0000001', package: '1 Month Unlimited', status: 'pending_activation', deadline: '2027-08-09' }];
 
 test('502: View lists the vouchers still to hand over, with what is left and when they can be collected; the old reward list is never shown', async () => {
-  await mount('manager', overviewWith({
+  await mount('owner', overviewWith({
     legacy_therapy: OLD_REWARD_LIST,
     vouchers_to_hand_over: [
       { no: 'LEG-0000002', package: 'Credit package reward — Fixture Package', left: 7, entitled: 10,
@@ -507,7 +507,7 @@ test('502: with nothing to hand over, or from a server before 502, there is no s
 
 // ── credit windows ─────────────────────────────────────────────────────────
 test('Opening balance and Adjust send one request id per window, the same on a second Confirm', async () => {
-  await mount('manager');
+  await mount('owner');  // 533 (M9, 20 Nov 2026): credit by hand is the Owner's alone
   await click(button('View', row('Ada Tan')));
   await click(button('Opening balance', modal()));
   backend.failures.set('add_legacy_credit', 'the answer was lost (fixture)');
@@ -920,4 +920,12 @@ test('528: Staff cannot add the first referrer to a customer made before today (
   await setValue(field('Notes'), 'x');
   await click(button('Save', modal()));
   assert.ok(modal().textContent.includes(refusal));
+});
+
+// 533 (M9, 20 Nov 2026): a Manager still sees the credit wallet, but adds or removes credit by hand no more.
+test('a Manager sees the credit wallet without Opening balance or Adjust', async () => {
+  await mount('manager');
+  await click(button('View', row('Ada Tan')));
+  assert.ok(modal().textContent.includes('Credit wallet'));
+  assert.ok(!button('Opening balance', modal()) && !button('Adjust', modal()));
 });

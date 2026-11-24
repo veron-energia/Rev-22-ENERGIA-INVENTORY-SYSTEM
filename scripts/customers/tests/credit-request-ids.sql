@@ -101,28 +101,30 @@ begin
 end $$;
 
 -- ===== 2. Opening balance =====
+-- Entered by the Owner: since 533 (security audit of 17 Nov 2026, M9) only an Owner adds or
+-- removes credit by hand (before 533 a Manager did, with the same answers).
 do $$
 declare v1 text; v2 text; rq uuid := gen_random_uuid(); sql text;
 begin
   sql := format('select public.add_legacy_credit(%L::uuid, ''legacy'', 120, current_date - 400, %L::uuid, null, ''T418C opening'', null, %L::uuid)::text',
                 pg_temp.id('c1'), pg_temp.id('store'), rq);
-  v1 := pg_temp.try('manager', sql);
-  v2 := pg_temp.try('manager', sql);
+  v1 := pg_temp.try('owner', sql);
+  v2 := pg_temp.try('owner', sql);
   perform pg_temp.check(v1 like 'ok%' and v1 = v2, '2a the repeat did not return the first balance: ' || v1 || ' / ' || v2);
   perform pg_temp.check((select count(*) from public.customer_credit_lots where customer_id = pg_temp.id('c1')) = 1
                         and (select count(*) from public.customer_credit_ledger where customer_id = pg_temp.id('c1')) = 1,
                         '2a an opening balance sent twice was recorded twice');
-  perform pg_temp.check((select approved_by = pg_temp.id('manager') and created_by = pg_temp.id('manager')
+  perform pg_temp.check((select approved_by = pg_temp.id('owner') and created_by = pg_temp.id('owner')
                            from public.customer_credit_lots where id = pg_temp.val(v1)::uuid), '2b the approver is not the person entering it');
   perform pg_temp.check(exists (select 1 from public.customer_credit_entry_requests r where r.request_id = rq
                                   and r.entry_kind = 'opening_balance' and r.entry_id = pg_temp.val(v1)::uuid
-                                  and r.customer_id = pg_temp.id('c1') and r.created_by = pg_temp.id('manager')),
+                                  and r.customer_id = pg_temp.id('c1') and r.created_by = pg_temp.id('owner')),
                         '2c the request id was not kept');
   -- The same request id for another customer, or as an adjustment, is refused.
-  v2 := pg_temp.try('manager', format('select public.add_legacy_credit(%L::uuid, ''legacy'', 120, current_date - 400, %L::uuid, null, ''T418C opening'', null, %L::uuid)::text',
+  v2 := pg_temp.try('owner', format('select public.add_legacy_credit(%L::uuid, ''legacy'', 120, current_date - 400, %L::uuid, null, ''T418C opening'', null, %L::uuid)::text',
                 pg_temp.id('c2'), pg_temp.id('store'), rq));
   perform pg_temp.check(v2 like 'P0001%already used for another entry%', '2d a request id was reused for another customer: ' || v2);
-  v2 := pg_temp.try('manager', format('select public.adjust_customer_credit(%L::uuid, ''paid'', ''increase'', 5, ''T418C'', null, null, null, %L::uuid, %L::uuid)::text',
+  v2 := pg_temp.try('owner', format('select public.adjust_customer_credit(%L::uuid, ''paid'', ''increase'', 5, ''T418C'', null, null, null, %L::uuid, %L::uuid)::text',
                 pg_temp.id('c1'), pg_temp.id('store'), rq));
   perform pg_temp.check(v2 like 'P0001%already used for another entry%', '2d an opening balance''s request id was reused for an adjustment: ' || v2);
   -- Without a request id, each call records (as before).
@@ -166,8 +168,8 @@ begin
   rq := gen_random_uuid();
   sql := format('select public.adjust_customer_credit(%L::uuid, ''paid'', ''decrease'', 12.5, ''T418C correction'', null, null, null, %L::uuid, %L::uuid)::text',
                 pg_temp.id('c1'), pg_temp.id('store'), rq);
-  v1 := pg_temp.try('manager', sql);
-  v2 := pg_temp.try('manager', sql);
+  v1 := pg_temp.try('owner', sql);
+  v2 := pg_temp.try('owner', sql);
   perform pg_temp.check(v1 like 'ok%' and v1 = v2, '3c the repeated decrease did not return the first: ' || v1 || ' / ' || v2);
   perform pg_temp.check((select count(*) from public.customer_credit_adjustments where customer_id = pg_temp.id('c1') and direction = 'decrease') = 1
                         and (select sum(remaining_amount) from public.customer_credit_lots where customer_id = pg_temp.id('c1') and category = 'paid') = 17.5,

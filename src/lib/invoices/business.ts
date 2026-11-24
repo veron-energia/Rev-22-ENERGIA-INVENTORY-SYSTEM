@@ -287,12 +287,17 @@ export function canGiveFoc(role: string | null | undefined): boolean {
  *  17 Nov 2026): made free, each still gives its credit, voucher or sessions,
  *  which is value given away with no money. Staff still make other lines
  *  free. The database refuses anyone else; the page leaves Make FOC off. */
-export const FOC_OWNER_OR_MANAGER_KINDS: readonly string[] = ['credit_package', 'premium_bundle', 'voucher', 'therapy'];
+export const FOC_OWNER_OR_MANAGER_KINDS: readonly string[] = ['voucher', 'therapy'];
+
+/** 533 (security audit of 17 Nov 2026, M9; the user's decision of 20 Nov 2026): a credit package
+ *  or premium bundle line is made free by an Owner only, no longer by a Manager. */
+export const FOC_OWNER_ONLY_KINDS: readonly string[] = ['credit_package', 'premium_bundle'];
 
 /** Who may make a line of this kind FOC: canGiveFoc, and for the kinds
  *  above an Owner or Manager only (507). */
 export function canGiveFocOn(role: string | null | undefined, kind: string | null | undefined): boolean {
   if (!canGiveFoc(role)) return false;
+  if (FOC_OWNER_ONLY_KINDS.includes(String(kind ?? ''))) return role === 'owner';
   return !FOC_OWNER_OR_MANAGER_KINDS.includes(String(kind ?? '')) || role === 'owner' || role === 'manager';
 }
 

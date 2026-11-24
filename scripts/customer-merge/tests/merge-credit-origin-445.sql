@@ -151,7 +151,11 @@ $$ select case when pg_temp.with_462() then 'ba05c2b1fb4c0e14d369c01d06a635b0' e
 -- lock), and the recipient's lot is not locked: its AFTER of the Move. No
 -- case here moves a locked lot, so every case ends as before.
 create function pg_temp.move_md5() returns text language sql as
-$$ select case when position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
+-- Where 533 is in (an Owner alone moves unused credit or vouchers; the security audit of 17 Nov
+-- 2026, M9), its AFTER of the Move, built on 477's. The cases here move as the Owner.
+$$ select case when position('533 (security audit' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
+               then '9e108d79e6212474397b7c9cacf0dc27'
+               when position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
                then '720d296a43524e7ac8843c6062030819' else '7aebd7120bc3928db46df0941cb20889' end $$;
 create function pg_temp.method(nm text) returns uuid language sql as
 $$ select id from public.payment_methods where name = nm and deleted_at is null $$;
@@ -1296,7 +1300,14 @@ $c$;
   -- recipient's lot read as the invoice's own credit (credit_lot_chain,
   -- invoice_credit_lot_ids).
 $c$;
+  -- (Where 533 is in, its Owner-only test is taken out first, giving 477's text.)
+  c533 constant text := $c$ -- 533 (security audit of 17 Nov 2026, M9; the user, 20 Nov 2026: "Credit without a sale:
+ -- Owners only"): unused credit or vouchers are moved to another customer by an Owner only.
+ if public.current_user_role() is distinct from 'owner' then
+  raise exception 'Only an Owner can move unused credit or vouchers to another customer.' using errcode='42501'; end if;
+$c$;
 begin
+  t := replace(t, c533, '');
   t := replace(replace(t, c477a, '  if l.status<>''active'' or l.is_locked then raise exception ''This credit lot is locked or reversed''; end if;'), c477b, '');
   t := replace(replace(t, c445, ''), '''reversal_of_lot_id'',null,''reassigned_from_lot_id'',null,', '''reversal_of_lot_id'',null,');
   if md5(t) <> 'ea7e8ce0612752c75ba75748c9275c42' then

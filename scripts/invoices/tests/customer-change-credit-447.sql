@@ -510,8 +510,12 @@ $$ select to_regprocedure('public.credit_given_back_follows(uuid)') is not null 
 -- a refund put back on a lot an Owner had reversed, or on a lot Cancel's
 -- write-off of credit released before full payment locked; no case here
 -- moves a locked lot, so every case ends as before).
+-- (533's where it is in: an Owner alone moves unused credit or vouchers, the security audit of 17
+-- Nov 2026, M9; built on 477's.)
 create function pg_temp.move_md5() returns text language sql as
-$$ select case when position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
+$$ select case when position('533 (security audit' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
+               then '9e108d79e6212474397b7c9cacf0dc27'
+               when position('-- 477 (the Owner, 27 Oct 2026' in pg_get_functiondef('public.transfer_invoice_unused_benefit(uuid,uuid,uuid,text,uuid)'::regprocedure)) > 0
                then '720d296a43524e7ac8843c6062030819' else '7aebd7120bc3928db46df0941cb20889' end $$;
 -- 447's text, read from what is installed: 455's, or 460's or 461's (or
 -- both, or 462 over both, or 463 over 462) with their changes taken out.

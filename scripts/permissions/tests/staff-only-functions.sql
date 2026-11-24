@@ -104,6 +104,15 @@ create function pg_temp.sof_515_revoked() returns text[] language sql immutable 
   select array['correct_tiktok_row(uuid,integer,text)', 'record_stock_use(text,uuid,uuid,integer,text,text)',
                'special_stock_in(uuid,uuid,integer,text)', 'voucher_stock_in(uuid,uuid,integer,text)',
                'claim_entitlement_vouchers(uuid,jsonb,text)'] $f$;
+-- Whether 533 is in, and the two functions it closed to signed-in logins (the security audit of
+-- 17 Nov 2026, M9): cancel_invoice_recorded (resolve_invoice_action_v2 reaches it as the owner)
+-- and the old single-line request_inventory_adjustment (the page calls request_inventory_adjustments).
+create function pg_temp.has_533() returns boolean language sql stable as
+  $f$ select to_regprocedure('public.invoice_taken_back(uuid)') is not null
+            and not has_function_privilege('authenticated', 'public.cancel_invoice_recorded(uuid,text,uuid)', 'execute') $f$;
+create function pg_temp.sof_533_revoked() returns text[] language sql immutable as $f$
+  select array['cancel_invoice_recorded(uuid,text,uuid)',
+               'request_inventory_adjustment(location_type,uuid,uuid,integer,text,text)'] $f$;
 
 -- Run p_sql as one of the fixture's logins and say what happened:
 --   'ok' and the result as text, or the SQLSTATE and the message.
@@ -471,7 +480,17 @@ begin
       and not (pg_temp.has_502() and x = any (pg_temp.sof_502_revoked()))
       and not (pg_temp.has_513() and x = any (pg_temp.sof_513_revoked()))
       and not (pg_temp.has_515() and x = any (pg_temp.sof_515_revoked()))
-      and not (not pg_temp.has_531() and x = 'confirm_affiliate_email_code(text)');
+      and not (not pg_temp.has_531() and x = 'confirm_affiliate_email_code(text)')
+      and not (pg_temp.has_533() and x = any (pg_temp.sof_533_revoked()));
+  -- 533: the two it closed are the service role's and the server's alone.
+  if pg_temp.has_533() then
+    perform pg_temp.sof_fail('1: 533 closed it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
+       from unnest(pg_temp.sof_533_revoked()) x
+      where to_regprocedure('public.' || x) is null
+         or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
+         or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
+         or not has_function_privilege('service_role', to_regprocedure('public.' || x), 'execute');
+  end if;
   -- 502: none of the 13 is callable by a signed-in login or a signed-out
   -- visitor; the service role keeps them all.
   if pg_temp.has_502() then
@@ -748,6 +767,12 @@ begin
     -- claim_entitlement_vouchers; the window calls 514's, with p_request_id).
     if pg_temp.has_515() and strpos(r.sql, 'public.claim_entitlement_vouchers(') > 0 then
       v_may := '{}';
+    end if;
+    -- 533: Mark as settled and its Void are an Owner's alone (the user, 20 Nov 2026); a Manager
+    -- gets 42501.
+    if pg_temp.has_533() and (strpos(r.sql, 'public.record_affiliate_deduction_settlement(') > 0
+                              or strpos(r.sql, 'public.void_affiliate_deduction_settlement(') > 0) then
+      v_may := array['owner'];
     end if;
     foreach v_who in array c_everyone loop
       v_out := pg_temp.sof_try(v_who, pg_temp.sof_sql(r.sql));

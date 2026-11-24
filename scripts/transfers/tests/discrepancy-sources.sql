@@ -125,6 +125,10 @@ begin
   insert into public.user_store_assignments(user_id, store_id, created_at)
   values (pg_temp.fx('staff2'), pg_temp.fx('sa'), now() - interval '2 days'), (pg_temp.fx('staff2'), pg_temp.fx('sb'), now() - interval '1 day'),
          (pg_temp.fx('staff1'), pg_temp.fx('sgone'), now() - interval '3 days'), (pg_temp.fx('staff1'), pg_temp.fx('sa'), now());
+  -- The Manager works at A and B: since 533 (security audit of 17 Nov 2026, M9) a Manager resolves
+  -- only for the stores they work at.
+  insert into public.user_store_assignments(user_id, store_id)
+  values (pg_temp.fx('manager'), pg_temp.fx('sa')), (pg_temp.fx('manager'), pg_temp.fx('sb'));
   insert into public.warehouse_inventory(warehouse_id, product_id, current_qty)
   values (pg_temp.fx('w1'), pg_temp.fx('p'), 100), (pg_temp.fx('w2'), pg_temp.fx('p'), 100), (pg_temp.fx('w3'), pg_temp.fx('p'), 100);
   insert into public.store_inventory(store_id, product_id, current_qty) values (pg_temp.fx('sb'), pg_temp.fx('p'), 50);

@@ -258,8 +258,9 @@ select pg_temp.check(coalesce((select md5 from pg_temp.fn_md5s() where fn = x.fn
                -- 518's, 18 Nov 2026: and one that is not a number)
                ('create_invoice_with_details(uuid,uuid,jsonb,jsonb)', '770ee0129b0e9fe909259ad7ea95b8d0|0ac29c7aa909dd756ec572645ca86448|7c37ac1d841d2c0c2a9cf9b54c563ead|0d60261bf337a1716dab9307b2f52fea'),
                -- (507's AFTER where it is in, 17 Nov 2026: Make FOC on a
-               -- credit package, premium bundle, voucher or therapy line is an Owner's or a Manager's)
-               ('apply_line_foc(uuid,integer,uuid,text)', '5fbd0b6feb36e11dea6be231ffa0e952|a249b0e94d4280d6ff4e73fa8e1efbc8'),
+               -- credit package, premium bundle, voucher or therapy line is an Owner's or a Manager's;
+               -- 533's, 20 Nov 2026: on a credit package or premium bundle line an Owner's alone)
+               ('apply_line_foc(uuid,integer,uuid,text)', '5fbd0b6feb36e11dea6be231ffa0e952|a249b0e94d4280d6ff4e73fa8e1efbc8|4a0d20eccbdebaa9af74bd9c1eb362ef'),
                ('confirm_foc_invoice(uuid,text)', 'ba8b1ce2a5671989b927891f0cb7b1a2'),
                ('record_invoice_payment(uuid,jsonb,uuid)', '9c70097ed4da614fb9dcc66fdfcdb7d6'),
                ('deduct_invoice_stock(uuid,text)', '32183fe9e7c15ed0b11307c48289831a'),

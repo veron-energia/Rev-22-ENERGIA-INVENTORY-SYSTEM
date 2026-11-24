@@ -673,7 +673,13 @@ end $$;
 -- it, so it is undone first, as its own UNDO says. 498 (where it is in) patches fulfil_special_doc
 -- on top of 496, so it goes before that; and 500 (where it is in) patches on top of 498, so before that.
 -- 528 (where it is in; security audit of 17 Nov 2026, M11) patches correct_invoice on top of 498's,
--- so it goes first of all.
+-- so it goes first of all. 533 (where it is in; security audit of 17 Nov 2026, M9) patches
+-- refund_invoice_recorded on top of 496's and correct_invoice's payment routes, so it goes even
+-- before 528.
+select to_regprocedure('public.invoice_taken_back(uuid)') is not null as t495_has533 \gset
+\if :t495_has533
+\ir ../../approvals/undo-533.sql
+\endif
 select to_regprocedure('public.special_release_rows(uuid)') is not null as t495_has496,
        position('-- 528 (security audit' in pg_get_functiondef('public.correct_invoice(uuid,jsonb,jsonb,text,uuid)'::regprocedure)) > 0 as t495_has528,
        pg_get_functiondef('public.fulfil_special_doc(text,uuid,uuid,text)'::regprocedure) like '%498 (the user%' as t495_has498,

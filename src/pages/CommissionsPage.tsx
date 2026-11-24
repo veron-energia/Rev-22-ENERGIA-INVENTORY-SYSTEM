@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isManagerOrAbove, isOwnerOrManager } from '../types';
+import { canRecordAffiliatePayout } from '../lib/permissions/approvals';
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Settings } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
@@ -178,7 +179,7 @@ const CommissionsPage: React.FC = () => {
         <button className={`btn btn-sm ${tab === 'referrers' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('referrers')}><Network size={14} /> Referrers</button>
       </div>
 
-      {tab !== 'referrers' ? <AffiliatePayoutPanel mode={tab} canPay={canPay} userId={profile?.id || ''} onSaved={() => { void loadReferrers(); }} /> : <div className="card">
+      {tab !== 'referrers' ? <AffiliatePayoutPanel mode={tab} canPay={canPay} canRecord={canRecordAffiliatePayout(profile?.role)} userId={profile?.id || ''} onSaved={() => { void loadReferrers(); }} /> : <div className="card">
         <div className="table-wrap">
           {
             refLoading ? <div className="empty-state"><RefreshCw size={24} className="spin" style={{ opacity: 0.4 }} /></div>

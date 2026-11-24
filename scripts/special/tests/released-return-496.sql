@@ -1113,14 +1113,18 @@ select pg_temp.check(
     and has_function_privilege('authenticated', to_regprocedure('public.invoice_refund_options(uuid)'), 'execute')
     and has_function_privilege('authenticated', to_regprocedure('public.invoice_action_plan(uuid,text,jsonb)'), 'execute')
     and has_function_privilege('authenticated', to_regprocedure('public.refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)'), 'execute')
-    and has_function_privilege('authenticated', to_regprocedure('public.cancel_invoice_recorded(uuid,text,uuid)'), 'execute')
+    -- (533, where it is in, closed cancel_invoice_recorded to signed-in logins; the approval reaches it)
+    and (has_function_privilege('authenticated', to_regprocedure('public.cancel_invoice_recorded(uuid,text,uuid)'), 'execute')
+         or (to_regprocedure('public.invoice_taken_back(uuid)') is not null
+             and has_function_privilege('service_role', to_regprocedure('public.cancel_invoice_recorded(uuid,text,uuid)'), 'execute')))
     and not has_function_privilege('anon', to_regprocedure('public.refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)'), 'execute')
     and not has_function_privilege('authenticated', to_regprocedure('public.record_invoice_stock_return(uuid,jsonb,text,uuid)'), 'execute')
     and not has_function_privilege('authenticated', to_regprocedure('public.create_special_docs_for_invoice(uuid)'), 'execute'),
   'S3 the patched functions keep their grants: signed-in staff as before, and the two internal ones still internal');
--- What 496 does not touch is what it was (production's md5, or 495's where 495 is in).
+-- What 496 does not touch is what it was (production's md5, or 495's where 495 is in; the
+-- approval: or 533's, where it is in, which refuses a Manager's own request).
 select pg_temp.check(
-    pg_temp.md5_of('resolve_invoice_action_v2(uuid,boolean,text,text,jsonb,jsonb,boolean)') = '201f08ebf14a64cd88d411a7cfb4c9c4'
+    pg_temp.md5_of('resolve_invoice_action_v2(uuid,boolean,text,text,jsonb,jsonb,boolean)') in ('201f08ebf14a64cd88d411a7cfb4c9c4', 'd1ab83e457684ad3d010dd5a92719570')
     and pg_temp.md5_of('request_invoice_action_v2(uuid,text,jsonb,text,text,uuid)') = '4360d74462ed1fc950b6bd8b5157b3ae'
     and pg_temp.md5_of('settle_waiting_special_docs_on_refund(uuid,jsonb,text)') = 'edfd1f1beb7ab3b6739096a618cd6a96'
     and pg_temp.md5_of('cancel_waiting_special_docs(uuid,text,text,uuid,uuid[])') = 'fe4753fffded2cc463dbe24571a9675c'

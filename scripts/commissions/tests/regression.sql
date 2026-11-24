@@ -70,7 +70,13 @@ begin
  perform affiliate_payout_overview();
  begin perform correct_affiliate_payout(p1,4,150,method,'2020-03-01',null,null,'Admin',gen_random_uuid());raise exception 'Admin write accepted';exception when insufficient_privilege then null;end;
  perform set_config('request.jwt.claim.sub',manager_id::text,true);
- perform record_affiliate_payout(ref,v_month,50,method,'2020-03-02',null,null,gen_random_uuid());
+ -- 533 (security audit of 17 Nov 2026, M9; the user, 20 Nov 2026): once it is in, only an
+ -- Owner records an affiliate payout; a Manager is refused (42501). Before 533 a Manager records it.
+ if to_regprocedure('public.invoice_taken_back(uuid)') is not null then
+  begin perform record_affiliate_payout(ref,v_month,50,method,'2020-03-02',null,null,gen_random_uuid());raise exception 'Manager payout accepted';exception when insufficient_privilege then null;end;
+ else
+  perform record_affiliate_payout(ref,v_month,50,method,'2020-03-02',null,null,gen_random_uuid());
+ end if;
  perform set_config('request.jwt.claim.sub',owner_id::text,true);
  update profiles set is_active=false where id=manager_id;
  perform set_config('request.jwt.claim.sub',manager_id::text,true);

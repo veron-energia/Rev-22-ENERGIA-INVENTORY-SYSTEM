@@ -255,8 +255,10 @@ begin
       'customer_id', (select customer_id from public.invoices where id = p_inv), 'store_id', (select store_id from public.invoices where id = p_inv)),
     'T502 one more'));
 end $f$;
+-- (As the database owner with the login's claims: 533 closed cancel_invoice_recorded to signed-in
+-- logins, and an approved cancellation request reaches it so. The answers are the same.)
 create function pg_temp.cancel(p_who uuid, p_inv uuid) returns text language sql as $f$
-  select pg_temp.try_as(p_who, format('select public.cancel_invoice_recorded(%L::uuid, %L, gen_random_uuid())::text', p_inv, 'T502 cancelled')) $f$;
+  select pg_temp.try_as(p_who, format('select public.cancel_invoice_recorded(%L::uuid, %L, gen_random_uuid())::text', p_inv, 'T502 cancelled'), true) $f$;
 create function pg_temp.reopen(p_who uuid, p_inv uuid) returns text language sql as $f$
   select pg_temp.try_as(p_who, format('select public.reopen_invoice(%L::uuid, %L, gen_random_uuid())::text', p_inv, 'T502 reopened')) $f$;
 -- The Finance panel's refund by line: every unused benefit of every line, from the receipts that
