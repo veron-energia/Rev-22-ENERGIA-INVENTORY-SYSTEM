@@ -184,6 +184,10 @@ declare
                              -- 526: the website key's check, which the event-website function asks with
                              -- the service key before it reads a message (security audit of 17 Nov 2026, L11)
                              'event_web_key_check',
+                             -- 530: who sent a request (the salted key of cf-connecting-ip), which
+                             -- the public QR health form counts as its owner (security audit of
+                             -- 17 Nov 2026, M4)
+                             'request_sender',
                              -- 409: the retired staff request, which moved the invoice itself
                              -- to refund_requested (staff raise guided requests now), and what a
                              -- cancelled invoice's customer already had (refund_invoice_recorded's)

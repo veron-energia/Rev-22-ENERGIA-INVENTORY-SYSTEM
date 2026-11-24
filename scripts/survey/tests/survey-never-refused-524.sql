@@ -100,6 +100,16 @@ exception when others then
   perform set_config('request.jwt.claims', '', true);
   insert into tx values ('sub:' || key, 'ERROR: ' || sqlerrm) on conflict (k) do update set v = excluded.v;
 end$$;
+-- 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026): where 530 is in, a form found by
+-- its phone and name for a customer with no survey waits for staff too (existing_customer), nothing
+-- filled (case 2's Gia; staff then attach it); and at most 3 forms a Singapore day are kept under one
+-- phone, so where a phone gets more here its earlier forms are moved to the day before
+-- (earlier_day). scripts/survey/tests/health-form-limits-530.sql checks 530 whole.
+create function pg_temp.m530() returns boolean language sql stable as
+$$ select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 $$;
+create function pg_temp.earlier_day(p text) returns void language sql as
+$$ update public.health_surveys set submitted_at = submitted_at - interval '1 day'
+    where pg_temp.m530() and public.normalize_customer_phone(phone) = p $$;
 create function pg_temp.reply(key text) returns jsonb language sql as
 $$ select case when pg_temp.tx('sub:' || key) like 'ERROR:%' then null else pg_temp.tx('sub:' || key)::jsonb end $$;
 -- The reply any form gets: success, a survey number of today's form, the survey's id; nothing else.
@@ -244,6 +254,8 @@ select pg_temp.check(pg_temp.plain_reply('r2') and pg_temp.plain_reply('u1')
 insert into tx values ('make_r1', pg_temp.as_login('s', format('select public.create_customer_from_held_survey(%L, %L)::text',
                                                               pg_temp.fx('hs:r1'), 'Rhea herself, Ola''s lodger')));
 insert into fx values ('cRhea', (pg_temp.survey('r1')).customer_id);
+-- 530: r1 and r2 were kept today under this phone; r3 and r4 make four, so those two go to the day before.
+select pg_temp.earlier_day('+61491570240');
 select pg_temp.submit('r3', 'Rhea', 'L524Sample', '+61491570240', pg_temp.mail('rhea'));
 select pg_temp.submit('r4', 'L524Sample', 'Rhea', '+61491570240', pg_temp.mail('rhea'));
 select pg_temp.check(pg_temp.tx('make_r1') !~ '^ERROR' and pg_temp.fx('cRhea') is not null
@@ -268,10 +280,18 @@ select pg_temp.check(pg_temp.plain_reply('d1')
     and pg_temp.held('d1', 'customer_has_survey', pg_temp.ids('cDee'), 'Dee L524Sample', '+61491570243', pg_temp.mail('dee'))
     and pg_temp.surveys_of('cDee') = 0 and pg_temp.record('cDee') = pg_temp.tx('rec:cDee'),
   '2 Dee, whose phone and name an old survey with no customer has: waits (customer_has_survey) for her; her record unchanged: ' || pg_temp.tx('sub:d1'));
-select pg_temp.check(pg_temp.hold('g1') is null and (pg_temp.survey('g1')).customer_id = pg_temp.fx('cGia')
+-- 530: Gia's form waits for staff (existing_customer), nothing filled; staff attach it, which fills them.
+select pg_temp.check(not pg_temp.m530()
+    or (pg_temp.held('g1', 'existing_customer', pg_temp.ids('cGia'), 'Gia L524Sample', '+61491570245', pg_temp.mail('gia'))
+        and pg_temp.record('cGia') = pg_temp.tx('rec:cGia')),
+  '2 (530) Gia (no survey) by her phone and name: waits for staff with her (existing_customer), her record unchanged: ' || pg_temp.tx('sub:g1'));
+insert into tx select 'att_g1', pg_temp.as_login('s', format('select public.attach_held_health_survey(%L, %L, %L)::text',
+                                                             pg_temp.fx('hs:g1'), pg_temp.fx('cGia'), 'Her phone and name'))
+ where pg_temp.m530();
+select pg_temp.check(pg_temp.hold('g1') is null is distinct from pg_temp.m530() and (pg_temp.survey('g1')).customer_id = pg_temp.fx('cGia')
     and (select date_of_birth = '1981-06-07' and occupation = 'L524 Tester' and source_option_id = pg_temp.fx('src') and email = pg_temp.mail('gia')
            from public.customers where id = pg_temp.fx('cGia')),
-  '2 Gia (no survey) by her phone and name: hers at once, her empty details filled, as before; the same reply: ' || pg_temp.tx('sub:g1'));
+  '2 Gia (no survey) by her phone and name: hers at once, her empty details filled, as before (530: once staff attach it); the same reply: ' || pg_temp.tx('sub:g1'));
 select pg_temp.check((pg_temp.submitted('b1')->>'held_for_staff')::boolean and pg_temp.submitted('b1')->>'hold_reason' = 'customer_has_survey'
     and pg_temp.submitted('b1')->>'customer_id' is null and not (pg_temp.submitted('b1')->>'customer_matched')::boolean
     and pg_temp.submitted('r2')->>'hold_reason' = 'repeat_form',
@@ -370,11 +390,13 @@ select pg_temp.check(has_function_privilege('anon', 'public.submit_health_survey
           where p.oid = 'public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)
         = 'anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres',
   'G the form stays callable signed out, signed in and by the server; its grants are as before');
-select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) = 'a65183cdcb48f2dd883a47c1c7aad7f3'
+select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
+        = case when pg_temp.m530() then '6441159a66f5ca4424848710c90f2576' else 'a65183cdcb48f2dd883a47c1c7aad7f3' end
     and (select pg_get_constraintdef(c.oid) from pg_constraint c
           where c.conrelid = 'public.health_survey_holds'::regclass and c.conname = 'health_survey_holds_reason_check')
-        = 'CHECK ((reason = ANY (ARRAY[''phone_in_use''::text, ''email_in_use''::text, ''phone_and_email_in_use''::text, ''several_name_matches''::text, ''phone_and_email_customer_has_survey''::text, ''repeat_form''::text, ''customer_has_survey''::text, ''legacy_survey_same_details''::text, ''unreadable_phone_same_name''::text])))',
-  'M submit_health_survey is 524''s AFTER version, the reason check 524''s');
+        = 'CHECK ((reason = ANY (ARRAY[''phone_in_use''::text, ''email_in_use''::text, ''phone_and_email_in_use''::text, ''several_name_matches''::text, ''phone_and_email_customer_has_survey''::text, ''repeat_form''::text, ''customer_has_survey''::text, ''legacy_survey_same_details''::text, ''unreadable_phone_same_name''::text'
+          || case when pg_temp.m530() then ', ''existing_customer''::text' else '' end || '])))',
+  'M submit_health_survey is 524''s AFTER version, the reason check 524''s (530''s, each, where 530 is in)');
 \if :{?skip_install}
 \else
 select pg_temp.check((select v from m524 where k = 'fn') = md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))

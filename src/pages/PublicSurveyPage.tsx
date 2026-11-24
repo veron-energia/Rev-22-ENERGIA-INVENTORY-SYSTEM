@@ -7,13 +7,11 @@ import PhoneInput from '../components/PhoneInput';
 import LeaveFormDialog from '../components/survey/LeaveFormDialog';
 import { useNavigationGuard } from '../hooks/useNavigationGuard';
 import {
-  FIELD_ORDER, makeInitialForm, parseDob, isSurveyDirty, validateSurvey, mapServerError,
+  FIELD_ORDER, makeInitialForm, parseDob, isSurveyDirty, validateSurvey, mapServerError, sgDate, SURVEY_LIMITS,
   type SurveyField, type SurveyFormState,
 } from '../lib/survey/form.mjs';
 import { Leaf, CheckCircle2, AlertTriangle, RefreshCw } from 'lucide-react';
 import '../styles/survey.css';
-
-const sgToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' });
 
 // Category order as printed on the form.
 const CATS = ['Pain', 'Sleep', 'Stress', 'Immune System & Other Health Issues'];
@@ -90,7 +88,16 @@ const PublicSurveyPage: React.FC = () => {
   const [done, setDone] = useState<string | null>(null);
 
   // "Today" is an initial value — captured once so it never reads as an edit.
-  const initialSignedDate = useMemo(() => sgToday(), []);
+  const initialSignedDate = useMemo(() => sgDate(), []);
+  // 530 ("Day it arrives"): the form is dated the Singapore day it reaches us,
+  // whatever is sent; the date box shows that day (kept current if the page
+  // stays open past midnight) and cannot be changed, and the signed PDF built
+  // here carries the same day.
+  const [today, setToday] = useState(() => sgDate());
+  useEffect(() => {
+    const t = setInterval(() => setToday(d => (d === sgDate() ? d : sgDate())), 60_000);
+    return () => clearInterval(t);
+  }, []);
   const initialForm = useMemo(() => makeInitialForm(initialSignedDate), [initialSignedDate]);
   const [f, setF] = useState<SurveyFormState>(() => makeInitialForm(initialSignedDate));
 
@@ -198,7 +205,8 @@ const PublicSurveyPage: React.FC = () => {
     phoneValid,
     requireSource,
     sourceRequiresDetails,
-  }), [f, dobResult, phoneValid, requireSource, sourceRequiresDetails]);
+    symptoms: Object.values(ticks).filter(v => v.on).map(v => ({ duration_text: v.duration })),
+  }), [f, dobResult, phoneValid, requireSource, sourceRequiresDetails, ticks]);
 
   // After the first attempt, keep inline messages in step as answers change —
   // without ever scrolling or moving focus while the customer types. Server‑
@@ -272,6 +280,9 @@ const PublicSurveyPage: React.FC = () => {
     if (firstBad) { focusField(firstBad); return; }
 
     const fullName = [f.first_name.trim(), f.last_name.trim()].filter(Boolean).join(' ');
+    // 530: the day the form is sent, in Singapore (the server dates it so too).
+    const signedDate = sgDate();
+    setToday(signedDate);
     const symptoms = Object.entries(ticks).filter(([, v]) => v.on)
       .map(([id, v]) => ({ option_id: id, duration_text: v.duration }));
 
@@ -288,7 +299,8 @@ const PublicSurveyPage: React.FC = () => {
       const { buildSurveyPdf } = await import('../lib/surveyPdf');
       pdf = buildSurveyPdf({
         store_name: link.store_name,
-        event_name: f.event_name || link.event_name,
+        // 530: a link's event wins over one typed (the server keeps the link's).
+        event_name: link.event_name || f.event_name,
         full_name: fullName,
         date_of_birth: f.date_of_birth,
         age: f.age,
@@ -309,7 +321,7 @@ const PublicSurveyPage: React.FC = () => {
         consent_marketing_sms: f.consent_marketing_sms,
         consent_marketing_phone: f.consent_marketing_phone,
         signature_data: f.signature_data,
-        signed_date: f.signed_date,
+        signed_date: signedDate,
         symptoms: Object.entries(ticks).filter(([, v]) => v.on).map(([id, v]) => {
           const o = options.find(x => x.id === id)!;
           return { category: o.category, label: o.label, duration_text: v.duration };
@@ -325,6 +337,9 @@ const PublicSurveyPage: React.FC = () => {
         p_token: token,
         p_payload: {
           ...f,
+          // 530: the server takes the date it arrives, the address and the
+          // device from the request itself; these are sent as before.
+          signed_date: signedDate,
           full_name: fullName,
           source_option_id: effSourceId,
           source_details: effSourceDetails,
@@ -423,7 +438,7 @@ const PublicSurveyPage: React.FC = () => {
           <div className="form-grid-2">
             <div className={`form-group ${errors.first_name ? 'survey-invalid' : ''}`} ref={registerField('first_name')}>
               <Label htmlFor="sv-first-name" required>First Name</Label>
-              <input id="sv-first-name" autoComplete="given-name" value={f.first_name}
+              <input id="sv-first-name" autoComplete="given-name" value={f.first_name} maxLength={SURVEY_LIMITS.name}
                 aria-invalid={errors.first_name ? true : undefined}
                 aria-describedby={errors.first_name ? 'err-first-name' : undefined}
                 onChange={e => setF({ ...f, first_name: e.target.value })} />
@@ -431,7 +446,7 @@ const PublicSurveyPage: React.FC = () => {
             </div>
             <div className="form-group">
               <Label htmlFor="sv-last-name" optional>Last Name</Label>
-              <input id="sv-last-name" autoComplete="family-name" value={f.last_name}
+              <input id="sv-last-name" autoComplete="family-name" value={f.last_name} maxLength={SURVEY_LIMITS.name}
                 onChange={e => setF({ ...f, last_name: e.target.value })} />
             </div>
           </div>
@@ -459,10 +474,13 @@ const PublicSurveyPage: React.FC = () => {
               </div>
               <FieldError id="err-dob" message={errors.date_of_birth} />
             </div>
-            <div className="form-group">
+            <div className={`form-group ${errors.age ? 'survey-invalid' : ''}`} ref={registerField('age')}>
               <Label htmlFor="sv-age" optional>Age</Label>
-              <input id="sv-age" type="number" inputMode="numeric" min={0} value={f.age}
+              <input id="sv-age" type="number" inputMode="numeric" min={0} max={SURVEY_LIMITS.age} value={f.age}
+                aria-invalid={errors.age ? true : undefined}
+                aria-describedby={errors.age ? 'err-age' : undefined}
                 onChange={e => setF({ ...f, age: e.target.value })} />
+              <FieldError id="err-age" message={errors.age} />
             </div>
           </div>
 
@@ -492,7 +510,7 @@ const PublicSurveyPage: React.FC = () => {
             </div>
             <div className={`form-group ${errors.email ? 'survey-invalid' : ''}`} ref={registerField('email')}>
               <Label htmlFor="sv-email" required>Email</Label>
-              <input id="sv-email" type="email" inputMode="email" autoComplete="email" value={f.email}
+              <input id="sv-email" type="email" inputMode="email" autoComplete="email" value={f.email} maxLength={SURVEY_LIMITS.email}
                 aria-invalid={errors.email ? true : undefined}
                 aria-describedby={errors.email ? 'err-email' : undefined}
                 onChange={e => setF({ ...f, email: e.target.value })} />
@@ -514,7 +532,7 @@ const PublicSurveyPage: React.FC = () => {
               {selectedSource?.requires_details && (
                 <div className={errors.source_details ? 'survey-invalid' : ''} ref={registerField('source_details')} style={{ marginTop: 8 }}>
                   <Label htmlFor="sv-source-details" required>Please tell us more</Label>
-                  <input id="sv-source-details" value={f.source_details}
+                  <input id="sv-source-details" value={f.source_details} maxLength={SURVEY_LIMITS.source_details}
                     aria-invalid={errors.source_details ? true : undefined}
                     aria-describedby={errors.source_details ? 'err-source-details' : undefined}
                     onChange={e => setF({ ...f, source_details: e.target.value })} />
@@ -525,16 +543,22 @@ const PublicSurveyPage: React.FC = () => {
           )}
 
           <div className="form-grid-2">
-            <div className="form-group">
+            <div className={`form-group ${errors.occupation ? 'survey-invalid' : ''}`} ref={registerField('occupation')}>
               <Label htmlFor="sv-occupation" optional>Occupation</Label>
-              <input id="sv-occupation" autoComplete="organization-title" value={f.occupation}
+              <input id="sv-occupation" autoComplete="organization-title" value={f.occupation} maxLength={SURVEY_LIMITS.occupation}
+                aria-invalid={errors.occupation ? true : undefined}
+                aria-describedby={errors.occupation ? 'err-occupation' : undefined}
                 onChange={e => setF({ ...f, occupation: e.target.value })} />
+              <FieldError id="err-occupation" message={errors.occupation} />
             </div>
             {!link.event_name && (
-              <div className="form-group">
+              <div className={`form-group ${errors.event_name ? 'survey-invalid' : ''}`} ref={registerField('event_name')}>
                 <Label htmlFor="sv-event" optional>Event</Label>
-                <input id="sv-event" value={f.event_name} placeholder="Optional"
+                <input id="sv-event" value={f.event_name} placeholder="Optional" maxLength={SURVEY_LIMITS.event_name}
+                  aria-invalid={errors.event_name ? true : undefined}
+                  aria-describedby={errors.event_name ? 'err-event' : undefined}
                   onChange={e => setF({ ...f, event_name: e.target.value })} />
+                <FieldError id="err-event" message={errors.event_name} />
               </div>
             )}
           </div>
@@ -550,9 +574,14 @@ const PublicSurveyPage: React.FC = () => {
         <YesNo label="Do you smoke?" value={f.smokes} onChange={v => setF({ ...f, smokes: v })} />
         <YesNo label="Are you now taking any medical / physiotherapy treatment or medicine / pain killer?" value={f.on_treatment} onChange={v => setF({ ...f, on_treatment: v })} />
         {f.on_treatment && (
-          <div className="form-group" style={{ marginTop: 12 }}>
+          <div className={`form-group ${errors.treatment_list ? 'survey-invalid' : ''}`} style={{ marginTop: 12 }}
+            ref={registerField('treatment_list')}>
             <Label htmlFor="sv-treatment" optional>If Yes, please list</Label>
-            <input id="sv-treatment" value={f.treatment_list} onChange={e => setF({ ...f, treatment_list: e.target.value })} />
+            <input id="sv-treatment" value={f.treatment_list} maxLength={SURVEY_LIMITS.treatment_list}
+              aria-invalid={errors.treatment_list ? true : undefined}
+              aria-describedby={errors.treatment_list ? 'err-treatment' : undefined}
+              onChange={e => setF({ ...f, treatment_list: e.target.value })} />
+            <FieldError id="err-treatment" message={errors.treatment_list} />
           </div>
         )}
       </section>
@@ -581,7 +610,7 @@ const PublicSurveyPage: React.FC = () => {
                       <span>{o.label}</span>
                     </label>
                     {t?.on && (
-                      <input className="survey-duration" value={t.duration}
+                      <input className="survey-duration" value={t.duration} maxLength={SURVEY_LIMITS.duration_text}
                         aria-label={`How long have you had: ${o.label}`}
                         onChange={e => setDur(o.id, e.target.value)} placeholder="Duration (e.g. 2 weeks)" />
                     )}
@@ -591,9 +620,17 @@ const PublicSurveyPage: React.FC = () => {
             </div>
           </div>
         ))}
-        <div className="form-group" style={{ marginTop: 6 }}>
+        <div ref={registerField('symptoms')} tabIndex={-1}>
+          <FieldError id="err-symptoms" message={errors.symptoms} />
+        </div>
+        <div className={`form-group ${errors.others_text ? 'survey-invalid' : ''}`} style={{ marginTop: 6 }}
+          ref={registerField('others_text')}>
           <Label htmlFor="sv-others" optional>Others (please indicate)</Label>
-          <input id="sv-others" value={f.others_text} onChange={e => setF({ ...f, others_text: e.target.value })} />
+          <input id="sv-others" value={f.others_text} maxLength={SURVEY_LIMITS.others_text}
+            aria-invalid={errors.others_text ? true : undefined}
+            aria-describedby={errors.others_text ? 'err-others' : undefined}
+            onChange={e => setF({ ...f, others_text: e.target.value })} />
+          <FieldError id="err-others" message={errors.others_text} />
         </div>
       </section>
 
@@ -662,9 +699,13 @@ const PublicSurveyPage: React.FC = () => {
               <FieldError id="err-sign" message={errors.signature_data} />
             </div>
             <div className="form-group">
-              <Label htmlFor="sv-signed-date" optional>Date</Label>
-              <input id="sv-signed-date" type="date" value={f.signed_date}
-                onChange={e => setF({ ...f, signed_date: e.target.value })} />
+              <Label htmlFor="sv-signed-date">Date</Label>
+              {/* 530: the day the form is sent (Singapore); it cannot be changed. */}
+              <input id="sv-signed-date" type="date" value={today} readOnly aria-readonly="true"
+                aria-describedby="sv-signed-date-hint" />
+              <div id="sv-signed-date-hint" className="survey-section-hint" style={{ marginTop: 4 }}>
+                Today&apos;s date, set when you submit.
+              </div>
             </div>
           </div>
 

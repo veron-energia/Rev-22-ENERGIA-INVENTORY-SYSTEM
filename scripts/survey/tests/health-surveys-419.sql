@@ -127,6 +127,22 @@ $$ select case when position('524:' in pg_get_functiondef('public.submit_health_
                             where h.survey_id = (pg_temp.msg(v)::jsonb->>'survey_id')::uuid and h.reason = p_reason
                               and h.resolved_at is null and s.customer_id is null)
           else v like '%HEALTH_SURVEY_ALREADY_EXISTS%' end $$;
+-- 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026, "Hold for staff"): where 530 is
+-- in, a form found by its phone and name no longer goes into the customer's unsigned consultant
+-- record by itself (Q10's rule now runs when staff attach it): it waits (existing_customer) with
+-- the customer, the record unsigned; below, staff attach it and the checks go on from there. 530
+-- also takes a signed PDF only as a PDF (base64 starting JVBERi0, "%PDF-"), so the PDFs sent here
+-- are '%PDF-1.4 DATA' and '%PDF-1.4 HELD' (they were 'PDFDATA' and 'PDFHELD').
+-- scripts/survey/tests/health-form-limits-530.sql checks 530 whole.
+create function pg_temp.m530() returns boolean language sql stable as
+$$ select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 $$;
+-- 530: the form waits for staff with that customer, whose record is still unsigned.
+create function pg_temp.held_for_record(v text, p_cust uuid, p_record uuid) returns boolean language sql stable as
+$$ select pg_temp.state(v) = 'ok'
+          and exists (select 1 from public.health_survey_holds h join public.health_surveys s on s.id = h.survey_id
+                       where h.survey_id = (pg_temp.msg(v)::jsonb->>'survey_id')::uuid and h.reason = 'existing_customer'
+                         and h.candidate_customer_ids = array[p_cust] and h.resolved_at is null and s.customer_id is null)
+          and exists (select 1 from public.health_surveys r where r.id = p_record and r.signature_data is null and r.source = 'consultant') $$;
 create function pg_temp.visit(p_survey uuid) returns date language sql stable as
 $$ select v.visit_on from public.customer_centre_visit_days() v where v.survey_id = p_survey $$;
 create function pg_temp.audits(p_survey uuid, p_action text) returns int language sql stable as
@@ -406,12 +422,22 @@ insert into fx select 'hs_empty', id from health_surveys where customer_id = pg_
 select pg_temp.check(pg_temp.visit(pg_temp.fx('hs_empty')) is null, 'Q1 (setup) the empty record is no visit');
 insert into tx values ('q1', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Cleo', 'Testthree', '+61 491 570 737', 't419-cleo-' || pg_temp.tx('sfx') || '@example.com'),
-  jsonb_build_array(jsonb_build_object('option_id', pg_temp.fx('sym2'), 'duration_text', '1 year')), 'UERGREFUQQ=='));
+  jsonb_build_array(jsonb_build_object('option_id', pg_temp.fx('sym2'), 'duration_text', '1 year')), 'JVBERi0xLjQgREFUQQ=='));
+select pg_temp.check(not pg_temp.m530() or pg_temp.held_for_record(pg_temp.tx('q1'), pg_temp.fx('c_empty'), pg_temp.fx('hs_empty')),
+  'Q1 (530) the form waits for staff with her, her empty record not signed: ' || pg_temp.tx('q1'));
+insert into fx select 'hs_q1form', (pg_temp.msg(pg_temp.tx('q1'))::jsonb->>'survey_id')::uuid where pg_temp.m530() and pg_temp.state(pg_temp.tx('q1')) = 'ok';
+insert into tx select 'q1att', pg_temp.try('s1', format('select public.attach_held_health_survey(%L, %L, %L)::text',
+                                                      pg_temp.fx('hs_q1form'), pg_temp.fx('c_empty'), 'Checked her IC'))
+ where pg_temp.m530();
 select pg_temp.check(pg_temp.state(pg_temp.tx('q1')) = 'ok'
-    and (pg_temp.msg(pg_temp.tx('q1'))::jsonb->>'survey_id')::uuid = pg_temp.fx('hs_empty')
-    and (pg_temp.msg(pg_temp.tx('q1'))::jsonb->>'survey_no') = 'HS-T419-EMPTY-' || pg_temp.tx('sfx')
+    and case when pg_temp.m530()
+             then pg_temp.state(pg_temp.tx('q1att')) = 'ok'
+                  and pg_temp.msg(pg_temp.tx('q1att'))::jsonb->>'signed_into_survey_no' = 'HS-T419-EMPTY-' || pg_temp.tx('sfx')
+             else (pg_temp.msg(pg_temp.tx('q1'))::jsonb->>'survey_id')::uuid = pg_temp.fx('hs_empty')
+                  and (pg_temp.msg(pg_temp.tx('q1'))::jsonb->>'survey_no') = 'HS-T419-EMPTY-' || pg_temp.tx('sfx') end
     and (select count(*) from health_surveys where customer_id = pg_temp.fx('c_empty')) = 1,
-  'Q1 a customer with an empty consultant record fills in the QR form: it goes into that record (Q10): ' || pg_temp.tx('q1'));
+  'Q1 a customer with an empty consultant record fills in the QR form: it goes into that record (Q10; 530: once staff attach it): '
+  || pg_temp.tx('q1') || coalesce(' / ' || pg_temp.tx('q1att'), ''));
 select pg_temp.check((select signature_data is not null and source = 'public_form' and survey_link_id = pg_temp.fx('link')
                          and submitted_at > now() - interval '1 minute' and smokes and has_medical_condition is false
                          and pdf_url = 'stored' and source_option_id = pg_temp.fx('src')
@@ -421,8 +447,11 @@ select pg_temp.check((select signature_data is not null and source = 'public_for
     and pg_temp.visit(pg_temp.fx('hs_empty')) = public.sg_today()
     and exists (select 1 from audit_logs where record_id = pg_temp.fx('hs_empty') and action = 'health_survey_signed_by_customer'
                   and (new_data->>'record_was_empty')::boolean and old_data->>'source' = 'consultant')
-    and exists (select 1 from audit_logs where record_id = pg_temp.fx('hs_empty') and action = 'health_survey_submitted'
-                  and (new_data->>'signed_into_record')::boolean),
+    and case when pg_temp.m530()
+             then exists (select 1 from audit_logs where record_id = pg_temp.fx('hs_q1form') and action = 'health_survey_matched'
+                            and new_data->>'signed_into_survey_no' = 'HS-T419-EMPTY-' || pg_temp.tx('sfx'))
+             else exists (select 1 from audit_logs where record_id = pg_temp.fx('hs_empty') and action = 'health_survey_submitted'
+                            and (new_data->>'signed_into_record')::boolean) end,
   'Q1 the empty record becomes the QR form it now is: signed, dated today, its answers, symptoms and PDF, a visit today');
 -- Q2 A record with the consultant's work keeps it; the customer's answers win.
 insert into tx values ('q2a', pg_temp.run('o', 'select public.upsert_consultant_survey(@c_worked@, ''Old injury'', p_store_id => @store_a@, p_smokes => false, p_drinks_alcohol => true)::text'));
@@ -436,8 +465,14 @@ values (pg_temp.fx('hs_worked'), pg_temp.fx('store_a') || '/' || pg_temp.fx('hs_
 insert into tx values ('q2visit', pg_temp.visit(pg_temp.fx('hs_worked'))::text);
 insert into tx values ('q2', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Dina', 'Testfour', '+61491571266', 't419-dina-' || pg_temp.tx('sfx') || '@example.com', '{"drinks_alcohol": null, "consent_marketing_sms": true}')));
+select pg_temp.check(not pg_temp.m530() or pg_temp.held_for_record(pg_temp.tx('q2'), pg_temp.fx('c_worked'), pg_temp.fx('hs_worked')),
+  'Q2 (530) the form waits for staff with her, her record not signed: ' || pg_temp.tx('q2'));
+insert into tx select 'q2att', pg_temp.try('s1', format('select public.attach_held_health_survey(%L, %L, %L)::text',
+                                                      (pg_temp.msg(pg_temp.tx('q2'))::jsonb->>'survey_id')::uuid, pg_temp.fx('c_worked'), 'Checked her IC'))
+ where pg_temp.m530();
 select pg_temp.check(pg_temp.state(pg_temp.tx('q2')) = 'ok'
-    and (pg_temp.msg(pg_temp.tx('q2'))::jsonb->>'survey_id')::uuid = pg_temp.fx('hs_worked')
+    and case when pg_temp.m530() then pg_temp.state(pg_temp.tx('q2att')) = 'ok'
+             else (pg_temp.msg(pg_temp.tx('q2'))::jsonb->>'survey_id')::uuid = pg_temp.fx('hs_worked') end
     and (select source = 'consultant' and signature_data is not null and remarks_condition = 'Old injury'
                 and smokes is true and drinks_alcohol is true and submitted_at < now() - interval '29 days'
                 and consent_marketing_sms is true and consent_marketing_email is false
@@ -448,19 +483,25 @@ select pg_temp.check(pg_temp.state(pg_temp.tx('q2')) = 'ok'
     and exists (select 1 from audit_logs where record_id = pg_temp.fx('hs_worked') and action = 'health_survey_signed_by_customer'
                   and not (new_data->>'record_was_empty')::boolean and old_data->'smokes' = 'false'::jsonb
                   and old_data->'consent_marketing_sms' = 'false'::jsonb and new_data->'consent_marketing_sms' = 'true'::jsonb),
-  'Q2 into a record with the consultant''s work: findings, note and file kept, the customer''s answers and consents win, one left blank keeps the record''s, the visit date stays: ' || pg_temp.tx('q2'));
+  'Q2 into a record with the consultant''s work: findings, note and file kept, the customer''s answers and consents win, one left blank keeps the record''s, the visit date stays (530: once staff attach the form): ' || pg_temp.tx('q2'));
 insert into tx values ('q3', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Dina', 'Testfour', '+61491571266', 't419-dina-' || pg_temp.tx('sfx') || '@example.com')));
-select pg_temp.check(pg_temp.refused_or_held(pg_temp.tx('q3'), 'customer_has_survey'),
-  'Q3 once signed, a second form is refused as before (524: waits for staff, customer_has_survey): ' || pg_temp.tx('q3'));
+select pg_temp.check(pg_temp.refused_or_held(pg_temp.tx('q3'), case when pg_temp.m530() then 'repeat_form' else 'customer_has_survey' end),
+  'Q3 once signed, a second form is refused as before (524: waits for staff, customer_has_survey; 530: her record took the form staff attached, so as sent again, repeat_form): ' || pg_temp.tx('q3'));
 -- Q4 A customer whose survey is a signed QR form: refused as before.
 insert into tx values ('q4a', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Esme', 'Testfive', '+61491571491', 't419-esme-' || pg_temp.tx('sfx') || '@example.com')));
+-- 530: her first form waits for staff with her; staff attach it, so it is her signed survey.
+insert into tx select 'q4att', pg_temp.try('s1', format('select public.attach_held_health_survey(%L, %L, %L)::text',
+                                                      (pg_temp.msg(pg_temp.tx('q4a'))::jsonb->>'survey_id')::uuid, pg_temp.fx('c_signed'), 'Checked her IC'))
+ where pg_temp.m530();
 insert into tx values ('q4b', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Esme', 'Testfive', '+61491571491', 't419-esme-' || pg_temp.tx('sfx') || '@example.com')));
 select pg_temp.check(pg_temp.state(pg_temp.tx('q4a')) = 'ok'
-    and pg_temp.refused_or_held(pg_temp.tx('q4b'), 'customer_has_survey'),
-  'Q4 a customer with a signed survey is refused a second, as before (524: it waits for staff, customer_has_survey): ' || pg_temp.tx('q4b'));
+    and (not pg_temp.m530() or pg_temp.state(pg_temp.tx('q4att')) = 'ok')
+    and pg_temp.refused_or_held(pg_temp.tx('q4b'), case when pg_temp.m530() then 'repeat_form' else 'customer_has_survey' end),
+  'Q4 a customer with a signed survey is refused a second, as before (524: it waits for staff, customer_has_survey; 530: her survey is the '
+  || 'form staff attached, so as sent again, repeat_form): ' || pg_temp.tx('q4b'));
 -- Q5 A new person: the name parts as typed (CUSTOMERS-8).
 insert into tx values ('q5', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Mary Ann', 'Tan Testlee', '+61491573770', 't419-mary-' || pg_temp.tx('sfx') || '@example.com')));
@@ -513,7 +554,7 @@ insert into tx values ('q10a', pg_temp.run('s1', 'select public.upsert_consultan
 insert into fx select 'hs_heldinto', pg_temp.msg(pg_temp.tx('q10a'))::uuid where pg_temp.state(pg_temp.tx('q10a')) = 'ok';
 insert into tx values ('q10b', pg_temp.submit(pg_temp.tx('token'),
   pg_temp.form('Faye', 'Testsix', '+61491571804', 't419-faye-' || pg_temp.tx('sfx') || '@example.com'),
-  jsonb_build_array(jsonb_build_object('option_id', pg_temp.fx('sym1'))), 'UERGSEVMRA=='));
+  jsonb_build_array(jsonb_build_object('option_id', pg_temp.fx('sym1'))), 'JVBERi0xLjQgSEVMRA=='));
 insert into fx select 'hs_held', (pg_temp.msg(pg_temp.tx('q10b'))::jsonb->>'survey_id')::uuid where pg_temp.state(pg_temp.tx('q10b')) = 'ok';
 select pg_temp.check((select customer_id is null from health_surveys where id = pg_temp.fx('hs_held'))
     and exists (select 1 from health_survey_holds where survey_id = pg_temp.fx('hs_held') and resolved_at is null),
@@ -537,7 +578,7 @@ select pg_temp.check(pg_temp.state(pg_temp.tx('q10')) = 'ok'
     and (select signature_data is not null and smokes is true and source = 'public_form'
                 and submitted_at = (select submitted_at from health_surveys where id = pg_temp.fx('hs_held'))
            from health_surveys where id = pg_temp.fx('hs_heldinto'))
-    and exists (select 1 from health_survey_pdfs where survey_id = pg_temp.fx('hs_heldinto') and pdf_base64 = 'UERGSEVMRA==')
+    and exists (select 1 from health_survey_pdfs where survey_id = pg_temp.fx('hs_heldinto') and pdf_base64 = 'JVBERi0xLjQgSEVMRA==')
     and exists (select 1 from health_survey_symptoms where survey_id = pg_temp.fx('hs_heldinto') and option_id = pg_temp.fx('sym1'))
     and (select customer_id is null from health_surveys where id = pg_temp.fx('hs_held'))
     and exists (select 1 from health_survey_holds where survey_id = pg_temp.fx('hs_held') and resolution = 'attached'

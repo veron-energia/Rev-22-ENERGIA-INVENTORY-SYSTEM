@@ -40,7 +40,7 @@ const STUBS = {
   'rrd': 'export const useParams = () => ({ token: "tok" });',
   'sb': 'export const supabase = new Proxy({}, { get: (_t, p) => globalThis.__SB__[p] });',
   // 419: a test may make the PDF fail (globalThis.__PDF_FAIL__ = 'why').
-  'pdf': 'export const buildSurveyPdf = () => { if (globalThis.__PDF_FAIL__) throw new Error(globalThis.__PDF_FAIL__); return "JVBER"; };',
+  'pdf': 'export const buildSurveyPdf = (a) => { globalThis.__PDF_ARGS__?.(a); if (globalThis.__PDF_FAIL__) throw new Error(globalThis.__PDF_FAIL__); return "JVBER"; };',
   'types': 'export {};',
   'css': '',
   'lucide': `
@@ -362,3 +362,87 @@ test('invalid link shows the unavailable screen', async () => {
 });
 
 test.after(async () => { dom.window.close(); await rm(dir, { recursive: true, force: true }); });
+
+// ── 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026) ─────────────────────────
+test('530: the date box shows today in Singapore and cannot be changed; the PDF and the payload carry that day', async () => {
+  let sent = null;
+  const ui = await mount({ submit: p => { sent = p; return { data: { survey_no: 'HS-6' } }; } });
+  try {
+    const box = ui.$('#sv-signed-date');
+    const sg = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    assert.equal(box.value, sg);
+    assert.equal(box.readOnly, true);
+    await sendValid(ui);
+    assert.equal(sent.p_payload.signed_date, sg);
+  } finally { ui.close(); }
+});
+
+test('530: every box has the size the server takes', async () => {
+  const ui = await mount();
+  try {
+    const max = sel => ui.$(sel).maxLength;
+    assert.equal(max('#sv-first-name'), 100);
+    assert.equal(max('#sv-last-name'), 100);
+    assert.equal(max('#sv-email'), 254);
+    assert.equal(max('#sv-occupation'), 100);
+    assert.equal(max('#sv-event'), 100);
+    assert.equal(max('#sv-others'), 1000);
+    assert.equal(ui.$('#sv-age').max, '120');
+  } finally { ui.close(); }
+});
+
+test('530: a form the day\'s limit dropped is thanked without a reference, and reads naturally', async () => {
+  const ui = await mount({ submit: () => ({ data: { success: true } }) });
+  try {
+    await ui.fillValid();
+    await ui.submitForm();
+    assert.ok(/Thank you!/.test(ui.text()));
+    assert.ok(/Your New Customer Form has been received\./.test(ui.text()));
+    assert.ok(!/reference/i.test(ui.text()));
+  } finally { ui.close(); }
+});
+
+test('530: past the limit per connection or per link the page says to try again later, and the answers stay', async () => {
+  const ui = await mount({ submit: () => ({ error: { message: 'SURVEY_BUSY: Many forms have been sent from this connection in the last hour. Please try again later, or ask our consultant for help.' } }) });
+  try {
+    await ui.fillValid();
+    await ui.submitForm();
+    assert.equal(ui.$('.survey-form-error').textContent.trim(),
+      'Many forms have been sent from this connection in the last hour. Please try again later, or ask our consultant for help.');
+    assert.equal(ui.$('#sv-first-name').value, 'Jamie');
+    assert.equal(ui.$('#sv-email').value, 'jamie@example.com');
+    assert.ok(!/Thank you/.test(ui.text()));
+  } finally { ui.close(); }
+});
+
+test('530: an answer the server refused shows by its field, in the server\'s words', async () => {
+  const ui = await mount({ submit: () => ({ error: { message: 'SURVEY_INPUT(occupation): Please shorten your occupation to at most 100 characters.' } }) });
+  try {
+    await ui.fillValid();
+    await ui.submitForm();
+    assert.equal(ui.$('#err-occupation')?.textContent, 'Please shorten your occupation to at most 100 characters.');
+    assert.equal(document.activeElement?.id, 'sv-occupation');
+  } finally { ui.close(); }
+});
+
+test('530: an age past 120 is caught on the page, by the age box, before sending', async () => {
+  let calls = 0;
+  const ui = await mount({ submit: () => { calls += 1; return { data: { survey_no: 'HS-7' } }; } });
+  try {
+    await ui.fillValid();
+    await ui.change('#sv-age', '130');
+    await ui.submitForm();
+    assert.equal(calls, 0);
+    assert.match(ui.$('#err-age')?.textContent ?? '', /from 0 to 120/);
+  } finally { ui.close(); }
+});
+
+test('530: on an event link the signed PDF names the link\'s event', async () => {
+  let built = null;
+  globalThis.__PDF_ARGS__ = a => { built = a; };
+  const ui = await mount({ linkInfo: { valid: true, store_name: 'Van', event_name: 'Fair 2026', source_option_id: 's4', source_label: 'RoadShow' } });
+  try {
+    await sendValid(ui, { event: true });
+    assert.equal(built?.event_name, 'Fair 2026');
+  } finally { ui.close(); globalThis.__PDF_ARGS__ = null; }
+});

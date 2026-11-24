@@ -14,6 +14,8 @@
 -- (src/lib/referral/signupInput.mjs), which only stops what 529 would refuse; after this undo
 -- it keeps refusing those names and emails on the page alone.
 --
+-- It refuses while 530 is in (the QR health form's request_sender reads the salt): run
+-- scripts/survey/undo-530.sql first.
 -- It refuses, with nothing changed, unless affiliate_referral_signup is exactly 529's version
 -- and the two tables are as 529 left them (so a later version is never overwritten). One transaction,
 -- all or nothing; it waits at most 5 seconds for a lock. The 529 row in
@@ -344,6 +346,10 @@ begin
   perform set_config('lock_timeout', '5s', true);
 
   -- 1. Checks: nothing is changed before all of them pass
+  -- 530 (the QR health form's limits) reads the salt this drops, through public.request_sender():
+  -- with 530 in, the health form would refuse every form. Undo 530 first.
+  if to_regprocedure('public.request_sender()') is not null then
+    raise exception 'UNDO 529: 530 is in (public.request_sender reads public.referral_sender_salt, which this drops). Run scripts/survey/undo-530.sql first. Nothing changed.'; end if;
   for i in 1 .. cardinality(c_sig) loop
     if to_regprocedure('public.' || c_sig[i]) is null then raise exception 'UNDO 529: public.% is missing', c_sig[i]; end if;
     v_def[i] := pg_get_functiondef(to_regprocedure('public.' || c_sig[i]));

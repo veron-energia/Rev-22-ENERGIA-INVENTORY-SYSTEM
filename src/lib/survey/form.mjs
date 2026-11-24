@@ -12,12 +12,50 @@ import { PHONE_LIMIT_MESSAGE } from '../customer-phones/normalize.mjs';
 export const FIELD_ORDER = [
   'first_name',
   'date_of_birth',
+  'age',
   'phone',
   'email',
   'source_option_id',
   'source_details',
+  'occupation',
+  'event_name',
+  'treatment_list',
+  'symptoms',
+  'others_text',
   'signature_data',
 ];
+
+/**
+ * 530 (security audit of 17 Nov 2026, M4): the sizes submit_health_survey
+ * takes, well above the longest answers on file. The page sets them as each
+ * box's maxLength and checks them before sending, so the server's refusal
+ * (SURVEY_INPUT) is only a backstop.
+ */
+export const SURVEY_LIMITS = {
+  name: 100,            // first and last name together
+  email: 254,
+  occupation: 100,
+  event_name: 100,
+  source_details: 200,
+  treatment_list: 1000,
+  others_text: 1000,
+  duration_text: 60,
+  age: 120,
+  signature: 100000,
+};
+
+/** Control characters, which the server refuses in any answer typed (530). */
+const CONTROL_RE = /[\u0001-\u001f\u007f-\u009f]/;
+
+/**
+ * 530 ("Day it arrives"): today's date in Singapore, YYYY-MM-DD, whatever the
+ * device's own time zone. Singapore keeps UTC+8 all year, so no time zone
+ * data is needed. The server dates the form the day it arrives (sg_today());
+ * the page shows and prints the same day.
+ */
+export function sgDate(now = new Date()) {
+  return new Date(now.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
 
 /**
  * The form's initial, untouched state. `signedDate` is the pre‑filled "today"
@@ -120,10 +158,24 @@ export function validateSurvey(input) {
     e.first_name = 'Please enter your first name.';
   }
 
+  // 530: the name (first and last together) at most 100 characters, no control characters.
+  const fullName = [String(form.first_name ?? '').trim(), String(form.last_name ?? '').trim()].filter(Boolean).join(' ');
+  if (!e.first_name && fullName.length > SURVEY_LIMITS.name) {
+    e.first_name = 'Please shorten your name: your first and last name together can be at most 100 characters.';
+  } else if (!e.first_name && CONTROL_RE.test(fullName)) {
+    e.first_name = 'Please enter your name without special characters.';
+  }
+
   if (dob.status === 'partial') {
     e.date_of_birth = 'Please choose the day, month and year — or clear all three.';
   } else if (dob.status === 'invalid') {
     e.date_of_birth = 'Please enter a real date that is not in the future.';
+  }
+
+  // 530: an age, when given, from 0 to 120.
+  const age = String(form.age ?? '').trim();
+  if (age && (!/^[0-9]{1,3}$/.test(age) || Number(age) > SURVEY_LIMITS.age)) {
+    e.age = 'Please enter an age from 0 to 120, or leave it blank.';
   }
 
   if (!String(form.phone ?? '').trim() || !phoneValid) {
@@ -132,7 +184,8 @@ export function validateSurvey(input) {
 
   const email = String(form.email ?? '').trim();
   if (!email) e.email = 'Please enter your email address.';
-  else if (!EMAIL_RE.test(email)) e.email = 'Please enter a valid email address, like name@example.com.';
+  else if (email.length > SURVEY_LIMITS.email) e.email = 'Please enter an email address of at most 254 characters.';
+  else if (!EMAIL_RE.test(email) || CONTROL_RE.test(email)) e.email = 'Please enter a valid email address, like name@example.com.';
 
   if (requireSource) {
     if (!form.source_option_id) {
@@ -142,8 +195,36 @@ export function validateSurvey(input) {
     }
   }
 
+  // 530: the other answers typed: at most so many characters, no control characters.
+  const text = (field, max, tooLong, odd) => {
+    const v = String(form[field] ?? '');
+    if (v.trim().length > max) e[field] = tooLong;
+    else if (CONTROL_RE.test(v)) e[field] = odd;
+  };
+  if (requireSource && !e.source_details) {
+    text('source_details', SURVEY_LIMITS.source_details,
+      'Please shorten these details to at most 200 characters.', 'Please enter these details without special characters.');
+  }
+  text('occupation', SURVEY_LIMITS.occupation,
+    'Please shorten your occupation to at most 100 characters.', 'Please enter your occupation without special characters.');
+  text('event_name', SURVEY_LIMITS.event_name,
+    'Please shorten the event name to at most 100 characters.', 'Please enter the event name without special characters.');
+  text('treatment_list', SURVEY_LIMITS.treatment_list,
+    'Please shorten the list of treatments to at most 1000 characters.', 'Please enter the list of treatments without special characters.');
+  text('others_text', SURVEY_LIMITS.others_text,
+    'Please shorten "Others" to at most 1000 characters.', 'Please enter "Others" without special characters.');
+  for (const s of input.symptoms ?? []) {
+    const d = String(s?.duration_text ?? '');
+    if (d.trim().length > SURVEY_LIMITS.duration_text || CONTROL_RE.test(d)) {
+      e.symptoms = 'Please keep how long you have had each symptom to at most 60 characters, without special characters.';
+      break;
+    }
+  }
+
   if (!form.signature_data) {
     e.signature_data = 'Please sign in the box below using your finger or mouse.';
+  } else if (String(form.signature_data).length > SURVEY_LIMITS.signature) {
+    e.signature_data = 'Your signature is too large to save. Please clear it and sign again.';
   }
 
   return e;
@@ -155,6 +236,18 @@ export function validateSurvey(input) {
  */
 export function mapServerError(raw) {
   const m = String(raw ?? '');
+
+  // 530 (security audit of 17 Nov 2026, M4): an answer the server refused,
+  // SURVEY_INPUT(<field>): <what to fix>, shown by that field when the page
+  // has one, else near Submit; and the limits per connection and per link,
+  // SURVEY_BUSY: <try again later>, near Submit. The answers stay on screen.
+  const input = /SURVEY_INPUT\(([a-z_]+)\):\s*([\s\S]+)$/.exec(m);
+  if (input) {
+    const message = input[2].trim();
+    return FIELD_ORDER.includes(input[1]) ? { field: input[1], message } : { scope: 'form', message };
+  }
+  const busy = /SURVEY_BUSY:\s*([\s\S]+)$/.exec(m);
+  if (busy) return { scope: 'form', message: busy[1].trim() };
 
   // 524 (the user, 18 Nov 2026): the form no longer refuses a form sent again,
   // one for a customer who has a survey, one beside an older survey with no

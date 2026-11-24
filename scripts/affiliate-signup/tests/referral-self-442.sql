@@ -373,9 +373,14 @@ select pg_temp.check(pg_temp.tx('views1')::jsonb = pg_temp.tx('views0')::jsonb,
   'N1 every view of referrals (her portal, the staff views, the promotion, the checks) is as it was');
 select pg_temp.check((select array_agg(p.oid::regprocedure::text order by p.oid::regprocedure::text)
                         from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
-                       where p.prosrc ilike '%referral_signup_events%' and ns.nspname not like 'pg\_temp\_%')
+                       where p.prosrc ilike '%referral_signup_events%' and ns.nspname not like 'pg\_temp\_%'
+                         -- 530 (security audit of 17 Nov 2026, M4): request_sender() names the table only
+                         -- in a comment (it keys a sender as 529 does); below: it neither reads nor writes it.
+                         and p.oid is distinct from to_regprocedure('public.request_sender()'))
                      = array['affiliate_referral_signup(text,text,text,text,text,text)', 'event_web_apply_referral(uuid,uuid)',
                              'event_web_new_customer(uuid)']
+    and coalesce((select p.prosrc !~* '(from|into|update|join)\s+(public\.)?referral_signup_events'
+                    from pg_proc p where p.oid = to_regprocedure('public.request_sender()')), true)
     and not exists (select 1 from pg_depend dp join pg_rewrite rw on rw.oid = dp.objid
                      where dp.classid = 'pg_rewrite'::regclass and dp.refobjid = 'public.referral_signup_events'::regclass
                        and rw.ev_class <> 'public.referral_signup_events'::regclass)

@@ -1,13 +1,36 @@
 export type SurveyField =
   | 'first_name'
   | 'date_of_birth'
+  | 'age'
   | 'phone'
   | 'email'
   | 'source_option_id'
   | 'source_details'
+  | 'occupation'
+  | 'event_name'
+  | 'treatment_list'
+  | 'symptoms'
+  | 'others_text'
   | 'signature_data';
 
 export const FIELD_ORDER: SurveyField[];
+
+/** 530: the sizes submit_health_survey takes (characters; age in years). */
+export const SURVEY_LIMITS: {
+  name: number;
+  email: number;
+  occupation: number;
+  event_name: number;
+  source_details: number;
+  treatment_list: number;
+  others_text: number;
+  duration_text: number;
+  age: number;
+  signature: number;
+};
+
+/** 530: today's date in Singapore (UTC+8), YYYY-MM-DD. */
+export function sgDate(now?: Date): string;
 
 export interface SurveyFormState {
   first_name: string;
@@ -73,6 +96,8 @@ export interface ValidateInput {
   phoneValid: boolean;
   requireSource: boolean;
   sourceRequiresDetails: boolean;
+  /** 530: the symptoms ticked, for their durations' size. */
+  symptoms?: { duration_text: string }[];
 }
 
 export function validateSurvey(input: ValidateInput): Partial<Record<SurveyField, string>>;

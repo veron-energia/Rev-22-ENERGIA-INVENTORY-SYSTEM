@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  makeInitialForm, parseDob, isSurveyDirty, validateSurvey, mapServerError, FIELD_ORDER,
+  makeInitialForm, parseDob, isSurveyDirty, validateSurvey, mapServerError, FIELD_ORDER, SURVEY_LIMITS, sgDate,
 } from '../../../src/lib/survey/form.mjs';
 
 const SIGNED = '2026-09-08';
@@ -109,4 +109,57 @@ test('mapServerError: recognised errors route to a field or section', () => {
   const unknown = mapServerError('duplicate key value violates unique constraint "pk"');
   assert.equal(unknown.scope, 'form');
   assert.ok(!/constraint/i.test(unknown.message));
+});
+
+// ── 530 (security audit of 17 Nov 2026, M4): the sizes the server takes, checked first ──
+const ok530 = () => ({
+  ...initial(), first_name: 'A', phone: '+6591234567', email: 'a@b.co', source_option_id: 's1',
+  signature_data: 'data:image/png;base64,AAAA',
+});
+const v530 = (form, extra = {}) => validateSurvey({
+  form, dob: parseDob({ d: '', m: '', y: '' }), phoneValid: true, requireSource: true, sourceRequiresDetails: false, ...extra,
+});
+
+test('530: every limit holds at its size and refuses one past it, by its field', () => {
+  assert.deepEqual(v530(ok530()), {});
+  assert.deepEqual(v530({ ...ok530(), first_name: 'N'.repeat(49), last_name: 'M'.repeat(50) }), {});
+  assert.match(v530({ ...ok530(), first_name: 'N'.repeat(50), last_name: 'M'.repeat(50) }).first_name, /at most 100 characters/);
+  assert.match(v530({ ...ok530(), last_name: 'T\u0007x' }).first_name, /without special characters/);
+  const at = n => 'e'.repeat(n - '@example.com'.length) + '@example.com';
+  assert.deepEqual(v530({ ...ok530(), email: at(254) }), {});
+  assert.match(v530({ ...ok530(), email: at(255) }).email, /at most 254/);
+  for (const [k, n] of [['occupation', 100], ['event_name', 100], ['treatment_list', 1000], ['others_text', 1000], ['source_details', 200]]) {
+    assert.deepEqual(v530({ ...ok530(), [k]: 'x'.repeat(n) }), {}, `${k} at ${n}`);
+    assert.match(v530({ ...ok530(), [k]: 'x'.repeat(n + 1) })[k], new RegExp(`at most ${n} characters`), `${k} past ${n}`);
+    assert.match(v530({ ...ok530(), [k]: 'x\u001bx' })[k], /without special characters/, `${k} with a control character`);
+  }
+  for (const age of ['', '0', '120']) assert.deepEqual(v530({ ...ok530(), age }), {}, `age ${age}`);
+  for (const age of ['121', '-1', '4.5', 'forty']) assert.match(v530({ ...ok530(), age }).age, /from 0 to 120/, `age ${age}`);
+  assert.deepEqual(v530(ok530(), { symptoms: [{ duration_text: 'w'.repeat(60) }] }), {});
+  assert.match(v530(ok530(), { symptoms: [{ duration_text: 'w'.repeat(61) }] }).symptoms, /at most 60 characters/);
+  assert.match(v530(ok530(), { symptoms: [{ duration_text: 'w\u0008' }] }).symptoms, /without special characters/);
+  assert.deepEqual(v530({ ...ok530(), signature_data: 'x'.repeat(SURVEY_LIMITS.signature) }), {});
+  assert.match(v530({ ...ok530(), signature_data: 'x'.repeat(SURVEY_LIMITS.signature + 1) }).signature_data, /too large/);
+  // Each new field has its place in the reading order.
+  for (const k of ['age', 'occupation', 'event_name', 'treatment_list', 'symptoms', 'others_text']) assert.ok(FIELD_ORDER.includes(k), k);
+});
+
+test('530: sgDate is the date in Singapore (UTC+8), whatever the device\'s zone', () => {
+  assert.equal(sgDate(new Date('2026-11-19T15:59:59Z')), '2026-11-19');
+  assert.equal(sgDate(new Date('2026-11-19T16:00:00Z')), '2026-11-20');
+  assert.equal(sgDate(new Date('2026-12-31T16:30:00Z')), '2027-01-01');
+});
+
+test('530: the server\'s SURVEY_INPUT goes to its field (or near Submit), SURVEY_BUSY near Submit, in its own words', () => {
+  assert.deepEqual(mapServerError('SURVEY_INPUT(first_name): Please shorten your name: your first and last name together can be at most 100 characters.'),
+    { field: 'first_name', message: 'Please shorten your name: your first and last name together can be at most 100 characters.' });
+  assert.deepEqual(mapServerError('SURVEY_INPUT(email): Please enter a valid email address, like name@example.com.'),
+    { field: 'email', message: 'Please enter a valid email address, like name@example.com.' });
+  assert.equal(mapServerError('SURVEY_INPUT(symptoms): Please tick each symptom only once.').field, 'symptoms');
+  assert.deepEqual(mapServerError('SURVEY_INPUT(sex): Please choose Female or Male, or leave it blank.'),
+    { scope: 'form', message: 'Please choose Female or Male, or leave it blank.' });
+  assert.deepEqual(mapServerError('SURVEY_INPUT(form): This form is too large to send. Please shorten your answers and try again.'),
+    { scope: 'form', message: 'This form is too large to send. Please shorten your answers and try again.' });
+  assert.deepEqual(mapServerError('SURVEY_BUSY: Many forms have been sent from this connection in the last hour. Please try again later, or ask our consultant for help.'),
+    { scope: 'form', message: 'Many forms have been sent from this connection in the last hour. Please try again later, or ask our consultant for help.' });
 });

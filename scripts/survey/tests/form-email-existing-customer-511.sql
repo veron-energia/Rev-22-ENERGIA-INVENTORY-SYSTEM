@@ -105,12 +105,15 @@ begin
 end $f$;
 
 -- 524 (18 Nov 2026) changed submit_health_survey again (a form it refused waits for staff); 511's
--- rule stands in it, so its AFTER is accepted too.
+-- rule stands in it, so its AFTER is accepted too. So is 530's (19 Nov 2026: limits, and a form for
+-- an existing customer waits for staff, who attach it; the form itself fills nothing then).
+create function pg_temp.m530() returns boolean language sql stable as
+$f$ select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 $f$;
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
-                       in ('ddc02ed5fa82aacde5f031d6d367b300', 'a65183cdcb48f2dd883a47c1c7aad7f3')
+                       in ('ddc02ed5fa82aacde5f031d6d367b300', 'a65183cdcb48f2dd883a47c1c7aad7f3', '6441159a66f5ca4424848710c90f2576')
     and md5(pg_get_functiondef('public.attach_held_health_survey(uuid,uuid,text)'::regprocedure)) = '55b632c7e9289cb267516a26af97387b'
     and md5(pg_get_functiondef('public.event_web_fill_customer(uuid,uuid)'::regprocedure)) = 'ca9957a62467c9f9ea574de86c8fd1bb',
-  'P0 511 is installed (the three functions are its AFTER versions; submit_health_survey 511''s or 524''s)');
+  'P0 511 is installed (the three functions are its AFTER versions; submit_health_survey 511''s, 524''s or 530''s)');
 select pg_temp.check(not exists (select 1 from public.customers
                                   where public.normalize_customer_phone(phone) between '+61491570510' and '+61491570529'),
   'P0 no customer uses the test phones +61 491 570 510 to 529 (the checks below assume so)');
@@ -161,11 +164,20 @@ end $$;
 select pg_temp.qr('vera', 'Vera', 'Blankmail', '+61491570511', 's511-other@example.com');
 select pg_temp.check(pg_temp.r('qr:vera') not like 'ERROR:%' and pg_temp.r('qr:vera')::jsonb -> 'success' = 'true',
   '1 the form goes through: ' || left(pg_temp.r('qr:vera'), 120));
+-- 530: found by her phone and name, the form waits for staff with her (existing_customer) and
+-- fills nothing; staff attach it (the server here), and the checks below are of that.
+select pg_temp.check(not pg_temp.m530()
+    or ((pg_temp.form('vera')).customer_id is null and pg_temp.email('vera') is null and pg_temp.rest('vera') = ''
+        and exists (select 1 from public.health_survey_holds h where h.survey_id = (pg_temp.form('vera')).id
+                      and h.reason = 'existing_customer' and h.candidate_customer_ids = array[pg_temp.id('vera')])),
+  '1 (530) it waits for staff with her, and her record is as it was: ' || coalesce(pg_temp.rest('vera'), 'null'));
+insert into r511 select 'attach_vera', pg_temp.err(format('select public.attach_held_health_survey(%L, %L, %L)',
+    (pg_temp.form('vera')).id, pg_temp.id('vera'), 'S511 check: her phone and name')) where pg_temp.m530();
 select pg_temp.check(pg_temp.email('vera') is null, '1 her record keeps no email');
 select pg_temp.check(pg_temp.rest('vera') = 'Tester|1980-02-03|female|t',
-  '1 it still takes the occupation, date of birth, sex and source: ' || coalesce(pg_temp.rest('vera'), 'null'));
+  '1 it still takes the occupation, date of birth, sex and source (530: once staff attach it): ' || coalesce(pg_temp.rest('vera'), 'null'));
 select pg_temp.check((pg_temp.form('vera')).email = 's511-other@example.com' and (pg_temp.form('vera')).customer_id = pg_temp.id('vera'),
-  '1 the form keeps the email typed and is her survey');
+  '1 the form keeps the email typed and is her survey (530: once staff attach it)');
 
 -- 2. a login with that email joins her on the phone and verifies its own inbox
 select pg_temp.as_login('u1');

@@ -14,6 +14,12 @@
 -- 524 (18 Nov 2026) changed submit_health_survey after 511 (the forms it refused wait for staff).
 -- Where 524 is in, it is first put back as before 524 by its UNDO, scripts/survey/undo-524.sql
 -- (inside the same rolled-back transaction), so that 511's own text is there to put back below.
+-- 530 (19 Nov 2026) changed it after 524 (limits, held existing customers): where 530 is in, it is
+-- put back first by its UNDO, scripts/survey/undo-530.sql, so that 524's text is there for 524's UNDO.
+select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 as as511_m530 \gset
+\if :as511_m530
+\ir ../undo-530.sql
+\endif
 select position('524:' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 as as511_m524 \gset
 \if :as511_m524
 \ir ../undo-524.sql

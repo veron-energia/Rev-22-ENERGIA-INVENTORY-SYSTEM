@@ -140,6 +140,17 @@ $$ select case when pg_temp.m524()
                             where h.survey_id = pg_temp.fx('hs:' || key) and h.reason = p_reason
                               and h.resolved_at is null and s.customer_id is null)
           else pg_temp.tx('sub:' || key) like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%' end $$;
+-- 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026, "Hold for staff"): where 530 is
+-- in, a form found by its phone and name (or phone and email) no longer attaches itself: it waits
+-- for staff (existing_customer) with that customer, nothing filled on them; below, staff attach
+-- it and the file goes on from there (scripts/survey/tests/health-form-limits-530.sql checks it
+-- whole). And at most 3 forms a Singapore day are kept under one phone: where a phone gets more
+-- here, its earlier forms are moved to the day before (earlier_day) so the next is kept as tested.
+create function pg_temp.m530() returns boolean language sql stable as
+$$ select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 $$;
+create function pg_temp.earlier_day(p text) returns void language sql as
+$$ update public.health_surveys set submitted_at = submitted_at - interval '1 day'
+    where pg_temp.m530() and public.normalize_customer_phone(phone) = p $$;
 create function pg_temp.reply(key text) returns jsonb language sql as
 $$ select case when pg_temp.tx('sub:' || key) like 'ERROR:%' then null else pg_temp.tx('sub:' || key)::jsonb end $$;
 create function pg_temp.survey_customer(key text) returns uuid language sql as
@@ -258,12 +269,32 @@ insert into tx values ('customers_before', (select count(*) from customers)::tex
 
 -- ═════ Q1-Q2 Attached by themselves ═════
 select pg_temp.submit('q1', 'Ann Lee Testtan', '+65 8433 0101', 's433-ann-' || pg_temp.tx('sfx') || '@tests.invalid');
-select pg_temp.check(pg_temp.survey_customer('q1') = pg_temp.fx('c1') and pg_temp.hold('q1') is null
+select pg_temp.check(case when pg_temp.m530()
+                       then pg_temp.survey_customer('q1') is null and (pg_temp.hold('q1')).reason = 'existing_customer'
+                            and (pg_temp.hold('q1')).candidate_customer_ids = array[pg_temp.fx('c1')]
+                            and (select date_of_birth is null and occupation is null and source_option_id is null
+                                   from customers where id = pg_temp.fx('c1'))
+                       else pg_temp.survey_customer('q1') = pg_temp.fx('c1') and pg_temp.hold('q1') is null end
     and (pg_temp.reply('q1') - 'survey_no' - 'survey_id') = '{"success": true}'::jsonb,
-  'Q1 exact phone and name: attached to the customer, as before; the reply says nothing about customers: ' || pg_temp.tx('sub:q1'));
+  'Q1 exact phone and name: attached to the customer, as before (530: it waits for staff with her, existing_customer, nothing filled); the reply says nothing about customers: ' || pg_temp.tx('sub:q1'));
 select pg_temp.submit('q2', 'Testwong Meiling', '+65 8433 0102', 's433-mei-' || pg_temp.tx('sfx') || '@tests.invalid');
-select pg_temp.check(pg_temp.survey_customer('q2') = pg_temp.fx('c2') and pg_temp.on_phone('+6584330102') = 1,
-  'Q2 "Testwong Meiling" for "Mei Ling (Orchard) Testwong": attached by the same words, no second customer');
+select pg_temp.check(case when pg_temp.m530()
+                       then pg_temp.survey_customer('q2') is null and (pg_temp.hold('q2')).reason = 'existing_customer'
+                            and (pg_temp.hold('q2')).candidate_customer_ids = array[pg_temp.fx('c2')]
+                       else pg_temp.survey_customer('q2') = pg_temp.fx('c2') end
+    and pg_temp.on_phone('+6584330102') = 1,
+  'Q2 "Testwong Meiling" for "Mei Ling (Orchard) Testwong": attached by the same words (530: waits for staff with her), no second customer');
+-- 530: staff attach the two (as the server, no login: require_active_staff lets that through).
+do $$ begin
+  if pg_temp.m530() then
+    insert into tx values ('attach_q1', pg_temp.attach('q1', 'c1', 'Her phone and name')), ('attach_q2', pg_temp.attach('q2', 'c2', 'Same words'));
+  end if;
+end $$;
+select pg_temp.check(not pg_temp.m530()
+    or (pg_temp.tx('attach_q1') = 'ok' and pg_temp.tx('attach_q2') = 'ok'
+        and pg_temp.survey_customer('q1') = pg_temp.fx('c1') and pg_temp.survey_customer('q2') = pg_temp.fx('c2')
+        and (select date_of_birth = '1980-02-03' and occupation = 'Tester' from customers where id = pg_temp.fx('c1'))),
+  'Q1/Q2 (530) staff attach them: they are the customers'' forms, and the empty details are filled then');
 select pg_temp.check((select full_name from health_surveys where id = pg_temp.fx('hs:q2')) = 'Mei Ling (Orchard) Testwong'
     and (select new_data->>'typed_name' = 'Testwong Meiling' and new_data->>'name_match' = 'same_words'
            from audit_logs where action = 'health_survey_submitted' and record_id = pg_temp.fx('hs:q2')),
@@ -340,19 +371,23 @@ select pg_temp.check(pg_temp.refused_or_held('q8', 'repeat_form') and pg_temp.re
 
 -- ═════ K Unchanged ═════
 select pg_temp.submit('k1', 'Ann Lee Testtan', '+65 8433 0101', 's433-ann-' || pg_temp.tx('sfx') || '@tests.invalid');
-select pg_temp.check(pg_temp.refused_or_held('k1', 'customer_has_survey'),
-  'K a customer who already has a survey is refused as before (524: it waits for staff, customer_has_survey): ' || pg_temp.tx('sub:k1'));
+select pg_temp.check(pg_temp.refused_or_held('k1', case when pg_temp.m530() then 'repeat_form' else 'customer_has_survey' end)
+    and (not pg_temp.m530() or (pg_temp.hold('k1')).candidate_customer_ids = array[pg_temp.fx('c1')]),
+  'K a customer who already has a survey is refused as before (524: it waits for staff, customer_has_survey; 530: her survey '
+  || 'is the form staff attached, so it waits as sent again, repeat_form, with her): ' || pg_temp.tx('sub:k1'));
 select pg_temp.check(
     (select count(*) = 4 and bool_and(case l.record_id
-                       when pg_temp.fx('hs:q1') then (l.new_data->>'held_for_staff')::boolean = false and l.new_data->>'name_match' = 'exact'
-                       when pg_temp.fx('hs:q2') then (l.new_data->>'held_for_staff')::boolean = false and l.new_data->>'name_match' = 'same_words'
+                       when pg_temp.fx('hs:q1') then (l.new_data->>'held_for_staff')::boolean = pg_temp.m530() and l.new_data->>'name_match' = 'exact'
+                                                    and l.new_data->>'hold_reason' is not distinct from case when pg_temp.m530() then 'existing_customer' end
+                       when pg_temp.fx('hs:q2') then (l.new_data->>'held_for_staff')::boolean = pg_temp.m530() and l.new_data->>'name_match' = 'same_words'
+                                                    and l.new_data->>'hold_reason' is not distinct from case when pg_temp.m530() then 'existing_customer' end
                        when pg_temp.fx('hs:q3') then (l.new_data->>'held_for_staff')::boolean and l.new_data->>'hold_reason' = 'phone_in_use'
                                                     and not (l.new_data->>'customer_created')::boolean
                        when pg_temp.fx('hs:q7') then (l.new_data->>'customer_created')::boolean and l.new_data->>'hold_reason' is null end)
        from audit_logs l
       where l.action = 'health_survey_submitted'
         and l.record_id in (pg_temp.fx('hs:q1'), pg_temp.fx('hs:q2'), pg_temp.fx('hs:q3'), pg_temp.fx('hs:q7'))),
-  'K the submission''s Audit Log row says whether it was held, why, and how the name matched');
+  'K the submission''s Audit Log row says whether it was held, why, and how the name matched (530: Q1 and Q2 held, existing_customer)');
 
 -- ═════ L The list ═════
 select pg_temp.as_user('s');
@@ -476,6 +511,8 @@ select pg_temp.check(pg_temp.make('q9') like '%CUSTOMER_PHONE_LIMIT%' and pg_tem
 -- the customer: sending the same form again is still refused.
 update health_surveys set customer_id = pg_temp.fx('cKeep') where id = pg_temp.fx('hs:q3');
 update customers set deleted_at = now() where id = (select resolved_customer_id from health_survey_holds where survey_id = pg_temp.fx('hs:q3'));
+-- 530: q3, q8 and q8b were kept today under this phone; they are moved to the day before.
+select pg_temp.earlier_day('+6584330103');
 select pg_temp.submit('q3again', 'Ah Kow Testkoh', '+65 8433 0103', 's433-ahkow-' || pg_temp.tx('sfx') || '@tests.invalid');
 select pg_temp.check(pg_temp.refused_or_held('q3again', 'repeat_form')
     and (not pg_temp.m524() or pg_temp.fx('cKeep') = any ((pg_temp.hold('q3again')).candidate_customer_ids)),
@@ -592,9 +629,9 @@ select pg_temp.check(bool_and(coalesce(md5(pg_get_functiondef(to_regprocedure(fn
                                          = case when to_regprocedure('public.update_survey_particulars_v2(uuid,jsonb,text)') is not null
                                                 then coalesce(ok419, ok) else ok end
                                        or md5(pg_get_functiondef(to_regprocedure(fn))) = any (string_to_array(ok468, ',')), false)),
-  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s, 485''s, 511''s or 524''s and attach_held_health_survey 485''s or 511''s, once they are)')
+  'M the functions are 433''s AFTER versions (or 419''s, once 419 is applied; submit_health_survey 468''s, 485''s, 511''s, 524''s or 530''s and attach_held_health_survey 485''s or 511''s, once they are)')
   from (values ('public.submit_health_survey(text,jsonb,jsonb,text)',     '5a3f27a0b9a0bed619ac0c82c8c52aab', 'ad2a66909b663026911dff137ab12185',
-                                                                         '014a970de2e5dee64e4027459cac5280,860743f4f2e92f669e257121de0a9308,ddc02ed5fa82aacde5f031d6d367b300,a65183cdcb48f2dd883a47c1c7aad7f3'),
+                                                                         '014a970de2e5dee64e4027459cac5280,860743f4f2e92f669e257121de0a9308,ddc02ed5fa82aacde5f031d6d367b300,a65183cdcb48f2dd883a47c1c7aad7f3,6441159a66f5ca4424848710c90f2576'),
                ('public.ads_rpc_no_show_run(text,text,text,text)',      'b0499ec3ab207e66e8c56e2f01ba3978', null, null),
                ('public.health_survey_holds_list()',                    'c3f50d90ba0509935681e4446bcbb21b', '0487502f033b56452140c81e108a8ebc', null),
                ('public.attach_held_health_survey(uuid,uuid,text)',     '104370324b701192ba9710d515cc388f', '53aabcdd564da445131633c41bef8249',

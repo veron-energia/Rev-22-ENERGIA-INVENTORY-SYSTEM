@@ -466,7 +466,8 @@ test('468 (A): a form for the one customer with the phone and the email, who has
     assert.equal(staff.$('[data-close]'), null, 'staff do not close it');
     assert.equal(staff.$('[data-delete]'), null, 'one customer with both: no Delete');
     assert.equal(staff.$('[data-duplicate-note]'), null);
-    assert.match(staff.text(), /unless that customer\s+already has a health survey: then it waits here too/);
+    // 530: a form whose phone and name, or phone and email, are one customer's waits here too.
+    assert.match(staff.text(), /are one customer's waits here too, with that\s+customer: check it is the same person, then attach it\./);
     await staff.click('[data-create="hs-a"]');
     await staff.click('[data-confirm]');
     assert.deepEqual(staff.calls.at(-1), { name: 'create_customer_from_held_survey', args: { p_survey_id: 'hs-a', p_note: null } });
@@ -538,4 +539,40 @@ test('524: a form sent again, one for a customer with a survey, one beside an ol
   try {
     for (const id of ['hs-r', 'hs-b', 'hs-e', 'hs-u']) assert.ok(owner.$(`[data-close="${id}"]`), `an Owner or Manager may close ${id}`);
   } finally { owner.close(); }
+});
+
+// 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026, "Hold for staff"): a form whose phone
+// and name, or phone and email, are one customer's waits here with that customer, who has no survey
+// (or a consultant's record not yet signed); staff attach it after checking.
+const EXISTING = [
+  { ...FORMS[0], survey_id: 'hs-x', survey_no: 'HS-20261119-x00001', full_name: 'Bee Hoon Testkoh', reason: 'existing_customer',
+    candidates: [cand('c-bee', 'Bee Hoon Testkoh', { phone: true, name: true })] },
+  { ...FORMS[0], survey_id: 'hs-y', survey_no: 'HS-20261119-y00001', full_name: 'Bo Otherperson', reason: 'existing_customer',
+    candidates: [cand('c-ben', 'Ben Testone', { phone: true, email: true })] },
+  { ...FORMS[0], survey_id: 'hs-z', survey_no: 'HS-20261119-z00001', full_name: 'Cal Testcons', reason: 'existing_customer',
+    candidates: [{ ...cand('c-cal', 'Cal Testcons', { phone: true, name: true }, 'HS-20261101-ca0000'), survey_takes_form: true }] },
+];
+
+test('530: a form for an existing customer waits with them: the reason in plain words, Attach offered, nothing else needed', async () => {
+  const staff = await mount({ forms: EXISTING, canClose: false });
+  try {
+    assert.equal(staff.$('[data-hold="hs-x"] [data-reason]').textContent,
+      'Its phone number and name are a customer\'s, who has no health survey yet. A QR form no longer becomes a '
+      + 'customer\'s by itself: if it is the same person, attach it (their empty details are filled from it then); if it '
+      + 'is someone else (for example a family member sharing the phone), make a new customer from it.');
+    assert.equal(staff.$('[data-hold="hs-y"] [data-reason]').textContent,
+      'Its phone number and email are a customer\'s, under another name, who has no health survey yet. A QR form no '
+      + 'longer becomes a customer\'s by itself: if it is the same person, attach it (their empty details are filled '
+      + 'from it then); if it is someone else (for example a family member sharing the phone), make a new customer from it.');
+    assert.match(staff.$('[data-hold="hs-z"] [data-reason]').textContent,
+      /their empty details are filled from it then, and their consultant's record, not yet signed, takes its answers\)/);
+    for (const c of ['c-bee', 'c-ben', 'c-cal']) assert.equal(staff.$(`[data-attach="${c}"]`).disabled, false, `${c} may take it`);
+    for (const id of ['hs-x', 'hs-y', 'hs-z']) assert.ok(staff.$(`[data-create="${id}"]`), `any staff may make a new customer from ${id}`);
+    assert.equal(staff.$('[data-delete]'), null, 'one customer: no Delete');
+    await staff.click('[data-attach="c-bee"]');
+    await staff.type('[data-note]', 'Checked her IC at the counter');
+    await staff.click('[data-confirm]');
+    assert.deepEqual(staff.calls.at(-1), { name: 'attach_held_health_survey',
+      args: { p_survey_id: 'hs-x', p_customer_id: 'c-bee', p_note: 'Checked her IC at the counter' } });
+  } finally { staff.close(); }
 });

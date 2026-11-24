@@ -665,6 +665,12 @@ select pg_temp.check((select count(*) from pg_indexes where schemaname = 'public
 
 -- ═════ U Undo, and 529 again ═════
 create temp table salt_before as select md5(salt) as m from public.referral_sender_salt;
+-- 530 (the QR health form's limits) reads the salt through public.request_sender(), so undo-529
+-- refuses while it is in: where it is, it is undone first and put back after 529 again (below).
+select to_regprocedure('public.request_sender()') is not null as u529_m530 \gset
+\if :u529_m530
+\ir ../../survey/undo-530.sql
+\endif
 \ir ../undo-529.sql
 select pg_temp.check(md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure)) = '2942e3d4d0e8c76600c3e0ad5e15cc2b'
     and not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'referral_signup_events' and column_name = 'sender_key')
@@ -682,6 +688,9 @@ select pg_temp.check(md5(pg_get_functiondef('public.affiliate_referral_signup(te
     and pg_temp.a('u3') = pg_temp.refused(pg_temp.msg('odd')) and pg_temp.ev(pg_temp.h('203.0.113.8')) = 1
     and (select md5(salt) from public.referral_sender_salt) <> (select m from salt_before),
   'U3 529 again after the undo: its version, odd input refused, the sender recorded again under a new salt');
+\if :u529_m530
+\ir ../../../supabase/530_the_health_form_has_limits_and_holds_existing_customers.sql
+\endif
 
 -- ═════ M 529 twice ═════
 \if :{?skip_install}

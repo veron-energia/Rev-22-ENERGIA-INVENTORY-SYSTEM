@@ -147,6 +147,27 @@ $$ select case when pg_temp.m524()
                             where h.survey_id = pg_temp.fx('hs:' || key) and h.reason = p_reason
                               and h.candidate_customer_ids = p_for and h.resolved_at is null and s.customer_id is null)
           else pg_temp.tx('sub:' || key) like 'ERROR: HEALTH_SURVEY_ALREADY_EXISTS%' end $$;
+-- 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026, "Hold for staff"): where 530 is
+-- in, a form found by its phone and name, or by its phone and email (468's one customer), no
+-- longer becomes theirs at once: it waits (existing_customer) with that customer, nothing filled
+-- and no record signed, and staff attach it (staff_take, as the server here), which fills their
+-- empty details then; the file goes on from there. And at most 3 forms a Singapore day are kept
+-- under one phone: where a phone gets more here, its earlier forms are moved to the day before
+-- (earlier_day). scripts/survey/tests/health-form-limits-530.sql checks 530 whole.
+create function pg_temp.m530() returns boolean language sql stable as
+$$ select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 $$;
+create function pg_temp.earlier_day(p text) returns void language sql as
+$$ update public.health_surveys set submitted_at = submitted_at - interval '1 day'
+    where pg_temp.m530() and public.normalize_customer_phone(phone) = p $$;
+-- The customer's at once (before 530), or waiting for staff with that one customer (530).
+create function pg_temp.found(key text, cust text) returns boolean language sql stable as
+$$ select case when pg_temp.m530()
+          then coalesce((select h.reason = 'existing_customer' and h.resolved_at is null and h.candidate_customer_ids = array[pg_temp.fx(cust)]
+                                and s.customer_id is null
+                           from public.health_survey_holds h join public.health_surveys s on s.id = h.survey_id
+                          where h.survey_id = pg_temp.fx('hs:' || key)), false)
+          else coalesce((select s.customer_id = pg_temp.fx(cust) from public.health_surveys s where s.id = pg_temp.fx('hs:' || key)), false)
+               and not exists (select 1 from public.health_survey_holds h where h.survey_id = pg_temp.fx('hs:' || key)) end $$;
 create function pg_temp.survey(key text) returns public.health_surveys language sql as
 $$ select s from public.health_surveys s where s.id = pg_temp.fx('hs:' || key) $$;
 create function pg_temp.survey_customer(key text) returns uuid language sql as
@@ -175,6 +196,9 @@ $$ select concat_ws('|', email, date_of_birth, gender, occupation, source_option
      from customers where id = pg_temp.fx(cust) $$;
 create function pg_temp.make(key text) returns text language sql as
 $$ select pg_temp.err(format('select public.create_customer_from_held_survey(%L, %L)', pg_temp.fx('hs:' || key), 'A family member')) $$;
+-- 530: staff attach a form that waits with its customer ('ok' where 530 is not in: it is theirs already).
+create function pg_temp.staff_take(key text, cust text) returns text language sql as
+$$ select case when pg_temp.m530() then pg_temp.attach(key, cust, 'Checked at the counter') else 'ok' end $$;
 create function pg_temp.close_form(key text) returns text language sql as
 $$ select pg_temp.err(format('select public.close_held_health_survey(%L, %L)', pg_temp.fx('hs:' || key), 'The same person again')) $$;
 
@@ -185,11 +209,13 @@ $$ select pg_temp.err(format('select public.close_held_health_survey(%L, %L)', p
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
                      in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308', 'ddc02ed5fa82aacde5f031d6d367b300',
                          -- 524 (18 Nov 2026): the forms it refused wait for staff; with its wider reason check.
-                         'a65183cdcb48f2dd883a47c1c7aad7f3')
+                         'a65183cdcb48f2dd883a47c1c7aad7f3',
+                         -- 530 (19 Nov 2026): limits, and a form for an existing customer waits for staff; one reason more.
+                         '6441159a66f5ca4424848710c90f2576')
     and (select md5(pg_get_constraintdef(oid)) from pg_constraint
           where conrelid = 'public.health_survey_holds'::regclass and conname = 'health_survey_holds_reason_check')
-        in ('378c1861f7ffacb38d2e6e8c69e45cc8', 'caad66551b1d96a8d4c440c0b41900f1'),
-  'P0 468 is installed (submit_health_survey is its AFTER version, 485''s, 511''s or 524''s, the reason check its AFTER version or 524''s)');
+        in ('378c1861f7ffacb38d2e6e8c69e45cc8', 'caad66551b1d96a8d4c440c0b41900f1', 'e0e8937d7f3dca213295916d74ec4b3a'),
+  'P0 468 is installed (submit_health_survey is its AFTER version, 485''s, 511''s, 524''s or 530''s, the reason check its AFTER version, 524''s or 530''s)');
 select pg_temp.check(not exists (select 1 from public.customers where public.normalize_customer_phone(phone) like '+614915705__')
     and not exists (select 1 from public.health_surveys where public.normalize_customer_phone(phone) like '+614915705__'),
   'P0 no customer or survey uses the test phones +61 491 570 5xx (the checks below assume so)');
@@ -285,7 +311,9 @@ alter table customers enable trigger zz_normalize_current_customer_phone;
 select pg_temp.check(public.normalize_customer_phone('0491570512') is null,
   'P0 (setup) the old record''s phone cannot be read as one number');
 select pg_temp.submit('pia0', 'Pia', 'Testsurvey', '+61491570513', pg_temp.mail('pia'));
-select pg_temp.check(pg_temp.survey_customer('pia0') = pg_temp.fx('cPia'), 'P0 (setup) Pia''s own QR survey, by phone and name');
+insert into tx values ('take_pia0', pg_temp.staff_take('pia0', 'cPia'));
+select pg_temp.check(pg_temp.survey_customer('pia0') = pg_temp.fx('cPia') and pg_temp.tx('take_pia0') = 'ok',
+  'P0 (setup) Pia''s own QR survey, by phone and name (530: once staff attach it)');
 insert into tx values ('customers_before', (select count(*) from customers)::text);
 insert into tx values ('details_ana', pg_temp.details('cAna')), ('details_quinn', pg_temp.details('cQuinn')),
                       ('details_pia', pg_temp.details('cPia')), ('details_ida', pg_temp.details('cIda')),
@@ -293,16 +321,10 @@ insert into tx values ('details_ana', pg_temp.details('cAna')), ('details_quinn'
 
 -- ═════ S1 The phone and the email: one customer ═════
 select pg_temp.submit('s1', 'Annie', 'Testone-Lee', '+61 491 570 501', upper(pg_temp.mail('ana')));
-select pg_temp.check(pg_temp.survey_customer('s1') = pg_temp.fx('cAna') and pg_temp.hold('s1') is null
+select pg_temp.check(pg_temp.found('s1', 'cAna')
     and (pg_temp.reply('s1') - 'survey_no' - 'survey_id') = '{"success": true}'::jsonb,
-  'S1 another name, the phone with spaces, the email in capitals: Ana''s at once, not held; the reply says nothing about customers: '
-  || pg_temp.tx('sub:s1'));
-select pg_temp.check((select full_name = 'Ana Testone' and first_name = 'Ana' and last_name = 'Testone'
-                         and phone = '+61491570501' and email = upper(pg_temp.mail('ana'))
-                         and date_of_birth = '1980-02-03' and sex = 'female' and occupation = 'Tester'
-                         and source_option_id = pg_temp.fx('src')
-                        from public.health_surveys where id = pg_temp.fx('hs:s1')),
-  'S1/B the form carries Ana''s name parts and keeps what was typed: phone, email, date of birth, sex, occupation, how they heard');
+  'S1 another name, the phone with spaces, the email in capitals: Ana''s at once, not held (530: it waits for staff with her alone, '
+  || 'existing_customer); the reply says nothing about customers: ' || pg_temp.tx('sub:s1'));
 select pg_temp.check((select full_name = 'Ana Testone' and phone = '+61491570501' and email = pg_temp.mail('ana')
                          and date_of_birth is null and gender is null and occupation is null and source_option_id is null
                          and source_label is null
@@ -313,10 +335,24 @@ select pg_temp.check((select full_name = 'Ana Testone' and phone = '+61491570501
   'B Ana keeps her name, phone and email, and none of her empty details is filled (date of birth, sex, occupation, how she heard); Ben (the phone only) and Cara (the email only) are untouched');
 select pg_temp.check(pg_temp.submitted('s1')->>'name_match' = 'phone_and_email'
     and (pg_temp.submitted('s1')->>'phone_and_email_customers')::int = 1
-    and (pg_temp.submitted('s1')->>'customer_matched')::boolean and not (pg_temp.submitted('s1')->>'held_for_staff')::boolean
+    and (pg_temp.submitted('s1')->>'customer_matched')::boolean = not pg_temp.m530()
+    and (pg_temp.submitted('s1')->>'held_for_staff')::boolean = pg_temp.m530()
+    and pg_temp.submitted('s1')->>'hold_reason' is not distinct from case when pg_temp.m530() then 'existing_customer' end
     and pg_temp.submitted('s1')->>'typed_name' = 'Annie Testone-Lee',
-  'S1 the Audit Log row: found by phone and email, one such customer, the name typed');
-select pg_temp.check(pg_temp.visits('s1') = 1, 'S1 the form counts as Ana''s visit at once');
+  'S1 the Audit Log row: found by phone and email, one such customer, the name typed (530: held, existing_customer)');
+select pg_temp.check(pg_temp.visits('s1') = case when pg_temp.m530() then 0 else 1 end,
+  'S1 the form counts as Ana''s visit at once (530: not while it waits for staff)');
+insert into tx values ('take_s1', pg_temp.staff_take('s1', 'cAna'));
+select pg_temp.check(pg_temp.tx('take_s1') = 'ok' and pg_temp.survey_customer('s1') = pg_temp.fx('cAna') and pg_temp.visits('s1') = 1,
+  'S1 (530: once staff attach it) the form is Ana''s and her visit: ' || pg_temp.tx('take_s1'));
+select pg_temp.check((select full_name = 'Ana Testone' and first_name = 'Ana' and last_name = 'Testone'
+                         and phone = '+61491570501' and email = upper(pg_temp.mail('ana'))
+                         and date_of_birth = '1980-02-03' and sex = 'female' and occupation = 'Tester'
+                         and source_option_id = pg_temp.fx('src')
+                        from public.health_surveys where id = pg_temp.fx('hs:s1')),
+  'S1/B the form carries Ana''s name parts and keeps what was typed: phone, email, date of birth, sex, occupation, how they heard');
+-- 530: staff attaching it filled Ana's empty details; the forms below must leave them as they are now.
+update tx set v = pg_temp.details('cAna') where k = 'details_ana' and pg_temp.m530();
 -- A: Ana now has a survey. The same phone and email under another name
 -- (twice under one name): never refused; each waits with her, quietly.
 select pg_temp.submit('s1again', 'Annie', 'Testone', '+61491570501', pg_temp.mail('ana'));
@@ -340,24 +376,26 @@ select pg_temp.check(pg_temp.submitted('s1again')->>'name_match' = 'phone_and_em
   'A the Audit Log row: found by phone and email, waits for staff with the reason, no customer');
 select pg_temp.check(pg_temp.visits('s1again') = 0, 'A the waiting form counts as no visit');
 select pg_temp.submit('s1g', 'Regina', 'Testgmail', '+61491570502', 'Z468Gina' || pg_temp.tx('sfx') || '+qr@GoogleMail.com');
-select pg_temp.check(pg_temp.survey_customer('s1g') = pg_temp.fx('cGina') and pg_temp.hold('s1g') is null,
-  'S1 Gmail: the record''s dotted address, the form''s +tag at googlemail.com: Gina''s at once: ' || pg_temp.tx('sub:s1g'));
+select pg_temp.check(pg_temp.found('s1g', 'cGina'),
+  'S1 Gmail: the record''s dotted address, the form''s +tag at googlemail.com: Gina''s at once (530: waits for staff with her): ' || pg_temp.tx('sub:s1g'));
 
 -- ═════ S2 The name first ═════
 select pg_temp.submit('s2', 'Dee', 'Testprec', '+61491570503', pg_temp.mail('eve'));
-select pg_temp.check(pg_temp.survey_customer('s2') = pg_temp.fx('cDee')
+select pg_temp.check(pg_temp.found('s2', 'cDee')
     and pg_temp.submitted('s2')->>'name_match' = 'exact' and pg_temp.submitted('s2')->>'phone_and_email_customers' is null,
-  'S2 the phone and Dee''s name, with Eve''s email: Dee''s (the name first), whatever the email: ' || pg_temp.tx('sub:s2'));
+  'S2 the phone and Dee''s name, with Eve''s email: Dee''s (the name first), whatever the email (530: waits for staff with Dee alone): ' || pg_temp.tx('sub:s2'));
+insert into tx values ('take_s2', pg_temp.staff_take('s2', 'cDee'));
 select pg_temp.check((select email = pg_temp.mail('dee') and date_of_birth = '1980-02-03' and occupation = 'Tester'
                          and gender = 'female' and source_option_id = pg_temp.fx('src')
                         from customers where id = pg_temp.fx('cDee')),
-  'S2/B Dee keeps her own email; a phone and name match fills her empty details, as today');
+  'S2/B Dee keeps her own email; a phone and name match fills her empty details, as today (530: once staff attach it): ' || pg_temp.tx('take_s2'));
 select pg_temp.submit('s2fay', 'Fay', 'Testtwin', '+61491570504', pg_temp.mail('fay'));
-select pg_temp.check(pg_temp.survey_customer('s2fay') = pg_temp.fx('cFay1') and pg_temp.hold('s2fay') is null
+select pg_temp.check(pg_temp.found('s2fay', 'cFay1')
     and pg_temp.submitted('s2fay')->>'name_match' = 'exact' and (pg_temp.submitted('s2fay')->>'phone_and_email_customers')::int = 1,
-  'S2 two Fays on the phone, one with the email: hers at once (the email decides among them): ' || pg_temp.tx('sub:s2fay'));
+  'S2 two Fays on the phone, one with the email: hers at once (the email decides among them; 530: waits for staff with her alone): ' || pg_temp.tx('sub:s2fay'));
+insert into tx values ('take_s2fay', pg_temp.staff_take('s2fay', 'cFay1'));
 select pg_temp.check((select date_of_birth = '1980-02-03' and occupation = 'Tester' from customers where id = pg_temp.fx('cFay1')),
-  'S2/B the Fay the email picked among namesakes: a name match, so her empty details are filled');
+  'S2/B the Fay the email picked among namesakes: a name match, so her empty details are filled (530: once staff attach it): ' || pg_temp.tx('take_s2fay'));
 select pg_temp.submit('s2gus', 'Gus', 'Testmany', '+61491570505', pg_temp.mail('gus'));
 select pg_temp.check(pg_temp.survey_customer('s2gus') is null and (pg_temp.hold('s2gus')).reason = 'several_name_matches'
     and pg_temp.held_for('s2gus') = pg_temp.ids('cGus1', 'cGus2')
@@ -477,20 +515,24 @@ select pg_temp.check(pg_temp.survey_customer('s5') is null and pg_temp.fx('hs:s5
     and pg_temp.details('cPia') = pg_temp.tx('details_pia'),
   'A Pia''s phone and email under another name: she has a survey, so it is not refused: it waits quietly with her, the reply as any other; her details untouched: '
   || pg_temp.tx('sub:s5'));
+-- 530: pia0 and s5 were kept today under this phone; with the two below that makes four.
+select pg_temp.earlier_day('+61491570513');
 select pg_temp.submit('s5own', 'Pia', 'Testsurvey', '+61491570513', pg_temp.mail('pia'));
 select pg_temp.submit('s5words', 'Testsurvey', 'Pia', '+61491570513', 'z468-other-' || pg_temp.tx('sfx') || '@example.invalid');
-select pg_temp.check(pg_temp.refused_or_held('s5own', 'customer_has_survey', array[pg_temp.fx('cPia')])
+select pg_temp.check(pg_temp.refused_or_held('s5own', case when pg_temp.m530() then 'repeat_form' else 'customer_has_survey' end, array[pg_temp.fx('cPia')])
     and pg_temp.refused_or_held('s5words', 'repeat_form', array[pg_temp.fx('cPia')])
     and (select count(*) from health_surveys where customer_id = pg_temp.fx('cPia')) = 1
     and pg_temp.details('cPia') = pg_temp.tx('details_pia'),
   'A by the phone and Pia''s name (as typed, or the same words in another order, any email): still refused '
-  || '(524: it waits with her, customer_has_survey; then, sent again in another order, repeat_form; her details untouched): '
+  || '(524: it waits with her, customer_has_survey; 530: her survey is the form staff attached, so repeat_form; then, sent again in another order, repeat_form; her details untouched): '
   || pg_temp.tx('sub:s5own') || ' / ' || pg_temp.tx('sub:s5words'));
 select pg_temp.submit('gw0', 'Gwen', 'Testsame', '+61491570528', pg_temp.mail('gwen'));
+select pg_temp.check(pg_temp.found('gw0', 'cGwen1'), 'A (setup) two Gwens on the phone, the email picks one (530: her form waits for staff with her alone)');
+insert into tx values ('take_gw0', pg_temp.staff_take('gw0', 'cGwen1'));
 select pg_temp.submit('gw1', 'Gwen', 'Testsame', '+61491570528', pg_temp.mail('gwen'));
 select pg_temp.check(pg_temp.survey_customer('gw0') = pg_temp.fx('cGwen1')
-    and pg_temp.refused_or_held('gw1', 'customer_has_survey', array[pg_temp.fx('cGwen1')]),
-  'A two Gwens on the phone, the email picks one: her form is hers; sent again by name: refused (a name match; 524: it waits with her, customer_has_survey): '
+    and pg_temp.refused_or_held('gw1', case when pg_temp.m530() then 'repeat_form' else 'customer_has_survey' end, array[pg_temp.fx('cGwen1')]),
+  'A two Gwens on the phone, the email picks one: her form is hers (530: once staff attach it); sent again by name: refused (a name match; 524: it waits with her, customer_has_survey; 530: as sent again, repeat_form): '
   || pg_temp.tx('sub:gw1'));
 select pg_temp.submit('vic', 'Val', 'Testlegacy', '+61491570529', pg_temp.mail('vic'));
 select pg_temp.check(pg_temp.survey_customer('vic') is null and (pg_temp.hold('vic')).reason = 'phone_and_email_customer_has_survey'
@@ -524,27 +566,33 @@ select pg_temp.check(pg_temp.tx('close_s1again2') = 'ok' and (pg_temp.hold('s1ag
   'A a Manager closes the extra one (the same person again): ' || pg_temp.tx('close_s1again2'));
 select pg_temp.as_server();
 select pg_temp.submit('s5c', 'Quin', 'Testcons', '+61491570514', pg_temp.mail('quinn'));
-select pg_temp.check((pg_temp.reply('s5c')->>'survey_id')::uuid = pg_temp.fx('hsQuinn')
+select pg_temp.check(case when pg_temp.m530()
+                       then pg_temp.found('s5c', 'cQuinn')
+                            and (select signature_data is null and customer_id = pg_temp.fx('cQuinn') from health_surveys where id = pg_temp.fx('hsQuinn'))
+                            and not exists (select 1 from health_survey_symptoms where survey_id = pg_temp.fx('hsQuinn'))
+                       else (pg_temp.reply('s5c')->>'survey_id')::uuid = pg_temp.fx('hsQuinn') and pg_temp.hold('s5c') is null end
+    and (select count(*) from health_surveys where customer_id = pg_temp.fx('cQuinn')) = 1
+    and pg_temp.details('cQuinn') = pg_temp.tx('details_quinn'),
+  'A/B Quinn''s phone and email: her consultant''s record she had not signed takes the form (419) with what was typed, her name kept; none of her own details filled '
+  || '(530: the form waits for staff with her alone; her record stays unsigned): ' || pg_temp.tx('sub:s5c'));
+insert into tx values ('take_s5c', pg_temp.staff_take('s5c', 'cQuinn'));
+select pg_temp.check(pg_temp.tx('take_s5c') = 'ok'
     and (select customer_id = pg_temp.fx('cQuinn') and signature_data is not null and full_name = 'Quinn Testcons'
            and date_of_birth = '1980-02-03' and occupation = 'Tester'
            from health_surveys where id = pg_temp.fx('hsQuinn'))
     and (select count(*) from health_surveys where customer_id = pg_temp.fx('cQuinn')) = 1
-    and pg_temp.hold('s5c') is null
-    and pg_temp.details('cQuinn') = pg_temp.tx('details_quinn'),
-  'A/B Quinn''s phone and email: her consultant''s record she had not signed takes the form (419) with what was typed, her name kept; none of her own details filled: '
-  || pg_temp.tx('sub:s5c'));
+    and (not pg_temp.m530() or (pg_temp.survey_customer('s5c') is null and (pg_temp.hold('s5c')).resolution = 'attached')),
+  'A/B Quinn''s record is signed with what was typed, her name kept (530: once staff attach the form, which stays as sent, marked attached): ' || pg_temp.tx('take_s5c'));
 
 -- ═════ S2 kept: a waiting form does not stop a customer's own form by name ═════
 select pg_temp.submit('s2tw0', 'Tee', 'Vee', '+61491570526', pg_temp.mail('tt'));
 select pg_temp.submit('s2tw', 'Theo', 'Testtwin', '+61491570526', pg_temp.mail('tt'));
-select pg_temp.check((pg_temp.hold('s2tw0')).reason = 'phone_and_email_in_use' and pg_temp.survey_customer('s2tw') = pg_temp.fx('cTheo')
-    and pg_temp.hold('s2tw') is null,
-  'S2 Tara and Theo share the phone and the email; a form under a nickname waits; Theo''s own form by name is his at once: ' || pg_temp.tx('sub:s2tw'));
+select pg_temp.check((pg_temp.hold('s2tw0')).reason = 'phone_and_email_in_use' and pg_temp.found('s2tw', 'cTheo'),
+  'S2 Tara and Theo share the phone and the email; a form under a nickname waits; Theo''s own form by name is his at once (530: waits for staff with him alone): ' || pg_temp.tx('sub:s2tw'));
 select pg_temp.submit('s2hh0', 'Ula', 'Testother', '+61491570527', pg_temp.mail('house'));
 select pg_temp.submit('s2hh', 'Uma', 'Testhouse', '+61491570527', pg_temp.mail('house'));
-select pg_temp.check((pg_temp.hold('s2hh0')).reason = 'phone_in_use' and pg_temp.survey_customer('s2hh') = pg_temp.fx('cUma')
-    and pg_temp.hold('s2hh') is null,
-  'S2 a household member''s form on Uma''s phone with a new email waits; Uma''s own form by name with that email is hers at once: ' || pg_temp.tx('sub:s2hh'));
+select pg_temp.check((pg_temp.hold('s2hh0')).reason = 'phone_in_use' and pg_temp.found('s2hh', 'cUma'),
+  'S2 a household member''s form on Uma''s phone with a new email waits; Uma''s own form by name with that email is hers at once (530: waits for staff with her alone): ' || pg_temp.tx('sub:s2hh'));
 
 -- ═════ O A stranger's two forms tell nothing ═════
 -- Each pair: the same phone and email, two names. o1 Oscar's phone; o2 a
@@ -584,8 +632,8 @@ begin
   insert into tx values ('sub:anon', r::text);
   insert into fx values ('hs:anon', (r->>'survey_id')::uuid);
 end $$;
-select pg_temp.check(pg_temp.survey_customer('anon') = pg_temp.fx('cSue') and pg_temp.hold('anon') is null,
-  'S1 signed out (anon), as the QR page sends it: Susan''s at once: ' || pg_temp.tx('sub:anon'));
+select pg_temp.check(pg_temp.found('anon', 'cSue'),
+  'S1 signed out (anon), as the QR page sends it: Susan''s at once (530: waits for staff with her alone): ' || pg_temp.tx('sub:anon'));
 
 -- ═════ K What the forms made ═════
 select pg_temp.check((select count(*) from customers) = pg_temp.tx('customers_before')::int + 5,
@@ -624,11 +672,13 @@ select pg_temp.check(not exists (select 1 from m468 m
 select pg_temp.check(md5(pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure))
                      in ('014a970de2e5dee64e4027459cac5280', '860743f4f2e92f669e257121de0a9308', 'ddc02ed5fa82aacde5f031d6d367b300',
                          -- 524 (18 Nov 2026): the forms it refused wait for staff; with its wider reason check.
-                         'a65183cdcb48f2dd883a47c1c7aad7f3')
+                         'a65183cdcb48f2dd883a47c1c7aad7f3',
+                         -- 530 (19 Nov 2026): limits, and a form for an existing customer waits for staff; one reason more.
+                         '6441159a66f5ca4424848710c90f2576')
     and (select md5(pg_get_constraintdef(oid)) from pg_constraint
           where conrelid = 'public.health_survey_holds'::regclass and conname = 'health_survey_holds_reason_check')
-        in ('378c1861f7ffacb38d2e6e8c69e45cc8', 'caad66551b1d96a8d4c440c0b41900f1'),
-  'M submit_health_survey is 468''s AFTER version, 485''s, 511''s or 524''s, the reason check 468''s AFTER version or 524''s');
+        in ('378c1861f7ffacb38d2e6e8c69e45cc8', 'caad66551b1d96a8d4c440c0b41900f1', 'e0e8937d7f3dca213295916d74ec4b3a'),
+  'M submit_health_survey is 468''s AFTER version, 485''s, 511''s, 524''s or 530''s, the reason check 468''s AFTER version, 524''s or 530''s');
 
 do $$ declare v_failed int; begin
   select count(*) into v_failed from failed;

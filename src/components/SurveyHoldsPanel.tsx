@@ -35,15 +35,22 @@ export interface HeldForm {
      * survey with no customer has this phone and name; an old customer of this name has a phone
      * that cannot be read but could be this one.
      */
-    | 'repeat_form' | 'customer_has_survey' | 'legacy_survey_same_details' | 'unreadable_phone_same_name';
+    | 'repeat_form' | 'customer_has_survey' | 'legacy_survey_same_details' | 'unreadable_phone_same_name'
+    /**
+     * 530 (security audit of 17 Nov 2026, M4; the user, 19 Nov 2026, "Hold for staff"): its phone and name, or
+     * its phone and email, are one customer's, who has no survey (or a consultant's record not yet signed). A QR
+     * form no longer becomes theirs by itself; staff check it and attach it.
+     */
+    | 'existing_customer';
   held_at: string;
   candidates: HoldCandidate[];
 }
 
 /**
  * 468: the customers in use that the form's phone AND email both belong to,
- * as the list gives them now. The form attaches itself to such a customer when
- * there is just one; several (a duplicate record) wait here.
+ * as the list gives them now. Since 530 a form for just one such customer
+ * waits here too (existing_customer), for staff to attach; several (a
+ * duplicate record) wait here, as before.
  */
 const bothMatch = (f: HeldForm) => f.candidates.filter(c => !c.deleted && c.phone_matches && c.email_matches);
 
@@ -87,6 +94,19 @@ const reasonText = (f: HeldForm) => {
       return 'An older survey with no customer has the same phone number and name, so it was not attached and no '
         + 'customer was made. If it is a new person, make a new customer from it; if it is the same person as that '
         + 'older survey, an Owner or Manager can close it.';
+    // 530 (the user, 19 Nov 2026, "Hold for staff"): anyone with a QR link who
+    // knew a customer's phone and name could make the form theirs; it waits
+    // here instead, with that customer, and fills nothing until attached.
+    case 'existing_customer': {
+      const c = f.candidates.find(x => !x.deleted) ?? f.candidates[0];
+      return (c && !c.name_matches && c.email_matches
+          ? 'Its phone number and email are a customer\'s, under another name, '
+          : 'Its phone number and name are a customer\'s, ')
+        + 'who has no health survey yet. A QR form no longer becomes a customer\'s by itself: if it is the same '
+        + 'person, attach it (their empty details are filled from it then'
+        + (c?.survey_takes_form ? ', and their consultant\'s record, not yet signed, takes its answers' : '')
+        + '); if it is someone else (for example a family member sharing the phone), make a new customer from it.';
+    }
     case 'unreadable_phone_same_name':
       return 'An older customer record with the same name has a phone number that cannot be read but could be this '
         + 'one, so it was not attached and no customer was made. If it is that person, attach it to that record (and '
@@ -118,7 +138,8 @@ type Action =
  * with no customer: only its phone or only its email belongs to a customer
  * under another name, its name matches several, or (468) more than one
  * customer has both its phone and its email, or the one customer with both
- * (under another name) already has a survey. Staff attach each to the
+ * (under another name) already has a survey; and (530) every form whose phone
+ * and name, or phone and email, are one customer's. Staff attach each to the
  * customer it belongs to, or make a new customer from it (any staff); an
  * Owner or Manager may close one without attaching it and, where several
  * customers have both the phone and the email, delete a duplicate record
@@ -200,9 +221,9 @@ const SurveyHoldsPanel: React.FC<{
         <div>
           A QR form waits here instead of making a second customer when only its phone number or only its
           email belongs to a customer under another name, or when more than one customer has both. A form
-          whose phone number and email are one customer's is attached to them by itself, unless that customer
-          already has a health survey: then it waits here too. So does a form sent again under the same phone
-          number and name, one for a customer (found by phone and name) who already has a health survey, one
+          whose phone number and name, or phone number and email, are one customer's waits here too, with that
+          customer: check it is the same person, then attach it. So does a form sent again under the same phone
+          number and name, one for a customer who already has a health survey, one
           whose phone number and name only an older survey with no customer has, and one whose name is on an older
           record with a phone number that cannot be read but could be this one. Attach it to the
           customer it belongs to, or make a new customer from it (for example a family member sharing the

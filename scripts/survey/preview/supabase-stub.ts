@@ -66,6 +66,12 @@ let holds: any[] = holdsMode === 'none' ? [] : [
     email: 'pia@sig.invalid', occupation: null, source_label: 'Walk-in', reason: 'phone_and_email_customer_has_survey',
     held_at: '2026-10-24T05:20:00Z',
     candidates: [cand('c-pia', { phone: true, email: true }, 'HS-20261001-c0ffee')] },
+  // 530: a form for one customer, found by phone and name: it waits for staff to attach it.
+  { survey_id: 'hs-7', survey_no: 'HS-20261119-e00001', submitted_at: '2026-11-19T04:10:00Z', store_name: 'Preview Main Store',
+    event_name: null, full_name: 'Bee Hoon Testkoh', date_of_birth: '1961-04-02', sex: 'female', phone: '+6584330901',
+    email: 'bee@sig.invalid', occupation: 'Retired', source_label: 'Walk-in', reason: 'existing_customer',
+    held_at: '2026-11-19T04:10:00Z',
+    candidates: [cand('c-bee', { phone: true, name: true })] },
 ];
 
 const overview = customers.map((c, i) => ({

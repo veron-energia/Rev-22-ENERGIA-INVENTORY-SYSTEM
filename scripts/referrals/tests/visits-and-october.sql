@@ -463,13 +463,14 @@ begin
   if pg_temp.t398_visit('v_bool') is distinct from '2026-10-03' then raise exception 'FAIL 3i: a note moved a visit''s date'; end if;
 
   -- (j) The real public form (submit_health_survey): the centre's link is a visit today, an event's is not.
+  -- (530 takes a signature only as a PNG data URL, as the page draws it; it was 'data:fixture'.)
   r := public.submit_health_survey('t398-centre', jsonb_build_object('full_name', 'Zoe Quek', 'phone', '+6591398016',
-         'email', 'zq@sig.invalid', 'signature_data', 'data:fixture', 'source_option_id', pg_temp.t398_id('source')), '[]');
+         'email', 'zq@sig.invalid', 'signature_data', 'data:image/png;base64,AAAA', 'source_option_id', pg_temp.t398_id('source')), '[]');
   insert into t398 select 'v_form', customer_id from public.health_surveys where id = (r->>'survey_id')::uuid;
   if pg_temp.t398_visit('v_form') is distinct from public.sg_today() then
     raise exception 'FAIL 3j: the public form through the centre''s link is not a visit today'; end if;
   r := public.submit_health_survey('t398-event', jsonb_build_object('full_name', 'Yan Seah', 'phone', '+6591398017',
-         'email', 'ys@sig.invalid', 'signature_data', 'data:fixture', 'source_option_id', pg_temp.t398_id('source')), '[]');
+         'email', 'ys@sig.invalid', 'signature_data', 'data:image/png;base64,AAAA', 'source_option_id', pg_temp.t398_id('source')), '[]');
   insert into t398 select 'v_form_event', customer_id from public.health_surveys where id = (r->>'survey_id')::uuid;
   if pg_temp.t398_visit('v_form_event') is not null then
     raise exception 'FAIL 3j: the public form through an event''s link counted'; end if;
