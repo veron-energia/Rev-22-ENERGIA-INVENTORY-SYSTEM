@@ -80,7 +80,7 @@ Deno.serve(async (req) => {
       return { data, error: error ? { message: error.message } : null };
     },
     notifyPasswordChanged: async (change) => {
-      const notice = renderPasswordChanged(change.displayName || change.email, change.changedAt, config.replyTo);
+      const notice = renderPasswordChanged('', change.changedAt, config.replyTo);
       await deliver(config, {
         requestId, actionType: 'password_changed', to: change.email,
         subject: notice.subject, html: notice.html, text: notice.text,

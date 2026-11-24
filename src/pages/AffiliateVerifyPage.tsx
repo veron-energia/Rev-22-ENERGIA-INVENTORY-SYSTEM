@@ -14,9 +14,10 @@ import { sessionFromEmailLink, takeEmailLinkError } from '../lib/affiliateEmail'
 //   * on the next sign-in of someone stuck after signing up (the login page
 //     and the portal guard send a login with no affiliate account here);
 //   * from an emailed link: the Account page's verification email, or an old
-//     sign-up link. A session opened from one also marks the email verified
-//     (confirm_affiliate_email), and the person lands on the Account page,
-//     which says so, or says the link could not verify it. A link Supabase
+//     sign-up link. Since M6 (20 Nov 2026) a session opened from one no
+//     longer verifies the email (confirm_affiliate_email answers 'use_code'):
+//     the person lands on the Account page, which says to verify with the
+//     6-digit code. A link Supabase
 //     refused (expired, or already used) is said here, with Sign in.
 // It never waits on staff: the server answers with an account, or "rejected".
 // Whether the login is a member of staff is the server's answer
@@ -66,20 +67,18 @@ const AffiliateVerifyPage: React.FC = () => {
     // A server from before 437 could still park the sign-up for staff.
     if (res?.status === 'pending_verification') { setState('pending'); setMsg(res.message); return; }
     if (res?.status === 'rejected') { setState('rejected'); setMsg(res.message); return; }
-    // 437: opened from an emailed link (the Account page's verification
-    // email): the email is verified now. Nothing waits on it; if it fails,
-    // the Account page says so and offers a new link.
-    let verifiedNow = false;
-    let verifyFailed = false;
+    // M6 (the user, 20 Nov 2026): an emailed link no longer verifies the
+    // email; it verifies with a 6-digit code typed on the Account page. A
+    // session opened from a link only finishes the sign-up, and the Account
+    // page says to use the code.
+    let useCode = false;
     if (fromLink) {
       const { data: v, error: vErr } = await supabase.rpc('confirm_affiliate_email');
-      verifiedNow = !vErr && (v as any)?.verified === true && (v as any)?.already !== true;
-      verifyFailed = !!vErr || (v as any)?.verified !== true;
+      useCode = !vErr && (v as any)?.verified !== true && (v as any)?.reason === 'use_code';
     }
     await refreshProfile();
     if (res?.status === 'suspended') { setState('suspended'); return; }
-    if (verifiedNow) { nav('/affiliate/account', { replace: true, state: { emailVerified: true } }); return; }
-    if (verifyFailed) { nav('/affiliate/account', { replace: true, state: { emailVerifyFailed: true } }); return; }
+    if (useCode) { nav('/affiliate/account', { replace: true, state: { emailVerifyFailed: true } }); return; }
     nav('/affiliate/dashboard', { replace: true });
   };
 
@@ -108,7 +107,7 @@ const AffiliateVerifyPage: React.FC = () => {
   }, []);
 
   if (state === 'working') return viaLink
-    ? <AffiliateAuthShell title="Verifying your email…" subtitle="Please wait a moment"><p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Checking the link Energia emailed you…</p></AffiliateAuthShell>
+    ? <AffiliateAuthShell title="Opening your account…" subtitle="Please wait a moment"><p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Checking the link Energia emailed you…</p></AffiliateAuthShell>
     : <AffiliateAuthShell title="Finishing setup…" subtitle="Please wait a moment"><p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Completing your affiliate account…</p></AffiliateAuthShell>;
 
   if (state === 'link_refused') return (

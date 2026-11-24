@@ -5,7 +5,7 @@
 // Every interpolated value goes through `escapeHtml`, and the action link is
 // checked against this project's Auth origin by the caller before it gets here.
 
-export type AuthEmailAction = 'verify_signup' | 'verify_email' | 'password_recovery' | 'password_changed' | 'user_invitation'
+export type AuthEmailAction = 'verify_signup' | 'verify_code' | 'password_recovery' | 'password_changed' | 'user_invitation'
   | 'details_code' | 'details_changed';
 
 export interface RenderedEmail {
@@ -16,7 +16,8 @@ export interface RenderedEmail {
 
 export const SUBJECTS: Record<AuthEmailAction, string> = {
   verify_signup: 'Verify Your Energia Affiliate Account',
-  verify_email: 'Verify Your Energia Email Address',
+  // M6 (20 Nov 2026): the Account page's verification email is a code, not a link.
+  verify_code: 'Your Energia Verification Code',
   password_recovery: 'Reset Your Energia Password',
   password_changed: 'Your Energia Password Was Changed',
   user_invitation: "You're Invited to Energia",
@@ -47,9 +48,24 @@ export function headerSafe(value: string, max = 200): string {
   return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-const greeting = (name: string): string => {
+/**
+ * "Hi," and nothing else (security audit of 17 Nov 2026, M6; the user, 20 Nov
+ * 2026). The name a login holds in its metadata is whatever was typed at
+ * sign-up by anyone, so it is never printed in an email we send to the
+ * address. Only an invitation names the person, and that name is the one
+ * staff typed (see `invitationGreeting`).
+ */
+const GREETING = 'Hi,';
+
+/**
+ * The invitation's greeting. The name comes from the staff member who made the
+ * invitation: the full name typed on Users & Roles (admin-invite-user's
+ * `full_name`, kept on the invitation row and read back for a resend), never
+ * from the invited person nor from a sign-up.
+ */
+const invitationGreeting = (name: string): string => {
   const clean = headerSafe(name, 60);
-  return clean ? `Hi ${clean},` : 'Hi,';
+  return clean ? `Hi ${clean},` : GREETING;
 };
 
 function shell(bodyHtml: string): string {
@@ -95,12 +111,12 @@ const p = (text: string): string =>
 const h = (text: string): string =>
   `<h1 style="margin:0 0 14px;font-size:20px;line-height:1.35;color:${INK};font-weight:700;">${escapeHtml(text)}</h1>`;
 
-export function renderVerifySignup(name: string, actionLink: string): RenderedEmail {
+export function renderVerifySignup(_name: string, actionLink: string): RenderedEmail {
   return {
     subject: SUBJECTS.verify_signup,
     html: shell(
       h('Verify your affiliate account') +
-      p(escapeHtml(greeting(name))) +
+      p(escapeHtml(GREETING)) +
       p('Thanks for signing up as an Energia Affiliate. Confirm your email address to finish setting up your account.') +
       button(actionLink, 'Verify My Account') +
       `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
@@ -108,7 +124,7 @@ export function renderVerifySignup(name: string, actionLink: string): RenderedEm
       </p>`,
     ),
     text: [
-      greeting(name), '',
+      GREETING, '',
       'Thanks for signing up as an Energia Affiliate. Confirm your email address',
       'to finish setting up your account:', '',
       actionLink, '',
@@ -120,34 +136,33 @@ export function renderVerifySignup(name: string, actionLink: string): RenderedEm
 }
 
 /**
- * The Account page's verification email (437). An affiliate signs up and
- * goes straight in (the Owner, 20 Oct 2026); verifying the email comes later,
- * from the Account page. The link is a single-use sign-in link to the
- * affiliate's own account: opening it signs them in and marks the email as
- * verified. Nothing in the portal waits on it, so the email says so rather
- * than urging.
+ * The Account page's verification email (437; a code since M6, the user, 20
+ * Nov 2026). The affiliate types the 6 digits on the Account page while signed
+ * in; nothing in this email verifies by itself, so a forwarded or scanned copy
+ * of it proves nothing. Nothing in the portal waits on it, so it says so
+ * rather than urging.
  */
-export function renderVerifyEmail(name: string, actionLink: string): RenderedEmail {
+export function renderVerifyCode(code: string): RenderedEmail {
+  const clean = /^[0-9]{6}$/.test(code) ? code : '';
+  const lines = [
+    'You asked to verify the email address of your Energia Affiliate account.',
+    'Enter this code on the Account page within 15 minutes:',
+  ];
+  const never = 'Energia staff will never ask you for this code.';
+  const ignore = 'If you did not create an Energia affiliate account, ignore this email.';
   return {
-    subject: SUBJECTS.verify_email,
+    subject: SUBJECTS.verify_code,
     html: shell(
-      h('Verify your email address') +
-      p(escapeHtml(greeting(name))) +
-      p('You asked to verify the email address of your Energia Affiliate account. Open the link below to confirm it is yours. ' +
-        'It signs you in to your affiliate portal and marks your email as verified.') +
-      button(actionLink, 'Verify My Email') +
-      `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
-        This link can only be used once and expires after a while. If you did not ask for it, you can ignore this email — your account stays as it is.
-      </p>`,
+      h('Your verification code') +
+      p(escapeHtml(GREETING)) +
+      p(escapeHtml(lines[0])) +
+      p(escapeHtml(lines[1])) +
+      `<p style="margin:18px 0;text-align:center;font-size:30px;font-weight:700;letter-spacing:6px;color:${INK};">${escapeHtml(clean)}</p>` +
+      p(escapeHtml(never)) +
+      `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">${escapeHtml(ignore)}</p>`,
     ),
     text: [
-      greeting(name), '',
-      'You asked to verify the email address of your Energia Affiliate account.',
-      'Open this link to confirm it is yours. It signs you in to your affiliate',
-      'portal and marks your email as verified:', '',
-      actionLink, '',
-      'This link can only be used once and expires after a while.',
-      'If you did not ask for it, you can ignore this email; your account stays as it is.', '',
+      GREETING, '', ...lines, '', `Your code: ${clean}`, '', never, ignore, '',
       'Rev 22 Global Energia',
     ].join('\n'),
   };
@@ -179,7 +194,7 @@ export function renderUserInvitation(name: string, actionLink: string, invitedBy
     subject: SUBJECTS.user_invitation,
     html: shell(
       h("You're invited to Energia") +
-      p(escapeHtml(greeting(name))) +
+      p(escapeHtml(invitationGreeting(name))) +
       p(`You have been invited${from} to use the Energia inventory and sales system. ` +
         'Set up your account to get started — you will choose your own password, ' +
         'and nobody else will know it.') +
@@ -193,7 +208,7 @@ export function renderUserInvitation(name: string, actionLink: string, invitedBy
       </p>`,
     ),
     text: [
-      greeting(name), '',
+      invitationGreeting(name), '',
       `You have been invited${fromText} to use the Energia inventory and sales system.`,
       'Set up your account here. You will choose your own password.', '',
       actionLink, '',
@@ -207,12 +222,12 @@ export function renderUserInvitation(name: string, actionLink: string, invitedBy
   };
 }
 
-export function renderPasswordRecovery(name: string, actionLink: string): RenderedEmail {
+export function renderPasswordRecovery(_name: string, actionLink: string): RenderedEmail {
   return {
     subject: SUBJECTS.password_recovery,
     html: shell(
       h('Reset your password') +
-      p(escapeHtml(greeting(name))) +
+      p(escapeHtml(GREETING)) +
       p('Energia received a request to reset the password for your account. Choose a new password using the link below.') +
       button(actionLink, 'Reset My Password') +
       `<p style="margin:18px 0 0;font-size:12.5px;line-height:1.6;color:${MUTED};">
@@ -220,7 +235,7 @@ export function renderPasswordRecovery(name: string, actionLink: string): Render
       </p>`,
     ),
     text: [
-      greeting(name), '',
+      GREETING, '',
       'Energia received a request to reset the password for your account.',
       'Choose a new password here:', '',
       actionLink, '',
@@ -237,19 +252,19 @@ export function renderPasswordRecovery(name: string, actionLink: string): Render
  * confirmed. It carries no link and no token on purpose: there is nothing to
  * click, so there is nothing to phish, and a stolen copy grants nothing.
  */
-export function renderPasswordChanged(name: string, whenIso: string, supportEmail: string): RenderedEmail {
+export function renderPasswordChanged(_name: string, whenIso: string, supportEmail: string): RenderedEmail {
   const when = formatWhen(whenIso);
   return {
     subject: SUBJECTS.password_changed,
     html: shell(
       h('Your password was changed') +
-      p(escapeHtml(greeting(name))) +
+      p(escapeHtml(GREETING)) +
       p(`The password for your Energia account was changed on <strong>${escapeHtml(when)}</strong>.`) +
       p('If that was you, there is nothing to do.') +
       p(`If it was not you, please contact Energia straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
     ),
     text: [
-      greeting(name), '',
+      GREETING, '',
       `The password for your Energia account was changed on ${when}.`, '',
       'If that was you, there is nothing to do.',
       `If it was not you, please contact Energia straight away at ${supportEmail}.`, '',
@@ -272,7 +287,7 @@ export function renderDetailsCode(code: string, purpose: 'current' | 'new'): Ren
     subject: SUBJECTS.details_code,
     html: shell(
       h('Your confirmation code') +
-      p(escapeHtml(greeting(''))) +
+      p(escapeHtml(GREETING)) +
       p(escapeHtml(why)) +
       `<p style="margin:18px 0;text-align:center;font-size:30px;font-weight:700;letter-spacing:6px;color:${INK};">${escapeHtml(clean)}</p>` +
       p('The code works for 10 minutes. Nothing changes until it is entered.') +
@@ -281,7 +296,7 @@ export function renderDetailsCode(code: string, purpose: 'current' | 'new'): Ren
       </p>`,
     ),
     text: [
-      greeting(''), '', why, '', `Your code: ${clean}`, '',
+      GREETING, '', why, '', `Your code: ${clean}`, '',
       'The code works for 10 minutes. Nothing changes until it is entered.',
       'If you did not ask for this, you can ignore this email. Never share this code with anyone, including Energia staff.', '',
       'Rev 22 Global Energia',
@@ -303,7 +318,7 @@ export function renderDetailsChanged(
     subject: SUBJECTS.details_changed,
     html: shell(
       h('Your details were changed') +
-      p(escapeHtml(greeting(''))) +
+      p(escapeHtml(GREETING)) +
       p(`The details on your Energia Affiliate account were changed on <strong>${escapeHtml(when)}</strong>:`) +
       lines.map(l => p(escapeHtml(headerSafe(l, 300)))).join('') +
       (changes.email ? p('From now on, sign in with your new email.') : '') +
@@ -311,7 +326,7 @@ export function renderDetailsChanged(
       p(`If it was not you, please contact Energia straight away at <a href="mailto:${escapeHtml(supportEmail)}" style="color:${BRAND};">${escapeHtml(supportEmail)}</a>.`),
     ),
     text: [
-      greeting(''), '', `The details on your Energia Affiliate account were changed on ${when}:`,
+      GREETING, '', `The details on your Energia Affiliate account were changed on ${when}:`,
       ...lines.map(l => headerSafe(l, 300)), '',
       ...(changes.email ? ['From now on, sign in with your new email.', ''] : []),
       'If that was you, there is nothing to do.',

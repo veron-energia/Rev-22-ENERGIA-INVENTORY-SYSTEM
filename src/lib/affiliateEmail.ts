@@ -1,6 +1,8 @@
 // 437 (the Owner, 20 Oct 2026): an affiliate verifies their email later,
-// from the Account page. Its email holds a sign-in link to /affiliate/verify;
-// a session opened from it marks the email verified there.
+// from the Account page. Since M6 (20 Nov 2026) that email carries a 6-digit
+// code, typed on the Account page; a session opened from an emailed link no
+// longer verifies anything (confirm_affiliate_email answers 'use_code'). This
+// file only tells such a session apart, to say so.
 
 /** The sign-in methods (the token's "amr") that come from an emailed link. */
 const EMAIL_LINK_METHODS = ['magiclink', 'otp', 'recovery', 'invite', 'email/signup'];

@@ -3,8 +3,19 @@
 --   psql -v ON_ERROR_STOP=1 -f scripts/permissions/tests/auth-email-pause.sql
 \set ON_ERROR_STOP on
 begin;
+-- 531 (security audit of 17 Nov 2026, M6) changed auth_email_reserve, whose version 405 pins, so
+-- 405 cannot run again where 531 is in: its pause rows are put in as 405 puts them, and the checks
+-- below hold the same (the pause is still looked at first).
+select position('-- 531 (security audit' in pg_get_functiondef('public.auth_email_reserve(text,text,text)'::regprocedure)) > 0 as has_531 \gset
+\if :has_531
+insert into public.auth_email_pauses (action, reason)
+values ('signup', 'Public affiliate sign-up paused until the security fix is live (the Owner, 9 Oct 2026)'),
+       ('resend', 'Verification resends paused with sign-up (the Owner, 9 Oct 2026)')
+on conflict (action) do nothing;
+\else
 \ir ../../../supabase/405_pause_affiliate_signup.sql
 \ir ../../../supabase/405_pause_affiliate_signup.sql
+\endif
 do $$
 declare r jsonb; v_events_before bigint; v_events_after bigint;
 begin

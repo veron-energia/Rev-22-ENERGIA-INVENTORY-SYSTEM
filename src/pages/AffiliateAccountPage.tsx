@@ -5,7 +5,7 @@ import AffiliateLayout from '../components/AffiliateLayout';
 import { usePortalRpc, dateStr } from '../lib/affiliatePortal';
 import { PortalError } from '../components/AffiliateResponsive';
 import { changePassword, AUTH_EMAIL_COPY } from '../lib/authEmail';
-import { readEmailVerified, sendVerificationEmail } from '../lib/affiliateEmailStatus';
+import { confirmEmailCode, readEmailVerified, sendVerificationEmail } from '../lib/affiliateEmailStatus';
 import { useAuth } from '../context/AuthContext';
 import YourDetailsCard from '../components/YourDetailsCard';
 
@@ -27,6 +27,11 @@ const AffiliateAccountPage: React.FC = () => {
   const [readTick, setReadTick] = useState(0);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyMsg, setVerifyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // M6: the 6-digit code typed here; the box shows once a code has been sent.
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState('');
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeMsg, setCodeMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const navState = location.state as { emailVerified?: boolean; emailVerifyFailed?: boolean } | null;
   const justVerified = navState?.emailVerified === true;
   // The emailed link was opened but could not verify the email (verify page).
@@ -47,9 +52,8 @@ const AffiliateAccountPage: React.FC = () => {
     return () => { live = false; };
   }, [uid, justVerified, readTick]);
 
-  // The same email as the warning's on the other portal pages: its link signs
-  // the affiliate in at /affiliate/verify, which marks the email verified and
-  // comes back here.
+  // The same email as the warning's on the other portal pages: a 6-digit code,
+  // typed in the box below while signed in (M6).
   const sendVerification = async () => {
     if (verifyBusy || !me?.email) return;
     setVerifyBusy(true); setVerifyMsg(null);
@@ -57,6 +61,17 @@ const AffiliateAccountPage: React.FC = () => {
     setVerifyBusy(false);
     if (result.verified) setVerified('yes');
     setVerifyMsg({ ok: result.ok, text: result.text });
+    if (result.ok && !result.verified) { setCodeSent(true); setCodeMsg(null); }
+  };
+
+  // The code the affiliate typed, checked with her own session.
+  const submitCode = async () => {
+    if (codeBusy) return;
+    setCodeBusy(true); setCodeMsg(null);
+    const result = await confirmEmailCode(code);
+    setCodeBusy(false);
+    if (result.verified) { setVerified('yes'); setVerifyMsg({ ok: true, text: result.text }); setReadTick(t => t + 1); return; }
+    setCodeMsg({ ok: false, text: result.text });
   };
 
   // Goes through the auth-change-password Edge Function rather than
@@ -113,18 +128,32 @@ const AffiliateAccountPage: React.FC = () => {
             <div className="card" data-section="verify-email" style={{ padding: 18, marginBottom: 20 }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Verify your email</h3>
               <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12 }}>
-                Energia will send a link to <b>{me.email}</b>. Open it to confirm the address is yours. Your portal, referral link,
+                Energia will send a 6-digit code to <b>{me.email}</b>. Enter it here to confirm the address is yours. Your portal, referral link,
                 commission and payouts work the same until then.
               </p>
               {verifyFailed && !verifyMsg && (
                 <p role="alert" data-note="verify-failed" style={{ fontSize: 13, marginBottom: 10, color: 'var(--danger)' }}>
-                  Your email could not be verified from that link. Send a new one.
+                  Your email could not be verified from that link. A link no longer verifies: send a verification email and enter the 6-digit code here.
                 </p>
               )}
               {verifyMsg && <p role={verifyMsg.ok ? 'status' : 'alert'} style={{ fontSize: 13, marginBottom: 10, color: verifyMsg.ok ? 'var(--success)' : 'var(--danger)' }}>{verifyMsg.text}</p>}
               <button className="btn btn-primary" disabled={verifyBusy} onClick={() => void sendVerification()} style={{ minHeight: 44 }}>
-                {verifyBusy ? 'Sending…' : 'Send verification email'}
+                {verifyBusy ? 'Sending…' : codeSent ? 'Send a new code' : 'Send verification email'}
               </button>
+              {/* Always there while unverified: a phone switching to the mail app often reloads this tab, and sending again would retire the code just received. */}
+              <form data-section="verify-code" onSubmit={e => { e.preventDefault(); void submitCode(); }} style={{ marginTop: 16 }}>
+                <p data-note="have-code" style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>Already have a code? Enter it here.</p>
+                <label htmlFor="verify-code-input" style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>6-digit code</label>
+                <input id="verify-code-input" className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                  value={code} onChange={e => setCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                  style={{ maxWidth: 200, letterSpacing: 4, fontSize: 18, marginBottom: 10 }} />
+                {codeMsg && <p role="alert" data-note="code-message" style={{ fontSize: 13, marginBottom: 10, color: 'var(--danger)' }}>{codeMsg.text}</p>}
+                <div>
+                  <button type="submit" className="btn btn-primary" disabled={codeBusy || code.length !== 6} style={{ minHeight: 44 }}>
+                    {codeBusy ? 'Checking…' : 'Verify'}
+                  </button>
+                </div>
+              </form>
             </div>
           )}
           {/* 491: change name, phone and email; the top box above reads them again after a change */}

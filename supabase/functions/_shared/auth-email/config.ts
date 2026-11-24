@@ -22,13 +22,6 @@ export interface AuthEmailConfig {
   fromName: string;
   replyTo: string;
   hashSecret: string;
-  /**
-   * Which entry of the forwarded-for header the platform itself wrote.
-   * 1 = the last entry (the value appended by the closest trusted proxy), which
-   * is the only one a caller cannot forge. Raise it only after confirming the
-   * real hop count from a live request — see the docs.
-   */
-  trustedProxyHops: number;
   pabblyTimeoutMs: number;
 }
 
@@ -113,7 +106,6 @@ export function loadConfig(): AuthEmailConfig {
     fromName,
     replyTo,
     hashSecret,
-    trustedProxyHops: Math.max(1, Number(env('AUTH_EMAIL_TRUSTED_PROXY_HOPS') || '1') || 1),
     pabblyTimeoutMs: Math.max(1000, Number(env('AUTH_EMAIL_PABBLY_TIMEOUT_MS') || '10000') || 10000),
   };
   return cached;

@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  verifyCodeMessage,
   AUTH_EMAIL_COPY, interpretAuthEmailResponse, interpretPasswordChange,
   readSignupRefusal, signupExistingMessage, signupRefusalState,
 } from '../../../src/lib/auth-email/client.mjs';
@@ -204,4 +205,18 @@ test('466: the words name both ways in, and say nothing of the account\'s email'
     assert.match(c, /reset your password/);
     assert.equal(/[•@]/.test(c), false);
   }
+});
+
+test('M6: every reason confirm_affiliate_email_code can give has its own fixed words', () => {
+  assert.equal(verifyCodeMessage('wrong_code', 3), 'That code is not right. 3 tries left.');
+  assert.equal(verifyCodeMessage('wrong_code', 1), 'That code is not right. 1 try left.');
+  assert.equal(verifyCodeMessage('wrong_code'), 'That code is not right.');
+  assert.match(verifyCodeMessage('expired'), /expired.*Send a new verification email/);
+  assert.match(verifyCodeMessage('no_code'), /No code is waiting/);
+  assert.match(verifyCodeMessage('too_many_tries'), /Too many wrong codes/);
+  assert.match(verifyCodeMessage('invalid'), /6 digits/);
+  assert.match(verifyCodeMessage('<b>anything else</b>'), /could not be checked just now/, 'never text from an answer');
+  assert.doesNotMatch(verifyCodeMessage('<b>x</b>'), /<b>/);
+  assert.match(AUTH_EMAIL_COPY.verifyEmailSent, /6-digit code/);
+  assert.match(AUTH_EMAIL_COPY.verifyEmailSentElsewhere, /Account page/);
 });

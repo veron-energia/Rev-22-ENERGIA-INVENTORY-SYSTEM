@@ -5,9 +5,9 @@
 //
 //   W1  An affiliate whose email is not verified: the Dashboard opens with the
 //       warning above its title, naming the login's address. Send
-//       verification email asks auth-resend-verification for that address,
-//       once however often it is tapped while sending, and says the link is
-//       on its way. The warning stays until the email is verified.
+//       verification email asks affiliate-details (M6: with her own session,
+//       no address in the body) once however often it is tapped while sending,
+//       and says a 6-digit code is on its way. The warning stays until the email is verified.
 //   W2  The same warning above the other portal pages; none on the Account
 //       page, which has its own Verify your email (one Send button there).
 //   W3  No warning for a verified email, before 437 is on the server, or
@@ -112,13 +112,16 @@ function backend({ verifiedAt = null, amr = 'password', resend } = {}) {
       affiliate_portal_me: () => ({ customer_id: 'cust-1', name: 'Wen Testbanner', email, referral_code: 'TWEN486', status: 'active',
         joined_at: '2026-11-01T02:00:00Z', account_status: 'claimed', direct_referrals: 0 }),
       complete_affiliate_onboarding: () => ({ status: 'active', customer_id: 'cust-1', referral_code: 'TWEN486', already: true, new_customer: false, email_verified: false }),
-      confirm_affiliate_email: () => {
+      // M6: a session opened from an emailed link no longer verifies; a typed code does.
+      confirm_affiliate_email: () => (row.email_verified_at ? { verified: true, already: true } : { verified: false, reason: 'use_code' }),
+      confirm_affiliate_email_code: ({ p_code }) => {
+        if (p_code !== '482913') return { verified: false, reason: 'wrong_code', tries_left: 4 };
         const already = !!row.email_verified_at;
         row.email_verified_at ??= '2026-11-03T02:00:00Z';
         return { verified: true, already };
       },
     },
-    invoke: { 'auth-resend-verification': resend ?? (() => ({ data: { ok: true, status: 'submitted', request_id: 'r1' }, error: null })) },
+    invoke: { 'affiliate-details': resend ?? (() => ({ data: { status: 'sent' }, error: null })) },
   });
   client.statusReads = 0;
   const realFrom = client.from;
@@ -149,7 +152,7 @@ function failStatusReads(client, error) {
 test('W1: an unverified email: the Dashboard opens with the warning, and Send asks for the login\'s own address once', async () => {
   let release = null;
   const { client, email } = backend({ resend: () => new Promise(r => {
-    release = () => r({ data: { ok: true, status: 'submitted', request_id: 'r1' }, error: null });
+    release = () => r({ data: { status: 'sent' }, error: null });
   }) });
   await d.mount(app('/affiliate/dashboard'));
   await d.tick(10);
@@ -157,7 +160,7 @@ test('W1: an unverified email: the Dashboard opens with the warning, and Send as
   const banner = warning();
   assert.ok(banner, 'the warning shows');
   assert.match(banner.textContent, /^Please verify your email/);
-  assert.match(banner.textContent, new RegExp(`Energia will send a link to ${email.replace('.', '\\.')}\\. Open it to confirm the address is yours\\.`));
+  assert.match(banner.textContent, new RegExp(`Energia will send a 6-digit code to ${email.replace('.', '\\.')}\\. Enter it on your Account page to confirm the address is yours\\.`));
   const title = document.querySelector('h1');
   assert.equal(title?.textContent, 'Dashboard');
   assert.ok(above(banner, title), 'above the page title');
@@ -170,8 +173,8 @@ test('W1: an unverified email: the Dashboard opens with the warning, and Send as
   await d.click(send);
   release();
   await d.tick(5);
-  assert.deepEqual(client.calls.filter(c => c.fn === 'auth-resend-verification').map(c => c.body), [{ email }], 'once, for the login\'s address');
-  assert.match(banner.querySelector('[role="status"]')?.textContent ?? '', /A verification link is on its way to your email\./);
+  assert.deepEqual(client.calls.filter(c => c.fn === 'affiliate-details').map(c => c.body), [{ action: 'verify_email_send' }], 'once, with no address in the body: the server reads it from the session');
+  assert.match(banner.querySelector('[role="status"]')?.textContent ?? '', /A 6-digit code is on its way to your email\./);
   assert.ok(warning(), 'the warning stays until the email is verified');
   assert.equal(d.button('Send verification email', warning())?.disabled, false);
 });
@@ -220,7 +223,7 @@ test('W3: no warning for a verified email, before 437 is on the server, or when 
 });
 
 test('W4: a send that fails says why, and the warning stays with its button', async () => {
-  const { client } = backend({ resend: () => ({ data: { ok: true, status: 'not_sent', request_id: 'r4' }, error: null }) });
+  const { client } = backend({ resend: () => ({ data: { error: 'not_sent' }, error: null }) });
   await d.mount(app('/affiliate/dashboard'));
   await d.tick(10);
   const banner = warning();
@@ -228,17 +231,17 @@ test('W4: a send that fails says why, and the warning stays with its button', as
   assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /Energia could not send the email just now/);
   assert.equal(d.button('Send verification email', banner)?.disabled, false);
   // No answer at all (a dead network).
-  client.invokeHandlers['auth-resend-verification'] = () => ({ data: null, error: { message: 'Failed to send a request to the Edge Function' } });
+  client.invokeHandlers['affiliate-details'] = () => ({ data: null, error: { message: 'Failed to send a request to the Edge Function' } });
   await d.click(d.button('Send verification email', banner));
-  assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /The server could not be reached/);
-  assert.equal(client.calls.filter(c => c.fn === 'auth-resend-verification').length, 2);
+  assert.match(banner.querySelector('[role="alert"]')?.textContent ?? '', /could not be done just now/);
+  assert.equal(client.calls.filter(c => c.fn === 'affiliate-details').length, 2);
   assert.ok(warning());
 });
 
 test('W5: verified meanwhile in another tab: Send says so, and coming back to the tab reads again (not while it is hidden)', async () => {
   const first = backend({ resend: () => {
     first.row.email_verified_at = '2026-11-03T04:00:00Z';
-    return { data: { ok: true, status: 'submitted', request_id: 'r5' }, error: null };
+    return { data: { status: 'not_needed' }, error: null };
   } });
   await d.mount(app('/affiliate/dashboard'));
   await d.tick(10);
@@ -267,7 +270,7 @@ test('W5: verified meanwhile in another tab: Send says so, and coming back to th
   assert.ok(noBanner(), 'the warning goes, with nothing to say');
 });
 
-test('W6: the next page opens with the warning straight away, and without it once the emailed link has verified the email', async () => {
+test('W6: the next page opens with the warning straight away, and without it once the typed code has verified the email', async () => {
   const { client } = backend({ amr: 'magiclink' });
   await d.mount(app('/affiliate/dashboard'));
   await d.tick(10);
@@ -280,10 +283,18 @@ test('W6: the next page opens with the warning straight away, and without it onc
   open(); await d.tick(5);
   delete client.gate.affiliate_accounts;
 
-  // The emailed link: /affiliate/verify marks the email verified and lands on the Account page.
+  // M6: the emailed link no longer verifies. /affiliate/verify lands on the Account page, which says to use the code.
   await goTo('/affiliate/verify');
   await d.tick(20);
   assert.equal(where(), '/affiliate/account');
+  assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Not verified');
+  assert.equal(client.calls.filter(c => c.rpc === 'confirm_affiliate_email_code').length, 0);
+  // The code typed on the Account page verifies it.
+  await d.click(d.button('Send verification email', document.querySelector('[data-section="verify-email"]')));
+  await d.tick(5);
+  await d.setValue(document.querySelector('#verify-code-input'), '482913');
+  await d.click(d.button('Verify'));
+  await d.tick(10);
   assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Verified');
   client.gate.affiliate_accounts = new Promise(r => { open = r; });
   await goTo('/affiliate/dashboard');

@@ -293,7 +293,8 @@ insert into want values
 -- A later migration that patches one of the four: its AFTER md5 also counts as "469 is in".
 create function pg_temp.later(p_fn text) returns text[] language sql immutable as
 $$ select case p_fn when 'complete_affiliate_onboarding(text,text,text,boolean)'
-                    then array['0dd12d4c9cef8b86bb1bcc02a5344927']  -- 508's AFTER (17 Nov 2026; 469's, patched)
+                    then array['0dd12d4c9cef8b86bb1bcc02a5344927',   -- 508's AFTER (17 Nov 2026; 469's, patched)
+                               '15f677725266f658f552051ae61e6d71']   -- 531's AFTER (security audit of 17 Nov 2026, M6; 508's, patched)
                     when 'affiliate_referral_signup(text,text,text,text,text,text)'
                     then array['00d528c6f4cc9240b2cf2f82ea2bd487']  -- 529's AFTER (19 Nov 2026; 469's, patched)
                     else '{}'::text[] end $$;

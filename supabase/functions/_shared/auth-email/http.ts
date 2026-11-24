@@ -140,31 +140,68 @@ async function readCapped(req: Request, limit: number): Promise<string | null> {
 }
 
 /**
- * The client IP, taken only from the entry the platform's own proxy wrote.
+ * The key a request is counted under for the per-connection limit (security
+ * audit of 17 Nov 2026, M6).
  *
- * A caller can put anything in `x-forwarded-for`; the platform appends the real
- * peer address after whatever arrived, so counting from the right is the only
- * reading a caller cannot forge. `hops` says how many proxies of our own sit in
- * front of the function — 1 by default.
+ * Only `cf-connecting-ip` is read. Cloudflare sets it, and production logs show
+ * it equal to `x-real-ip` on every call; `x-forwarded-for` is a header a caller
+ * can write, so it is not read anywhere.
  *
- * Returns null when nothing trustworthy is available. Callers must treat that as
- * "no IP limiting", never as "unlimited": the per-email limits stay mandatory.
+ *   * IPv4: the address, octets written as plain numbers (192.000.002.004 is 192.0.2.4).
+ *   * IPv4-mapped IPv6 (::ffff:a.b.c.d): the IPv4.
+ *   * IPv6: its /64, written the same way whatever the spelling, so every
+ *     address in one /64 (one household or one hosting plan) is one connection.
+ *   * Missing or not an address: the literal 'unknown', one shared bucket. That
+ *     fails closed: it never means "no limit".
  */
-export function trustedClientIp(req: Request, hops: number): string | null {
-  const header = req.headers.get('x-forwarded-for');
-  if (!header) return null;
-  const parts = header.split(',').map(s => s.trim()).filter(Boolean);
-  if (parts.length === 0) return null;
-  const index = parts.length - Math.max(1, hops);
-  if (index < 0) return null;
-  const candidate = parts[index];
-  return looksLikeIp(candidate) ? candidate : null;
+export const UNKNOWN_CLIENT = 'unknown';
+
+export function clientKey(req: Request): string {
+  const raw = req.headers.get('cf-connecting-ip');
+  if (!raw) return UNKNOWN_CLIENT;
+  const bare = raw.trim().replace(/^\[/, '').replace(/\]$/, '').split('%')[0];
+  if (bare.includes(':')) {
+    const groups = parseIpv6(bare);
+    if (!groups) return UNKNOWN_CLIENT;
+    const mapped = groups.slice(0, 5).every(g => g === 0) && groups[5] === 0xffff;
+    if (mapped) return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+    return `${groups.slice(0, 4).map(g => g.toString(16)).join(':')}::/64`;
+  }
+  // The octets are numbers, so 192.000.002.004 and 192.0.2.4 are one connection.
+  return isIpv4(bare) ? bare.split('.').map(Number).join('.') : UNKNOWN_CLIENT;
 }
 
-function looksLikeIp(value: string): boolean {
-  const bare = value.replace(/^\[|\]$/g, '').split('%')[0];
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(bare)) {
-    return bare.split('.').every(o => Number(o) <= 255);
+function isIpv4(value: string): boolean {
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(value) && value.split('.').every(o => Number(o) <= 255);
+}
+
+/** The eight 16-bit groups of an IPv6 address, or null when it is not one. */
+function parseIpv6(value: string): number[] | null {
+  let text = value;
+  // An embedded IPv4 tail (::ffff:192.0.2.1) is two groups.
+  const tail = text.match(/:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (tail) {
+    if (!isIpv4(tail[1])) return null;
+    const o = tail[1].split('.').map(Number);
+    text = text.slice(0, text.length - tail[1].length) + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
   }
-  return /^[0-9a-f:]+$/i.test(bare) && bare.includes(':');
+  if (!/^[0-9a-f:]+$/i.test(text) || text.includes(':::')) return null;
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const read = (part: string): number[] | null => {
+    if (part === '') return [];
+    const out: number[] = [];
+    for (const g of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+      out.push(parseInt(g, 16));
+    }
+    return out;
+  };
+  const head = read(halves[0]);
+  const rest = halves.length === 2 ? read(halves[1]) : [];
+  if (!head || !rest) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const missing = 8 - head.length - rest.length;
+  if (missing < 1) return null;
+  return [...head, ...new Array<number>(missing).fill(0), ...rest];
 }

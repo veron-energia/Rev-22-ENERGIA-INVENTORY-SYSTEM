@@ -580,3 +580,14 @@ test('Q17: the staff panel: an approval that could not be made says why, and the
   assert.equal(row(RID) === null, true);
   assert.match(panel().textContent, /Approved: the change was made\./);
 });
+
+test('M6: a details change the email budget refuses says so, not "several changes today"', async () => {
+  const { client } = backend({ steps: [{ error: 'email_limit', status: 429, body: { error: 'email_limit' } }] });
+  await d.mount(app()); await d.tick(10);
+  await editTo({ email: NEWMAIL });
+  await d.click(d.button('Save changes', card()));
+  await d.tick(5);
+  assert.equal(sent(client).length, 1);
+  assert.match(card().textContent, /Energia cannot send more emails to this address today\. Please try again tomorrow\./);
+  assert.doesNotMatch(card().textContent, /several changes today/);
+});

@@ -12,7 +12,9 @@
 -- (437's sign-up that also keeps the copy of what the login signed up with)
 -- it does the same: the 432 text writes no copy, which those suites never read.
 -- With 469 in (440's, patched: the same phone and email join or wait for
--- staff) it does the same.
+-- staff) it does the same. With 508 in, and with 531 in (508's, patched: a
+-- new account is verified only from the server's date on the login; security
+-- audit of 17 Nov 2026, M6), it does the same.
 --
 -- Included by scripts/affiliate-claims/tests/staff-claims.sql,
 -- scripts/affiliate-claims/tests/reject-protects.sql and
@@ -24,6 +26,7 @@ declare
   c_440 constant text := '43084deab54968eacaf1793c470fd08f';  -- 440's AFTER (21 Oct 2026; 437's, patched)
   c_469 constant text := '1b9dfc819b860dcb19244063a4628f47';  -- 469's AFTER (24 Oct 2026; 440's, patched)
   c_508 constant text := '0dd12d4c9cef8b86bb1bcc02a5344927';  -- 508's AFTER (17 Nov 2026; 469's, patched)
+  c_531 constant text := '15f677725266f658f552051ae61e6d71';  -- 531's AFTER (security audit of 17 Nov 2026, M6; 508's, patched)
   c_432 constant text := 'ff59dd1f8a6ca7397efea5880c6a87a7';
   c_def constant text := $def$CREATE OR REPLACE FUNCTION public.complete_affiliate_onboarding(p_first_name text, p_last_name text, p_phone text, p_agree boolean DEFAULT false)
  RETURNS jsonb
@@ -263,7 +266,7 @@ $def$;
 begin
   if md5(c_def) <> c_432 then raise exception 'sign-up-before-437: the 432 text is not the one read (md5 %)', md5(c_def); end if;
   if d = c_432 then return; end if;
-  if d not in (c_437, c_440, c_469, c_508) then raise exception 'sign-up-before-437: complete_affiliate_onboarding is neither 432''s, nor 437''s, 440''s, 469''s or 508''s (md5 %)', d; end if;
+  if d not in (c_437, c_440, c_469, c_508, c_531) then raise exception 'sign-up-before-437: complete_affiliate_onboarding is neither 432''s, nor 437''s, 440''s, 469''s, 508''s or 531''s (md5 %)', d; end if;
   execute c_def;
   if md5(pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure)) <> c_432 then
     raise exception 'sign-up-before-437: the 432 sign-up did not go back as read'; end if;

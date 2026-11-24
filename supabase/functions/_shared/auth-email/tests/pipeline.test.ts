@@ -2,12 +2,12 @@
 // are hard to reproduce against a live project are the ones worth pinning down.
 
 import { assert, assertEquals, assertFalse, assertNotEquals } from 'jsr:@std/assert@1';
-import { EMAIL_IN_USE_MESSAGE, handlePublicRequest } from '../pipeline.ts';
+import { EMAIL_IN_USE_MESSAGE, handlePublicRequest, handleRetiredResend } from '../pipeline.ts';
 import { affiliateExistsMessage, type ExistingAffiliate } from '../existing.ts';
-import { recoveryEndpoint, resendEndpoint, signupEndpoint } from '../flows.ts';
+import { recoveryEndpoint, signupEndpoint } from '../flows.ts';
 import { MissingConfigError } from '../config.ts';
 import {
-  APP_URL, ACTION_LINK, MAGIC_LINK, allowAll, fakeAdmin, flowDeps, magicLink, okLink,
+  APP_URL, ACTION_LINK, allowAll, fakeAdmin, flowDeps, okLink,
   postRequest, recordingDeliver, testConfig, validSignupBody,
 } from './support.ts';
 
@@ -63,12 +63,10 @@ Deno.test('an address that already has a login is told so, and nothing about tha
   for (const state of ['confirmed', 'unconfirmed'] as const) {
     const { sent, deliver } = recordingDeliver();
     let created = 0;
-    let regenerated = 0;
     const deps = flowDeps({
       deliver,
       accountState: () => Promise.resolve(state),
       createConfirmedSignup: () => { created += 1; return Promise.resolve({ status: 'created', userId: 'u-2' }); },
-      regenerateSignupLink: () => { regenerated += 1; return Promise.resolve(okLink()); },
     });
     const response = await run(postRequest({ ...validSignupBody, password: 'a-completely-different-password' }), signupEndpoint(deps));
     assertEquals(response.status, 409, state);
@@ -77,7 +75,6 @@ Deno.test('an address that already has a login is told so, and nothing about tha
     assertEquals(body.message, EMAIL_IN_USE_MESSAGE);
     assert(/sign in/i.test(body.message) && /reset your password/i.test(body.message), 'it offers Sign in and Reset password');
     assertEquals(created, 0, 'no second login');
-    assertEquals(regenerated, 0, 'and no email');
     assertEquals(sent.length, 0);
   }
 });
@@ -349,112 +346,48 @@ Deno.test('466: the refusal never carries the login email itself, a secret or th
 });
 
 // ---------------------------------------------------------------------------
-// Resend, and the Account page's verification email (437)
+// Resend: retired (M6). It sends nothing; the code is asked for from the
+// signed-in Account page (affiliate-details, 'verify_email_send').
 // ---------------------------------------------------------------------------
 
-Deno.test('resend sends the old sign-up link only to an account that exists and is unverified', async () => {
-  for (const [state, expected] of [['none', 0], ['unconfirmed', 1]] as const) {
-    const { sent, deliver } = recordingDeliver();
-    let created = 0;
-    const deps = flowDeps({
-      deliver,
-      accountState: () => Promise.resolve(state),
-      createConfirmedSignup: () => { created += 1; return Promise.resolve({ status: 'created', userId: 'u' }); },
-      // Note the arguments this path is even capable of passing: an email and
-      // a redirect. No password, no metadata.
-      regenerateSignupLink: (_a, args) => {
-        assertEquals(Object.keys(args).sort(), ['email', 'redirectTo']);
-        return Promise.resolve(okLink());
-      },
-    });
-    const response = await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(deps));
-    assertEquals(response.status, 200, state);
-    assertEquals(sent.length, expected, `state=${state}`);
-    if (expected) assertEquals(sent[0].request.subject, 'Verify Your Energia Affiliate Account');
-    assertEquals(created, 0, 'resend must never create an account');
-  }
-});
+const retired = (req: Request) => handleRetiredResend(req, { allowedOrigins: () => [APP_URL] });
 
-Deno.test('a confirmed affiliate whose email is not verified gets the verification email: a sign-in link to /affiliate/verify', async () => {
-  const { sent, deliver } = recordingDeliver();
-  const asked: string[] = [];
-  const deps = flowDeps({
-    deliver,
-    accountState: () => Promise.resolve('confirmed'),
-    affiliateEmailNeedsVerification: (_a, email) => { asked.push(email); return Promise.resolve(true); },
-    generateMagicLink: (_a, args) => {
-      assertEquals(args.email, 'ada@example.com');
-      assertEquals(args.redirectTo, `${APP_URL}/affiliate/verify`);
-      assertEquals(Object.keys(args).sort(), ['email', 'redirectTo']);
-      return Promise.resolve(magicLink('ada@example.com', 'Ada Lovelace'));
-    },
-  });
-  const response = await run(postRequest({ email: 'Ada@Example.com' }), resendEndpoint(deps));
-  assertEquals(response.status, 200);
-  assertEquals((await bodyOf(response)).status, 'submitted');
-  assertEquals(asked, ['ada@example.com']);
-  assertEquals(sent.length, 1);
-  assertEquals(sent[0].request.to, 'ada@example.com');
-  assertEquals(sent[0].request.subject, 'Verify Your Energia Email Address');
-  assertEquals(sent[0].request.actionType, 'verify_signup');
-  assertEquals(sent[0].request.recipientRole, 'affiliate');
-  assert(sent[0].request.html.includes(MAGIC_LINK.replace(/&/g, '&amp;')), 'the link is in the email');
-  assert(sent[0].request.text.includes(MAGIC_LINK));
-});
-
-Deno.test('a verified, a staff or a non-affiliate login is sent nothing', async () => {
-  const { sent, deliver } = recordingDeliver();
-  let links = 0;
-  const deps = flowDeps({
-    deliver,
-    accountState: () => Promise.resolve('confirmed'),
-    affiliateEmailNeedsVerification: () => Promise.resolve(false),
-    generateMagicLink: () => { links += 1; return Promise.resolve(magicLink()); },
-  });
-  const response = await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(deps));
-  assertEquals(response.status, 200);
-  assertEquals(links, 0);
-  assertEquals(sent.length, 0);
-});
-
-Deno.test('resend answers identically whatever the address holds', async () => {
-  const bodies = [];
-  for (const [state, needs] of [['none', false], ['unconfirmed', false], ['confirmed', false], ['confirmed', true]] as const) {
-    const response = await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(flowDeps({
-      accountState: () => Promise.resolve(state),
-      affiliateEmailNeedsVerification: () => Promise.resolve(needs),
-    })));
+Deno.test('M6: the retired resend answers 200 and makes no database call at all', async () => {
+  // Any rpc would be a count against the typed address: it must make none.
+  const admin = fakeAdmin(allowAll);
+  const originalFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = (() => { fetched += 1; return Promise.reject(new Error('no network')); }) as typeof fetch;
+  try {
+    const response = await retired(postRequest({ email: 'ada@example.com' }));
     assertEquals(response.status, 200);
     const body = await bodyOf(response);
+    assertEquals(body.ok, true);
+    assertEquals(body.status, 'submitted');
+    assert(typeof body.request_id === 'string' && body.request_id.length > 0);
+  } finally { globalThis.fetch = originalFetch; }
+  assertEquals(fetched, 0, 'no webhook, no database');
+  assertEquals(admin.calls.length, 0, 'no reserve, no outcome row, no take');
+});
+
+Deno.test('M6: the retired resend does not touch the pipeline, the limiter or the database', async () => {
+  const source = await Deno.readTextFile(new URL('../pipeline.ts', import.meta.url));
+  const body = source.slice(source.indexOf('export async function handleRetiredResend'));
+  assertFalse(/reserve\(|recordOutcome\(|adminClient|makeAdmin|hashKey|\.rpc\(|take\(/.test(body));
+  const index = await Deno.readTextFile(new URL('../../../auth-resend-verification/index.ts', import.meta.url));
+  assertFalse(/liveDeps|deliver|adminClient/.test(index));
+});
+
+Deno.test('the retired resend still has to be the right shape and answers the same whatever the address', async () => {
+  assertEquals((await retired(postRequest({ email: 'ada@example.com', password: 'x' }))).status, 400, 'an unknown field is refused, not ignored');
+  assertEquals((await retired(postRequest('{"email":', {}))).status, 400);
+  const bodies = [];
+  for (const email of ['ada@example.com', 'nobody@example.invalid']) {
+    const body = await bodyOf(await retired(postRequest({ email })));
     delete body.request_id;
     bodies.push(JSON.stringify(body));
   }
-  assertEquals(new Set(bodies).size, 1, `bodies differed: ${bodies.join(' | ')}`);
-});
-
-Deno.test('a verification email that fails to send says so, so the page can offer a retry', async () => {
-  const { deliver } = recordingDeliver({ outcome: 'provider_rejected', httpStatus: 400, detail: 'workflow disabled' });
-  const response = await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(flowDeps({
-    deliver,
-    accountState: () => Promise.resolve('confirmed'),
-    affiliateEmailNeedsVerification: () => Promise.resolve(true),
-  })));
-  const body = await bodyOf(response);
-  assertEquals(response.status, 200);
-  assertEquals(body.status, 'not_sent');
-});
-
-Deno.test('an ambiguous timeout is not retried and is not reported as a failure', async () => {
-  const { sent, deliver } = recordingDeliver({ outcome: 'timeout', httpStatus: null, detail: 'no response' });
-  const admin = fakeAdmin(allowAll);
-  const response = await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(flowDeps({
-    deliver, accountState: () => Promise.resolve('confirmed'), affiliateEmailNeedsVerification: () => Promise.resolve(true),
-  })), admin);
-  const body = await bodyOf(response);
-
-  assertEquals(sent.length, 1, 'exactly one attempt: the message may already have gone');
-  assertEquals(body.status, 'submitted', 'a timeout is not proof of failure');
-  assertEquals(admin.calls.filter(c => c.fn === 'auth_email_record_outcome').at(-1)?.args.p_outcome, 'timeout');
+  assertEquals(new Set(bodies).size, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -501,14 +434,11 @@ Deno.test('no response ever carries the action link, a token, a secret or the pa
   for (const [endpoint, body] of [
     [signupEndpoint(flowDeps()), validSignupBody],
     [signupEndpoint(flowDeps({ accountState: () => Promise.resolve('confirmed') })), validSignupBody],
-    [resendEndpoint(flowDeps({ accountState: () => Promise.resolve('unconfirmed') })), { email: 'ada@example.com' }],
-    [resendEndpoint(flowDeps({ accountState: () => Promise.resolve('confirmed'), affiliateEmailNeedsVerification: () => Promise.resolve(true) })),
-      { email: 'ada@example.com' }],
     [recoveryEndpoint(flowDeps()), { email: 'ada@example.com', flow: 'staff' }],
   ] as const) {
     const text = await (await run(postRequest(body), endpoint, fakeAdmin(allowAll), config)).text();
     for (const secret of [
-      ACTION_LINK, MAGIC_LINK, 'abc123', 'mag456', '/auth/v1/verify', config.pabblySharedSecret,
+      ACTION_LINK, 'abc123', '/auth/v1/verify', config.pabblySharedSecret,
       config.serviceRoleKey, config.hashSecret, config.pabblyWebhookUrl, validSignupBody.password,
     ]) {
       assertFalse(text.includes(secret), `response leaked: ${secret.slice(0, 40)}`);
@@ -538,19 +468,17 @@ Deno.test('a caller cannot choose the recipient, the content, the redirect or a 
   assertEquals(sent.length, 0, 'nothing is sent while the shape is wrong');
 });
 
-Deno.test('even a valid request cannot influence sender, subject or recipient of the verification email', async () => {
+Deno.test('even a valid request cannot influence sender, subject or recipient of the reset email', async () => {
   const { sent, deliver } = recordingDeliver();
   const config = testConfig();
-  await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(flowDeps({
+  await run(postRequest({ email: 'ada@example.com', flow: 'affiliate' }), recoveryEndpoint(flowDeps({
     deliver,
-    accountState: () => Promise.resolve('confirmed'),
-    affiliateEmailNeedsVerification: () => Promise.resolve(true),
     // Supabase reports the address it actually holds; that is what gets mailed.
-    generateMagicLink: () => Promise.resolve(magicLink('ada@example.com')),
+    generateRecoveryLink: () => Promise.resolve(okLink('held@example.com')),
   })), fakeAdmin(allowAll), config);
 
-  assertEquals(sent[0].request.to, 'ada@example.com');
-  assertEquals(sent[0].request.subject, 'Verify Your Energia Email Address');
+  assertEquals(sent[0].request.to, 'held@example.com');
+  assertEquals(sent[0].request.subject, 'Reset Your Energia Password');
   assertEquals(sent[0].config.fromAddress, config.fromAddress);
   assertEquals(sent[0].config.fromName, config.fromName);
 });
@@ -585,6 +513,7 @@ Deno.test('the reservation is claimed before the login is made, and never handed
   const order: string[] = [];
   const admin = fakeAdmin({
     auth_email_reserve: () => { order.push('reserve'); return { allowed: true, retry_after_seconds: 0 }; },
+    auth_email_take: () => ({ allowed: true, retry_after_seconds: 0 }),
     auth_email_record_outcome: () => null,
   });
   const deps = flowDeps({
@@ -595,23 +524,9 @@ Deno.test('the reservation is claimed before the login is made, and never handed
 
   await run(postRequest(validSignupBody), signupEndpoint(deps), admin);
   assertEquals(order, ['reserve', 'existing', 'state', 'create']);
+  // (the overall slot sits between 'state' and 'create'; it is checked in m6-limits.test.ts)
   // A failure does not refund the slot: that is what caps retries.
   assertEquals(admin.calls.filter(c => c.fn === 'auth_email_reserve').length, 1);
-});
-
-Deno.test('the reservation comes before the verification link too', async () => {
-  const order: string[] = [];
-  const admin = fakeAdmin({
-    auth_email_reserve: () => { order.push('reserve'); return { allowed: true, retry_after_seconds: 0 }; },
-    auth_email_record_outcome: () => null,
-  });
-  await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(flowDeps({
-    accountState: () => Promise.resolve('confirmed'),
-    affiliateEmailNeedsVerification: () => { order.push('needs'); return Promise.resolve(true); },
-    generateMagicLink: () => { order.push('link'); return Promise.resolve(magicLink()); },
-    deliver: () => { order.push('deliver'); return Promise.resolve({ outcome: 'failed', httpStatus: null, detail: 'down' }); },
-  })), admin);
-  assertEquals(order, ['reserve', 'needs', 'link', 'deliver']);
 });
 
 Deno.test('a limiter that cannot answer fails closed', async () => {
@@ -672,11 +587,9 @@ Deno.test('an exception inside the endpoint replies a fixed 503 with none of its
 
 Deno.test('an untrustworthy action link is never emailed', async () => {
   const { sent, deliver } = recordingDeliver();
-  const response = await run(postRequest({ email: 'ada@example.com' }), resendEndpoint(flowDeps({
+  const response = await run(postRequest({ email: 'ada@example.com', flow: 'affiliate' }), recoveryEndpoint(flowDeps({
     deliver,
-    accountState: () => Promise.resolve('confirmed'),
-    affiliateEmailNeedsVerification: () => Promise.resolve(true),
-    generateMagicLink: () => Promise.resolve({
+    generateRecoveryLink: () => Promise.resolve({
       status: 'ok', link: { actionLink: 'https://evil.example/auth/v1/verify?token=x', email: 'ada@example.com', displayName: '' },
     }),
   })));

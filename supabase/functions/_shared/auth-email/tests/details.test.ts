@@ -29,9 +29,13 @@ const NEW = 'ada.new@example.com';
 
 interface World {
   answers?: Record<string, unknown | ((args: Record<string, unknown>) => unknown)>;
-  user?: { id: string } | null;
+  user?: { id: string; email: string | null } | null;
+  /** M6: what the ip + address reservation answers (default allowed). */
+  reserve?: { allowed: boolean; retryAfterSeconds: number } | null;
   loginOk?: boolean | ((email: string) => boolean);
   sendOk?: boolean;
+  /** M6: what the day's budget answers, per ask (default always 'ok'). */
+  slots?: ('ok' | 'full' | 'unavailable')[];
 }
 
 function world(w: World = {}) {
@@ -39,9 +43,17 @@ function world(w: World = {}) {
   const emails: { kind: string; to: string; body: string }[] = [];
   const logins: string[] = [];
   const logs: string[] = [];
+  const takes: { loginEmail?: string; userId?: string; recipientEmail?: string }[] = [];
+  const reserves: string[] = [];
+  const order: string[] = [];
+  let asked = 0;
   const deps: DetailsDeps = {
-    readUser: async (token) => (token === 'good' ? (w.user === undefined ? { id: UID } : w.user) : null),
+    takeSend: async (opts) => { order.push('take'); takes.push(opts); const i = asked++; return w.slots?.[i] ?? 'ok'; },
+    reserveResend: async (email) => { order.push('reserve'); reserves.push(email); return w.reserve === undefined ? { allowed: true, retryAfterSeconds: 0 } : w.reserve; },
+    sendVerifyCode: async (to, code) => { emails.push({ kind: 'verify', to, body: code }); return w.sendOk ?? true; },
+    readUser: async (token) => (token === 'good' ? (w.user === undefined ? { id: UID, email: OLD } : w.user) : null),
     rpc: async (fn, args): Promise<RpcAnswer> => {
+      if (fn === 'affiliate_email_code_issue') order.push('issue');
       calls.push({ fn, args });
       const a = w.answers?.[fn];
       const data = typeof a === 'function' ? (a as (x: Record<string, unknown>) => unknown)(args) : a;
@@ -56,7 +68,7 @@ function world(w: World = {}) {
     sendChanged: async (to, changes) => { emails.push({ kind: 'changed', to, body: JSON.stringify(changes) }); return true; },
     log: (event, fields) => logs.push(`${event} ${JSON.stringify(fields)}`),
   };
-  return { deps, calls, emails, logins, logs };
+  return { deps, calls, emails, logins, logs, takes, reserves, order, asked: () => asked };
 }
 
 const applied = (changes: Record<string, string>, notifyTo = OLD) =>
@@ -264,4 +276,125 @@ Deno.test('the two emails: the code shows only six digits; the notice lists what
   assert(notice.text.includes('From now on, sign in with your new email.') && notice.html.includes('From now on, sign in with your new email.'));
   const noEmail = renderDetailsChanged({ phone: '+61255500101' }, '2026-11-03T04:00:00Z', 'info@example.com');
   assert(!noEmail.text.includes('sign in with') && !noEmail.html.includes('sign in with'));
+});
+
+Deno.test('M6: a code takes a slot first; a spent budget answers 429 email_limit (not too_many_requests) and sends no code', async () => {
+  const answers = { affiliate_detail_change_start: { request_id: RID, route: 'code', next: 'code', send: { to: OLD, code: '482913', purpose: 'current' } } };
+  const full = world({ answers, slots: ['full'] });
+  const a = await handleDetailsRequest('good', { action: 'start', changes: { first_name: 'Ada' } }, full.deps);
+  assertEquals(a.status, 429);
+  assertEquals(a.body, { error: 'email_limit' }, 'the page words too_many_requests as "several changes today"');
+  assertEquals(full.emails, [], 'no code was sent');
+  assert(!full.logs.join('\n').includes('482913'));
+
+  const down = world({ answers, slots: ['unavailable'] });
+  const b = await handleDetailsRequest('good', { action: 'start', changes: { first_name: 'Ada' } }, down.deps);
+  assertEquals(b.status, 503, 'a limiter that cannot answer fails closed');
+  assertEquals(down.emails, []);
+
+  const ok = world({ answers });
+  await handleDetailsRequest('good', { action: 'start', changes: { first_name: 'Ada' } }, ok.deps);
+  assertEquals(ok.asked(), 1);
+  assertEquals(ok.emails.length, 1);
+});
+
+Deno.test('M6: a "details changed" notice takes a slot; a refused one is skipped and the change still stands', async () => {
+  const answers = {
+    affiliate_detail_change_start: { request_id: RID, route: 'free', next: 'apply', apply: plan() },
+    affiliate_detail_change_finish: applied({ phone: '+61255500101' }),
+  };
+  const full = world({ answers, slots: ['full'] });
+  const a = await handleDetailsRequest('good', { action: 'start', changes: { phone: '+61 2 5550 0101' } }, full.deps);
+  assertEquals(a.status, 200);
+  assertEquals(a.body.status, 'applied');
+  assertEquals(full.emails, [], 'the notice was skipped');
+  assert(full.logs.some(l => l.startsWith('affiliate_details.changed_notice_skipped_budget')));
+
+  const ok = world({ answers });
+  await handleDetailsRequest('good', { action: 'start', changes: { phone: '+61 2 5550 0101' } }, ok.deps);
+  assertEquals(ok.asked(), 1);
+  assertEquals(ok.emails.length, 1);
+});
+
+Deno.test('M6: the code that verifies the login email: her own session, reserve, issue, take without a hash, send', async () => {
+  const t = world({ answers: { affiliate_email_code_issue: { status: 'issued', code: '482913', email: OLD, expires_in_seconds: 900 } } });
+  const a = await handleDetailsRequest('good', { action: 'verify_email_send', email: 'someone.else@example.invalid' }, t.deps);
+  assertEquals(a, { status: 200, body: { status: 'sent' } });
+  assertEquals(t.reserves, [OLD], 'counted against the login of the token, never an address from the body');
+  assertEquals(t.calls, [{ fn: 'affiliate_email_code_issue', args: { p_auth_user_id: UID } }]);
+  assertEquals(t.order, ['reserve', 'take', 'issue'], 'reserve, then the slot, then the code');
+  assertEquals(t.takes, [{ userId: UID }], 'no email hash (the reservation already counted the address), the caller\'s id picks the pool');
+  assertEquals(t.emails, [{ kind: 'verify', to: OLD, body: '482913' }], 'to the address the database returned');
+  assert(!JSON.stringify(a).includes('482913') && !t.logs.join('\n').includes('482913'));
+});
+
+Deno.test('M6: verify_email_send needs a session, and refuses before anything is issued', async () => {
+  for (const token of [null, 'bad']) {
+    const t = world();
+    assertEquals((await handleDetailsRequest(token, { action: 'verify_email_send' }, t.deps)).status, 401);
+    assertEquals(t.calls.length + t.reserves.length + t.emails.length, 0);
+  }
+  const full = world({ reserve: { allowed: false, retryAfterSeconds: 600 } });
+  const a = await handleDetailsRequest('good', { action: 'verify_email_send' }, full.deps);
+  assertEquals(a.status, 429);
+  assert(String(a.body.message).includes('10 minutes'));
+  assertEquals(full.calls.length, 0, 'nothing issued');
+  assertEquals(full.emails.length, 0);
+  const down = world({ reserve: null });
+  assertEquals((await handleDetailsRequest('good', { action: 'verify_email_send' }, down.deps)).status, 503);
+});
+
+Deno.test('M6: nothing to verify is "not_needed": the slot was taken first, nothing is sent', async () => {
+  const t = world({ answers: { affiliate_email_code_issue: { status: 'none' } } });
+  const a = await handleDetailsRequest('good', { action: 'verify_email_send' }, t.deps);
+  assertEquals(a, { status: 200, body: { status: 'not_needed' } });
+  assertEquals(t.asked(), 1, 'the slot is spent; the per-address reserve bounds that');
+  assertEquals(t.emails.length, 0);
+});
+
+Deno.test('M6: a refused take on her own code is 429 too_many_requests, with no code sent', async () => {
+  const issued = { status: 'issued', code: '482913', email: OLD, expires_in_seconds: 900 };
+  const full = world({ answers: { affiliate_email_code_issue: issued }, slots: ['full'] });
+  assertEquals(await handleDetailsRequest('good', { action: 'verify_email_send' }, full.deps), { status: 429, body: { error: 'too_many_requests' } });
+  assertEquals(full.emails.length, 0);
+  assertEquals(full.calls.length, 0, 'a refused take issues nothing, so her current code stays as it is');
+  const down = world({ answers: { affiliate_email_code_issue: issued }, slots: ['unavailable'] });
+  assertEquals((await handleDetailsRequest('good', { action: 'verify_email_send' }, down.deps)).status, 503);
+  const bad = world({ answers: { affiliate_email_code_issue: { status: 'issued', code: 'abc', email: OLD } } });
+  assertEquals((await handleDetailsRequest('good', { action: 'verify_email_send' }, bad.deps)).status, 503);
+  const notSent = world({ answers: { affiliate_email_code_issue: issued }, sendOk: false });
+  assertEquals((await handleDetailsRequest('good', { action: 'verify_email_send' }, notSent.deps)).status, 502);
+});
+
+Deno.test('M6: codes and notices count against the login\'s own address (493: not the recipient\'s)', async () => {
+  const lost = world({ answers: { affiliate_detail_change_start_lost_inbox: { request_id: RID, next: 'code', send: { to: NEW, code: '482913', purpose: 'new' } } } });
+  await handleDetailsRequest('good', { action: 'start', lost_inbox: true, changes: { email: NEW } }, lost.deps);
+  assertEquals(lost.takes, [{ loginEmail: OLD, userId: UID, recipientEmail: NEW }], 'keyed on the login, though the code goes to the new address');
+  const free = world({ answers: {
+    affiliate_detail_change_start: { request_id: RID, route: 'free', next: 'apply', apply: plan() },
+    affiliate_detail_change_finish: applied({ phone: '+61255500101' }),
+  } });
+  await handleDetailsRequest('good', { action: 'start', changes: { phone: '+61 2 5550 0101' } }, free.deps);
+  assertEquals(free.takes, [{ loginEmail: OLD, userId: UID }]);
+});
+
+Deno.test('M6: a code to an address she typed passes the recipient too; one to her own login address does not', async () => {
+  const verify = world({ answers: { affiliate_detail_change_verify: { request_id: RID, next: 'code', send: { to: NEW, code: '120034', purpose: 'new' } } } });
+  await handleDetailsRequest('good', { action: 'verify', request_id: RID, code: '482913' }, verify.deps);
+  assertEquals(verify.takes, [{ loginEmail: OLD, userId: UID, recipientEmail: NEW }], 'the new email proving itself');
+  const own = world({ answers: { affiliate_detail_change_start: { request_id: RID, route: 'code', next: 'code', send: { to: OLD.toUpperCase(), code: '482913', purpose: 'current' } } } });
+  await handleDetailsRequest('good', { action: 'start', changes: { first_name: 'Ada' } }, own.deps);
+  assertEquals(own.takes, [{ loginEmail: OLD, userId: UID }], 'her own address: no recipient');
+});
+
+Deno.test('M6: the details-changed notice to the new address (a staff decision) passes the recipient', async () => {
+  const t = world({ answers: {
+    affiliate_detail_change_decide: { request_id: RID, next: 'apply', apply: plan(NEW) },
+    affiliate_detail_change_finish: applied({ email: NEW }),
+  } });
+  await handleDetailsRequest('good', { action: 'decide', request_id: RID, approve: true }, t.deps);
+  assertEquals(t.takes, [
+    { loginEmail: OLD, userId: UID },
+    { loginEmail: OLD, userId: UID, recipientEmail: NEW },
+  ], 'the old address first (her own), then the new one with its recipient');
 });

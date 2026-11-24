@@ -35,7 +35,7 @@ const VerifyEmailBanner: React.FC = () => {
   const send = async () => {
     if (busy || !email) return;
     setBusy(true); setSent(null);
-    const result = await sendVerificationEmail(uid, email);
+    const result = await sendVerificationEmail(uid, email, 'account');
     setBusy(false);
     if (result.verified) setVerified(true);
     setSent(result);
@@ -56,7 +56,7 @@ const VerifyEmailBanner: React.FC = () => {
       <div className="portal-break" style={{ flex: '1 1 auto', minWidth: 0 }}>
         <strong style={{ display: 'block', fontSize: 14, marginBottom: 4 }}>Please verify your email</strong>
         <p style={{ lineHeight: 1.6, marginBottom: 10 }}>
-          Energia will send a link to <b>{email}</b>. Open it to confirm the address is yours.
+          Energia will send a 6-digit code to <b>{email}</b>. Enter it on your Account page to confirm the address is yours.
         </p>
         {sent && (
           <p role={sent.ok ? 'status' : 'alert'} style={{ lineHeight: 1.6, marginBottom: 10, fontWeight: 600, color: sent.ok ? undefined : 'var(--danger)' }}>

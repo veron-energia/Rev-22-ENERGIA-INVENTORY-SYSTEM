@@ -30,6 +30,8 @@ export const AUTH_EMAIL_COPY: {
   signupExistingHint: string;
   signupEmailInUse: string;
   verifyEmailSent: string;
+  verifyEmailSentElsewhere: string;
+  verifyEmailLimit: string;
   resendSubmitted: string;
   recoverySubmitted: string;
   notSent: string;
@@ -37,5 +39,6 @@ export const AUTH_EMAIL_COPY: {
   network: string;
   unauthorized: string;
 };
+export function verifyCodeMessage(reason: unknown, triesLeft?: number): string;
 export function interpretAuthEmailResponse(httpStatus: number, body: unknown): AuthEmailResult;
 export function interpretPasswordChange(httpStatus: number, body: unknown): PasswordChangeResult;

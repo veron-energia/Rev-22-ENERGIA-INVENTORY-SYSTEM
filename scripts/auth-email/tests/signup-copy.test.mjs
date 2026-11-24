@@ -55,8 +55,9 @@ test('437: the email-in-use copy says so and names both next steps', () => {
   assert.match(c, /reset your password/);
 });
 
-test('437: the verification copy points at the inbox, not at a wait', () => {
+test('M6: the verification copy points at the inbox and a code, not at a link', () => {
   const c = AUTH_EMAIL_COPY.verifyEmailSent.toLowerCase();
-  assert.match(c, /verification link/);
+  assert.match(c, /6-digit code/);
+  assert.doesNotMatch(c, /link/);
   assert.match(c, /spam/);
 });

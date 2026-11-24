@@ -12,9 +12,10 @@ import type { AccountState, CreateOutcome, GenerateOutcome } from './admin.ts';
 import type { DeliveryRequest, DeliveryResult } from './pabbly.ts';
 import type { ExistingAffiliate } from './existing.ts';
 import type { EndpointResult, PublicEndpoint, PublicContext } from './pipeline.ts';
-import { validateEmailOnly, validateRecovery, validateSignup, type RecoveryFlow, type SignupInput } from './validate.ts';
+import { validateRecovery, validateSignup, type RecoveryFlow, type SignupInput } from './validate.ts';
 import { callbackUrl, isTrustedActionLink } from './redirects.ts';
-import { renderPasswordRecovery, renderVerifyEmail, renderVerifySignup } from './templates.ts';
+import { renderPasswordRecovery } from './templates.ts';
+import { take, type TakeBucket, type TakeWho } from './ratelimit.ts';
 
 // deno-lint-ignore no-explicit-any
 type Admin = any;
@@ -25,11 +26,6 @@ export interface FlowDeps {
   affiliateSignupExisting: (admin: Admin, args: { email: string; phone: string; name: string; requestId: string }) => Promise<ExistingAffiliate>;
   /** 437: the affiliate sign-up's login, made already confirmed. */
   createConfirmedSignup: (admin: Admin, args: { email: string; password: string; metadata: Record<string, unknown> }) => Promise<CreateOutcome>;
-  regenerateSignupLink: (admin: Admin, args: { email: string; redirectTo: string }) => Promise<GenerateOutcome>;
-  /** 437: the Account page's verification email holds a sign-in link. */
-  generateMagicLink: (admin: Admin, args: { email: string; redirectTo: string }) => Promise<GenerateOutcome>;
-  /** 437: a confirmed affiliate login whose email the app has not verified yet. */
-  affiliateEmailNeedsVerification: (admin: Admin, email: string) => Promise<boolean>;
   generateRecoveryLink: (admin: Admin, args: { email: string; redirectTo: string }) => Promise<GenerateOutcome>;
   deliver: (config: AuthEmailConfig, request: DeliveryRequest) => Promise<DeliveryResult>;
   normalizePhone: (raw: string) => string | null;
@@ -37,44 +33,18 @@ export interface FlowDeps {
 }
 
 /**
- * Send an email for a link we have just generated and trust: the old sign-up
- * verification (a login made before 437 and never confirmed), or the Account
- * page's verification email (437).
+ * M6: take one slot of an overall ceiling, right before the thing it limits.
+ * Returns the refusal to answer with, or null when the slot was taken. A
+ * limiter that cannot answer throws RateLimiterUnavailableError: the request
+ * ends in the usual 503 and nothing is made or sent.
+ *
+ * Only sign-up answers a refusal with the 429. Recovery answers it as a
+ * suppression (200, "submitted"), the same as an address with no login:
+ * otherwise a spent budget would tell who has a login.
  */
-async function sendVerification(
-  ctx: PublicContext<unknown>,
-  deps: FlowDeps,
-  outcome: GenerateOutcome,
-  name: string,
-  kind: 'signup' | 'email' = 'signup',
-): Promise<EndpointResult> {
-  if (outcome.status === 'already_confirmed') return { kind: 'suppressed', reason: 'already_verified' };
-  if (outcome.status === 'no_such_user') return { kind: 'suppressed', reason: 'no_account' };
-  if (outcome.status === 'error') return { kind: 'internal_error', detail: outcome.message };
-
-  if (!isTrustedActionLink(outcome.link.actionLink, ctx.config)) {
-    return { kind: 'internal_error', detail: 'generated link failed origin validation' };
-  }
-
-  const email = kind === 'email'
-    ? renderVerifyEmail(name || outcome.link.displayName, outcome.link.actionLink)
-    : renderVerifySignup(name || outcome.link.displayName, outcome.link.actionLink);
-  return {
-    kind: 'delivered',
-    result: await deps.deliver(ctx.config, {
-      requestId: ctx.requestId,
-      // Both go through the workflow's affiliate verification route; the
-      // subject and the content are built here.
-      actionType: 'verify_signup',
-      // The recipient is the address Supabase holds for the account, never a
-      // value from the request body.
-      to: outcome.link.email,
-      subject: email.subject,
-      html: email.html,
-      text: email.text,
-      recipientRole: 'affiliate',
-    }),
-  };
+async function takeSlot(ctx: PublicContext<unknown>, bucket: TakeBucket, who: TakeWho = {}): Promise<EndpointResult | null> {
+  const taken = await take(ctx.admin, bucket, who);
+  return taken.allowed ? null : { kind: 'take_refused', bucket, retryAfterSeconds: taken.retryAfterSeconds, action: taken.action };
 }
 
 /**
@@ -146,6 +116,11 @@ export function signupEndpoint(deps: FlowDeps): PublicEndpoint<SignupInput> {
         return { kind: 'affiliate_exists', matched: 'phone' };
       }
 
+      // M6: the overall ceiling (30 new logins an hour), taken last, so a
+      // duplicate try above uses no slot.
+      const refused = await takeSlot(ctx, 'signup');
+      if (refused) return refused;
+
       const outcome = await deps.createConfirmedSignup(ctx.admin, {
         email: ctx.value.email,
         password: ctx.value.password,
@@ -170,48 +145,28 @@ export function signupEndpoint(deps: FlowDeps): PublicEndpoint<SignupInput> {
   };
 }
 
-/**
- * Resend, and the Account page's "Send verification email" (437).
- *
- *   * A login from before 437 that was never confirmed gets a fresh sign-up
- *     link, as before: the password untouched, no metadata written.
- *   * A confirmed affiliate login whose email the app has not verified gets
- *     the verification email: a sign-in link to /affiliate/verify, which
- *     marks the email verified (confirm_affiliate_email()).
- *   * Anything else gets nothing.
- * The response is the same in every case, so it tells no one whether the
- * address has a login.
- */
-export function resendEndpoint(deps: FlowDeps): PublicEndpoint<{ email: string }> {
-  return {
-    action: 'resend',
-    parse: (body) => validateEmailOnly(body),
-    emailOf: (value) => value.email,
-    run: async (ctx) => {
-      const state = await deps.accountState(ctx.admin, ctx.value.email);
-      if (state === 'none') return { kind: 'suppressed', reason: 'no_account' };
-
-      const redirectTo = callbackUrl(ctx.config, 'affiliate_signup', ctx.origin);
-      if (state === 'unconfirmed') {
-        const outcome = await deps.regenerateSignupLink(ctx.admin, { email: ctx.value.email, redirectTo });
-        return await sendVerification(ctx, deps, outcome, '');
-      }
-
-      if (!(await deps.affiliateEmailNeedsVerification(ctx.admin, ctx.value.email))) {
-        return { kind: 'suppressed', reason: 'already_verified' };
-      }
-      const outcome = await deps.generateMagicLink(ctx.admin, { email: ctx.value.email, redirectTo });
-      return await sendVerification(ctx, deps, outcome, '', 'email');
-    },
-  };
-}
-
 export function recoveryEndpoint(deps: FlowDeps): PublicEndpoint<{ email: string; flow: RecoveryFlow }> {
   return {
     action: 'recovery',
     parse: (body) => validateRecovery(body),
     emailOf: (value) => value.email,
     run: async (ctx) => {
+      // M6: the daily budget is taken BEFORE Supabase makes the link, so a
+      // refused take leaves no new link nobody receives (a new recovery link
+      // probably ends the one the person already holds). The database finds
+      // the login by the typed address and chooses the pool itself (staff 20 a
+      // day, everyone else 60); the request's 'flow' is never passed.
+      //   no login           -> action 'no_login', nothing inserted: 'no_account'
+      //   any other refusal  -> '<action>_full'
+      // Both are answered silently, exactly like each other: 200 "submitted",
+      // no Retry-After (the reset page already says an email is sent only if
+      // the account exists).
+      const refused = await takeSlot(ctx, 'send', { lookupEmail: ctx.value.email });
+      if (refused) {
+        const action = refused.kind === 'take_refused' ? refused.action : undefined;
+        return { kind: 'suppressed', reason: action === 'no_login' ? 'no_account' : `${action ?? 'send'}_full` };
+      }
+
       const redirectTo = callbackUrl(
         ctx.config,
         ctx.value.flow === 'staff' ? 'staff_recovery' : 'affiliate_recovery',
@@ -219,7 +174,7 @@ export function recoveryEndpoint(deps: FlowDeps): PublicEndpoint<{ email: string
       );
       const outcome = await deps.generateRecoveryLink(ctx.admin, { email: ctx.value.email, redirectTo });
 
-      // No account for this address: nothing sent, nothing revealed.
+      // No account after all (only a race, once the slot is taken): nothing sent, nothing revealed.
       if (outcome.status === 'no_such_user' || outcome.status === 'already_confirmed') {
         return { kind: 'suppressed', reason: 'no_account' };
       }
@@ -228,7 +183,7 @@ export function recoveryEndpoint(deps: FlowDeps): PublicEndpoint<{ email: string
         return { kind: 'internal_error', detail: 'generated link failed origin validation' };
       }
 
-      const email = renderPasswordRecovery(outcome.link.displayName, outcome.link.actionLink);
+      const email = renderPasswordRecovery('', outcome.link.actionLink);
       return {
         kind: 'delivered',
         result: await deps.deliver(ctx.config, {

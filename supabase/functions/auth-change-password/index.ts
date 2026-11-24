@@ -40,7 +40,7 @@ import { bearerToken, changeOwnPassword, checkCurrentPassword, readOwnAccount } 
 import { changeOwnPasswordRequest } from '../_shared/auth-email/change.ts';
 import { renderPasswordChanged } from '../_shared/auth-email/templates.ts';
 import { deliver } from '../_shared/auth-email/pabbly.ts';
-import { hashKey } from '../_shared/auth-email/ratelimit.ts';
+import { hashKey, takeSendSlot } from '../_shared/auth-email/ratelimit.ts';
 import { logEvent, newRequestId, recordOutcome, safeDetail } from '../_shared/auth-email/diagnostics.ts';
 
 Deno.serve(async (req) => {
@@ -86,8 +86,23 @@ Deno.serve(async (req) => {
         // The label only steers the email's wording; the change is already made.
       }
 
+      // M6: the notice takes one slot of the day's budget of 60 verify and
+      // reset emails. A refused or unanswered slot skips it: the password is
+      // changed already, and the notice is best effort.
+      // Also against this login's own cap of sends a day (its current address), in
+      // the pool the database picks from the login's id (staff 20 a day, others 60).
+      const slot = await takeSendSlot(admin, { emailHash: recipientHash, userId: change.userId });
+      if (slot.result !== 'ok') {
+        if (slot.result === 'full') {
+          await recordOutcome(admin, { requestId, action: 'password_change', outcome: 'suppressed', recipientHash, detail: 'rate_limited:send' });
+        }
+        logEvent(slot.result === 'full' ? 'auth_email.notification_skipped_budget' : 'auth_email.limiter_unavailable',
+          { action: 'password_change', request_id: requestId, retry_after: slot.retryAfterSeconds });
+        return false;
+      }
+
       try {
-        const message = renderPasswordChanged(change.displayName, change.changedAt, config.replyTo);
+        const message = renderPasswordChanged('', change.changedAt, config.replyTo);
         const result = await deliver(config, {
           requestId,
           actionType: 'password_changed',

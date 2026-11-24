@@ -77,6 +77,8 @@ begin;
 \ir confirm-email-as-484.sql
 -- 509 (17 Nov 2026): where it is in, the four functions it changes are put back for this run (see the file).
 \ir ../../affiliate-signup/tests/portal-as-before-509.sql
+-- 531 (security audit of 17 Nov 2026, M6): where it is in, the sign-up is 508's for this run first (see the file).
+\ir ../../affiliate-signup/tests/onboarding-as-before-531.sql
 -- 508 (17 Nov 2026) patches the sign-up (complete_affiliate_onboarding: every login joined to a record that was there
 -- before is listed for staff). 484's file, run again below, relies on 469's text (1b9dfc81...), so where 508 is in the
 -- sign-up is put back to it for the run, which is rolled back: 508's one replacement there, reversed. Anywhere else this

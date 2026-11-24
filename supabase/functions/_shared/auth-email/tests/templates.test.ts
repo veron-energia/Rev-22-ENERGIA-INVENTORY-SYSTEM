@@ -4,20 +4,21 @@
 import { assert, assertEquals, assertFalse, assertStringIncludes } from 'jsr:@std/assert@1';
 import {
   SUBJECTS, escapeHtml, headerSafe, formatWhen,
-  renderVerifySignup, renderVerifyEmail, renderPasswordRecovery, renderPasswordChanged,
+  renderVerifySignup, renderVerifyCode, renderPasswordRecovery, renderPasswordChanged, renderUserInvitation,
   renderDetailsCode, renderDetailsChanged,
 } from '../templates.ts';
-import { ACTION_LINK, MAGIC_LINK } from './support.ts';
+import { ACTION_LINK, VERIFY_CODE } from './support.ts';
 
 Deno.test('subjects are exactly the agreed wording', () => {
   assertEquals(SUBJECTS.verify_signup, 'Verify Your Energia Affiliate Account');
-  assertEquals(SUBJECTS.verify_email, 'Verify Your Energia Email Address');
+  assertEquals(SUBJECTS.verify_code, 'Your Energia Verification Code');
   assertEquals(SUBJECTS.password_recovery, 'Reset Your Energia Password');
   assertEquals(SUBJECTS.password_changed, 'Your Energia Password Was Changed');
 });
 
 Deno.test('a name carrying markup cannot become markup', () => {
-  const email = renderVerifySignup('<img src=x onerror="alert(1)">', ACTION_LINK);
+  // The invitation is the one email that names a person: the name staff typed.
+  const email = renderUserInvitation('<img src=x onerror="alert(1)">', ACTION_LINK);
   assertFalse(email.html.includes('<img'), 'raw tag must not survive');
   assertFalse(email.html.includes('onerror="'), 'raw attribute must not survive');
   assertStringIncludes(email.html, '&lt;img');
@@ -26,7 +27,7 @@ Deno.test('a name carrying markup cannot become markup', () => {
 
 Deno.test('a name carrying a newline cannot inject a header', () => {
   assertEquals(headerSafe('Ada\r\nBcc: victim@example.com'), 'Ada Bcc: victim@example.com');
-  const email = renderVerifySignup('Ada\r\nBcc: victim@example.com', ACTION_LINK);
+  const email = renderUserInvitation('Ada\r\nBcc: victim@example.com', ACTION_LINK);
   assertFalse(email.subject.includes('\n'));
   assertFalse(email.subject.includes('\r'));
   // The greeting is one line: nothing in it can start a new header downstream.
@@ -35,8 +36,7 @@ Deno.test('a name carrying a newline cannot inject a header', () => {
 });
 
 Deno.test('both emails carry the action link in HTML and plain text', () => {
-  for (const email of [renderVerifySignup('Ada', ACTION_LINK), renderPasswordRecovery('Ada', ACTION_LINK),
-                       renderVerifyEmail('Ada', ACTION_LINK)]) {
+  for (const email of [renderVerifySignup('Ada', ACTION_LINK), renderPasswordRecovery('Ada', ACTION_LINK)]) {
     assertStringIncludes(email.html, escapeHtml(ACTION_LINK));
     assertStringIncludes(email.text, ACTION_LINK);
     assert(email.text.length > 80, 'plain-text alternative must be real text');
@@ -86,19 +86,29 @@ Deno.test('a missing name produces a greeting, not "Hi undefined"', () => {
   assertStringIncludes(renderPasswordRecovery('   ', ACTION_LINK).text, 'Hi,');
 });
 
-Deno.test('437: the Account page verification email says what the link does, and escapes the name', () => {
-  const email = renderVerifyEmail('<b>Ada</b>', MAGIC_LINK);
-  assertEquals(email.subject, 'Verify Your Energia Email Address');
-  assertStringIncludes(email.html, 'Verify My Email');
-  assertStringIncludes(email.text, MAGIC_LINK);
-  assertStringIncludes(email.text, 'marks your email as verified');
-  assertFalse(email.html.includes('<b>Ada'), 'the name is escaped');
-  assertStringIncludes(email.html, '&lt;b&gt;Ada');
+Deno.test('M6: the Account page verification email carries the code and no link that verifies', () => {
+  const email = renderVerifyCode(VERIFY_CODE);
+  assertEquals(email.subject, 'Your Energia Verification Code');
+  for (const part of [email.html, email.text]) {
+    assertStringIncludes(part, VERIFY_CODE);
+    assertStringIncludes(part, 'Enter this code on the Account page within 15 minutes');
+    assertStringIncludes(part, 'Energia staff will never ask you for this code.');
+    assertStringIncludes(part, 'If you did not create an Energia affiliate account, ignore this email.');
+    assertFalse(/https?:\/\//.test(part), 'no link in the code email');
+    assertFalse(part.includes('/auth/v1/verify'));
+  }
+  assertFalse(email.html.includes('<a '), 'nothing to click');
+});
+
+Deno.test('M6: only six digits are printed as a code, anything else is dropped', () => {
+  const email = renderVerifyCode('<b>1</b>');
+  assertFalse(email.html.includes('<b>1</b>'));
+  assertFalse(email.text.includes('<b>'));
 });
 
 Deno.test('492: the emails an affiliate gets speak as Energia, never "we", "our" or "us"', () => {
   const emails = {
-    verify_signup: renderVerifySignup('Ada', ACTION_LINK), verify_email: renderVerifyEmail('Ada', MAGIC_LINK),
+    verify_signup: renderVerifySignup('Ada', ACTION_LINK), verify_code: renderVerifyCode(VERIFY_CODE),
     password_recovery: renderPasswordRecovery('Ada', ACTION_LINK),
     password_changed: renderPasswordChanged('Ada', '2026-11-03T04:00:00Z', 'info@example.com'),
     details_code: renderDetailsCode('482913', 'current'),
@@ -114,4 +124,21 @@ Deno.test('492: the emails an affiliate gets speak as Energia, never "we", "our"
     assertStringIncludes(emails[name].text, 'If it was not you, please contact Energia straight away at info@example.com.');
     assertStringIncludes(emails[name].html, 'please contact Energia straight away');
   }
+});
+
+Deno.test('M6: no email but an invitation carries a typed name: the greeting is "Hi,"', () => {
+  const typed = 'Mallory Typedname';
+  const emails = [
+    renderVerifySignup(typed, ACTION_LINK), renderPasswordRecovery(typed, ACTION_LINK),
+    renderPasswordChanged(typed, '2026-11-03T04:00:00Z', 'info@example.com'),
+    renderVerifyCode(VERIFY_CODE), renderDetailsCode('482913', 'current'),
+    renderDetailsChanged({ phone: '+61491570101' }, '2026-11-03T04:00:00Z', 'info@example.com'),
+  ];
+  for (const email of emails) {
+    assertFalse(email.html.includes(typed) || email.text.includes(typed), email.subject);
+    assertEquals(email.text.split('\n')[0], 'Hi,', email.subject);
+    assertStringIncludes(email.html, 'Hi,</p>');
+  }
+  // The invitation names the person staff typed on Users & Roles.
+  assertStringIncludes(renderUserInvitation(typed, ACTION_LINK).text, `Hi ${typed},`);
 });

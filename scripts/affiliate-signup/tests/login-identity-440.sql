@@ -778,7 +778,8 @@ select pg_temp.check(not has_function_privilege('anon', 'public.complete_affilia
   'G2 the sign-up stays the signed-in login''s; /r/ stays the anon key''s');
 select pg_temp.check(md5(pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure))
           in ('43084deab54968eacaf1793c470fd08f', '1b9dfc819b860dcb19244063a4628f47',
-              '0dd12d4c9cef8b86bb1bcc02a5344927')  -- 508's AFTER (17 Nov 2026; 469's, patched)
+              '0dd12d4c9cef8b86bb1bcc02a5344927',  -- 508's AFTER (17 Nov 2026; 469's, patched)
+              '15f677725266f658f552051ae61e6d71')  -- 531's AFTER (security audit of 17 Nov 2026, M6; 508's, patched)
     and md5(pg_get_functiondef('public.affiliate_referral_signup(text,text,text,text,text,text)'::regprocedure))
           in ('a3deac154f5144cffb34fab871f076c6', 'c76573912de0a4ded29e81e5c56c96d3', '2942e3d4d0e8c76600c3e0ad5e15cc2b',
               '00d528c6f4cc9240b2cf2f82ea2bd487')  -- 529's AFTER (19 Nov 2026; 469's, patched)

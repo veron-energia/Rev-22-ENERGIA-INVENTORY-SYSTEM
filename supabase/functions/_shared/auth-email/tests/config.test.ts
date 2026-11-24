@@ -39,7 +39,6 @@ Deno.test('a complete environment loads, with sensible defaults', () => {
     assertEquals(config.publicAppUrl, 'https://rev-22-energia-inventory-system.vercel.app', 'trailing slash trimmed');
     assertEquals(config.replyTo, 'info@rev22.com.sg', 'reply-to defaults to the sender');
     assertEquals(config.callbackBaseUrls, [config.publicAppUrl], 'production only until test URLs are configured');
-    assertEquals(config.trustedProxyHops, 1);
     assertEquals(config.pabblyTimeoutMs, 10_000, 'bounded at about ten seconds');
   });
 });

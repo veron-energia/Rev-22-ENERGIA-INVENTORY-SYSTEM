@@ -86,8 +86,9 @@ const where = () => document.querySelector('[data-where]')?.getAttribute('data-w
  * supabase-js does), the tables the app reads, and the server functions.
  */
 function backend({ signedIn = false, amr = 'password', meta = {}, signup, verifiedAt = null, hasAccount = false,
-  staff = false, fail = {}, confirm, resend } = {}) {
+  staff = false, fail = {}, confirm, resend, details } = {}) {
   const listeners = [];
+  let codeAnswer = null;
   const session = () => ({
     access_token: tokenWith({ sub: UID, role: 'authenticated', amr: [{ method: amr, timestamp: Math.floor(Date.now() / 1000) - 60 }] }),
     user: { id: UID, email: EMAIL, user_metadata: meta },
@@ -124,20 +125,27 @@ function backend({ signedIn = false, amr = 'password', meta = {}, signup, verifi
         if (!already) client.tables.affiliate_accounts.push(account());
         return { status: 'active', customer_id: 'cust-1', referral_code: 'T437ADA', already, new_customer: false, email_verified: false };
       },
-      confirm_affiliate_email: confirm ?? (() => {
+      // M6: a session opened from an emailed link no longer verifies; a typed code does.
+      confirm_affiliate_email: confirm ?? (() => (client.tables.affiliate_accounts[0]?.email_verified_at
+        ? { verified: true, already: true } : { verified: false, reason: 'use_code' })),
+      confirm_affiliate_email_code: ({ p_code }) => {
         const row = client.tables.affiliate_accounts[0];
+        if (codeAnswer) return codeAnswer;
+        if (p_code !== '482913') return { verified: false, reason: 'wrong_code', tries_left: 4 };
         const already = !!row.email_verified_at;
         row.email_verified_at ??= '2026-10-21T02:00:00Z';
         return { verified: true, already };
-      }),
+      },
       affiliate_portal_me: () => ({ customer_id: 'cust-1', name: 'Ada Testlovelace', email: EMAIL, referral_code: 'T437ADA',
         status: 'active', joined_at: '2026-10-21T02:00:00Z', account_status: 'claimed', direct_referrals: 0 }),
     },
     invoke: {
       'auth-signup-request': signup ?? (() => ({ data: { ok: true, status: 'created', request_id: 'r1' }, error: null })),
       'auth-resend-verification': resend ?? (() => ({ data: { ok: true, status: 'submitted', request_id: 'r2' }, error: null })),
+      'affiliate-details': details ?? (() => ({ data: { status: 'sent' }, error: null })),
     },
   });
+  client.answerCode = a => { codeAnswer = a; };
   globalThis.__supabase = client;
   return client;
 }
@@ -239,10 +247,10 @@ test('G: the login page sends a login with no affiliate account to finish its si
   assert.doesNotMatch(d.text(), /waiting to be switched on/);
   await d.click(d.button('Send the sign-up link again'));
   assert.deepEqual(client.calls.filter(c => c.fn === 'auth-resend-verification').map(c => c.body), [{ email: EMAIL }]);
-  assert.match(document.querySelector('[data-state="not-confirmed"] [role="status"]')?.textContent ?? '', /a new link is on its way/);
+  assert.match(document.querySelector('[data-state="not-confirmed"] [role="status"]')?.textContent ?? '', /sign in with your password/);
 });
 
-test('A: the Account page shows "Not verified" and sends the verification email to the affiliate\'s own address', async () => {
+test('A: the Account page sends a 6-digit code to the login\'s own address (her session, no address in the body) and verifies it when typed', async () => {
   const client = backend({ signedIn: true, hasAccount: true });
   await d.mount(app('/affiliate/account'));
   await d.tick(10);
@@ -251,20 +259,69 @@ test('A: the Account page shows "Not verified" and sends the verification email 
   assert.equal(badge.textContent, 'Not verified');
   const section = document.querySelector('[data-section="verify-email"]');
   assert.match(section.textContent, /work the same until then/);
+  assert.ok(document.querySelector('#verify-code-input'), 'the code box is there while unverified, before any send (a reloaded tab keeps it)');
+  assert.match(section.querySelector('[data-note="have-code"]')?.textContent ?? '', /Already have a code\? Enter it here\./);
+  assert.ok(d.button('Send verification email', section), 'the button says Send verification email until one is sent in this view');
   await d.click(d.button('Send verification email', section));
-  assert.deepEqual(client.calls.filter(c => c.fn === 'auth-resend-verification').map(c => c.body), [{ email: EMAIL }]);
-  assert.match(section.textContent, /verification link is on its way/);
+  assert.deepEqual(client.calls.filter(c => c.fn === 'affiliate-details').map(c => c.body), [{ action: 'verify_email_send' }]);
+  assert.deepEqual(client.calls.filter(c => c.fn === 'auth-resend-verification'), [], 'the public endpoint is not used');
+  assert.match(section.textContent, /6-digit code is on its way/);
+  assert.ok(d.button('Send a new code', section), 'then Send a new code');
+  assert.ok(d.button('Verify', section), 'the code box and Verify button show');
+  await d.setValue(document.querySelector('#verify-code-input'), '482913');
+  await d.click(d.button('Verify', section));
+  await d.tick(10);
+  assert.deepEqual(rpcs(client, 'confirm_affiliate_email_code').map(c => c.args), [{ p_code: '482913' }]);
+  assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Verified');
+  assert.match(document.querySelector('[data-note="email-verified"]')?.textContent ?? '', /Your email is verified/);
 });
 
-test('A: the verification link signs in at /affiliate/verify, marks the email verified and lands on the Account page', async () => {
+test('A: each refusal of the code has its own words, and a 429 on sending shows the server\'s', async () => {
+  const client = backend({ signedIn: true, hasAccount: true });
+  await d.mount(app('/affiliate/account'));
+  await d.tick(10);
+  const section = () => document.querySelector('[data-section="verify-email"]');
+  // No send in this view: a code already received can be typed straight away.
+  for (const [answer, words] of [
+    [{ verified: false, reason: 'wrong_code', tries_left: 3 }, /That code is not right\. 3 tries left\./],
+    [{ verified: false, reason: 'wrong_code', tries_left: 1 }, /1 try left\./],
+    [{ verified: false, reason: 'expired' }, /That code has expired\. Send a new verification email\./],
+    [{ verified: false, reason: 'no_code' }, /No code is waiting/],
+    [{ verified: false, reason: 'too_many_tries' }, /Too many wrong codes\./],
+    [{ verified: false, reason: 'invalid' }, /Enter the 6 digits/],
+  ]) {
+    client.answerCode(answer);
+    await d.setValue(document.querySelector('#verify-code-input'), '123456');
+    await d.click(d.button('Verify', section()));
+    await d.tick(5);
+    assert.match(section().querySelector('[data-note="code-message"]')?.textContent ?? '', words, JSON.stringify(answer));
+    assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Not verified');
+  }
+  // Fewer than six digits cannot be sent.
+  await d.setValue(document.querySelector('#verify-code-input'), '123');
+  assert.equal(d.button('Verify', section())?.disabled, true);
+  // A limited send shows the server's own words.
+  await d.click(d.button('Send verification email', section()));
+  await d.tick(5);
+  client.invokeHandlers['affiliate-details'] = () => ({ data: { error: 'rate_limited', message: 'Too many attempts just now. Please try again in about 12 minutes.' }, error: null });
+  await d.click(d.button('Send a new code', section()));
+  await d.tick(5);
+  assert.match(section().textContent, /try again in about 12 minutes/);
+  client.invokeHandlers['affiliate-details'] = () => ({ data: { error: 'too_many_requests' }, error: null });
+  await d.click(d.button('Send a new code', section()));
+  await d.tick(5);
+  assert.match(section().textContent, /cannot send any more verification emails just now/);
+});
+
+test('A: the verification link no longer verifies: /affiliate/verify finishes the sign-up and lands on the Account page, which says to use the code', async () => {
   const client = backend({ signedIn: true, hasAccount: true, amr: 'magiclink' });
   await d.mount(app('/affiliate/verify'));
   await d.tick(20);
   assert.equal(rpcs(client, 'confirm_affiliate_email').length, 1);
+  assert.equal(rpcs(client, 'confirm_affiliate_email_code').length, 0);
   assert.equal(where(), '/affiliate/account');
-  assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Verified');
-  assert.match(document.querySelector('[data-note="email-verified"]')?.textContent ?? '', /Your email is verified/);
-  assert.equal(document.querySelector('[data-section="verify-email"]'), null, 'no button once verified');
+  assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Not verified');
+  assert.match(document.querySelector('[data-note="verify-failed"]')?.textContent ?? '', /6-digit code/);
 });
 
 test('A: before 437 is on the server the Account page shows no badge and no button', async () => {
@@ -315,19 +372,6 @@ test('S: the staff screen comes from the server (STAFF_ACCOUNT), not from what t
   assert.equal(where(), '/affiliate/verify');
 });
 
-test('F: a link that could not verify the email lands on the Account page, which says so and offers a new one', async () => {
-  const client = backend({ signedIn: true, hasAccount: true, amr: 'magiclink',
-    confirm: () => ({ verified: false, reason: 'not_from_email_link' }) });
-  await d.mount(app('/affiliate/verify'));
-  await d.tick(20);
-  assert.equal(rpcs(client, 'confirm_affiliate_email').length, 1);
-  assert.equal(where(), '/affiliate/account');
-  assert.equal(document.querySelector('[data-email-verified]')?.textContent, 'Not verified');
-  const section = document.querySelector('[data-section="verify-email"]');
-  assert.match(section?.querySelector('[data-note="verify-failed"]')?.textContent ?? '', /Your email could not be verified from that link\. Send a new one\./);
-  assert.ok(d.button('Send verification email', section));
-});
-
 test('F: a verify page with no session asks the person to sign in (not to edit their details)', async () => {
   const client = backend();
   await d.mount(app('/affiliate/verify'));
@@ -339,9 +383,9 @@ test('F: a verify page with no session asks the person to sign in (not to edit t
 });
 
 test('F: Send on a stale Account page, the email verified meanwhile: says so, and shows Verified', async () => {
-  const client = backend({ signedIn: true, hasAccount: true, resend: () => {
+  const client = backend({ signedIn: true, hasAccount: true, details: () => {
     client.tables.affiliate_accounts[0].email_verified_at = '2026-10-21T04:00:00Z';   // verified in another tab
-    return { data: { ok: true, status: 'submitted', request_id: 'r3' }, error: null };
+    return { data: { status: 'not_needed' }, error: null };
   } });
   await d.mount(app('/affiliate/account'));
   await d.tick(10);

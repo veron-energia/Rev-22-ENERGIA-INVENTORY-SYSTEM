@@ -4,11 +4,15 @@
 -- verifies: 431ff39a... -> 8a0a7036...). 484's file pins the version before it, so running that file again (the
 -- suite's G and U sections) would refuse. For the run, which is rolled back, the version 484 pinned is put back;
 -- 491's own checks are in scripts/affiliate-details/tests/details-491.sql. Anywhere else this changes nothing.
+-- 531 (security audit of 17 Nov 2026, M6) changed it again (no emailed link verifies any more: 8a0a7036... ->
+-- 701c2626...); where 531 is in, the version 484 pinned is put back for the run the same way. 531's own checks
+-- are in scripts/affiliate-signup/tests/signup-limits-and-email-codes-531.sql.
 do $cae484$
 declare v_path text := current_setting('search_path');
 begin
   perform set_config('search_path', 'public', true);
-  if md5(pg_get_functiondef('public.confirm_affiliate_email()'::regprocedure)) = '8a0a7036312cf5dc22dd2beb82b3ce09' then
+  if md5(pg_get_functiondef('public.confirm_affiliate_email()'::regprocedure))
+       in ('8a0a7036312cf5dc22dd2beb82b3ce09', '701c2626748dd8ab80aa4e36a3d2c036') then
     execute $c484$CREATE OR REPLACE FUNCTION public.confirm_affiliate_email()
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -59,7 +63,7 @@ $c484$;
     if md5(pg_get_functiondef('public.confirm_affiliate_email()'::regprocedure)) <> '431ff39aa4fe42ec9b1442e65a044676' then
       raise exception 'confirm-email-as-484: confirm_affiliate_email is not the version 484 pinned after putting it back';
     end if;
-    raise notice '491 is in: confirm_affiliate_email is the version 484 pinned for this run (rolled back at the end)';
+    raise notice '491 (or 531) is in: confirm_affiliate_email is the version 484 pinned for this run (rolled back at the end)';
   end if;
   perform set_config('search_path', v_path, true);
 end $cae484$;

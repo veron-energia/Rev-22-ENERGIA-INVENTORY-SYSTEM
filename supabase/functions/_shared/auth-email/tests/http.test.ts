@@ -1,7 +1,7 @@
 // The request envelope, CORS, and where the client IP is allowed to come from.
 
 import { assert, assertEquals, assertFalse } from 'jsr:@std/assert@1';
-import { corsHeaders, guardRequest, json, notConfigured, NOT_CONFIGURED_MESSAGE, trustedClientIp, MAX_BODY_BYTES } from '../http.ts';
+import { corsHeaders, guardRequest, json, notConfigured, NOT_CONFIGURED_MESSAGE, clientKey, MAX_BODY_BYTES } from '../http.ts';
 import { APP_URL } from './support.ts';
 
 const allowed = [APP_URL];
@@ -90,23 +90,47 @@ Deno.test('responses are never cached', async () => {
   assertEquals(await response.json(), { ok: true });
 });
 
-Deno.test('the client IP is read only from the entry our own proxy wrote', () => {
-  // A caller putting a fake address in front cannot displace the real one.
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '9.9.9.9, 203.0.113.7' } }), 1), '203.0.113.7');
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '203.0.113.7' } }), 1), '203.0.113.7');
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': 'a, b, 203.0.113.7, 10.0.0.1' } }), 2), '203.0.113.7');
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '2001:db8::1' } }), 1), '2001:db8::1');
+const withCf = (value: string | null, extra: Record<string, string> = {}) =>
+  new Request('https://x', { headers: { ...(value === null ? {} : { 'cf-connecting-ip': value }), ...extra } });
+
+Deno.test('M6: the client key of an IPv4 address is the address', () => {
+  assertEquals(clientKey(withCf('203.0.113.7')), '203.0.113.7');
+  assertEquals(clientKey(withCf(' 198.51.100.20 ')), '198.51.100.20');
 });
 
-Deno.test('an unusable forwarded-for yields no IP, never a fabricated one', () => {
-  // null means "email limits only" to the caller; it must never mean "unlimited".
-  assertEquals(trustedClientIp(new Request('https://x'), 1), null);
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '' } }), 1), null);
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': 'not-an-ip' } }), 1), null);
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '999.1.1.1' } }), 1), null);
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-forwarded-for': '203.0.113.7' } }), 3), null);
-  // Headers we have not verified as platform-written are not consulted at all.
-  assertEquals(trustedClientIp(new Request('https://x', { headers: { 'x-real-ip': '203.0.113.7', 'true-client-ip': '203.0.113.7' } }), 1), null);
+Deno.test('M6: IPv4 octets are normalised, so a leading zero is not a new connection', () => {
+  assertEquals(clientKey(withCf('192.000.002.004')), '192.0.2.4');
+  assertEquals(clientKey(withCf('203.000.113.007')), '203.0.113.7');
+  assertEquals(clientKey(withCf('256.1.1.1')), 'unknown');
+});
+
+Deno.test('M6: an IPv4-mapped IPv6 address is its IPv4, in either spelling', () => {
+  assertEquals(clientKey(withCf('::ffff:203.0.113.7')), '203.0.113.7');
+  assertEquals(clientKey(withCf('::FFFF:cb00:7107')), '203.0.113.7');
+  assertEquals(clientKey(withCf('[::ffff:192.0.2.1]')), '192.0.2.1');
+});
+
+Deno.test('M6: an IPv6 address is its /64, however it is spelt', () => {
+  const key = '2001:db8:1:2::/64';
+  for (const a of [
+    '2001:db8:1:2::1', '2001:db8:1:2:ffff:ffff:ffff:ffff', '2001:0db8:0001:0002:0000:0000:0000:0001',
+    '2001:DB8:1:2:a:b:c:d', '[2001:db8:1:2::9]', '2001:db8:1:2::1%eth0', '2001:db8:1:2:0:0:0:0',
+  ]) assertEquals(clientKey(withCf(a)), key, a);
+  assertEquals(clientKey(withCf('2001:db8:1:3::1')), '2001:db8:1:3::/64', 'the next /64 is another connection');
+  assertEquals(clientKey(withCf('2001:db8::1')), '2001:db8:0:0::/64', 'a "::" inside the first four groups');
+  assertEquals(clientKey(withCf('::1')), '0:0:0:0::/64');
+});
+
+Deno.test('M6: a forged x-forwarded-for, x-real-ip or true-client-ip is never read', () => {
+  const forged = { 'x-forwarded-for': '198.51.100.9, 203.0.113.7', 'x-real-ip': '203.0.113.8', 'true-client-ip': '203.0.113.9' };
+  assertEquals(clientKey(withCf('198.51.100.5', forged)), '198.51.100.5');
+  assertEquals(clientKey(withCf(null, forged)), 'unknown', 'with no cf-connecting-ip the forged headers count for nothing');
+});
+
+Deno.test('M6: a missing or unusable header is the shared key "unknown", never "no limit"', () => {
+  for (const v of [null, '', 'not-an-ip', '999.1.1.1', '1.2.3', '2001:db8::1::2', '2001:db8:1:2:3:4:5:6:7', '12345::1', ':::', '2001:db8:g::1']) {
+    assertEquals(clientKey(withCf(v)), 'unknown', String(v));
+  }
 });
 
 // (security audit of 17 Nov 2026, L10)

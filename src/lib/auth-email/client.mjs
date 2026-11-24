@@ -28,12 +28,21 @@ export const AUTH_EMAIL_COPY = {
   // accepted that this shows the address is registered.
   signupEmailInUse:
     'This email already has an Energia login. Sign in, or reset your password if you have forgotten it.',
-  // 437 (decision 2): the Account page's "Send verification email".
+  // M6 (the user, 20 Nov 2026): the Account page's "Send verification email"
+  // sends a 6-digit code, typed on the Account page while signed in. No
+  // emailed link verifies any more.
   verifyEmailSent:
-    'A verification link is on its way to your email. Open it on this phone or computer to finish. '
+    'A 6-digit code is on its way to your email. Enter it below within 15 minutes. '
     + 'Check your spam folder if it does not arrive in a few minutes.',
+  verifyEmailSentElsewhere:
+    'A 6-digit code is on its way to your email. Enter it on the Account page within 15 minutes. '
+    + 'Check your spam folder if it does not arrive in a few minutes.',
+  verifyEmailLimit:
+    'Energia cannot send any more verification emails just now. Please try again tomorrow.',
+  // The public resend sends nothing since M6, so this only points the way.
   resendSubmitted:
-    'If that address still needs verifying, a new link is on its way. Please check your inbox and spam folder.',
+    'If this address has a login, sign in with your password, or reset it if you have forgotten it. '
+    + 'Your email is verified with a 6-digit code from the Account page after you sign in.',
   recoverySubmitted:
     'If an account exists for this email, password reset instructions will be sent.',
   notSent:
@@ -45,6 +54,24 @@ export const AUTH_EMAIL_COPY = {
   unauthorized:
     'Your session has expired. Please use the link again, or sign in and retry.',
 };
+
+/**
+ * M6: what the Account page says for each answer of confirm_affiliate_email_code
+ * ({ verified: false, reason, tries_left? }). Fixed words, built from the
+ * server's fixed reasons, never from text in an answer.
+ */
+export function verifyCodeMessage(reason, triesLeft) {
+  if (reason === 'wrong_code') {
+    return typeof triesLeft === 'number' && triesLeft >= 0
+      ? `That code is not right. ${triesLeft} ${triesLeft === 1 ? 'try' : 'tries'} left.`
+      : 'That code is not right.';
+  }
+  if (reason === 'expired') return 'That code has expired. Send a new verification email.';
+  if (reason === 'no_code') return 'No code is waiting for this email. Send a verification email first.';
+  if (reason === 'too_many_tries') return 'Too many wrong codes. Send a new verification email.';
+  if (reason === 'invalid') return 'Enter the 6 digits from the email.';
+  return 'That code could not be checked just now. Please try again.';
+}
 
 /** 466: why a sign-up was sent to Sign in, as the Sign in page reads it. */
 export const SIGNUP_REFUSAL_REASONS = ['email_in_use', 'affiliate_email', 'affiliate_phone'];

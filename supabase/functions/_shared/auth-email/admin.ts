@@ -108,36 +108,6 @@ export async function createConfirmedSignup(
 }
 
 /**
- * A sign-in link for a confirmed login, sent as the Account page's
- * verification email (437). Opening it signs the person in at
- * /affiliate/verify, and a session opened from an emailed link is what
- * confirm_affiliate_email() accepts as proof of the mailbox. Only asked for an
- * address that already has a confirmed affiliate login
- * (affiliateEmailNeedsVerification), so it never brings an account into being.
- */
-export async function generateMagicLink(
-  admin: SupabaseClient,
-  args: { email: string; redirectTo: string },
-): Promise<GenerateOutcome> {
-  return await runGenerate(admin, {
-    type: 'magiclink',
-    email: args.email,
-    options: { redirectTo: args.redirectTo },
-  });
-}
-
-/**
- * Whether an address belongs to a confirmed affiliate login whose email the
- * app has not verified yet (437). Answered by a service-role-only database
- * function; the answer never reaches the browser.
- */
-export async function affiliateEmailNeedsVerification(admin: SupabaseClient, email: string): Promise<boolean> {
-  const { data, error } = await admin.rpc('affiliate_email_verification_needed', { p_email: email });
-  if (error) throw new Error(`verification lookup failed: ${error.message}`);
-  return data === true;
-}
-
-/**
  * 466 (the Owner, 24 Oct 2026): whether the email or phone of a sign-up is
  * an existing affiliate's, asked before any login is made. Answered by a
  * service-role-only database function, which also writes the Audit Log row

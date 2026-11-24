@@ -42,7 +42,8 @@ Pabbly webhook URL or the shared secret. It gets `{ ok, status, request_id }`.
 | Flow | Endpoint | Callback |
 |---|---|---|
 | Affiliate signup confirmation | `auth-signup-request` | `/affiliate/verify` |
-| Affiliate resend verification | `auth-resend-verification` | `/affiliate/verify` |
+| Affiliate email verification (a 6-digit code, no link; since M6) | `affiliate-details` (`verify_email_send`, signed in) | typed on `/affiliate/account` |
+| Affiliate resend verification (retired by M6: sends nothing) | `auth-resend-verification` | none |
 | Password recovery (affiliate) | `auth-request-recovery` (`flow: "affiliate"`) | `/affiliate/reset-password` |
 | Password recovery (staff) | `auth-request-recovery` (`flow: "staff"`) | `/reset-password` |
 | Password-changed notification | `auth-change-password` | — (no link in the email) |
@@ -151,7 +152,6 @@ Optional:
 |---|---|---|
 | `AUTH_EMAIL_TEST_ORIGINS` | — | Extra CORS origins, comma-separated. |
 | `AUTH_EMAIL_TEST_CALLBACK_URLS` | — | Extra callback bases for staging. A request's `Origin` must match one exactly to be used. |
-| `AUTH_EMAIL_TRUSTED_PROXY_HOPS` | `1` | See [§9](#9-a-note-on-the-client-ip). |
 | `AUTH_EMAIL_PABBLY_TIMEOUT_MS` | `10000` | Bounded wait for Pabbly. |
 
 `.env` in the repo root now carries all seven of the values you must set, ready
@@ -596,18 +596,17 @@ off would let unverified accounts straight in.
 
 ## 9. A note on the client IP
 
-The IP is read **only** from the entry of `x-forwarded-for` that our own proxy
-wrote — counting from the right, since a caller can prepend anything. Headers
-that have not been verified as platform-written (`x-real-ip`, `true-client-ip`)
-are not consulted at all.
+The limiter reads the connection **only** from the `cf-connecting-ip` header,
+which Cloudflare sets. `x-forwarded-for`, `x-real-ip` and `true-client-ip` are not
+read, because a caller can write them. An IPv4 address is counted as it is; an
+IPv6 address by its /64, so every address in one /64 is one connection. A missing
+or unusable header becomes one shared `unknown` bucket, which is limited like any
+other and never means "no limit". `AUTH_EMAIL_TRUSTED_PROXY_HOPS` is no longer
+read.
 
-`AUTH_EMAIL_TRUSTED_PROXY_HOPS` defaults to `1` (the last entry). **Confirm the
-real hop count from a live request before relying on IP limits.** Deploy, send
-one request, and read the `ip_seen` field in the function log:
-
-* `ip_seen: true` — an IP was accepted; the per-IP limits are live.
-* `ip_seen: false` — nothing trustworthy was found. Requests are still limited by
-  the mandatory per-email buckets. Adjust the hop count and re-check.
+In the function log, `ip_seen: true` means a real address was read. `ip_seen:
+false` means the `cf-connecting-ip` header did not arrive; those requests share
+the `unknown` bucket.
 
 ---
 
@@ -786,7 +785,8 @@ settled by Gmail's own response headers.
 **Still unverified, and only deployment will settle it:** live Supabase
 `generateLink` responses, real token expiry and reuse behaviour, the cross-device
 callback against a real link, the deployed rate limiter under real traffic,
-whether `x-forwarded-for` yields a usable client IP on this project (§9), and
+whether `cf-connecting-ip` reaches the functions on this project (`ip_seen` on the
+first calls after the M6 deploy; §9), and
 whether the test messages actually landed in the inbox.
 
 ---
@@ -856,7 +856,7 @@ select action, outcome, count(*)
 | Link lands on the wrong page | The redirect URL is not on Supabase's allowlist (§8), so Auth fell back to the Site URL. |
 | Wrong sender address | §7. Check the alias, then whether Pabbly's Gmail action can set `From`. |
 | **Mail lands in Junk, or never arrives at Outlook/Yahoo** | §7a. Run `npm run check:deliverability`. Almost always missing SPF/DKIM/DMARC on the sending domain, not the message. |
-| `ip_seen: false` in logs | §9 — adjust `AUTH_EMAIL_TRUSTED_PROXY_HOPS`. Email limits still apply meanwhile. |
+| `ip_seen: false` in logs | §9 — the `cf-connecting-ip` header did not arrive; those requests share one `unknown` bucket. |
 
 ### Is it even deployed?
 

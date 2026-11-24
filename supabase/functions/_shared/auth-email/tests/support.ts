@@ -28,7 +28,6 @@ export function testConfig(overrides: Partial<AuthEmailConfig> = {}): AuthEmailC
     fromName: 'Rev 22 Global Energia',
     replyTo: 'info@rev22.com.sg',
     hashSecret: 'hash-secret-value',
-    trustedProxyHops: 1,
     pabblyTimeoutMs: 10_000,
     ...overrides,
   };
@@ -36,8 +35,10 @@ export function testConfig(overrides: Partial<AuthEmailConfig> = {}): AuthEmailC
 
 export const ACTION_LINK = `${SUPABASE_URL}/auth/v1/verify?token=abc123&type=signup&redirect_to=${encodeURIComponent(APP_URL + '/affiliate/verify')}`;
 
-export function okLink(email = 'someone@example.com', displayName = 'Ada Lovelace'): GenerateOutcome {
-  return { status: 'ok', link: { actionLink: ACTION_LINK, email, displayName } };
+export const LOGIN_ID = '00000000-0000-4000-8000-000000000531';
+
+export function okLink(email = 'someone@example.com', displayName = 'Ada Lovelace', userId: string | null = LOGIN_ID): GenerateOutcome {
+  return { status: 'ok', link: { actionLink: ACTION_LINK, email, displayName, userId } };
 }
 
 export const acceptedDelivery: DeliveryResult = { outcome: 'accepted', httpStatus: 200, detail: '' };
@@ -60,6 +61,7 @@ export function fakeAdmin(handlers: Record<string, (args: Record<string, unknown
 /** Always admits, so a test can get past the limiter to the thing it cares about. */
 export const allowAll = {
   auth_email_reserve: () => ({ allowed: true, retry_after_seconds: 0 }),
+  auth_email_take: () => ({ allowed: true, retry_after_seconds: 0 }),
   auth_email_record_outcome: () => null,
 };
 
@@ -74,20 +76,11 @@ export function recordingDeliver(result: DeliveryResult = acceptedDelivery) {
   return { sent, deliver };
 }
 
-export const MAGIC_LINK = `${SUPABASE_URL}/auth/v1/verify?token=mag456&type=magiclink&redirect_to=${encodeURIComponent(APP_URL + '/affiliate/verify')}`;
-
-export function magicLink(email = 'someone@example.com', displayName = 'Ada Lovelace'): GenerateOutcome {
-  return { status: 'ok', link: { actionLink: MAGIC_LINK, email, displayName } };
-}
-
 export function flowDeps(overrides: Partial<FlowDeps> = {}): FlowDeps {
   return {
     accountState: () => Promise.resolve('none' as AccountState),
     affiliateSignupExisting: () => Promise.resolve(NO_EXISTING_AFFILIATE),
     createConfirmedSignup: () => Promise.resolve({ status: 'created', userId: '00000000-0000-4000-8000-000000000437' } as CreateOutcome),
-    regenerateSignupLink: () => Promise.resolve(okLink()),
-    generateMagicLink: () => Promise.resolve(magicLink()),
-    affiliateEmailNeedsVerification: () => Promise.resolve(false),
     generateRecoveryLink: () => Promise.resolve(okLink()),
     deliver: () => Promise.resolve(acceptedDelivery),
     normalizePhone: (raw) => (/^\+65[3689]\d{7}$/.test(raw) ? raw : null),
@@ -113,3 +106,5 @@ export const validSignupBody = {
   password: 'correct-horse-battery',
   terms_accepted: true,
 };
+
+export const VERIFY_CODE = '482913';

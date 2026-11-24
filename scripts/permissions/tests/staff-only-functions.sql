@@ -93,6 +93,10 @@ create function pg_temp.sof_513_revoked() returns text[] language sql immutable 
 -- Whether 515 is in, and the signatures without a request id it closed to signed-in logins
 -- (the security audit of 17 Nov 2026, L3). The pages call 514's signatures, which take
 -- p_request_id and start with require_active_staff(), so they are in no list.
+-- 531 (security audit of 17 Nov 2026, M6): the code from the verify email, typed by the
+-- signed-in affiliate (confirm_affiliate_email_code), is there only once 531 is in.
+create function pg_temp.has_531() returns boolean language sql stable as
+  $f$ select to_regprocedure('public.confirm_affiliate_email_code(text)') is not null $f$;
 create function pg_temp.has_515() returns boolean language sql stable as
   $f$ select to_regprocedure('public.voucher_stock_in(uuid,uuid,integer,text,uuid)') is not null
             and not has_function_privilege('authenticated', 'public.voucher_stock_in(uuid,uuid,integer,text)', 'execute') $f$;
@@ -296,7 +300,10 @@ declare
       -- 437: the signed-in affiliate's own email, verified from an emailed link
       'confirm_affiliate_email()',
       -- 491: the signed-in affiliate's own name, phone and email, and how they may change them
-      'affiliate_portal_details()'];
+      'affiliate_portal_details()',
+      -- 531: the signed-in affiliate's own email, verified by the code from the verify email
+      -- (only once 531 is in)
+      'confirm_affiliate_email_code(text)'];
   -- Answer only about the caller: the policy helpers and their kin. Rules on
   -- tables call several of them, so signed-in logins keep them
   -- (function-grants.sql check 4).
@@ -463,7 +470,8 @@ begin
            or not has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute'))
       and not (pg_temp.has_502() and x = any (pg_temp.sof_502_revoked()))
       and not (pg_temp.has_513() and x = any (pg_temp.sof_513_revoked()))
-      and not (pg_temp.has_515() and x = any (pg_temp.sof_515_revoked()));
+      and not (pg_temp.has_515() and x = any (pg_temp.sof_515_revoked()))
+      and not (not pg_temp.has_531() and x = 'confirm_affiliate_email_code(text)');
   -- 502: none of the 13 is callable by a signed-in login or a signed-out
   -- visitor; the service role keeps them all.
   if pg_temp.has_502() then

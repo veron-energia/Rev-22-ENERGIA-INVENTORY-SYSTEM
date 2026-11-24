@@ -58,6 +58,12 @@ begin
   perform set_config('request.jwt.claims', (jsonb_build_object('sub', v, 'role', 'authenticated')
     || case when p_from_link then jsonb_build_object('amr', jsonb_build_array(jsonb_build_object('method', 'magiclink',
               'timestamp', extract(epoch from clock_timestamp())::bigint))) else '{}'::jsonb end)::text, true);
+  -- 531 (security audit of 17 Nov 2026, M6): an emailed link no longer verifies an email; the
+  -- affiliate types the code from the verify email. Where 531 is in, a session from the link is
+  -- one that has typed that code, so the checks after it read the same.
+  if p_from_link and to_regprocedure('public.confirm_affiliate_email_code(text)') is not null then
+    perform public.confirm_affiliate_email_code(public.affiliate_email_code_issue(v)->>'code');
+  end if;
 end $f$;
 create function pg_temp.as_server() returns void language sql as
 $f$ select set_config('request.jwt.claim.sub', '', true), set_config('request.jwt.claim.role', '', true),

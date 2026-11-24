@@ -40,6 +40,8 @@ const MESSAGES: Record<string, string> = {
   verify_first: 'Please verify your email first, then you can change your details.',
   not_allowed: 'Your details cannot be changed here. Please ask Energia staff.',
   open_request: 'You already have a change in progress. Finish or cancel it first.',
+  rate_limited: 'Too many attempts just now. Please try again later.',
+  email_limit: 'Energia cannot send more emails to this address today. Please try again tomorrow.',
   too_many_requests: 'You have made several changes today. Please try again tomorrow.',
   no_change: 'Nothing has changed.',
   name_required: 'Please enter your first and last name.',
@@ -85,7 +87,7 @@ export async function detailsStep(body: Record<string, unknown>): Promise<Detail
     return { ok: false, error: code, field: payload.field as string | undefined,
       purpose: payload.purpose as DetailsStep['purpose'], code_to: payload.code_to as string | undefined,
       request_id: payload.request_id as string | undefined,
-      message: detailsMessage(code, { tries_left: payload.tries_left as number | undefined, seconds: payload.seconds as number | undefined }) };
+      message: code === 'rate_limited' && typeof payload.message === 'string' ? payload.message : detailsMessage(code, { tries_left: payload.tries_left as number | undefined, seconds: payload.seconds as number | undefined }) };
   }
   return { ok: true, next: payload.next as DetailsStep['next'], status: payload.status as DetailsStep['status'],
     purpose: payload.purpose as DetailsStep['purpose'], code_to: payload.code_to as string | undefined,

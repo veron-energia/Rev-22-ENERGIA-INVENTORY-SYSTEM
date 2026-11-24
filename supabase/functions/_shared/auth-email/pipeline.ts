@@ -22,13 +22,13 @@
 
 import { loadAllowedOrigins, loadConfig, MissingConfigError, type AuthEmailConfig } from './config.ts';
 import { adminClient } from './admin.ts';
-import { guardRequest, json, notConfigured, trustedClientIp } from './http.ts';
-import { hashKey, rateLimitMessage, reserve, RateLimiterUnavailableError, type LimitedAction } from './ratelimit.ts';
+import { clientKey, guardRequest, json, notConfigured, UNKNOWN_CLIENT } from './http.ts';
+import { hashKey, rateLimitMessage, reserve, RateLimiterUnavailableError, type LimitedAction, type TakeBucket } from './ratelimit.ts';
 import { logEvent, newRequestId, recordOutcome, safeDetail } from './diagnostics.ts';
 import { definitelyNotSent } from './pabbly.ts';
 import { affiliateExistsMessage } from './existing.ts';
 import type { DeliveryResult } from './pabbly.ts';
-import type { FieldError, Validated } from './validate.ts';
+import { validateEmailOnly, type FieldError, type Validated } from './validate.ts';
 
 // deno-lint-ignore no-explicit-any
 type Admin = any;
@@ -51,6 +51,11 @@ export type EndpointResult =
   | { kind: 'suppressed'; reason: string }
   /** Handed to Pabbly; the result says what Pabbly did with it. */
   | { kind: 'delivered'; result: DeliveryResult }
+  /**
+   * M6: an overall ceiling (30 new logins an hour, 60 emails a day) was full.
+   * Nothing was made or sent. Answered exactly like a refused reservation.
+   */
+  | { kind: 'take_refused'; bucket: TakeBucket; retryAfterSeconds: number; action?: string }
   /** 437, sign-up: the login was made, already confirmed. Nothing was sent. */
   | { kind: 'created' }
   /** 437, sign-up: the address already has a login. Nothing was changed. */
@@ -116,10 +121,12 @@ export async function handlePublicRequest<T>(
   }
 
   const email = endpoint.emailOf(parsed.value);
-  const ip = trustedClientIp(req, config.trustedProxyHops);
+  // Always a key: an address' own /64, or 'unknown' (one shared bucket).
+  const ip = clientKey(req);
 
   const emailHash = await hashKey(email, config.hashSecret, 'email');
-  const ipHash = ip ? await hashKey(ip, config.hashSecret, 'ip') : null;
+  const ipHash = await hashKey(ip, config.hashSecret, 'ip');
+  const ipSeen = ip !== UNKNOWN_CLIENT;
 
   const admin = (deps.makeAdmin ?? adminClient)(config);
 
@@ -140,13 +147,9 @@ export async function handlePublicRequest<T>(
   if (!reservation.allowed) {
     logEvent('auth_email.rate_limited', {
       action: endpoint.action, request_id: requestId,
-      retry_after: reservation.retryAfterSeconds, ip_seen: ip !== null,
+      retry_after: reservation.retryAfterSeconds, ip_seen: ipSeen,
     });
-    return json(
-      { error: 'rate_limited', message: rateLimitMessage(reservation.retryAfterSeconds), retry_after_seconds: reservation.retryAfterSeconds },
-      429, origin, allowed,
-      { 'Retry-After': String(Math.max(1, reservation.retryAfterSeconds)) },
-    );
+    return rateLimited(reservation.retryAfterSeconds, origin, allowed);
   }
 
   await recordOutcome(admin, { requestId, action: endpoint.action, outcome: 'requested', recipientHash: emailHash });
@@ -158,7 +161,7 @@ export async function handlePublicRequest<T>(
     result = { kind: 'internal_error', detail: safeDetail(String(error)) };
   }
 
-  return await finish(admin, { requestId, action: endpoint.action, emailHash, origin, allowed, ipSeen: ip !== null }, result);
+  return await finish(admin, { requestId, action: endpoint.action, emailHash, origin, allowed, ipSeen }, result);
 }
 
 async function finish(
@@ -173,6 +176,15 @@ async function finish(
     logEvent('auth_email.internal_error', { action, request_id: requestId, detail: result.detail });
     return json({ error: 'temporarily_unavailable', message: 'That request could not be processed just now. Please try again shortly.' },
       503, origin, allowed);
+  }
+
+  // M6: an overall ceiling is full. The same 429 as a refused reservation.
+  if (result.kind === 'take_refused') {
+    await recordOutcome(admin, { requestId, action, outcome: 'suppressed', recipientHash: emailHash, detail: `rate_limited:${result.bucket}` });
+    logEvent('auth_email.rate_limited', {
+      action, request_id: requestId, bucket: result.bucket, retry_after: result.retryAfterSeconds, ip_seen: meta.ipSeen,
+    });
+    return rateLimited(result.retryAfterSeconds, origin, allowed);
   }
 
   // 437: sign-up's own answers. Recorded like a send that was not needed.
@@ -224,8 +236,45 @@ async function finish(
   return json({ ok: true, status, request_id: requestId }, 200, origin, allowed);
 }
 
+/** The 429 for a full bucket, whichever bucket it was: the same words, the same body. */
+function rateLimited(retryAfterSeconds: number, origin: string | null, allowed: string[]): Response {
+  return json(
+    { error: 'rate_limited', message: rateLimitMessage(retryAfterSeconds), retry_after_seconds: retryAfterSeconds },
+    429, origin, allowed,
+    { 'Retry-After': String(Math.max(1, retryAfterSeconds)) },
+  );
+}
+
 function shapeErrors(errors: FieldError[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const e of errors) if (!(e.field in out)) out[e.field] = e.message;
   return out;
+}
+
+/**
+ * The retired public resend (M6, the user, 20 Nov 2026). It sends nothing and
+ * makes nothing, and it counts nothing: no reservation, no outcome row, no
+ * database call at all. A reservation here would count the typed address, and
+ * anyone who knows an affiliate's address could then fill that person's own
+ * daily allowance of verification emails with requests that send nothing.
+ *
+ * The request is still held to the usual envelope and shape, and answers the
+ * same 200 as before, so a page from before M6 gets its usual answer. The
+ * verification code is asked for from the affiliate's signed-in Account page
+ * (affiliate-details, 'verify_email_send'). The sign-up link of a login from
+ * before 437 is gone too: there are none left, and that link signs in.
+ */
+export async function handleRetiredResend(
+  req: Request,
+  deps: { allowedOrigins?: () => string[] } = {},
+): Promise<Response> {
+  const requestId = newRequestId();
+  const allowed = (deps.allowedOrigins ?? loadAllowedOrigins)();
+  const origin = req.headers.get('origin');
+  const guard = await guardRequest(req, allowed);
+  if (!guard.ok) return guard.response;
+  const parsed = validateEmailOnly(guard.body);
+  if (!parsed.ok) return json({ error: 'invalid_request', fields: shapeErrors(parsed.errors) }, 400, origin, allowed);
+  logEvent('auth_email.suppressed', { action: 'resend', request_id: requestId, reason: 'retired' });
+  return json({ ok: true, status: 'submitted', request_id: requestId }, 200, origin, allowed);
 }

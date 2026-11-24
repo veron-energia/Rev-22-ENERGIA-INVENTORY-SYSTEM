@@ -537,6 +537,28 @@ select pg_temp.check(pg_temp.ans('lStk2')->>'status' = 'active' and (pg_temp.ans
 
 -- ═════ E The email ═════
 select pg_temp.onboard('lOld', 'Olu', 'Testold', '+61491578148');
+-- 531 (security audit of 17 Nov 2026, M6): the sign-up no longer counts Supabase's own confirmation
+-- or a session from an emailed link as a verified email; a new account is verified only from the
+-- date the server keeps on the login, else with the code. Where 531 is in, these read that way.
+select position('-- 531 (security audit' in pg_get_functiondef('public.complete_affiliate_onboarding(text,text,text,boolean)'::regprocedure)) > 0 as onb_531 \gset
+\if :onb_531
+select pg_temp.check(not (pg_temp.ans('lOld')->>'email_verified')::boolean
+    and (select email_verified_at is null from affiliate_accounts where auth_user_id = pg_temp.fx('lOld')),
+  'E (531) a login Supabase confirmed by its own email link (before 437) is not verified by that: it uses the code');
+select pg_temp.as_user('lLink', 'magiclink', '2 minutes');
+insert into tx values ('onb_link', public.complete_affiliate_onboarding('Lin', 'Testlink', '+61491578888', true)::text);
+select pg_temp.check(not (pg_temp.tx('onb_link')::jsonb->>'email_verified')::boolean
+    and (select email_verified_at is null from affiliate_accounts where auth_user_id = pg_temp.fx('lLink'))
+    and (select not (raw_app_meta_data ? 'affiliate_email_verified_at') from auth.users where id = pg_temp.fx('lLink')),
+  'E (531) a sign-up whose session came from an emailed link is not verified by it, and no verified date is written on the login');
+select pg_temp.check(public.affiliate_email_verification_needed(pg_temp.mail('lSolo'))
+    and public.affiliate_email_verification_needed(upper(' ' || pg_temp.mail('lSolo') || ' '))
+    and public.affiliate_email_verification_needed(pg_temp.mail('lOld'))
+    and not public.affiliate_email_verification_needed('t437-nobody@example.com')
+    and not public.affiliate_email_verification_needed(pg_temp.mail('lRej')),
+  'E (531) affiliate_email_verification_needed: yes for an affiliate not verified (lOld too now); no for no login, or no affiliate account');
+\else
+select pg_temp.onboard('lOld', 'Olu', 'Testold', '+61491578148');
 select pg_temp.check((pg_temp.ans('lOld')->>'email_verified')::boolean
     and (select email_verified_at from affiliate_accounts where auth_user_id = pg_temp.fx('lOld'))
         = (select email_confirmed_at from auth.users where id = pg_temp.fx('lOld')),
@@ -550,6 +572,37 @@ select pg_temp.check(public.affiliate_email_verification_needed(pg_temp.mail('lS
     and not public.affiliate_email_verification_needed('t437-nobody@example.com')
     and not public.affiliate_email_verification_needed(pg_temp.mail('lRej')),
   'E affiliate_email_verification_needed: yes for an affiliate not verified; no for one verified, no login, or no affiliate account');
+\endif
+-- 531 (security audit of 17 Nov 2026, M6; the user, 20 Nov 2026: "Code on the Account page"): no
+-- emailed link verifies an email any more; the code from the verify email, typed while signed in,
+-- does. Where 531 is in, these checks read that way (531's own suite tests the code in full).
+select position('-- 531 (security audit' in pg_get_functiondef('public.confirm_affiliate_email()'::regprocedure)) > 0 as has_531 \gset
+\if :has_531
+select pg_temp.as_user('lSolo');
+select pg_temp.check(public.confirm_affiliate_email() = '{"reason": "use_code", "verified": false}'::jsonb,
+  'E (531) a password session does not verify the email: use the code');
+select pg_temp.as_user('lSolo', 'magiclink', '3 minutes');
+select pg_temp.check(public.confirm_affiliate_email() = '{"reason": "use_code", "verified": false}'::jsonb
+    and (select email_verified_at is null from affiliate_accounts where auth_user_id = pg_temp.fx('lSolo')),
+  'E (531) nor does a sign-in link opened 3 minutes ago: nothing is verified');
+insert into tx values ('code_solo', public.affiliate_email_code_issue(pg_temp.fx('lSolo'))->>'code');
+insert into tx values ('confirm1', public.confirm_affiliate_email_code(pg_temp.tx('code_solo'))::text);
+select pg_temp.check(pg_temp.tx('confirm1')::jsonb = '{"verified": true}'::jsonb
+    and (select email_verified_at is not null from affiliate_accounts where auth_user_id = pg_temp.fx('lSolo'))
+    and (select count(*) from audit_logs l join affiliate_accounts a on a.id = l.record_id
+          where l.action = 'affiliate_email_verified' and a.auth_user_id = pg_temp.fx('lSolo')) = 1
+    and not public.affiliate_email_verification_needed(pg_temp.mail('lSolo')),
+  'E (531) the code from the verify email, typed on the Account page, verifies the email, with one audit row');
+select pg_temp.check((public.confirm_affiliate_email()->>'already')::boolean
+    and (select count(*) from audit_logs l join affiliate_accounts a on a.id = l.record_id
+          where l.action = 'affiliate_email_verified' and a.auth_user_id = pg_temp.fx('lSolo')) = 1,
+  'E (531) a second open answers "already" and writes nothing');
+select pg_temp.as_user('lNeo', 'recovery', '5 minutes');
+insert into tx values ('code_neo', public.affiliate_email_code_issue(pg_temp.fx('lNeo'))->>'code');
+select pg_temp.check(public.confirm_affiliate_email() = '{"reason": "use_code", "verified": false}'::jsonb
+    and (public.confirm_affiliate_email_code(pg_temp.tx('code_neo'))->>'verified')::boolean,
+  'E (531) a password-reset link does not verify the email either; the code does');
+\else
 select pg_temp.as_user('lSolo');
 select pg_temp.check(public.confirm_affiliate_email() = '{"reason": "not_from_email_link", "verified": false}'::jsonb,
   'E a password session does not verify the email');
@@ -572,6 +625,7 @@ select pg_temp.check((public.confirm_affiliate_email()->>'already')::boolean
   'E a second open answers "already" and writes nothing');
 select pg_temp.as_user('lNeo', 'recovery', '5 minutes');
 select pg_temp.check((public.confirm_affiliate_email()->>'verified')::boolean, 'E a password-reset link proves the mailbox too');
+\endif
 select pg_temp.as_user('lRej', 'magiclink', '1 minute');
 select pg_temp.check(public.confirm_affiliate_email() = '{"reason": "not_affiliate", "verified": false}'::jsonb,
   'E a login with no affiliate account is told so, and nothing is written');
@@ -796,9 +850,14 @@ select pg_temp.check(pg_temp.tx('unlink_neo') = 'ok' and pg_temp.ans('lNeo')->>'
   'V after an Owner unlinks the login, its next sign-in makes an account that is verified still, from the same date: ' || pg_temp.ans('lNeo')::text);
 -- A login confirmed by the sign-up whose first session came from an emailed
 -- link (lLink, E above) is marked on the login too.
+\if :onb_531
+select pg_temp.check((select not (raw_app_meta_data ? 'affiliate_email_verified_at') from auth.users where id = pg_temp.fx('lLink')),
+  'V (531) a sign-up from an emailed-link session is not verified, so nothing is kept on the login');
+\else
 select pg_temp.check((select raw_app_meta_data ? 'affiliate_email_verified_at' and not (raw_app_meta_data ? 'affiliate_email_unverified')
                         from auth.users where id = pg_temp.fx('lLink')),
   'V a sign-up verified by its own emailed-link session is kept on the login too');
+\endif
 
 -- ═════ T Twin records (AFF-SIGNUP-13) ═════
 -- Han signed up (S2) with the very same name and phone as Han Testhas, whose
