@@ -297,6 +297,11 @@ declare
                              -- 423: the trigger function that writes every change to a voucher
                              -- and to its store prices into the audit log
                              'trg_audit_voucher_change',
+                             -- 532: the trigger function that records a change made straight
+                             -- on a store, a payment method, a promotion, a staff profile and
+                             -- nine other tables, and the one that locks a payment method's
+                             -- wallet settings (security audit of 17 Nov 2026, M7 and M8)
+                             'trg_audit_direct_change','trg_payment_method_wallet_locked',
                              -- 419: a customer's signed QR form into their consultant record,
                              -- called inside submit_health_survey and attach_held_health_survey
                              'health_survey_sign_into_record',

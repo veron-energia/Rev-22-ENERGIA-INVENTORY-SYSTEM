@@ -7,16 +7,17 @@ import { Modal } from '../components/ui';
 import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { uploadStoreAsset } from '../lib/storeAssets';
 import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, RotateCcw } from 'lucide-react';
-import { canManagePlaces, storeAssignmentBlock, worksAtEveryStore } from '../lib/permissions/products';
+import { canManagePlaces, canAddStore, canChangeStore, storeAssignmentBlock, worksAtEveryStore } from '../lib/permissions/products';
 
 const StoresPage: React.FC = () => {
   const { profile, assignments: myAssignments } = useAuth();
   const canManage = canManagePlaces(profile?.role);
-  // Owners, Admins and Managers see every store (Managers edit any store, as
-  // before). Staff and Inventory Managers see the stores they work at. Every
+  // Owners, Admins and Managers see every store (a Manager changes only the
+  // stores they work at, 532). Staff and Inventory Managers see the stores they work at. Every
   // store's name stays readable elsewhere: transfers and invoices name them.
   const seesAll = worksAtEveryStore(profile?.role) || profile?.role === 'manager';
   const myStoreIds = myAssignments.map(a => a.store_id);
+  const mayChange = (s: StoreT) => canChangeStore(profile?.role, s.id, myStoreIds);
 
   const [rows, setRows] = useState<StoreT[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,11 +84,14 @@ const StoresPage: React.FC = () => {
       qr_paynow_url: form.qr_paynow_url || null, qr_grabpay_url: form.qr_grabpay_url || null, qr_atome_url: form.qr_atome_url || null,
     };
     const res = editId
-      ? await supabase.from('stores').update(payload).eq('id', editId)
-      : await supabase.from('stores').insert(payload);
+      ? await supabase.from('stores').update(payload).eq('id', editId).select('id')
+      : await supabase.from('stores').insert(payload).select('id');
     // A store or warehouse that still holds stock cannot be switched off: the
     // database says what is left there (the Owner, 9 Oct 2026).
     if (res.error) { setErr(res.error.code === '23505' ? 'That code already exists.' : res.error.message); setSaving(false); return; }
+    // A store the database will not let this person change is filtered out:
+    // no error and no row (532).
+    if (!res.data || res.data.length === 0) { setErr('Nothing was saved: you can change only the stores you work at.'); setSaving(false); return; }
     setSaving(false); setModalOpen(false); load();
   };
 
@@ -159,7 +163,7 @@ const StoresPage: React.FC = () => {
               { header: 'Status', value: (s2: any) => s2.is_active ? 'Active' : 'Inactive' },
             ]} />
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {canManage && <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Store</button>}
+          {canAddStore(profile?.role) && <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Store</button>}
         </div>
       </div>
 
@@ -193,11 +197,11 @@ const StoresPage: React.FC = () => {
                     <td>{s.deleted_at ? <span className="badge badge-danger">Deleted</span>
                       : s.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-muted">Inactive</span>}</td>
                     {canManage && <td>{s.deleted_at
-                      ? <button className="btn btn-secondary btn-sm" disabled={busyId === s.id} onClick={() => handleRestore(s)}><RotateCcw size={13} /> Restore</button>
+                      ? (mayChange(s) && <button className="btn btn-secondary btn-sm" disabled={busyId === s.id} onClick={() => handleRestore(s)}><RotateCcw size={13} /> Restore</button>)
                       : <div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openAssignments(s)}><Users2 size={13} /> Staff</button>
-                      <button className="btn btn-secondary btn-sm btn-icon" title="Edit" onClick={() => openEdit(s)}><Pencil size={13} /></button>
-                      <button className="btn btn-danger btn-sm btn-icon" title="Delete" disabled={busyId === s.id} onClick={() => handleDelete(s)}><Trash2 size={13} /></button>
+                      {mayChange(s) && <button className="btn btn-secondary btn-sm btn-icon" title="Edit" onClick={() => openEdit(s)}><Pencil size={13} /></button>}
+                      {mayChange(s) && <button className="btn btn-danger btn-sm btn-icon" title="Delete" disabled={busyId === s.id} onClick={() => handleDelete(s)}><Trash2 size={13} /></button>}
                     </div>}</td>}
                   </tr>
                 ))}

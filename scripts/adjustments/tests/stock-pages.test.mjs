@@ -226,6 +226,8 @@ function createBackend(fx, who) {
         if (!fn) return { data: null, error: { message: `unknown rpc ${this.name}` } };
         return { data: structuredClone(fn(this.args)), error: null };
       }
+      // Row-level security filters a refused update or insert out: no error, no row.
+      if (b.noRows?.has(`${this.kind}:${this.name}`)) return { data: [], error: null };
       const rows = (fx[this.name] ?? []).filter(r => this.filters.every(f => f(r)));
       return { data: structuredClone(this.single ? rows[0] ?? null : rows), error: null };
     }
@@ -949,12 +951,49 @@ test('Stores: staff through assign_user_store, with the rules shown; delete and 
   backend.failures.set('soft_delete_store', { message: 'Fixture Store A cannot be deleted yet. Still open: stock of 1 product (5 units).', once: true });
   await click(row('Fixture Store A').querySelector('button[title="Delete"]'));
   assert.ok(text().includes('Fixture Store A cannot be deleted yet.'));
+  // A Manager does not work at the deleted store, so has no Restore on it (532).
+  await tick_box([...document.querySelectorAll('input[type="checkbox"]')].find(i => i.parentElement.textContent.includes('Show deleted')));
+  assert.ok(!buttonWith('Restore', row('Fixture Old Store')));
+  await mount(P.StoresPage, 'owner');
   await tick_box([...document.querySelectorAll('input[type="checkbox"]')].find(i => i.parentElement.textContent.includes('Show deleted')));
   await click(buttonWith('Restore', row('Fixture Old Store')));
   assert.deepEqual(callsOf('restore_store').map(c => c.args), [{ p_store_id: 's-old' }]);
   const src = read('src/pages/StoresPage.tsx');
   assert.ok(!/from\('user_store_assignments'\)\.(insert|delete)/.test(src) && !/deleted_at: new Date/.test(src));
   assert.ok(!src.includes('RLS automatically limits stores'));
+});
+
+test('Stores (532, M7): Add Store is Owner-only; a Manager changes only the stores they work at; no row back is not saved', async () => {
+  assert.equal(perms.canAddStore('owner'), true);
+  for (const r of ['manager', 'admin', 'inventory_manager', 'staff', null]) assert.equal(perms.canAddStore(r), false, String(r));
+  assert.equal(perms.canChangeStore('owner', 's-b', []), true);
+  assert.equal(perms.canChangeStore('manager', 's-a', ['s-a']), true);
+  assert.equal(perms.canChangeStore('manager', 's-b', ['s-a']), false);
+  for (const r of ['admin', 'inventory_manager', 'staff']) assert.equal(perms.canChangeStore(r, 's-a', ['s-a']), false, r);
+
+  await mount(P.StoresPage, 'manager');
+  assert.ok(!buttonWith('Add Store'), 'a Manager cannot add a store');
+  assert.ok(row('Fixture Store A').querySelector('button[title="Edit"]') && row('Fixture Store A').querySelector('button[title="Delete"]'));
+  assert.ok(row('Fixture Store B'), 'a Manager still sees every store');
+  assert.ok(!row('Fixture Store B').querySelector('button[title="Edit"]') && !row('Fixture Store B').querySelector('button[title="Delete"]'));
+
+  await mount(P.StoresPage, 'owner');
+  assert.ok(buttonWith('Add Store'));
+  for (const n of ['Fixture Store A', 'Fixture Store B']) {
+    assert.ok(row(n).querySelector('button[title="Edit"]') && row(n).querySelector('button[title="Delete"]'), n);
+  }
+  // The save asks for the row back and says so when none comes.
+  await click(row('Fixture Store A').querySelector('button[title="Edit"]'));
+  backend.noRows = new Set(['update:stores']);
+  await click(button('Save'));
+  assert.ok(modal(), 'the form stays open');
+  assert.ok(modal().textContent.includes('Nothing was saved: you can change only the stores you work at.'));
+  assert.equal(callsOf('stores').filter(c => c.kind === 'update').length, 1);
+  backend.noRows = new Set();
+  await click(button('Save'));
+  assert.ok(!modal(), 'a save that returns the row closes the form');
+  const src = read('src/pages/StoresPage.tsx');
+  assert.ok(src.includes(".update(payload).eq('id', editId).select('id')") && src.includes(".insert(payload).select('id')"));
 });
 
 test('Stores: Staff see the stores they work at; Warehouses delete and restore through the server', async () => {

@@ -27,6 +27,18 @@ export const canConfigureCatalogue = (r?: UserRole | null): boolean =>
 export const canManagePlaces = (r?: UserRole | null): boolean =>
   r === 'owner' || r === 'manager';
 
+/**
+ * Stores, from migration 532 (security audit of 17 Nov 2026, M7; the user's
+ * decision of 20 Nov 2026): only an Owner adds a store; an Owner changes any
+ * store, a Manager only a store they work at. Mirrors the stores policies and
+ * soft_delete_store / restore_store. Warehouses keep canManagePlaces.
+ */
+export const canAddStore = (r?: UserRole | null): boolean => r === 'owner';
+
+/** Edit, delete or restore this store. callerStoreIds: the stores they work at. */
+export const canChangeStore = (r: UserRole | null | undefined, storeId: string, callerStoreIds: string[]): boolean =>
+  r === 'owner' || (r === 'manager' && callerStoreIds.includes(storeId));
+
 /** Owners and Admins work at every store, so they are never put on one. */
 export const worksAtEveryStore = (r?: UserRole | null): boolean =>
   r === 'owner' || r === 'admin';

@@ -504,7 +504,10 @@ select pg_temp.check((select relrowsecurity from pg_class where oid = 'public.st
                      and not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'staff_login_blocks'),
   'table: row level security on, no rule');
 select pg_temp.check((select string_agg(pg_get_triggerdef(t.oid), '|' order by t.tgname) from pg_trigger t
-                       where t.tgrelid = 'public.profiles'::regclass and not t.tgisinternal and t.tgenabled = 'O')
+                       where t.tgrelid = 'public.profiles'::regclass and not t.tgisinternal and t.tgenabled = 'O'
+                         -- 532's audit of a change to a profile (security audit of 17 Nov 2026, M8)
+                         -- is its own suite's (scripts/audit-log/tests/direct-changes-recorded-532.sql).
+                         and t.tgname <> 'audit_direct_change')
   = 'CREATE TRIGGER guard_profile_privileges BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION trg_guard_profile_privileges()|'
     || 'CREATE TRIGGER staff_login_follows_profile AFTER INSERT OR UPDATE OF is_active, deleted_at, invitation_status ON public.profiles FOR EACH ROW EXECUTE FUNCTION trg_staff_login_follows_profile()',
   'trigger: the guard before, this after; both enabled');

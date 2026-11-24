@@ -275,8 +275,9 @@ begin
   perform pg_temp.expect(r, 'ok:%', 'Staff ask for 3 -> 1 at Store C');
   req := substr(r, 4)::uuid;
   -- Store C cannot be switched off while it holds stock and the count waits
-  -- (the Owner, 9 Oct 2026).
-  perform pg_temp.expect(pg_temp.try_as(mgr, format($q$update public.stores set is_active = false where id = %L returning 1$q$, sc)),
+  -- (the Owner, 9 Oct 2026). Tried by the Owner: since 532 a Manager changes only the stores
+  -- they work at, and this Manager does not work at Store C.
+  perform pg_temp.expect(pg_temp.try_as(own, format($q$update public.stores set is_active = false where id = %L returning 1$q$, sc)),
     'P0001:ADJX Store C cannot be switched off yet. Still open: stock of 1 product (3 units); 1 stock correction waiting for approval.',
     'a store with stock and a waiting count is not switched off');
   -- Switched off past that check (the check turned off, as only the database

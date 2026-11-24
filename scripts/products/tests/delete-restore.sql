@@ -59,6 +59,9 @@ declare
   sa uuid; sb uuid; s_stock uuid; s_tr uuid; s_loan uuid; s_adj uuid; s_ok uuid; s_shut uuid; s_rent uuid;
   w uuid; w_stock uuid; w_special uuid; w_ok uuid; w_rent uuid; cust uuid; rt uuid; rt_w uuid; rt_c uuid;
   p_stock uuid; p_tr uuid; p_loan uuid; p_promo uuid; p_ended uuid; p_special uuid; p_adj uuid; p_ok uuid; p_del uuid;
+  -- 532 (security audit of 17 Nov 2026, M7): the products' and their links' write rules are
+  -- gone; the Products page saves through save_product alone.
+  v532 boolean := not exists (select 1 from pg_policy where polrelid = 'public.products'::regclass and polname = 'update products');
   c1 uuid; c2 uuid; c3 uuid; su1 uuid; br uuid; promo uuid; promo_old uuid; sp uuid; tr uuid;
   r text; v_new uuid;
 begin
@@ -94,6 +97,9 @@ begin
   insert into public.warehouses (name, code) values ('PRDX Empty Warehouse', 'PRDX-W3') returning id into w_ok;
   insert into public.warehouses (name, code) values ('PRDX Rental Warehouse', 'PRDX-W4') returning id into w_rent;
   insert into public.user_store_assignments (user_id, store_id) values (mgr, sa), (stf, sa);
+  -- The Manager also works at the stores they switch off, edit and delete below: since 532 a
+  -- Manager changes only the stores they work at.
+  insert into public.user_store_assignments (user_id, store_id) values (mgr, s_stock), (mgr, s_adj), (mgr, s_ok), (mgr, s_rent);
 
   insert into public.categories (name) values ('PRDX Cat 1') returning id into c1;
   insert into public.categories (name) values ('PRDX Cat 2') returning id into c2;
@@ -193,15 +199,16 @@ begin
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(%L, %L)::text$q$, p_del, jsonb_build_object('name', 'Back'))),
     'P0001:This product is deleted. Restore it first.', 'editing a deleted product');
   -- The table rules match: Owner, Manager, Inventory Manager change products and
-  -- their links; nobody removes a product outright.
+  -- their links; nobody removes a product outright. Since 532 nobody changes them
+  -- straight on the table: an Inventory Manager's direct edit changes nothing too.
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$with u as (update public.products set barcode = 'PRDX-BC' where id = %L returning 1) select count(*)::text from u$q$, v_new)),
-    'ok:1', 'an Inventory Manager edits a product directly, as the old page did');
+    case when v532 then 'ok:0' else 'ok:1' end, 'an Inventory Manager edits a product directly, as the old page did');
   perform pg_temp.expect(pg_temp.try_as(adm, format($q$with u as (update public.products set barcode = 'x' where id = %L returning 1) select count(*)::text from u$q$, v_new)),
     'ok:0', 'an Admin''s direct edit changes nothing');
   perform pg_temp.expect(pg_temp.try_as(stf, format($q$with u as (update public.products set barcode = 'x' where id = %L returning 1) select count(*)::text from u$q$, v_new)),
     'ok:0', 'Staff''s direct edit changes nothing');
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$insert into public.product_categories (product_id, category_id) values (%L, %L) returning 1$q$, v_new, c1)),
-    'ok:1', 'an Inventory Manager ticks a category');
+    case when v532 then '42501:%' else 'ok:1' end, 'an Inventory Manager ticks a category');
   perform pg_temp.expect(pg_temp.try_as(stf, format($q$insert into public.product_suppliers (product_id, supplier_id) values (%L, %L) returning 1$q$, p_ok, su1)),
     '42501:%', 'Staff cannot tick a supplier');
   perform pg_temp.expect(pg_temp.try_as(own, format($q$delete from public.products where id = %L returning 1$q$, p_ok)),
@@ -226,8 +233,9 @@ begin
   -- Switching off is the same, by save_product or directly.
   perform pg_temp.expect(pg_temp.try_as(inv, format($q$select public.save_product(%L, %L)::text$q$, p_stock, jsonb_build_object('is_active', false))),
     'P0001:PRDX Stocked cannot be switched off yet. Still open: stock (%', 'switching off a product with stock');
+  -- (Since 532 a direct switch-off changes no row at all; the SQL editor's below still meets the check.)
   perform pg_temp.expect(pg_temp.try_as(mgr, format($q$update public.products set is_active = false where id = %L returning 1$q$, p_stock)),
-    'P0001:PRDX Stocked cannot be switched off yet.%', 'switching it off directly');
+    case when v532 then 'ok:' else 'P0001:PRDX Stocked cannot be switched off yet.%' end, 'switching it off directly');
   perform pg_temp.expect(pg_temp.try_as(null, format($q$update public.products set deleted_at = now() where id = %L returning 1$q$, p_stock)),
     'P0001:PRDX Stocked cannot be deleted yet.%', 'deleting it from the SQL editor');
   -- A clean product: deleted, hidden, restored, with audit rows.
