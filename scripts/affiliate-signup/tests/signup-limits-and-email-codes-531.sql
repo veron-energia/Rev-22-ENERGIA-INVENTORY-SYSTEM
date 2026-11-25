@@ -727,6 +727,15 @@ select pg_temp.check(not exists (select 1 from m531 m
 \endif
 
 -- ═════ U the undo ═════
+-- 537 (the affiliate WhatsApp as two messages) relies on 531's affiliate_whatsapp_enqueue and
+-- replaces 394's affiliate_whatsapp_message, which 531 pins, so 531 cannot be put back over it.
+-- Where 537 is in, it is undone first (scripts/affiliate-whatsapp/undo-537.sql, rolled back with
+-- the rest of this file), and the undo below is 531's alone. Where it is not, nothing changes.
+select md5(pg_get_functiondef('public.affiliate_whatsapp_message(text,text,text,text)'::regprocedure))
+         = '9b7caba24a3cec3e7dc66becfae7ed4b' as had537 \gset
+\if :had537
+\ir ../../affiliate-whatsapp/undo-537.sql
+\endif
 create temp table fp531 as
   select md5(string_agg(md5(pg_get_functiondef(p.oid)), '' order by p.oid::regprocedure::text)) || ' ' || count(*) as fp
     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind in ('f', 'p');

@@ -23,6 +23,12 @@
 -- supabase_migrations.schema_migrations stays; with the user's OK, remove that one row (found by
 -- its name, 531_the_affiliate_sign_up_limits_and_email_codes) or record this UNDO beside it.
 --
+-- It also refuses while affiliate_whatsapp_message or affiliate_whatsapp_settle is not 394's
+-- version: 537 (the affiliate WhatsApp as two messages, 24 Nov 2026) replaced both and relies on
+-- 531's affiliate_whatsapp_enqueue. Run scripts/affiliate-whatsapp/undo-537.sql first. Undone under
+-- 537, 531 would leave 537's words and settle on 394's enqueue, a state no script gets out of
+-- (undo-537 and 531 would both refuse there; the security audit's check of 24 Nov 2026).
+--
 -- It ends by printing the fingerprint of every public function (md5 of their md5s, by
 -- signature, and their count), to compare with the one taken before 531.
 do $undo$
@@ -659,6 +665,14 @@ begin
   perform set_config('lock_timeout', '5s', true);
 
   -- 1. Checks: nothing is changed before all of them pass
+  -- 537 replaced 394's affiliate_whatsapp_message and affiliate_whatsapp_settle and relies on
+  -- 531's enqueue, while 531 relies on 394's message: undo 537 (or whatever later replaced
+  -- them) first.
+  if md5(pg_get_functiondef('public.affiliate_whatsapp_message(text,text,text,text)'::regprocedure))
+       <> '6cab1d437121fb0942f90dd7ec7c5310'
+     or md5(pg_get_functiondef('public.affiliate_whatsapp_settle(bigint,integer,boolean,text)'::regprocedure))
+       <> '950a44ad565eada10199a3ccfc0e20bb' then
+    raise exception 'undo-531: affiliate_whatsapp_message or affiliate_whatsapp_settle is not 394''s version (537 is in, or one of them was changed by hand). Run scripts/affiliate-whatsapp/undo-537.sql first. Nothing changed.'; end if;
   for i in 1 .. cardinality(c_def) loop
     if md5(c_def[i]) <> c_before_531[i] then
       raise exception 'undo-531: the text kept for public.% is not its version before 531', c_sig[i]; end if;

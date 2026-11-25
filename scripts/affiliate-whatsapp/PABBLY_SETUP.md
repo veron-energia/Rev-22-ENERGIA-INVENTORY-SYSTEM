@@ -14,8 +14,8 @@ One POST per message, JSON, flat:
 | key               | example                                   |
 |-------------------|-------------------------------------------|
 | `secret`          | the shared secret (checked by the filter) |
-| `idempotency_key` | `welcome:<login id>` or `reactivated:<affiliate id>:<time>` |
-| `kind`            | `welcome` or `reactivated`                |
+| `idempotency_key` | `welcome:<login id>`, `reactivated:<affiliate id>:<time>`, or `share:` + the first message's key (537) |
+| `kind`            | `welcome`, `reactivated` or `share` (537) |
 | `first_name`      | `Jane` (empty when none looks like a name) |
 | `phone_e164`      | `+6591234567`                             |
 | `wa_country_code` | `65`                                      |
@@ -25,6 +25,33 @@ One POST per message, JSON, flat:
 A 2xx answer from Pabbly marks the message `sent`. Any other status code is
 posted again 5 minutes later, at most 3 posts in all. A timeout or no answer is
 never posted again (it may have gone out).
+
+## Two messages (537)
+
+Since `supabase/537_the_affiliate_whatsapp_goes_out_as_two_messages.sql`, each
+welcome and each "active again" message goes out as two posts to the same phone:
+
+1. the first (`kind` `welcome` or `reactivated`): the login and forgot-password
+   links, and a line saying the next message is for friends and family. It no
+   longer has the referral link;
+2. about a minute later, once Pabbly has answered the first with a 2xx, a
+   second post with `kind` `share`: the message the affiliate copies and sends
+   on, with their referral link (`<app>/r/<code>`) and no name in it.
+
+**No change to the workflow is needed.** The body has the same keys; `share`
+is only a new value of `kind`. The workflow (built 6 Oct 2026, steps below):
+the Filter checks only `secret`, and the WbizTool step maps only
+`wa_country_code`, `wa_number` and `message`. It reads neither `kind` nor
+`first_name`, so a `share` post passes the filter and sends its `message` like
+any other. Each affiliate now uses two Pabbly runs instead of one.
+
+A `share` is queued only when its first message is `sent`, and only for a
+first message composed after 537 (one already holding its referral link gets
+none; there is no backfill). It waits, expires after 48 hours and is skipped
+(`no_longer_active`) like any row. A share that cannot be composed is kept
+`skipped` (`no_referral_code`); one that could not be queued is kept `failed`
+with `skip_reason` `enqueue_error` and is never posted. `undo-537.sql` puts the
+one-message words back and skips any share still waiting (`undo_537`).
 
 ## 1. Build the workflow (Pabbly Connect, folder "Rev22 Energia")
 
@@ -93,7 +120,7 @@ minute; older ones are marked `expired` and never sent.
 ## 5. Watching it
 
 ```sql
-select status, skip_reason, count(*) from public.affiliate_whatsapp_outbox group by 1, 2 order by 1, 2;
+select kind, status, skip_reason, count(*) from public.affiliate_whatsapp_outbox group by 1, 2, 3 order by 1, 2, 3;
 
 select id, kind, first_name, phone_e164, status, skip_reason, attempts,
        last_status_code, last_error, created_at, sent_at
@@ -115,5 +142,5 @@ select id, kind, first_name, phone_e164, status, skip_reason, attempts,
 
 The words live in one function, `public.affiliate_whatsapp_message(kind,
 first_name, app_url, referral_code)`. Change them with a new migration that
-replaces that function (guarded on 394's AFTER md5). Messages already queued keep
-the words they were composed with.
+replaces that function (guarded on its current AFTER md5: 537's since 537).
+Messages already queued keep the words they were composed with.
