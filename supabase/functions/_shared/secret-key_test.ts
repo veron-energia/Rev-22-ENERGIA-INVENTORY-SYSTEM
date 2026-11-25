@@ -98,8 +98,23 @@ Deno.test('one fixed line per instance names the source and nothing else', () =>
   });
   withEnv({ SUPABASE_SERVICE_ROLE_KEY: 'legacy-service-role' }, () => {
     const lines = captured(() => { loadServiceKey(); loadServiceKey(); });
-    assertEquals(lines, ['service key source: legacy']);
+    assertEquals(lines, ['service key source: legacy (no SUPABASE_SECRET_KEYS)']);
   });
+});
+
+Deno.test('the legacy line gives the reason, and key names only as safe labels', () => {
+  const L = { SUPABASE_SERVICE_ROLE_KEY: 'legacy-service-role' };
+  const reasonOf = (c: Record<string, string>) => { let out: string[] = []; withEnv({ ...L, ...c }, () => { out = captured(() => { loadServiceKey(); }); }); return out; };
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: '{not json ' + EDGE }), ['service key source: legacy (SUPABASE_SECRET_KEYS is not JSON)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: JSON.stringify([EDGE, EDGE]) }), ['service key source: legacy (SUPABASE_SECRET_KEYS is a list of 2)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: '7' }), ['service key source: legacy (SUPABASE_SECRET_KEYS is not an object)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: keys({ default: EDGE, pabbly: EDGE }) }), ['service key source: legacy (no edge_functions entry; names: default, pabbly)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: keys({}) }), ['service key source: legacy (no edge_functions entry; names: none)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: JSON.stringify({ 'sb_secret_odd_name': EDGE, 'has space': EDGE }) }), ['service key source: legacy (no edge_functions entry; names: ?, ?)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: JSON.stringify({ edge_functions: { api_key: EDGE } }) }), ['service key source: legacy (edge_functions entry is object)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: JSON.stringify({ edge_functions: null }) }), ['service key source: legacy (edge_functions entry is null)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: keys({ edge_functions: 'sb_publishable_test_edge' }) }), ['service key source: legacy (edge_functions entry is not a secret key)']);
+  assertEquals(reasonOf({ SUPABASE_SECRET_KEYS: keys({ edge_functions: 'sb_secret_short' }) }), ['service key source: legacy (edge_functions entry is too short)']);
 });
 
 Deno.test('nothing but that line is logged, and it never holds key text, in any case', () => {
@@ -114,7 +129,7 @@ Deno.test('nothing but that line is logged, and it never holds key text, in any 
     withEnv(c, () => {
       const lines = captured(() => { loadServiceKey(); });
       for (const l of lines) {
-        assert(l === 'service key source: named' || l === 'service key source: legacy', l);
+        assert(l === 'service key source: named' || l.startsWith('service key source: legacy ('), l);
         assertFalse(l.includes('sb_secret_'));
         assertFalse(l.includes('legacy-service-role'));
       }
