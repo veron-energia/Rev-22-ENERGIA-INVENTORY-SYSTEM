@@ -55,11 +55,15 @@ select to_regprocedure('public.update_customer(uuid,jsonb,text,timestamptz)') is
 -- ===== 1. Fixture: 999 customers on three import timestamps =====
 create temp table t409p(k text primary key, id uuid);
 do $$
-declare stf uuid := gen_random_uuid();
+declare stf uuid := gen_random_uuid(); mgr uuid := gen_random_uuid();
 begin
   insert into auth.users(id, email) values (stf, 't409p-stf@tests.invalid');
   insert into profiles(id, full_name, email, role) values (stf, 'T409P Staff', 't409p-stf@tests.invalid', 'staff');
   insert into t409p values ('stf', stf);
+  -- 539: a page of 1000 (the exports) is an Owner's or a Manager's; Staff get 50 a call.
+  insert into auth.users(id, email) values (mgr, 't409p-mgr@tests.invalid');
+  insert into profiles(id, full_name, email, role) values (mgr, 'T409P Manager', 't409p-mgr@tests.invalid', 'manager');
+  insert into t409p values ('mgr', mgr);
   -- Half of them share one name, so the survey list's name order ties too.
   insert into customers(full_name, phone, created_at)
   select case when n % 2 = 0 then 'T409 Paging Same Name' else 'T409 Paging ' || lpad(n::text, 3, '0') end,
@@ -78,7 +82,8 @@ do $$
 declare v_size int; v_query text; v_off int; v_got uuid[]; v_page uuid[]; v_total bigint; v_ref uuid[];
   v_sgot text[]; v_spage text[]; v_sref text[];
 begin
-  perform set_config('request.jwt.claim.sub', (select id from t409p where k = 'stf')::text, true);
+  -- 539: as a Manager, who pages at 1000 as the exports do (Staff are refused above 50).
+  perform set_config('request.jwt.claim.sub', (select id from t409p where k = 'mgr')::text, true);
   foreach v_query in array array['T409 Paging', ''] loop
     -- The order the list promises, read straight from the table.
     select array_agg(c.id order by c.created_at desc, c.id desc) into v_ref

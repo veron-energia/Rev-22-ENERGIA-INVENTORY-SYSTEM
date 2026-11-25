@@ -278,9 +278,12 @@ select pg_temp.check(pg_temp.try_as('staff', format('select count(*)::text from 
 select pg_temp.check(pg_temp.try_as('staff', format('select string_agg(phone || '' '' || reason, '','') from public.customer_phone_history where customer_id = %L', pg_temp.fx('cust')))
                      = 'ok' || chr(9) || pg_temp.ph(9) || ' Test old number',
   'P1 Staff read the customer''s old number and its reason from the table, as the Profile does (430''s rule; no change)');
+-- 539 (security audit of 17 Nov 2026, M13): where it is in, an Inventory Manager reads none.
 select pg_temp.check(pg_temp.try_as('invman', format('select count(*)::text from public.customer_phone_history where customer_id = %L', pg_temp.fx('cust')))
-                     = 'ok' || chr(9) || '1',
-  'P2 KNOWN: an Inventory Manager can read it from the table too; only the page keeps it from them (NOT COVERED 2)');
+                     = 'ok' || chr(9) || case when to_regprocedure('public.customer_list_guard(integer)') is not null then '0' else '1' end,
+  case when to_regprocedure('public.customer_list_guard(integer)') is not null
+       then 'P2 an Inventory Manager reads no phone history (539)'
+       else 'P2 KNOWN: an Inventory Manager can read it from the table too; only the page keeps it from them (NOT COVERED 2)' end);
 
 -- ═════ N No new data ═════
 select pg_temp.check((select array_agg(k order by k) from jsonb_object_keys(pg_temp.body(pg_temp.try_as('staff', pg_temp.q_stats('cust')))::jsonb) k)

@@ -127,6 +127,13 @@
 -- (part-paid-change-same-as-paid-in-full-476 checks it).
 \set ON_ERROR_STOP on
 begin;
+-- 540 (security audit of 17 Nov 2026, M13: "Stock only") changed functions this file pins; it
+-- changes nothing an Owner, a Manager or Staff are answered. Where it is in, its UNDO goes first
+-- (this run only, rolled back with everything here).
+select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
+\if :t540_in
+\ir ../../customers/undo-540.sql
+\endif
 do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; end if; end $m536$;  -- 536: this suite back-dates or removes its own Audit Log rows; the trigger comes back with the rollback
 set local lock_timeout = '10s';
 set local statement_timeout = '900s';

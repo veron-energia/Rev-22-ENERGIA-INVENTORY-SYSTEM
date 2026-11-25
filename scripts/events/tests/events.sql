@@ -420,7 +420,8 @@ select pg_temp.check(pg_temp.err(format('select public.event_guest_list(%L)', pg
     and exists (select 1 from jsonb_array_elements(public.events_list()) x where (x->>'id')::uuid = pg_temp.fx('closed')),
   'V8 a manager of another store does not see the van''s event, and sees their own');
 select pg_temp.as_user('inv_mgr');
-select pg_temp.check(pg_temp.err(format('select public.event_guest_list(%L)', pg_temp.fx('ev'))) ~ 'access'
+-- 540 (M13, "Stock only"): where it is in, an Inventory Manager is refused the guest list in its words.
+select pg_temp.check(pg_temp.err(format('select public.event_guest_list(%L)', pg_temp.fx('ev'))) ~ 'access|An Inventory Manager works with stock only'
     and jsonb_array_length(public.events_list()) = 0, 'V8 an inventory manager sees no events');
 select pg_temp.check(pg_temp.err(format('select public.event_check_in(%L, %L, true, null)', pg_temp.fx('free1'), pg_temp.d(0))) ~ 'access',
   'V8 an inventory manager cannot check anyone in');

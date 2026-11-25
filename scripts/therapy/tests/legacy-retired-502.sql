@@ -73,6 +73,17 @@ select md5(pg_get_functiondef('public.dashboard_alerts_summary()'::regprocedure)
 \if :t502_522_in
 \ir ../../dashboard/undo-522.sql
 \endif
+-- 539 and 540 (security audit of 17 Nov 2026, M13) changed therapy_customer_summary and other
+-- functions 502 pins: where they are in, their UNDOs go first, 540's then 539's (this run only,
+-- rolled back with everything here).
+select to_regprocedure('public.inventory_manager_guard(text)') is not null as t502_540_in,
+       to_regprocedure('public.customer_list_guard(integer)') is not null as t502_539_in \gset
+\if :t502_540_in
+\ir ../../customers/undo-540.sql
+\endif
+\if :t502_539_in
+\ir ../../customers/undo-539.sql
+\endif
 -- 535 (security audit of 17 Nov 2026, M12) changed upsert_credit_package and
 -- upsert_premium_bundle after 502 (and 502's UNDO rightly refuses them): where 535 is in, 535's
 -- UNDO puts back the versions 502 left, for this run only (rolled back with everything here).

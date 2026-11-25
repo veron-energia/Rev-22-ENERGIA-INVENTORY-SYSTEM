@@ -26,6 +26,13 @@
 \set t495_undo `cat scripts/products/undo-495.sql`
 \set t495_remove `cat scripts/products/remove-service-stock-495.sql`
 begin;
+-- 540 (security audit of 17 Nov 2026, M13: "Stock only") changed functions this file pins (or an
+-- older UNDO it runs pins); it changes nothing an Owner, a Manager or Staff are answered. Where it
+-- is in, its UNDO goes first (this run only, rolled back with everything here).
+select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
+\if :t540_in
+\ir ../../customers/undo-540.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '600s';
 select set_config('t495.mig', :'t495_mig', true), set_config('t495.undo', :'t495_undo', true),

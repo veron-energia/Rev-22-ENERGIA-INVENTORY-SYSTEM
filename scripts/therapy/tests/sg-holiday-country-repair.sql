@@ -11,6 +11,13 @@
 -- phone and email is invented (T423H, +65 9123 46xx, @sig.invalid).
 \set ON_ERROR_STOP on
 begin;
+-- 540 (security audit of 17 Nov 2026, M13: "Stock only") changed therapy_recalculation_preview,
+-- which the repair pins; it changes nothing an Owner, a Manager or Staff are answered. Where it is
+-- in, its UNDO goes first (this run only, rolled back with everything here).
+select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
+\if :t540_in
+\ir ../../customers/undo-540.sql
+\endif
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $$begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end$$;
 create temp table fx(k text primary key, v uuid);

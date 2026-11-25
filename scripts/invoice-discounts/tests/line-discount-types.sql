@@ -554,16 +554,21 @@ end $$;
 -- ═════ L6 Who ═════
 do $$
 declare r jsonb; inv uuid; it uuid; e text; li public.invoice_items;
+  -- 540 (M13, "Stock only"): where it is in, an Inventory Manager makes no invoice at all.
+  v540 boolean := to_regprocedure('public.inventory_manager_guard(text)') is not null;
+  c540 constant text := 'An Inventory Manager does not make or change invoices.';
 begin
   perform pg_temp.as_user('im');
   r := pg_temp.mk(pg_temp.fx('nodob'), jsonb_build_array(pg_temp.ln('own') || pg_temp.opt('voucher')));
-  perform pg_temp.check(r->>'err' = 'Inventory Manager cannot give a voucher, Birthday or Staff discount',
+  perform pg_temp.check(r->>'err' = case when v540 then c540 else 'Inventory Manager cannot give a voucher, Birthday or Staff discount' end,
     'L6 an Inventory Manager may not give a voucher: ' || coalesce(r->>'err', 'saved'));
   r := pg_temp.mk(pg_temp.fx('nodob'), jsonb_build_array(pg_temp.ln('own') || pg_temp.opt('foc')));
-  perform pg_temp.check(r->>'err' = 'Inventory Manager cannot apply FOC', 'L6 nor FOC (as before): ' || coalesce(r->>'err', 'saved'));
+  perform pg_temp.check(r->>'err' = case when v540 then c540 else 'Inventory Manager cannot apply FOC' end, 'L6 nor FOC (as before): ' || coalesce(r->>'err', 'saved'));
   r := pg_temp.mk(pg_temp.fx('nodob'), jsonb_build_array(pg_temp.ln('own') || pg_temp.manual(10), pg_temp.ln('third') || pg_temp.pct(10)));
-  perform pg_temp.check(r ? 'id' and (pg_temp.inv((r->>'id')::uuid)).discount_total = 15,
-    'L6 but may give manual and percentage discounts: ' || coalesce(r->>'err', 'saved'));
+  perform pg_temp.check(case when v540 then r->>'err' = c540
+                             else r ? 'id' and (pg_temp.inv((r->>'id')::uuid)).discount_total = 15 end,
+    case when v540 then 'L6 nor manual and percentage discounts (540: no invoice at all): '
+         else 'L6 but may give manual and percentage discounts: ' end || coalesce(r->>'err', 'saved'));
 
   -- Staff correct a paid invoice of their store (377) with the new options.
   perform pg_temp.as_user('o');

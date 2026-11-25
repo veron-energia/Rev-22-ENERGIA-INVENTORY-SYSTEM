@@ -201,7 +201,7 @@ begin
  if exists(select 1 from jsonb_array_elements(r->'unlimited') x where x->>'id'=u3::text) then
   raise exception 'A unit taken as vouchers is listed as unlimited therapy'; end if;
  -- … the holdings list still shows the customer while vouchers are owed …
- if not exists(select 1 from therapy_customer_summary(null,500,0,false) x where x.customer_id=c2 and x.unlimited_pending>0) then
+ if not exists(select 1 from therapy_customer_summary('PSC Second',50,0,false) x where x.customer_id=c2 and x.unlimited_pending>0) then  -- 539: 50 a call
   raise exception 'A customer owed vouchers dropped out of the holdings list'; end if;
  r:=customer_overview(c2);
  if not exists(select 1 from jsonb_array_elements(r->'purchased_therapy') x where x->>'benefit'='voucher') then
@@ -345,7 +345,7 @@ begin
  r:=therapy_customer_detail(c2);
  if exists(select 1 from jsonb_array_elements(r->'pending') x where x->>'entitlement_no'=(select entitlement_no from therapy_entitlements where id=ent)) then
   raise exception 'A fully resolved voucher allowance is still listed as unclaimed'; end if;
- if exists(select 1 from therapy_customer_summary(null,500,0,false) x where x.customer_id=c2 and x.unlimited_pending>0) then
+ if exists(select 1 from therapy_customer_summary('PSC Second',50,0,false) x where x.customer_id=c2 and x.unlimited_pending>0) then  -- 539: 50 a call
   raise exception 'A customer with nothing owed is still listed as unclaimed'; end if;
 
  -- a unit taken as vouchers with none collected is still unused: a whole refund

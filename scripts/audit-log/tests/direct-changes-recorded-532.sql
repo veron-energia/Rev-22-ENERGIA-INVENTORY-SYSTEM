@@ -848,8 +848,10 @@ declare t text; v uuid;
 begin
   perform pg_temp.mark();
   -- The Users & Roles page's save.
-  t := pg_temp.n('own', format('update public.profiles set full_name = full_name, role = %L, work_phone = work_phone, personal_phone = personal_phone, personal_email = personal_email, updated_at = now() + interval ''1 second'' where id = %L',
-    'inventory_manager', pg_temp.fx('stf2')));
+  -- 539: a login reads no personal_phone or personal_email, so the page sends their values (as here).
+  t := pg_temp.n('own', format('update public.profiles set full_name = full_name, role = %L, work_phone = work_phone, personal_phone = %L, personal_email = %L, updated_at = now() + interval ''1 second'' where id = %L',
+    'inventory_manager', (select personal_phone from public.profiles where id = pg_temp.fx('stf2')),
+    (select personal_email from public.profiles where id = pg_temp.fx('stf2')), pg_temp.fx('stf2')));
   perform pg_temp.check(t = 'ok:1' and pg_temp.saw() = 'profiles/staff_role_changed/stf2/-/users/own'
     and pg_temp.od() = '{"role": "staff"}' and pg_temp.nd() = '{"role": "inventory_manager"}' and pg_temp.role_of() = 'owner',
     'M8a an Owner makes a Staff login an Inventory Manager: one entry, the old and the new role, the Owner: ' || t || ' / ' || pg_temp.saw() || ' ' || coalesce(pg_temp.nd()::text, ''));
@@ -918,8 +920,10 @@ begin
     'M8n a login switched off by the secret key alone: 532''s entry (service_role) beside 412''s: ' || t || ' / ' || pg_temp.acts());
   -- Switched on by an Owner from the Users & Roles page (its whole save): one entry, 412's.
   perform pg_temp.mark();
-  t := pg_temp.n('own', format('update public.profiles set full_name = full_name, role = role, is_active = true, work_phone = work_phone, personal_phone = personal_phone, personal_email = personal_email, updated_at = now() + interval ''4 seconds'' where id = %L and is_active = false',
-    pg_temp.fx('stf2')));
+  -- 539: the personal phone and email as values, as the page sends them.
+  t := pg_temp.n('own', format('update public.profiles set full_name = full_name, role = role, is_active = true, work_phone = work_phone, personal_phone = %L, personal_email = %L, updated_at = now() + interval ''4 seconds'' where id = %L and is_active = false',
+    (select personal_phone from public.profiles where id = pg_temp.fx('stf2')),
+    (select personal_email from public.profiles where id = pg_temp.fx('stf2')), pg_temp.fx('stf2')));
   perform pg_temp.check(t = 'ok:1' and pg_temp.saw() = 'profiles/staff_login_unblocked/stf2/-/users/own',
     'M8o an Owner''s switch alone on the page still gives exactly one entry (412''s, with the Owner): ' || t || ' / ' || pg_temp.saw());
 end $M8$;

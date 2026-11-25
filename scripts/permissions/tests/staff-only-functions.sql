@@ -107,6 +107,13 @@ create function pg_temp.sof_515_revoked() returns text[] language sql immutable 
 -- Whether 533 is in, and the two functions it closed to signed-in logins (the security audit of
 -- 17 Nov 2026, M9): cancel_invoice_recorded (resolve_invoice_action_v2 reaches it as the owner)
 -- and the old single-line request_inventory_adjustment (the page calls request_inventory_adjustments).
+-- 540 (security audit of 17 Nov 2026, M13: "Stock only"): an Inventory Manager gets no invoice,
+-- exchange, therapy, print or send log, and lends and takes back nothing.
+create function pg_temp.has_540() returns boolean language sql stable as
+  $f$ select to_regprocedure('public.inventory_manager_guard(text)') is not null $f$;
+-- 539 (security audit of 17 Nov 2026, M13): an Inventory Manager gets no customer list.
+create function pg_temp.has_539() returns boolean language sql stable as
+  $f$ select to_regprocedure('public.customer_list_guard(integer)') is not null $f$;
 create function pg_temp.has_533() returns boolean language sql stable as
   $f$ select to_regprocedure('public.invoice_taken_back(uuid)') is not null
             and not has_function_privilege('authenticated', 'public.cancel_invoice_recorded(uuid,text,uuid)', 'execute') $f$;
@@ -540,6 +547,11 @@ begin
   else
     v_named := v_named || pg_temp.sof_535_revoked();
   end if;
+  -- 540: the guard answers about the caller (four of its callers run as their caller); it refuses
+  -- an Inventory Manager and answers nothing to anyone else.
+  if pg_temp.has_540() then
+    v_named := v_named || array['inventory_manager_guard(text)'];
+  end if;
   for r in
     select p.oid, p.proname, p.oid::regprocedure::text as sig, p.prosecdef,
            p.prorettype = 'void'::regtype as is_void,
@@ -795,7 +807,21 @@ begin
                               or strpos(r.sql, 'public.void_affiliate_deduction_settlement(') > 0) then
       v_may := array['owner'];
     end if;
+    -- 539: the customer search, the Therapy page's customers and the invoice's affiliate picker
+    -- refuse an Inventory Manager (42501), and the customers table gives them no row.
+    if pg_temp.has_539() and r.label in ('customer search', 'therapy customers', 'affiliate picker') then
+      v_may := array_remove(v_may, 'invman');
+    end if;
+    -- 540: these refuse an Inventory Manager (42501) too.
+    if pg_temp.has_540() and r.label in ('bill-to, store A', 'revisions', 'transferable benefits', 'exchange details', 'print, A',
+                                         'send log', 'financial position', 'request status', 'exchange eligibility',
+                                         'exchange credit preview', 'therapy customer', 'take back a loan') then
+      v_may := array_remove(v_may, 'invman');
+    end if;
     foreach v_who in array c_everyone loop
+      -- 539: customer_overview still answers an Inventory Manager (540 closes it), but the
+      -- customer's name it is read with here is gone; nothing to check for them on this line.
+      continue when pg_temp.has_539() and r.label = 'customer view' and v_who = 'invman';
       v_out := pg_temp.sof_try(v_who, pg_temp.sof_sql(r.sql));
       v_state := split_part(v_out, chr(9), 1);
       n := n + 1;

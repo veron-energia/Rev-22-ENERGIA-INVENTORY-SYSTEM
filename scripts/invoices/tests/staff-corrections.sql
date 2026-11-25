@@ -76,6 +76,13 @@
 -- installs 416). Fixtures are invented.
 \set ON_ERROR_STOP on
 begin;
+-- 540 (security audit of 17 Nov 2026, M13: "Stock only") changed functions this file pins; it
+-- changes nothing an Owner, a Manager or Staff are answered. Where it is in, its UNDO goes first
+-- (this run only, rolled back with everything here).
+select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
+\if :t540_in
+\ir ../../customers/undo-540.sql
+\endif
 \if :{?mig}
 \i :mig
 \endif

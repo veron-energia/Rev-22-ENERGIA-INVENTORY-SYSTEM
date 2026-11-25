@@ -13,6 +13,13 @@
 -- everything is rolled back. Made-up records only (L513, @example.invalid).
 \set ON_ERROR_STOP on
 begin;
+-- 540 (security audit of 17 Nov 2026, M13: "Stock only") changed functions this file pins; it
+-- changes nothing an Owner, a Manager or Staff are answered. Where it is in, its UNDO goes first
+-- (this run only, rolled back with everything here).
+select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
+\if :t540_in
+\ir ../../customers/undo-540.sql
+\endif
 select position('513:' in pg_get_functiondef('public.create_transfer_request(text,text,uuid,text,uuid,jsonb,text)'::regprocedure)) > 0 as m513_in \gset
 \if :m513_in
 \else

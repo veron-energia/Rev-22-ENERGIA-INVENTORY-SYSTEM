@@ -15,8 +15,14 @@ select position('512:' in pg_get_functiondef('public.trg_guard_profile_privilege
 \else
 \ir ../../../supabase/512_only_an_owner_changes_an_owner.sql
 \endif
--- A second run changes nothing.
+-- A second run changes nothing. (Where 539 is in, 512's file refuses: it pins user_admin_list as
+-- it was before 539, which changes who sees the login emails; the rest of this file still runs.)
+select to_regprocedure('public.customer_list_guard(integer)') is not null as m539_in \gset
+\if :m539_in
+\echo NOTE  512 a second time is skipped (539 is in)
+\else
 \ir ../../../supabase/512_only_an_owner_changes_an_owner.sql
+\endif
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end $f$;
