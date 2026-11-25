@@ -18,6 +18,7 @@ import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
 import '../components/therapy/therapy.css';
 import { purchasedStatusOn } from '../lib/therapy/status';
 import { calendarDate } from '../lib/calendarDates';
+import { canSetOwnCommissionRates, COMMISSION_RATE_NOTES, ownRatesError, ownRateText, ownRateValue } from '../lib/permissions/commissions';
 
 const money = (n: number) => `S$${Number(n ?? 0).toFixed(2)}`;
 // A Singapore day as dd/mm/yyyy, whatever the device's time zone: a date-only
@@ -99,6 +100,9 @@ const TherapyPage: React.FC = () => {
   // Spending rules are the Owner's alone. Managers and Staff still open the
   // panel, read-only, because they are asked what a balance covers.
   const isOwner = profile?.role === 'owner';
+  // 535 (M12, 24 Nov 2026): a package's or bundle's own commission rates are
+  // the Owner's. A Manager edits the rest, and their save sends them back as read.
+  const canSetRates = canSetOwnCommissionRates(profile?.role);
   const [rulesFor, setRulesFor] = useState<{ id: string; name: string } | null>(null);
   // A voucher reward can be taken a few at a time, so it stays reachable for as
   // long as anything is left on it — not only on the day it is first claimed.
@@ -158,13 +162,16 @@ const TherapyPage: React.FC = () => {
   const emptyBundle = { id: null as string | null, name: '', sku: '', grants_reward: false, customer_payment_amount: '',
     paid_credit_amount: '', bonus_credit_amount: '', free_voucher_qty: '',
     reward_qualifying_amount: '', is_active: true, effective_from: '', effective_to: '',
-    commission_classification: 'third_party', tier1_rate: '', tier2_rate: '',
+    commission_classification: 'third_party', tier1_rate: '', tier2_rate: '', staff_commission_rate: '',
     store_ids: [] as string[], voucher_ids: [] as string[] };
   const [bundleForm, setBundleForm] = useState<typeof emptyBundle | null>(null);
   const [bundleBusy, setBundleBusy] = useState(false);
   const [bundleErr, setBundleErr] = useState<string | null>(null);
   const saveBundle = async () => {
     if (!bundleForm) return;
+    // 535 (M12): an own rate outside 0 to 100 is refused here, in the server's words.
+    const rateErr = ownRatesError(bundleForm);
+    if (rateErr) { setBundleErr(rateErr); return; }
     setBundleBusy(true); setBundleErr(null);
     const { data, error } = await supabase.rpc('upsert_premium_bundle', {
       p_id: bundleForm.id, p_name: bundleForm.name,
@@ -177,9 +184,12 @@ const TherapyPage: React.FC = () => {
       p_effective_from: bundleForm.effective_from || null,
       p_effective_to: bundleForm.effective_to || null,
       p_commission_classification: bundleForm.commission_classification,
-      p_staff_commission_enabled: true, p_staff_commission_rate: null,
-      p_tier1_rate: bundleForm.tier1_rate === '' ? null : Number(bundleForm.tier1_rate),
-      p_tier2_rate: bundleForm.tier2_rate === '' ? null : Number(bundleForm.tier2_rate),
+      p_staff_commission_enabled: true,
+      // 535 (M12): Tier 1 and 2 as in the form (as read, for a Manager); the staff rate is not
+      // shown and goes back exactly as read, so no save changes it.
+      p_staff_commission_rate: ownRateValue(bundleForm.staff_commission_rate),
+      p_tier1_rate: ownRateValue(bundleForm.tier1_rate),
+      p_tier2_rate: ownRateValue(bundleForm.tier2_rate),
       p_notes: null,
       p_store_ids: bundleForm.store_ids.length ? bundleForm.store_ids : null,
       p_voucher_ids: bundleForm.voucher_ids.length ? bundleForm.voucher_ids : null,
@@ -199,7 +209,7 @@ const TherapyPage: React.FC = () => {
   const [allVouchers, setAllVouchers] = useState<any[]>([]);
   const emptyPkg = { id: null as string | null, name: '', sku: '', customer_price: '', paid_credit_amount: '',
     is_active: true, effective_from: '', effective_to: '', commission_classification: 'third_party',
-    staff_commission_enabled: true, tier1_rate: '', tier2_rate: '',
+    staff_commission_enabled: true, tier1_rate: '', tier2_rate: '', staff_commission_rate: '',
     // reward_qualifying_amount and voucher_ids are no longer shown: a Credit
     // Package sold from 10 Nov 2026 gives credit only. They are sent back as
     // they were read, so a save changes nothing about them (sales already made
@@ -226,6 +236,9 @@ const TherapyPage: React.FC = () => {
     const effectiveFrom = pkgForm.effective_from
       || (pkgForm.id ? (creditPkgs.find(p => p.id === pkgForm.id)?.effective_from ?? '') : sgToday());
     if (!effectiveFrom) { setPkgErr('Enter the "Effective from" date.'); return; }
+    // 535 (M12): an own rate outside 0 to 100 is refused here, in the server's words.
+    const rateErr = ownRatesError(pkgForm);
+    if (rateErr) { setPkgErr(rateErr); return; }
     setPkgBusy(true); setPkgErr(null);
     const { data, error } = await supabase.rpc('upsert_credit_package', {
       p_id: pkgForm.id, p_name: pkgForm.name,
@@ -236,9 +249,11 @@ const TherapyPage: React.FC = () => {
       p_effective_to: pkgForm.effective_to || null,
       p_commission_classification: pkgForm.commission_classification,
       p_staff_commission_enabled: pkgForm.staff_commission_enabled,
-      p_staff_commission_rate: null,
-      p_tier1_rate: pkgForm.tier1_rate === '' ? null : Number(pkgForm.tier1_rate),
-      p_tier2_rate: pkgForm.tier2_rate === '' ? null : Number(pkgForm.tier2_rate),
+      // 535 (M12): Tier 1 and 2 as in the form (as read, for a Manager); the staff rate is not
+      // shown and goes back exactly as read, so no save changes it.
+      p_staff_commission_rate: ownRateValue(pkgForm.staff_commission_rate),
+      p_tier1_rate: ownRateValue(pkgForm.tier1_rate),
+      p_tier2_rate: ownRateValue(pkgForm.tier2_rate),
       p_reward_qualifying_amount: pkgForm.reward_qualifying_amount === '' ? null : Number(pkgForm.reward_qualifying_amount),
       p_notes: null,
       p_store_ids: pkgForm.store_ids.length ? pkgForm.store_ids : null,
@@ -820,6 +835,7 @@ const TherapyPage: React.FC = () => {
                             commission_classification: 'third_party',
                             tier1_rate: b.tier1_rate != null ? String(b.tier1_rate) : '',
                             tier2_rate: b.tier2_rate != null ? String(b.tier2_rate) : '',
+                            staff_commission_rate: ownRateText(b.staff_commission_rate),
                             store_ids: ((st4 as any[]) ?? []).map(x => x.store_id),
                             voucher_ids: ((vs2 as any[]) ?? []).map(x => x.voucher_id) });
                         }}><Pencil size={13} /></button></td>
@@ -879,11 +895,12 @@ const TherapyPage: React.FC = () => {
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Tier 1 rate (%)</label>
-                <input type="number" min={0} max={100} step={0.1} value={bundleForm.tier1_rate} onChange={e => setBundleForm(f => f && ({ ...f, tier1_rate: e.target.value }))} placeholder="default" />
+                <input type="number" min={0} max={100} step={0.1} value={bundleForm.tier1_rate} disabled={!canSetRates} onChange={e => setBundleForm(f => f && ({ ...f, tier1_rate: e.target.value }))} placeholder="default" />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Tier 2 rate (%)</label>
-                <input type="number" min={0} max={100} step={0.1} value={bundleForm.tier2_rate} onChange={e => setBundleForm(f => f && ({ ...f, tier2_rate: e.target.value }))} placeholder="default" />
+                <input type="number" min={0} max={100} step={0.1} value={bundleForm.tier2_rate} disabled={!canSetRates} onChange={e => setBundleForm(f => f && ({ ...f, tier2_rate: e.target.value }))} placeholder="default" />
+                {!canSetRates && <div data-note="own-rates-owner-only" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{COMMISSION_RATE_NOTES.ownRatesReadOnly}</div>}
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Effective from</label>
@@ -985,6 +1002,7 @@ const TherapyPage: React.FC = () => {
                             staff_commission_enabled: p2.staff_commission_enabled ?? true,
                             tier1_rate: p2.tier1_rate != null ? String(p2.tier1_rate) : '',
                             tier2_rate: p2.tier2_rate != null ? String(p2.tier2_rate) : '',
+                            staff_commission_rate: ownRateText(p2.staff_commission_rate),
                             reward_qualifying_amount: p2.reward_qualifying_amount != null ? String(p2.reward_qualifying_amount) : '',
                             store_ids: ((st3 as any[]) ?? []).map(x => x.store_id),
                             voucher_ids: ((vs as any[]) ?? []).map(x => x.voucher_id) });
@@ -1128,11 +1146,12 @@ const TherapyPage: React.FC = () => {
             <div className="form-grid-2">
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Tier 1 rate (%)</label>
-                <input type="number" min={0} max={100} step={0.1} value={pkgForm.tier1_rate} onChange={e => setPkgForm(f => f && ({ ...f, tier1_rate: e.target.value }))} placeholder="default" />
+                <input type="number" min={0} max={100} step={0.1} value={pkgForm.tier1_rate} disabled={!canSetRates} onChange={e => setPkgForm(f => f && ({ ...f, tier1_rate: e.target.value }))} placeholder="default" />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Tier 2 rate (%)</label>
-                <input type="number" min={0} max={100} step={0.1} value={pkgForm.tier2_rate} onChange={e => setPkgForm(f => f && ({ ...f, tier2_rate: e.target.value }))} placeholder="default" />
+                <input type="number" min={0} max={100} step={0.1} value={pkgForm.tier2_rate} disabled={!canSetRates} onChange={e => setPkgForm(f => f && ({ ...f, tier2_rate: e.target.value }))} placeholder="default" />
+                {!canSetRates && <div data-note="own-rates-owner-only" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{COMMISSION_RATE_NOTES.ownRatesReadOnly}</div>}
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label>Effective from</label>

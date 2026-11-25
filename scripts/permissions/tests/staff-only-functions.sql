@@ -254,6 +254,15 @@ create function pg_temp.sof_writes() returns bigint language sql volatile as
   $f$ select coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del), 0)::bigint from pg_stat_xact_all_tables
        where schemaname not in ('pg_catalog', 'information_schema') and schemaname !~ '^pg_(temp|toast)' $f$;
 
+-- Whether 535 is in, and the two staff-commission functions it closed to every login (the security
+-- audit of 17 Nov 2026, M12; no page calls them). Before 535 they are named with the other
+-- functions that refuse a login that is not staff themselves.
+create function pg_temp.has_535() returns boolean language sql stable as
+  $f$ select to_regprocedure('public.invoice_affiliate_rates_for(uuid)') is not null
+            and not has_function_privilege('authenticated', 'public.set_staff_commission_rate(numeric)', 'execute') $f$;
+create function pg_temp.sof_535_revoked() returns text[] language sql immutable as $f$
+  select array['apply_commission_rebase_all()', 'set_staff_commission_rate(numeric)'] $f$;
+
 -- An argument for a call. Variant 1: null. Variant 2: the fixture's id for an
 -- id whose name says what it is, 'SOFX' for text, a page of 50 from the
 -- start, today's date. Variant 3: those ids, and null for everything else.
@@ -332,7 +341,7 @@ declare
       'add_promotion_item(uuid,promotion_item_type,uuid,uuid,uuid,text,integer,text,uuid,uuid)',
       'adjust_customer_credit(uuid,text,text,numeric,text,text,date,text,uuid,uuid)',
       'affiliate_admin_directory()', 'affiliate_pending_claims()', 'affiliate_rejected_claims()',
-      'apply_commission_rebase_all()', 'apply_line_foc(uuid,integer,uuid,text)',
+      'apply_line_foc(uuid,integer,uuid,text)',
       'archive_therapy_service(uuid,text)', 'backfill_legacy_qualification(date,date,uuid)',
       'cancel_invoice_recorded(uuid,text,uuid)', 'change_customer_phone(uuid,text,text)',
       'choose_therapy_benefit(uuid,text,uuid,text)',
@@ -391,7 +400,7 @@ declare
       'set_low_stock_threshold(location_type,uuid,uuid,integer)', 'set_product_important(uuid,boolean)',
       'set_product_prices(uuid,uuid,numeric,numeric,text)',
       'set_promotion_price_all_stores(uuid,numeric,boolean)',
-      'set_promotion_prices(uuid,uuid,numeric,numeric,boolean)', 'set_staff_commission_rate(numeric)',
+      'set_promotion_prices(uuid,uuid,numeric,numeric,boolean)',
       'set_therapy_calendar_coverage(text,integer,text,boolean,text,text,text)',
       'set_therapy_service_store(uuid,uuid,boolean,numeric)',
       'set_tiktok_status_mapping_active(uuid,boolean)',
@@ -518,6 +527,18 @@ begin
          or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
          or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
          or not has_function_privilege('service_role', to_regprocedure('public.' || x), 'execute');
+  end if;
+  -- 535: the two staff-commission functions it closed are the service role's and the server's
+  -- alone; before 535 they refuse a login that is not staff themselves, as before.
+  if pg_temp.has_535() then
+    perform pg_temp.sof_fail('1: 535 closed it, yet a signed-in login or anon can call it, or the service role cannot: ' || x)
+       from unnest(pg_temp.sof_535_revoked()) x
+      where to_regprocedure('public.' || x) is null
+         or has_function_privilege('authenticated', to_regprocedure('public.' || x), 'execute')
+         or has_function_privilege('anon', to_regprocedure('public.' || x), 'execute')
+         or not has_function_privilege('service_role', to_regprocedure('public.' || x), 'execute');
+  else
+    v_named := v_named || pg_temp.sof_535_revoked();
   end if;
   for r in
     select p.oid, p.proname, p.oid::regprocedure::text as sig, p.prosecdef,

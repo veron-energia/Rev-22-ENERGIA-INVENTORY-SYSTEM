@@ -799,10 +799,26 @@ begin
   -- Dry run of the same take-back (tier 1 own rate lowered to 13.5%, the money
   -- unchanged: 54.00 / 18.90 on the 400 held): reported on the row's own date.
   v_fp := pg_temp.fingerprint(v_inv);
+  if to_regclass('public.invoice_affiliate_rates') is not null then
+    -- 535 (security audit of 17 Nov 2026, M12): an invoice keeps the rates it first earned at,
+    -- so a settings change alone takes nothing back; the rate kept for this invoice is lowered
+    -- instead, for the same take-back.
+    update app_settings set commission_tier1_own_rate = 13.5 where id = true;
+    select coalesce(jsonb_agg(jsonb_build_object('tier', d.o_tier, 'amt', d.o_amount, 'date', d.o_date) order by d.o_tier), '[]'::jsonb)
+      into v_dry from sync_instalment_commissions(v_inv, 'dry run', null, true) d where d.o_ledger = 'affiliate';
+    update app_settings set commission_tier1_own_rate = 15 where id = true;
+    perform pg_temp.check(v_sc, v_dry = '[]'::jsonb and pg_temp.fingerprint(v_inv) = v_fp,
+      format('535: a settings rate change alone takes nothing back from this invoice; got %s', v_dry));
+    update invoice_affiliate_rates set tier1_own_rate = 13.5 where invoice_id = v_inv;
+    select coalesce(jsonb_agg(jsonb_build_object('tier', d.o_tier, 'amt', d.o_amount, 'date', d.o_date) order by d.o_tier), '[]'::jsonb)
+      into v_dry from sync_instalment_commissions(v_inv, 'dry run', null, true) d where d.o_ledger = 'affiliate';
+    update invoice_affiliate_rates set tier1_own_rate = 15 where invoice_id = v_inv;
+  else
   update app_settings set commission_tier1_own_rate = 13.5 where id = true;
   select coalesce(jsonb_agg(jsonb_build_object('tier', d.o_tier, 'amt', d.o_amount, 'date', d.o_date) order by d.o_tier), '[]'::jsonb)
     into v_dry from sync_instalment_commissions(v_inv, 'dry run', null, true) d where d.o_ledger = 'affiliate';
   update app_settings set commission_tier1_own_rate = 15 where id = true;
+  end if;
   perform pg_temp.check(v_sc, v_dry = jsonb_build_array(
         jsonb_build_object('tier', 'tier1', 'amt', -6.00, 'date', pg_temp.prev()),
         jsonb_build_object('tier', 'tier2', 'amt', -2.10, 'date', pg_temp.prev()))

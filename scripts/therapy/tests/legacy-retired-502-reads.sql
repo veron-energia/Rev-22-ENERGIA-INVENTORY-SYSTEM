@@ -51,6 +51,13 @@ select md5(pg_get_functiondef('public.dashboard_alerts_summary()'::regprocedure)
 \if :t502r_522_in
 \ir ../../dashboard/undo-522.sql
 \endif
+-- 535 (security audit of 17 Nov 2026, M12) changed upsert_credit_package and
+-- upsert_premium_bundle after 502 (and 502's UNDO rightly refuses them): where 535 is in, 535's
+-- UNDO puts back the versions 502 left, for this run only (rolled back with everything here).
+select to_regclass('public.invoice_affiliate_rates') is not null as t502r_535_in \gset
+\if :t502r_535_in
+\ir ../../commissions/undo-535.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '900s';
 -- Definitions are read with public alone on the search path, as 502 reads them.

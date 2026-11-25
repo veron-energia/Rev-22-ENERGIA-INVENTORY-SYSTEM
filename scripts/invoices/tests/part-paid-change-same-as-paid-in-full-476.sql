@@ -1012,7 +1012,10 @@ begin
                                 in (m.after,
                                     -- 527 (security audit of 17 Nov 2026, M2) changes the preview after 476:
                                     -- a referrer who may not earn is 'blocked' there (-v nomig=1 where it is in)
-                                    case when m.sig = 'invoice_package_commission_preview(uuid)' then '966e8b7166607aa1d986f20fbbbc1e52' end) end) into v
+                                    case when m.sig = 'invoice_package_commission_preview(uuid)' then '966e8b7166607aa1d986f20fbbbc1e52' end,
+                                    -- 535 (security audit of 17 Nov 2026, M12) changes it again: the
+                                    -- invoice's kept rates, a settled line's sale snapshot (-v nomig=1 where it is in)
+                                    case when m.sig = 'invoice_package_commission_preview(uuid)' then 'ef34e72a6bffaebb33af83f2b38f2ade' end) end) into v
     from t476_md5 m;
   perform set_config('search_path', p, true);
   return v;

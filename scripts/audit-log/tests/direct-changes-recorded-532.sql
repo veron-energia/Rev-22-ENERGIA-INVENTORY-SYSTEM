@@ -77,6 +77,14 @@
 begin;
 set local lock_timeout = '10s';
 set local statement_timeout = '300s';
+-- 535 (security audit of 17 Nov 2026, M12) extends trg_audit_direct_change() and attaches it to
+-- three more tables (app_settings, credit_packages, premium_bundles): where 535 is in, 535's UNDO
+-- puts back 532's function and its thirteen triggers, for this run only (rolled back with
+-- everything here). This suite tests 532.
+select to_regclass('public.invoice_affiliate_rates') is not null as m532_535_in \gset
+\if :m532_535_in
+\ir ../../commissions/undo-535.sql
+\endif
 -- Before: every function's text and rights, and every rule of public.
 create temp table fn0 as
   select p.oid::regprocedure::text as fn, md5(pg_get_functiondef(p.oid)) as md5, p.proacl::text as acl

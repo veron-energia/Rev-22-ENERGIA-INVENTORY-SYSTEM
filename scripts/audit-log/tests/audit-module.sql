@@ -488,6 +488,20 @@ begin
 
   -- Real server functions, as the page calls them, signed in as the Owner:
   -- one through write_audit, one that writes audit_logs itself with no module.
+  if to_regclass('public.invoice_affiliate_rates') is not null then
+    -- 535 (security audit of 17 Nov 2026, M12) closed set_staff_commission_rate to every login
+    -- (no page calls it); the Commissions page's Rates save writes the same table through
+    -- write_audit, as the Owner, at the rates already set.
+    v_out := pg_temp.audm_try('owner', 'select public.set_commission_rates(a.commission_tier1_own_rate, a.commission_tier1_third_rate, '
+                                       || 'a.commission_tier2_own_rate, a.commission_tier2_third_rate)::text from public.app_settings a where a.id');
+    if split_part(v_out, chr(9), 1) <> 'ok' then
+      perform pg_temp.audm_fail('4: set_commission_rates failed for the Owner: ' || v_out);
+    end if;
+    if (select string_agg(concat_ws(':', a.table_name, a.module, a.actor_role), ',') from public.audit_logs a
+         where a.action = 'commission_rates_set' and a.changed_by = o) is distinct from 'app_settings:settings:owner' then
+      perform pg_temp.audm_fail('4: set_commission_rates''s entry is not filed under settings');
+    end if;
+  else
   v_out := pg_temp.audm_try('owner', 'select public.set_staff_commission_rate(3)::text');
   if split_part(v_out, chr(9), 1) <> 'ok' then
     perform pg_temp.audm_fail('4: set_staff_commission_rate failed for the Owner: ' || v_out);
@@ -495,6 +509,7 @@ begin
   if (select string_agg(concat_ws(':', a.table_name, a.module, a.actor_role), ',') from public.audit_logs a
        where a.action = 'staff_commission_rate_set' and a.changed_by = o) is distinct from 'app_settings:settings:owner' then
     perform pg_temp.audm_fail('4: set_staff_commission_rate''s entry is not filed under settings');
+  end if;
   end if;
   v_out := pg_temp.audm_try('owner', 'select public.upsert_therapy_service(null, ''AUDM-SVC-1'', ''AUDM service'', 10, null, ''unrestricted'')::text');
   if split_part(v_out, chr(9), 1) <> 'ok' then

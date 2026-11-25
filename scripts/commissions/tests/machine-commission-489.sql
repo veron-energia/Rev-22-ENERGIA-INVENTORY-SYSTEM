@@ -40,6 +40,10 @@
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
+-- 535 (security audit of 17 Nov 2026, M12) builds on 489's two functions, so where it is in,
+-- 489's file is not run again below (it would refuse them); its other step, setting the
+-- cut-off at the moment it runs, is done in its place, as 489 does it.
+select to_regclass('public.invoice_affiliate_rates') is not null as m489_has535 \gset
 create temp table failed(n serial, msg text);
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $$begin
@@ -151,7 +155,11 @@ begin
     'M0 before 489 (where it is in: with no cut-off, as its UNDO leaves it) a third-party machine sold as a special product earns as ours (got ' || pg_temp.earned(inv) || ' / ' || pg_temp.earned(inv, 'tier2') || ')');
 end $$;
 
+\if :m489_has535
+update public.app_settings set machine_commission_from = now() where id = true and machine_commission_from is null;
+\else
 \ir ../../../supabase/489_machines_earn_like_the_machine.sql
+\endif
 -- M0's sale was made before the change: back-date it a day, as a real sale
 -- of yesterday. Every invoice in this one transaction has the same creation
 -- time, and invoice_created_at_immutable refuses the app a change, so the
@@ -253,7 +261,11 @@ create temp table before_rerun as
    where p.oid in ('public.earn_invoice_commission(uuid)'::regprocedure,
                    'public.invoice_affiliate_commission_preview(uuid)'::regprocedure);
 create temp table cutoff_before as select machine_commission_from v from public.app_settings where id = true;
+\if :m489_has535
+update public.app_settings set machine_commission_from = now() where id = true and machine_commission_from is null;
+\else
 \ir ../../../supabase/489_machines_earn_like_the_machine.sql
+\endif
 do $$
 begin
   perform pg_temp.check(not exists (select 1 from before_rerun b

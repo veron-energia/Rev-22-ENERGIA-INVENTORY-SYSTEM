@@ -13,6 +13,10 @@
 //                  referrers yet". A failed referrer says so, with Retry. A
 //                  late answer for a referrer no longer open is dropped.
 //   AFFILIATES-13  The downline is Tier 1 and Tier 2 only, said so.
+//   535 (M12)      Only an Owner changes the rates: a Manager's Rates window
+//                  is read-only, says "Only an Owner can change the commission
+//                  rates.", and has no Save; the window says a change applies
+//                  to invoices that first earn commission after it.
 //
 // src/pages/CommissionsPage.tsx is bundled with esbuild and mounted in jsdom;
 // only the Supabase client, the auth context and xlsx are stubbed. Every name
@@ -178,7 +182,8 @@ test('AFFILIATES-M2: 0 shows as "0", a blank box is refused, nothing changed mea
 });
 
 test('AFFILIATES-M2: Save shows old → new and saves only on Confirm', async () => {
-  await mount('manager');
+  // 535 (M12): only an Owner saves the rates (a Manager's window is read-only, below).
+  await mount('owner');
   await click(button('Rates'));
   await setValue(modal().querySelector('input[name="t1_own"]'), '12.5');
   await click(button('Save', modal()));
@@ -257,6 +262,41 @@ test('AFFILIATES-M2: rates changed while the window was open are not saved over'
 test('AFFILIATES-M2: Admins see no Rates button', async () => {
   await mount('admin');
   absent(button('Rates'), 'no Rates for an Admin');
+});
+
+// 535 (security audit of 17 Nov 2026, M12; the user, 24 Nov 2026): only an Owner changes the rates.
+test('535: a Manager sees the rates read-only, with the sentence, and cannot save', async () => {
+  await mount('manager');
+  await click(button('Rates'));
+  const boxes = ['t1_own', 't1_third', 't2_own', 't2_third'].map(k => modal().querySelector(`input[name="${k}"]`));
+  assert.deepEqual(boxes.map(b => b.value), ['15', '4.5', '35', '0'], 'the saved rates are shown');
+  assert.ok(boxes.every(b => b.disabled && b.readOnly), 'every box is read-only');
+  assert.equal(modal().querySelector('[data-note="owner-only"]')?.textContent.trim(), '⚠Only an Owner can change the commission rates.');
+  absent(button('Save', modal()), 'no Save');
+  absent(button('Confirm and save', modal()), 'no Confirm');
+  absent(modal().querySelector('[data-note="no-change"]'), 'no "Nothing has changed yet."');
+  await click(button('Close', modal()));
+  absent(modal(), 'Close closes it');
+  assert.equal(callsOf('set_commission_rates').length, 0, 'nothing is saved');
+});
+
+test('535: the Owner\'s window edits and says a rate change applies to invoices that first earn after it', async () => {
+  await mount('owner');
+  await click(button('Rates'));
+  const box = modal().querySelector('input[name="t1_own"]');
+  assert.ok(!box.disabled && !box.readOnly, 'the Owner edits');
+  absent(modal().querySelector('[data-note="owner-only"]'), 'no read-only note for the Owner');
+  assert.equal(modal().querySelector('[data-note="kept-rates"]')?.textContent,
+    'Applies to invoices that first earn commission from now on. An invoice that has already earned keeps the rates it earned at, also when it is corrected, reconciled or paid in instalments.');
+});
+
+test('535: a refusal from the server is shown in its words', async () => {
+  await mount('owner', b => { b.failures.set('set_commission_rates', 'Only an Owner can change the commission rates.'); });
+  await click(button('Rates'));
+  await setValue(modal().querySelector('input[name="t1_own"]'), '16');
+  await click(button('Save', modal()));
+  await click(button('Confirm and save', modal()));
+  assert.ok(modal().textContent.includes('Only an Owner can change the commission rates.'), 'the server\'s sentence');
 });
 
 test('AFFILIATES-6: the tabs and buttons wrap, and the first tab is "Balances"', async () => {

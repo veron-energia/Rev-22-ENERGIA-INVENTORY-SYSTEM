@@ -65,3 +65,48 @@ test('rates saved by someone else while the window was open: boxes left alone ta
   const r = checkRatesDraft(now, { ...rebaseDraft(SAVED, now, draft), t2_third: '35' });
   assert.deepEqual(r.changes.map(changeLine), ['Tier 1 — Own: 15% → 16%']);
 });
+
+// 535 (security audit of 17 Nov 2026, M12; the user, 24 Nov 2026): src/lib/permissions/commissions.ts.
+// Only an Owner changes the four rates and a package's or bundle's own rates; an own rate is
+// none or 0 to 100, refused in the server's words.
+const compiled535 = await build({ stdin: { contents: "export * from './src/lib/permissions/commissions';", resolveDir: process.cwd(), loader: 'ts' },
+  bundle: true, write: false, format: 'esm' });
+const m535 = await import('data:text/javascript;base64,' + Buffer.from(compiled535.outputFiles[0].text).toString('base64'));
+
+test('535: only an Owner changes the commission rates or a package\'s own rates', () => {
+  for (const [role, ok] of [['owner', true], ['manager', false], ['admin', false], ['staff', false], ['inventory_manager', false], [null, false], [undefined, false]]) {
+    assert.equal(m535.canChangeCommissionRates(role), ok, String(role));
+    assert.equal(m535.canSetOwnCommissionRates(role), ok, String(role));
+  }
+});
+
+test('535: the sentences are the server\'s', () => {
+  assert.deepEqual(m535.COMMISSION_RATE_MESSAGES, {
+    ratesOwnerOnly: 'Only an Owner can change the commission rates.',
+    ownRatesOwnerOnly: "Only an Owner can set a package's or bundle's own commission rates.",
+    tier1Range: "A package's or bundle's Tier 1 rate must be between 0 and 100.",
+    tier2Range: "A package's or bundle's Tier 2 rate must be between 0 and 100.",
+    staffRange: "A package's or bundle's Staff commission rate must be between 0 and 100.",
+  });
+});
+
+test('535: an own rate is none, or 0 to 100; the first box out of range is named', () => {
+  const blank = { tier1_rate: '', tier2_rate: '', staff_commission_rate: '' };
+  assert.equal(m535.ownRatesError(blank), null);
+  assert.equal(m535.ownRatesError({ tier1_rate: '0', tier2_rate: '100', staff_commission_rate: '3.5' }), null);
+  assert.equal(m535.ownRatesError({ ...blank, tier1_rate: '500' }), m535.COMMISSION_RATE_MESSAGES.tier1Range);
+  assert.equal(m535.ownRatesError({ ...blank, tier2_rate: '-1' }), m535.COMMISSION_RATE_MESSAGES.tier2Range);
+  assert.equal(m535.ownRatesError({ ...blank, staff_commission_rate: '100.001' }), m535.COMMISSION_RATE_MESSAGES.staffRange);
+  assert.equal(m535.ownRatesError({ ...blank, tier1_rate: 'abc' }), m535.COMMISSION_RATE_MESSAGES.tier1Range);
+  assert.equal(m535.ownRatesError({ tier1_rate: '101', tier2_rate: '-5', staff_commission_rate: '' }), m535.COMMISSION_RATE_MESSAGES.tier1Range, 'the first');
+});
+
+test('535: a stored own rate round-trips through the form as read', () => {
+  for (const v of [null, undefined, '']) assert.equal(m535.ownRateText(v), '');
+  assert.equal(m535.ownRateText(10), '10');
+  assert.equal(m535.ownRateText('20.500'), '20.500');
+  assert.equal(m535.ownRateValue(''), null);
+  assert.equal(m535.ownRateValue('  '), null);
+  assert.equal(m535.ownRateValue('20.500'), 20.5);
+  assert.equal(m535.ownRateValue(m535.ownRateText(0)), 0, 'a real 0 is sent as 0, not none');
+});

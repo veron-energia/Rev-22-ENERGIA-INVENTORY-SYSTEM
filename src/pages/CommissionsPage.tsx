@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { isManagerOrAbove, isOwnerOrManager } from '../types';
 import { canRecordAffiliatePayout } from '../lib/permissions/approvals';
+import { canChangeCommissionRates, COMMISSION_RATE_MESSAGES, COMMISSION_RATE_NOTES } from '../lib/permissions/commissions';
 import { Modal, NoAccess } from '../components/ui';
 import { RefreshCw, Coins, Wallet, Network, ChevronRight, ChevronDown, Settings } from 'lucide-react';
 import { ExcelExportButton } from '../components/ExcelExport';
@@ -30,6 +31,8 @@ const CommissionsPage: React.FC = () => {
   // treats as a fatal error and blanks the whole app.
   const hasAccess = isManagerOrAbove(profile?.role);
   const canPay = isOwnerOrManager(profile?.role);
+  // 535 (M12, 24 Nov 2026): Owners and Managers open Rates; only an Owner saves.
+  const canEditRates = canChangeCommissionRates(profile?.role);
 
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'earned' | 'payouts' | 'referrers'>('earned');
@@ -125,6 +128,7 @@ const CommissionsPage: React.FC = () => {
   };
   const editRate = (k: RateKey, v: string) => { setRatesDraft(d => ({ ...d, [k]: v })); setRatesConfirm(false); setRatesErr(null); };
   const saveRates = async () => {
+    if (!canEditRates) { setRatesErr(COMMISSION_RATE_MESSAGES.ratesOwnerOnly); return; }
     if (!ratesCheck?.rates || ratesCheck.changes.length === 0) return;
     // The first click shows what changes; the second saves it.
     if (!ratesConfirm) { setRatesConfirm(true); return; }
@@ -334,23 +338,28 @@ const CommissionsPage: React.FC = () => {
       )}
 
       {ratesOpen && (
-        <Modal title="Commission Rates" maxWidth={460} onClose={() => setRatesOpen(false)} confirmClose={!!ratesCheck && ratesCheck.changes.length > 0}
-          footer={<><button className="btn btn-secondary" onClick={() => ratesConfirm ? setRatesConfirm(false) : setRatesOpen(false)}>{ratesConfirm ? 'Back' : 'Cancel'}</button><button className="btn btn-primary" onClick={() => void saveRates()} disabled={ratesBusy || !ratesCheck?.rates || ratesCheck.changes.length === 0}>{ratesBusy ? 'Saving…' : ratesConfirm ? 'Confirm and save' : 'Save'}</button></>}>
+        <Modal title="Commission Rates" maxWidth={460} onClose={() => setRatesOpen(false)} confirmClose={canEditRates && !!ratesCheck && ratesCheck.changes.length > 0}
+          footer={canEditRates
+            ? <><button className="btn btn-secondary" onClick={() => ratesConfirm ? setRatesConfirm(false) : setRatesOpen(false)}>{ratesConfirm ? 'Back' : 'Cancel'}</button><button className="btn btn-primary" onClick={() => void saveRates()} disabled={ratesBusy || !ratesCheck?.rates || ratesCheck.changes.length === 0}>{ratesBusy ? 'Saving…' : ratesConfirm ? 'Confirm and save' : 'Save'}</button></>
+            : <button className="btn btn-secondary" onClick={() => setRatesOpen(false)}>Close</button>}>
           <div className="form-grid">
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-              Set the two-tier referral commission rates. Tier 1 is a percentage of the line value; Tier 2 is a percentage of the Tier 1 amount. Own and Third-party products can differ.
+              {canEditRates ? 'Set the two-tier referral commission rates.' : 'The two-tier referral commission rates.'} Tier 1 is a percentage of the line value; Tier 2 is a percentage of the Tier 1 amount. Own and Third-party products can differ.
             </div>
+            {/* 535 (M12, 24 Nov 2026): a Manager sees the rates, read-only, and why. */}
+            {!canEditRates && <div className="alert alert-warning" data-note="owner-only" style={{ marginBottom: 0 }}><span>⚠</span><div>{COMMISSION_RATE_MESSAGES.ratesOwnerOnly}</div></div>}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               {RATE_KEYS.map((k, i) => (
                 <div className="form-group" style={{ marginBottom: 0 }} key={k}>
                   <label htmlFor={`rate-${k}`}>{RATE_LABELS[k]} (%)</label>
-                  <input id={`rate-${k}`} name={k} type="text" inputMode="decimal" value={ratesDraft[k]} autoFocus={i === 0}
+                  <input id={`rate-${k}`} name={k} type="text" inputMode="decimal" value={ratesDraft[k]} autoFocus={canEditRates && i === 0}
+                    readOnly={!canEditRates} disabled={!canEditRates}
                     aria-invalid={!!ratesCheck?.errors[k]} onChange={e => editRate(k, e.target.value)} />
                   {ratesCheck?.errors[k] && <div role="alert" data-rate-error={k} style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{ratesCheck.errors[k]}</div>}
                 </div>
               ))}
             </div>
-            {ratesCheck?.rates && ratesCheck.changes.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-note="no-change">Nothing has changed yet.</div>}
+            {canEditRates && ratesCheck?.rates && ratesCheck.changes.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-note="no-change">Nothing has changed yet.</div>}
             {ratesConfirm && ratesCheck?.rates && ratesCheck.changes.length > 0 && (
               <div className="alert alert-warning" data-confirm="rates" style={{ marginBottom: 0 }}>
                 <span>⚠</span>
@@ -361,7 +370,7 @@ const CommissionsPage: React.FC = () => {
               </div>
             )}
             {ratesErr && <div className="alert alert-danger" style={{ marginBottom: 0 }}><span>⚠</span><div>{ratesErr}</div></div>}
-            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div>Applies to invoices paid from now on. Already-earned commissions keep the rate they were calculated at.</div></div>
+            <div className="alert alert-info" style={{ marginBottom: 0 }}><span>ℹ️</span><div data-note="kept-rates">{COMMISSION_RATE_NOTES.keptRates}</div></div>
           </div>
         </Modal>
       )}
