@@ -11,7 +11,8 @@ import BookingCell from '../components/referrals/BookingCell';
  *  tier. Counts only; their Tier 1 list is below. 404: a friend counts by
  *  their first visit to the centre, past customers never (the Owner, 8 Oct
  *  2026); while the promotion runs, how many friends they referred during
- *  it have not visited yet (a count, no names; hidden at 0). Shown only
+ *  it have not visited yet (534: "aren't counted yet", as a visit counts once an Owner or
+ *  Manager has written on it; a count, no names; hidden at 0). Shown only
  *  until the promotion ends (the user, 3 Nov 2026): once it is final, My
  *  Network shows no card. */
 const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
@@ -36,6 +37,7 @@ const PromotionCard: React.FC<{ p: PortalProgress }> = ({ p }) => {
         A friend counts when their first visit to the centre is during the promotion, whenever you referred them, as long as you referred them by its last day.
         {' '}Friends who were already paying customers before it started do not count.
         {' '}Rewards are given after it ends, for the highest tier you reach.
+        {' '}A friend's visit counts once our consultant has reviewed their health form.
       </p>
     </div>
   );

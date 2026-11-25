@@ -89,10 +89,13 @@ end$$;
 create function pg_temp.check_of(key text) returns public.referral_signup_checks language sql as
 $$ select * from public.referral_signup_checks where customer_id = pg_temp.fx(key) $$;
 -- A first visit through the centre's QR link, on a day.
+-- 534 (security audit of 17 Nov 2026, M5): such a form counts for a referral promotion once an Owner or
+-- Manager has written on it, so each has a saved review (an acidity result), as staff save one at the centre.
 create function pg_temp.visit(key text, on_day date) returns void language sql as
-$$ insert into public.health_surveys(survey_no, store_id, survey_link_id, customer_id, full_name, phone, source, submitted_at)
+$$ insert into public.health_surveys(survey_no, store_id, survey_link_id, customer_id, full_name, phone, source, submitted_at,
+                                     reviewed_at, acidity_result)
    select 'HS-T425-' || key, pg_temp.fx('st'), pg_temp.fx('link'), c.id, c.full_name, c.phone, 'public_form',
-          (on_day + time '11:00') at time zone 'Asia/Singapore'
+          (on_day + time '11:00') at time zone 'Asia/Singapore', (on_day + time '12:00') at time zone 'Asia/Singapore', 'green'
      from public.customers c where c.id = pg_temp.fx(key) $$;
 create function pg_temp.friend(key text) returns record language sql as
 $$ select f.counted, f.first_visit_on from public.referral_campaign_friends(pg_temp.fx('camp')) f where f.friend_customer_id = pg_temp.fx(key) $$;

@@ -85,7 +85,8 @@ export function notYetVisited(row) {
 
 /** The line under a referrer's name: their friends referred in the window
  *  who have not visited at all (the only ones the report lists without
- *  counting them). Once the promotion has ended it says they did not visit
+ *  counting them; since 534 a visit no Owner or Manager has written on is
+ *  none, so it says "no counted visit"). Once the promotion has ended it says they did not visit
  *  during it or since: a friend who first visits after the end is no longer
  *  listed, so the figure is not every friend who missed the promotion. No
  *  line when there are none, so "0 referred" is never read as nobody
@@ -95,8 +96,8 @@ export function notYetVisitedLine(n, status) {
   if (count === 0) return '';
   const who = count === 1 ? '1 friend referred in the window' : `${count} friends referred in the window`;
   return status === 'final'
-    ? `${who} did not visit during it or since`
-    : `${who} ${count === 1 ? 'has' : 'have'} not visited yet`;
+    ? `${who} had no counted visit during it or since`
+    : `${who} ${count === 1 ? 'has' : 'have'} no counted visit yet`;
 }
 
 /** What the friend table says about a friend (404): counted; not counted
@@ -108,7 +109,7 @@ export function friendStatus(friend, status) {
   // 425: a link sign-up on a customer's phone under another name counts once
   // an Owner or Manager checks them as a different person (Q19 = A).
   if (friend?.needs_check) return 'Waiting for a check (shares a phone)';
-  if (!friend?.first_visit_on) return status === 'final' ? 'No visit during the promotion' : 'Not yet visited';
+  if (!friend?.first_visit_on) return status === 'final' ? 'No counted visit during the promotion' : 'No counted visit yet';
   return 'Visit outside the window';
 }
 
@@ -118,9 +119,9 @@ export function friendStatus(friend, status) {
  *  say there are none. */
 export function emptyReportNote(listed, onlyCounted) {
   if (onlyCounted && Number(listed) > 0) {
-    return 'No referrer has a friend counted in this promotion yet. Untick "Only referrers with a friend counted" to see the friends referred during it who have not visited.';
+    return 'No referrer has a friend counted in this promotion yet. Untick "Only referrers with a friend counted" to see the friends referred during it who have no counted visit yet.';
   }
-  return 'No friend counts in this promotion yet, and no friend referred during it is waiting for a first visit';
+  return 'No friend counts in this promotion yet, and no friend referred during it is waiting for a counted visit';
 }
 
 /** The affiliate portal's one line about their own progress. */
@@ -145,8 +146,8 @@ export function portalNotYetVisitedLine(p) {
   const n = Math.max(0, Math.trunc(Number(p.not_yet_visited)) || 0);
   if (n === 0) return '';
   return n === 1
-    ? "1 friend you referred during the promotion hasn't visited yet."
-    : `${n} friends you referred during the promotion haven't visited yet.`;
+    ? "1 friend you referred during the promotion isn't counted yet."
+    : `${n} friends you referred during the promotion aren't counted yet.`;
 }
 
 /** The reward lines as give_referral_campaign_reward takes them, or the

@@ -3230,11 +3230,15 @@ select pg_temp.check(pg_temp.tx('fa3_rhea') = 'ok' and (pg_temp.fa('fa1', 6)).cu
     and pg_temp.self_audits((pg_temp.fa('fa1', 6)).id) = 1,
   'FA3 (B) staff link the affiliate (her name, a new phone) to her own record: self, no check, her own referrer kept, the note written once: ' || pg_temp.tx('fa3_rhea'));
 -- The mother and the friend visit the centre today (a survey through its own link), while their checks wait.
+-- 534 (security audit of 17 Nov 2026, M5): such a form counts for a referral promotion once an Owner or
+-- Manager has written on it, so each has a saved review (an acidity result), as staff save one at the centre.
 select pg_temp.as_user('owner');
 do $$ declare l uuid; st uuid := (select s.store_id from event_web_settings s where s.event_id = pg_temp.fx('ev')); begin
   insert into survey_links(token, store_id) values ('ht436-fa-' || lower(pg_temp.tx('sfx')), st) returning id into l;
-  insert into health_surveys(survey_no, store_id, survey_link_id, customer_id, full_name, phone, source, submitted_at, signed_date)
-  select 'HS-HT436-' || x.k || '-' || pg_temp.tx('sfx'), st, l, c.id, c.full_name, c.phone, 'public_form', now(), public.sg_today()
+  insert into health_surveys(survey_no, store_id, survey_link_id, customer_id, full_name, phone, source, submitted_at, signed_date,
+                             reviewed_at, acidity_result)
+  select 'HS-HT436-' || x.k || '-' || pg_temp.tx('sfx'), st, l, c.id, c.full_name, c.phone, 'public_form', now(), public.sg_today(),
+         now(), 'green'
     from (values ('mona', pg_temp.fx('fa_mona')), ('frida', pg_temp.fx('fa_frida'))) x(k, id) join customers c on c.id = x.id;
 end $$;
 -- FA4 VIP while the checks wait: one payment for the mother, the friend, the new person and Rhea herself.

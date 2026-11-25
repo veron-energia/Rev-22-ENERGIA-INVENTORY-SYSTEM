@@ -17,7 +17,8 @@ interface Reward {
 }
 interface ReferrerRow {
   referrer_customer_id: string; name: string; phone: string | null; is_affiliate: boolean;
-  /** 404: friends referred in the window who have not visited yet (absent before 404). */
+  /** 404: friends referred in the window who have not visited yet (absent before 404); since 534 also those whose visit no
+   *  Owner or Manager has written on yet: "not counted yet" on screen. */
   counted: number; not_yet_visited?: number;
   /** 425: friends waiting for a check because they share a customer's phone (absent before 425). */
   waiting_check?: number;
@@ -174,7 +175,7 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
             { header: 'Phone', value: r => r.phone ?? '' },
             { header: 'Affiliate', value: r => r.is_affiliate ? 'Yes' : 'No' },
             { header: 'Friends Counted', value: r => r.counted },
-            { header: 'Referred In Window, Not Yet Visited', value: r => notYetVisited(r) },
+            { header: 'Referred In Window, Not Counted Yet', value: r => notYetVisited(r) },
             { header: 'Tier Reached', value: r => r.tier_reached ?? '' },
             { header: 'Next Tier', value: r => r.next_tier ?? '' },
             { header: 'More To Next Tier', value: r => r.to_next ?? '' },
@@ -195,8 +196,10 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
             <span style={{ fontSize: 12.5 }}>
               A Tier 1 friend counts when their first visit to the centre is in the promotion, whenever they were referred (the referral must be
               recorded by its last day; links without a referral date use the date the customer was created). Friends referred during the
-              promotion who have not visited yet are listed too, not counted. A past customer (a paid or part-paid invoice dated before the
-              promotion started) is neither counted nor listed; cancelled, refunded, unpaid and FOC invoices do not make one. A visit through
+              promotion who have no counted visit yet are listed too, not counted. A past customer (a paid or part-paid invoice dated before the
+              promotion started) is neither counted nor listed; cancelled, refunded, unpaid and FOC invoices do not make one. A visit counts
+              here only once an Owner or Manager has written on the survey (a saved review, a note or a file), so the Customers page may show a
+              friend as visited who has no counted visit yet here. A visit through
               the centre's QR link counts on the day the form was sent, not the date written on it, so a friend's first visit here can differ
               from the Customers page. Tiers: {tiers}. The reward is for the highest tier reached only.
             </span>
@@ -262,7 +265,7 @@ const ReferralPromotionPanel: React.FC<{ isOwner: boolean }> = ({ isOwner }) => 
                       <td colSpan={7} style={{ background: 'var(--surface-2)' }}>
                         <table style={{ fontSize: 12 }}>
                           <thead><tr><th>Friend</th><th>Phone</th><th>Referred</th>
-                            <th title="For the promotion: a form through the centre's QR link is dated the day it was sent">First visit (promotion)</th>
+                            <th title="For the promotion: a visit counts once an Owner or Manager has saved a review, a note or a file on the survey; a form through the centre's QR link is dated the day it was sent">First visit (promotion)</th>
                             <th>Counts</th></tr></thead>
                           <tbody>
                             {r.friends.map(f => (

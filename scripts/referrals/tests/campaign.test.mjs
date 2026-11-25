@@ -100,12 +100,12 @@ test('404: the friends not yet visited, from the report or (before 404) from the
   assert.equal(notYetVisited({ friends }), 2);
   assert.equal(notYetVisited({ not_yet_visited: null, friends: [] }), 0);
   assert.equal(notYetVisited(null), 0);
-  assert.equal(notYetVisitedLine(2, 'provisional'), '2 friends referred in the window have not visited yet');
-  assert.equal(notYetVisitedLine(1, 'not_started'), '1 friend referred in the window has not visited yet');
-  assert.equal(notYetVisitedLine('3', 'provisional'), '3 friends referred in the window have not visited yet');
+  assert.equal(notYetVisitedLine(2, 'provisional'), '2 friends referred in the window have no counted visit yet');
+  assert.equal(notYetVisitedLine(1, 'not_started'), '1 friend referred in the window has no counted visit yet');
+  assert.equal(notYetVisitedLine('3', 'provisional'), '3 friends referred in the window have no counted visit yet');
   // After the end the figure is the friends with no visit at all (one who first visits after it is no longer listed).
-  assert.equal(notYetVisitedLine(3, 'final'), '3 friends referred in the window did not visit during it or since');
-  assert.equal(notYetVisitedLine(1, 'final'), '1 friend referred in the window did not visit during it or since');
+  assert.equal(notYetVisitedLine(3, 'final'), '3 friends referred in the window had no counted visit during it or since');
+  assert.equal(notYetVisitedLine(1, 'final'), '1 friend referred in the window had no counted visit during it or since');
   // None: no line, so a referrer counted only for friends referred earlier never reads "0 referred in the window".
   assert.equal(notYetVisitedLine(0, 'provisional'), '');
   assert.equal(notYetVisitedLine(0, 'final'), '');
@@ -116,15 +116,15 @@ test('404: the friends not yet visited, from the report or (before 404) from the
 test('404: a friend is counted, not yet visited, or (after the promotion) did not visit during it', () => {
   assert.equal(friendStatus({ counted: true, first_visit_on: '2026-10-05' }, 'provisional'), 'Yes');
   assert.equal(friendStatus({ counted: true, first_visit_on: '2026-10-05' }, 'final'), 'Yes');
-  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'provisional'), 'Not yet visited');
-  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'not_started'), 'Not yet visited');
-  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'final'), 'No visit during the promotion');
+  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'provisional'), 'No counted visit yet');
+  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'not_started'), 'No counted visit yet');
+  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'final'), 'No counted visit during the promotion');
   // Only a database before 404 lists a friend whose first visit fell outside the window.
   assert.equal(friendStatus({ counted: false, first_visit_on: '2026-09-20' }, 'provisional'), 'Visit outside the window');
 });
 
 test('404: an empty referrer table never says nobody is waiting while the filter hides them', () => {
-  const none = 'No friend counts in this promotion yet, and no friend referred during it is waiting for a first visit';
+  const none = 'No friend counts in this promotion yet, and no friend referred during it is waiting for a counted visit';
   assert.equal(emptyReportNote(0, false), none);
   assert.equal(emptyReportNote(0, true), none, 'an empty report, filter or not');
   // The filter hides every referrer listed: their friends are all waiting for a first visit.
@@ -140,10 +140,10 @@ test('404: the rule as the pages state it is the first visit, whenever the frien
   const panel = read('src/components/referrals/ReferralPromotionPanel.tsx');
   const flat = panel.replace(/\s+/g, ' ');
   assert.match(flat, /A Tier 1 friend counts when their first visit to the centre is in the promotion, whenever they were referred \(the referral must be recorded by its last day;/);
-  assert.match(flat, /Friends referred during the promotion who have not visited yet are listed too, not counted\./);
+  assert.match(flat, /Friends referred during the promotion who have no counted visit yet are listed too, not counted\./);
   assert.doesNotMatch(flat, /referred in the window \(links without|first visited the centre in the same window/, 'the 398 rule is gone');
   assert.doesNotMatch(panel, /r\.referred_in_window/, 'the page reads the not-yet-visited figure, not referred_in_window');
-  assert.match(panel, /header: 'Referred In Window, Not Yet Visited', value: r => notYetVisited\(r\)/);
+  assert.match(panel, /header: 'Referred In Window, Not Counted Yet', value: r => notYetVisited\(r\)/);
   const portal = read('src/pages/AffiliateNetworkPage.tsx').replace(/\s+/g, ' ');
   assert.match(portal, /A friend counts when their first visit to the centre is during the promotion, whenever you referred them, as long as you referred them by its last day\./);
   assert.doesNotMatch(portal, /when you referred them during the promotion and they visited the centre during it too/);
@@ -161,9 +161,9 @@ test('404: past customers and the day a form was sent, as the pages state them',
 test('404: the portal says how many friends referred during the promotion have not visited yet, counts only', () => {
   const p = (n, status = 'provisional') => ({ campaign: { code: '2026-10', title: 'October', starts_on: '2026-10-01',
     ends_on: '2026-10-31', tiers: [10, 20], status }, counted: 3, not_yet_visited: n });
-  assert.equal(portalNotYetVisitedLine(p(2)), "2 friends you referred during the promotion haven't visited yet.");
-  assert.equal(portalNotYetVisitedLine(p(1)), "1 friend you referred during the promotion hasn't visited yet.");
-  assert.equal(portalNotYetVisitedLine(p('3')), "3 friends you referred during the promotion haven't visited yet.");
+  assert.equal(portalNotYetVisitedLine(p(2)), "2 friends you referred during the promotion aren't counted yet.");
+  assert.equal(portalNotYetVisitedLine(p(1)), "1 friend you referred during the promotion isn't counted yet.");
+  assert.equal(portalNotYetVisitedLine(p('3')), "3 friends you referred during the promotion aren't counted yet.");
   assert.equal(portalNotYetVisitedLine(p(0)), '', 'hidden at 0');
   assert.equal(portalNotYetVisitedLine(p(-1)), '');
   assert.equal(portalNotYetVisitedLine(p(undefined)), '', 'a database before 404 sends no figure');
@@ -196,4 +196,21 @@ test('the pages call the 398 functions, and the Customers page sends the filters
     assert.match(panel, new RegExp(`rpc\\('${fn}'`), fn);
   }
   assert.match(read('src/pages/AffiliateNetworkPage.tsx'), /portalRpc<PortalProgress>\('affiliate_portal_campaign_progress'\)/);
+});
+
+test('534: a visit counts for the promotion once an Owner or Manager has written on the survey, as the pages state it', () => {
+  // 534 (security audit of 17 Nov 2026, M5; the user, 24 Nov 2026: "Same test for all"): referral_campaign_friends counts a
+  // visit only once an Owner or Manager has saved a review, a note or a file on the survey; the dates are as before. The
+  // promotion screens say "not counted yet" / "no counted visit yet", as the Customers page may still say "Visited".
+  const panel = read('src/components/referrals/ReferralPromotionPanel.tsx');
+  const flat = panel.replace(/\s+/g, ' ');
+  assert.match(flat, /A visit counts here only once an Owner or Manager has written on the survey \(a saved review, a note or a file\), so the Customers page may show a friend as visited who has no counted visit yet here\./);
+  assert.match(panel, /title="For the promotion: a visit counts once an Owner or Manager has saved a review, a note or a file on the survey; a form through the centre's QR link is dated the day it was sent"/);
+  assert.doesNotMatch(flat, /Not Yet Visited|have not visited yet are listed/, 'the promotion report no longer says "not yet visited"');
+  const portal = read('src/pages/AffiliateNetworkPage.tsx').replace(/\s+/g, ' ');
+  assert.match(portal, /A friend's visit counts once our consultant has reviewed their health form\./);
+  // No timing is promised to the affiliate.
+  assert.doesNotMatch(portal, /reviewed (it |their health form )?(within|by|in) /);
+  assert.equal(portalNotYetVisitedLine({ campaign: { status: 'provisional' }, not_yet_visited: 2 }), "2 friends you referred during the promotion aren't counted yet.");
+  assert.equal(friendStatus({ counted: false, first_visit_on: null }, 'provisional'), 'No counted visit yet');
 });
