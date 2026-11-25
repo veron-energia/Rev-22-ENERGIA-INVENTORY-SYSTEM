@@ -174,12 +174,13 @@ test('the On loan list keeps only the latest answer, for the location on screen,
   assert.match(hook, /loaded\.key === key \? loaded : null/, 'another location\'s loans are never shown');
   assert.match(hook, /canAct: typeof data\?\.can_act === 'boolean'/);
   const store = read('src/pages/StoreInventoryPage.tsx');
-  assert.match(store, /canAct=\{loans\.canAct === true\}/, 'Store: Take back only where the database lets this person act');
+  // 540 ("No lending by IM"): and never for an Inventory Manager.
+  assert.match(store, /canAct=\{loans\.canAct === true && canLendStock\(profile\?\.role\)\}/, 'Store: Take back only where the database lets this person act');
   assert.doesNotMatch(store, /\bcanAct onTakeBack/, 'Store: Take back is no longer always offered');
   assert.match(store, /const actHere = loans\.canAct !== false;/);
   assert.equal((store.match(/disabled=\{!selectedStore \|\| !actHere\}/g) ?? []).length, 2, 'Store: Lend and Record Use follow it');
   const wh = read('src/pages/WarehouseInventoryPage.tsx');
-  assert.match(wh, /canAct=\{canUseStock && loans\.canAct === true\}/);
+  assert.match(wh, /canAct=\{canUseStock && loans\.canAct === true && canLendStock\(profile\?\.role\)\}/);
   assert.match(read('supabase/401_record_use_and_stock_loans.sql'), /'can_act', public\.stock_loan_access\(p_location_type, p_location_id, true\)/);
 });
 
@@ -201,7 +202,7 @@ test('the pages use one call per form, and the shared pieces', () => {
   }
   // The warehouse buttons follow the database's permission, and the access
   // check no longer returns before the page's hooks.
-  assert.match(wh, /canUseStock && <button[^\n]*Lend/);
+  assert.match(wh, /canUseStock && canLendStock\(profile\?\.role\) && <button[^\n]*Lend/);  // 540: not an Inventory Manager's
   assert.match(wh, /canUseStock && <button[^\n]*Record Use/);
   assert.match(wh, /const canUseStock = canManageWarehouseStock\(profile\?\.role\)/);
   assert.match(wh, /return <WarehouseInventoryView \/>;/);

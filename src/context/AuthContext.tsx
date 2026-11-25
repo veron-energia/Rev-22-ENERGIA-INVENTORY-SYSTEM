@@ -3,6 +3,7 @@ import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { Profile, UserStoreAssignment } from '../types';
 import { signInErrorMessage } from '../lib/staffLogin';
+import { PROFILE_COLUMNS, withContacts } from '../lib/permissions/customers';
 
 // A logged-in Supabase Auth user resolves to EITHER a Staff member (has a
 // profiles row) OR an Affiliate (has an affiliate_accounts row) — never both.
@@ -83,8 +84,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const known = loadedFor.current === userId && loadedActor.current !== null;
 
     // 1) Staff? A profiles row keyed by auth.uid().
-    const { data: profileData, error: profileError } = await supabase
-      .from('profiles').select('*').eq('id', userId).maybeSingle();
+    // 539 (security audit of 17 Nov 2026, M13): a login reads only the
+    // columns PROFILE_COLUMNS names from the table, before and after 539 alike
+    // (select('*') fails once 539 is in). Its login email is the session's;
+    // personal phone and email are not needed here (Users & Roles reads them).
+    const [{ data: profileData, error: profileError }, { data: sessionData }] = await Promise.all([
+      supabase.from('profiles').select(PROFILE_COLUMNS).eq('id', userId).maybeSingle(),
+      supabase.auth.getSession(),
+    ]);
     if (stale()) return;
 
     // A failed lookup is not the same as "no profile". Falling through would
@@ -109,7 +116,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setError(null);
       setActorType('staff');
-      setProfile(profileData as Profile);
+      const login = sessionData?.session?.user;
+      setProfile(withContacts(profileData as unknown as Profile, { email: login?.id === userId ? login.email ?? '' : '' }));
       setAffiliateAccount(null);
       loadedFor.current = userId;
       loadedActor.current = 'staff';

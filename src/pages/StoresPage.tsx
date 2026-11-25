@@ -8,6 +8,7 @@ import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { uploadStoreAsset } from '../lib/storeAssets';
 import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, RotateCcw } from 'lucide-react';
 import { canManagePlaces, canAddStore, canChangeStore, storeAssignmentBlock, worksAtEveryStore } from '../lib/permissions/products';
+import { PROFILE_COLUMNS } from '../lib/permissions/customers';
 
 const StoresPage: React.FC = () => {
   const { profile, assignments: myAssignments } = useAuth();
@@ -124,8 +125,9 @@ const StoresPage: React.FC = () => {
   };
   const openAssignments = async (s: StoreT) => {
     setAssignStore(s); setAssignErr(null);
-    const { data: users } = await supabase.from('profiles').select('*').is('deleted_at', null).order('full_name');
-    setAllUsers((users as Profile[]) ?? []);
+    // 539 (M13): the columns a signed-in login reads (no login email or personal contacts).
+    const { data: users } = await supabase.from('profiles').select(PROFILE_COLUMNS).is('deleted_at', null).order('full_name');
+    setAllUsers((users as unknown as Profile[]) ?? []);
     await loadAssignments(s.id);
   };
 

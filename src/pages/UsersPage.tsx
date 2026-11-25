@@ -13,6 +13,7 @@ import {
   activeSaveRefused, isInvitee, loginChangeHint, loginChangeNote,
   contactRequired, contactsChanged, deactivateQuestion, promotionQuestion,
 } from '../lib/staffLogin';
+import { PROFILE_COLUMNS, withContacts } from '../lib/permissions/customers';
 import '../components/users/users.css';
 
 /** One row of user_admin_list(): the account state and the invitation state, side by side. */
@@ -85,9 +86,12 @@ const UsersPage: React.FC = () => {
     setLoadErr(null);
     // user_admin_list() knows about invitations; the profiles table alone cannot
     // tell "invited last week, never accepted" from "deactivated last year".
+    // 539 (security audit of 17 Nov 2026, M13): the table gives no login the
+    // login email, personal phone or personal email; user_admin_list gives
+    // them to an Owner or a Manager, and the Edit window takes them from there.
     const [{ data: admin, error: adminError }, { data: profiles, error: profilesError }, unfinished] = await Promise.all([
       supabase.rpc('user_admin_list'),
-      supabase.from('profiles').select('*').is('deleted_at', null).order('created_at'),
+      supabase.from('profiles').select(PROFILE_COLUMNS).is('deleted_at', null).order('created_at'),
       loadOrphanInvitations(),
     ]);
     const failed = adminError ?? profilesError;
@@ -96,8 +100,10 @@ const UsersPage: React.FC = () => {
       setLoadErr(`Could not load users: ${failed.message}`);
       setAdminRows([]); setRows([]);
     } else {
-      setAdminRows((admin as AdminRow[]) ?? []);
-      setRows((profiles as Profile[]) ?? []);
+      const list = (admin as AdminRow[]) ?? [];
+      const contacts = new Map(list.map(a => [a.user_id, a]));
+      setAdminRows(list);
+      setRows(((profiles as unknown as Profile[]) ?? []).map(p => withContacts(p, contacts.get(p.id))));
     }
     if (unfinished.ok) {
       setOrphans(unfinished.rows.map(orphanRow));

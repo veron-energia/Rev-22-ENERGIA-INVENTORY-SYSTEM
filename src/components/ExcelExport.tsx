@@ -48,9 +48,10 @@ export interface ExcelExportProps<T> {
   disabled?: boolean;
   /**
    * For server-paginated pages: return every matching row, so the export is not
-   * limited to the page on screen.
+   * limited to the page on screen. It is told the date range chosen in the
+   * window ('' for an open end), which the rows are still filtered by here.
    */
-  fetchAll?: () => Promise<T[]>;
+  fetchAll?: (range: { from: string; to: string }) => Promise<T[]>;
   /** Let the person choose which columns to include. The dialog then always
    *  opens, even without a date range. Off by default, so existing exports are
    *  unchanged. */
@@ -124,7 +125,7 @@ export function ExcelExportButton<T>({
   const [busy, setBusy] = useState(false);
   const [exportError, setExportError] = useState('');
 
-  const collect = async (): Promise<T[]> => (fetchAll ? await fetchAll() : rows);
+  const collect = async (): Promise<T[]> => (fetchAll ? await fetchAll({ from, to }) : rows);
 
   const applyRange = (data: T[]) => {
     if (!dateOf || (!from && !to)) return data;

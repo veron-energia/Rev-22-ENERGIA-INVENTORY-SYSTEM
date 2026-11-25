@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ROLE_LABELS, isManagerOrAbove, isOwnerOrManager } from '../types';
 import { ErrorBoundary } from './ErrorBoundary';
+import { canSeeCustomerList, worksWithStockOnly } from '../lib/permissions/customers';
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
@@ -60,17 +61,20 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   ];
 
   const salesNav: NavItem[] = [
-    { to: '/invoices', label: 'Invoices', icon: <FileText size={17} />, show: true },
+    // 540 (the user, 25 Nov 2026: "Stock only"): an Inventory Manager has no invoices, exchanges,
+    // therapy or affiliates (they name customers); their stock pages stay.
+    { to: '/invoices', label: 'Invoices', icon: <FileText size={17} />, show: !worksWithStockOnly(role) },
     { to: '/tiktok-import', label: 'TikTok Sales Import', icon: <Upload size={17} />, show: true },
-    { to: '/exchanges', label: 'Exchanges', icon: <Repeat size={17} />, show: true },
+    { to: '/exchanges', label: 'Exchanges', icon: <Repeat size={17} />, show: !worksWithStockOnly(role) },
     { to: '/events', label: 'Events', icon: <PartyPopper size={17} />, show: isManagerOrAbove(role) || role === 'staff' },
-    { to: '/therapy', label: 'Therapy', icon: <Sparkles size={17} />, show: true },
+    { to: '/therapy', label: 'Therapy', icon: <Sparkles size={17} />, show: !worksWithStockOnly(role) },
     { to: '/therapy-services', label: 'Therapy Services', icon: <Sparkles size={17} />, show: isManagerOrAbove(role) },
     // Health data is not for Inventory Managers, as the server already rules
     // for the survey detail and consultant notes (CUSTOMERS-M2).
     { to: '/surveys', label: 'Health Surveys', icon: <ClipboardList size={17} />, show: role !== 'inventory_manager' },
-    { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: true },
-    { to: '/affiliates', label: 'Affiliates', icon: <UserPlus size={17} />, show: true },
+    // 539 (security audit of 17 Nov 2026, M13): an Inventory Manager gets no customer list.
+    { to: '/customers', label: 'Customers', icon: <Users size={17} />, show: canSeeCustomerList(role) },
+    { to: '/affiliates', label: 'Affiliates', icon: <UserPlus size={17} />, show: !worksWithStockOnly(role) },
     { to: '/commissions', label: 'Commissions', icon: <Star size={17} />, show: isManagerOrAbove(role) },
     { to: '/price-list', label: 'Price List', icon: <Tag size={17} />, show: isOwnerOrManager(role) },
     { to: '/vouchers', label: 'Vouchers', icon: <Ticket size={17} />, show: isOwnerOrManager(role) },

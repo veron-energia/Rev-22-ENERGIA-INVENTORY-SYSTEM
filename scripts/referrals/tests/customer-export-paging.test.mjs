@@ -71,11 +71,16 @@ test('nothing matched: an empty export', async () => {
   assert.deepEqual(await fetchAllCustomerRows(async () => ({ data: [], error: null }), 1000), []);
 });
 
-test('the Customers page exports through it, in pages of 1,000', () => {
+test('the Customers page exports through export_customers (539), in one call, in the list\'s order', () => {
+  // 539 (security audit of 17 Nov 2026, M13): an export is one call, which the server checks
+  // (Owner or Manager) and records once, so the page no longer pages through search_customers.
   const page = readFileSync(new URL('../../../src/pages/CustomersPage.tsx', import.meta.url), 'utf8');
-  assert.match(page, /const fetchAllForExport = \(\) => fetchAllCustomerRows<any>\(async \(limit, offset\) => \{/);
-  assert.match(page, /p_limit: limit, p_offset: offset,/);
+  assert.match(page, /supabase\.rpc\('export_customers',/);
+  // The paging read stays only for a database without 539 (no export_customers yet).
+  assert.match(page, /if \(error && exportFunctionMissing\(error\)\) \{\n\s+return fetchAllCustomerRows<any>/, 'paging only as the fallback before 539');
   assert.ok(!/for \(let offset = 0; ; offset \+= PAGE\)/.test(page), 'the old loop, which ignored errors, is gone');
   const sql = readFileSync(new URL('../../../supabase/409_refund_requests_refund_due_customer_order.sql', import.meta.url), 'utf8');
   assert.ok(sql.includes("order by m.created_at desc, m.id desc"), 'search_customers settles ties by id');
+  const m539 = readFileSync(new URL('../../../supabase/539_customer_export_and_staff_contacts_for_owners_and_managers.sql', import.meta.url), 'utf8');
+  assert.ok(m539.includes('with ordinality s') && m539.includes('order by s.ordinality'), 'the export keeps the search\'s order');
 });

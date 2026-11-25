@@ -12,6 +12,7 @@ import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
 import { PackagePlus, RefreshCw, Warehouse as WarehouseIcon, AlertTriangle, SlidersHorizontal, MinusCircle, HandHelping } from 'lucide-react';
 import RecordUseModal from '../components/stock-loans/RecordUseModal';
 import LendModal from '../components/stock-loans/LendModal';
+import { canLendStock } from '../lib/permissions/customers';
 import TakeBackModal from '../components/stock-loans/TakeBackModal';
 import OnLoanPanel from '../components/stock-loans/OnLoanPanel';
 import { useStockLoans } from '../components/stock-loans/useStockLoans';
@@ -189,7 +190,8 @@ const WarehouseInventoryView: React.FC = () => {
               { header: 'Status', value: (r: any) => stockStatusText(r.inv?.current_qty, r.inv?.low_stock_threshold) },
             ]} />
           <button className="btn btn-secondary" onClick={() => { loadInventory(selectedWh); loans.reload(); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
-          {canUseStock && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setLendOpen(true); }}><HandHelping size={16} /> Lend</button>}
+          {/* 540 ("No lending by IM"): Lend and Take back are not an Inventory Manager's; Record use is. */}
+          {canUseStock && canLendStock(profile?.role) && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setLendOpen(true); }}><HandHelping size={16} /> Lend</button>}
           {canUseStock && <button className="btn btn-secondary" disabled={!selectedWh || !actHere} onClick={() => { setFlash(null); setUseOpen(true); }}><MinusCircle size={16} /> Record Use</button>}
           {canStockIn && <button className="btn btn-primary" onClick={openStockIn} disabled={!selectedWh}><PackagePlus size={16} /> Stock In</button>}
         </div>
@@ -219,7 +221,7 @@ const WarehouseInventoryView: React.FC = () => {
           {tab === 'loans' ? (
             <OnLoanPanel open={loans.open} closed={loans.closed} today={loans.today} loading={loans.loading} error={loans.error}
               showClosed={showClosed} onShowClosed={setShowClosed} onReload={loans.reload}
-              canAct={canUseStock && loans.canAct === true} onTakeBack={l => { setFlash(null); setTakeBack(l); }} />
+              canAct={canUseStock && loans.canAct === true && canLendStock(profile?.role)} onTakeBack={l => { setFlash(null); setTakeBack(l); }} />
           ) : (<>
           <div style={{ marginBottom: 14, maxWidth: 360 }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search product or SKU…" />

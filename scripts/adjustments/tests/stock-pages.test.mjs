@@ -876,6 +876,10 @@ test('495: Warehouse Stock lists no service; Stock In, Record Use and Lend offer
   await click(buttonWith('Record Use'));
   noService(await offered(), 'Record Use');
   await click(button('Cancel', modal()));
+  // 540 ("No lending by IM"): Lend is not an Inventory Manager's (their Stock In and Record Use
+  // stay); an Owner's Lend offers no service.
+  assert.equal(buttonWith('Lend'), undefined, 'no Lend for an Inventory Manager');
+  await mount(P.WarehouseInventoryPage, 'owner');
   await click(buttonWith('Lend'));
   noService(await offered(), 'Lend');
 });

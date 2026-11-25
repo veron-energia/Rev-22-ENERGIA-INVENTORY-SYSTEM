@@ -20,6 +20,7 @@ import { DISCOUNT_CHOICE_LABELS, discountChoicesFor, voucherCategory, isVoucherC
   lineDiscountPayload, lineDiscountProblem, restoreLineDiscount, switchDiscount, withQuantity, printedLineDiscount, birthdayProblem, formatPercent,
   toCents, fromCents, type DiscountChoice, type LineMoney } from '../lib/invoices/lineDiscounts';
 import { SearchSelect, CustomerSearchSelect } from '../components/SearchSelect';
+import { canMakeInvoices } from '../lib/permissions/customers';
 import { mayChangeInvoiceAffiliate, INVOICE_AFFILIATE_LOCKED_HINT } from '../lib/customers/emailReferrerRules.mjs';
 import { QuickCustomerModal } from '../components/customers/QuickCustomerModal';
 import { CreditPackageSplitPanel } from '../components/CreditPackageSplitPanel';
@@ -3404,7 +3405,8 @@ const InvoicesPage: React.FC = () => {
               { header: 'Payment', value: (i: any) => i.payment_methods_label ?? (payMethodsByInvoice[i.id] ?? []).join(', ') },
               { header: 'Status', value: (i: any) => INVOICE_STATUS_LABELS[i.status as InvoiceStatus] ?? i.status },
             ]} />}
-          <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>
+          {/* 540 ("Stock only"): an Inventory Manager makes no invoice; the database refuses it too. */}
+          {canMakeInvoices(profile?.role) && <button className="btn btn-primary" onClick={() => { resetCreate(); setCreateOpen(true); }}><Plus size={16} /> New Invoice</button>}
         </div>
       </div>
 

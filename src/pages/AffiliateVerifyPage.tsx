@@ -27,7 +27,7 @@ const ONBOARDING_KEY = 'energia_aff_onboarding';
 
 const AffiliateVerifyPage: React.FC = () => {
   const nav = useNavigate();
-  const { refreshProfile, profile } = useAuth();
+  const { refreshProfile, profile, session } = useAuth();
   const [state, setState] = useState<'working' | 'need_details' | 'pending' | 'error' | 'suspended' | 'rejected' | 'staff'
     | 'signed_out' | 'link_refused'>('working');
   // The session came from an emailed link: the working screen says so.
@@ -144,7 +144,7 @@ const AffiliateVerifyPage: React.FC = () => {
   if (state === 'staff') return (
     <AffiliateAuthShell title="You are signed in as staff">
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        You are signed in as <b>{profile?.full_name ?? profile?.email ?? 'a staff member'}</b>. An
+        You are signed in as <b>{profile?.full_name ?? session?.user?.email ?? 'a staff member'}</b>. An
         Energia staff login cannot also be an affiliate account, so nothing has been created.
       </p>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6, marginTop: 10 }}>

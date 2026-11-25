@@ -16,6 +16,7 @@ import { CoverageLine } from '../components/therapy/coverage';
 import DownlineModal from '../components/referrals/DownlineModal';
 import { visitFilterArgs, visitFilterActive, sgDate, sgDayOf } from '../lib/referral/campaign.mjs';
 import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
+import { canExportCustomers, customerExportArgs, exportFunctionMissing, type CustomerExportKind } from '../lib/permissions/customers';
 import { canEditCustomers, canSeeCustomerProfile } from '../lib/customers/customerRoles.mjs';
 import { emailChanged, mayAddReferrer, mayChangeEmail, EMAIL_LOCKED_HINT, REFERRER_LOCKED_HINT } from '../lib/customers/emailReferrerRules.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
@@ -98,9 +99,13 @@ const CustomersPage: React.FC = () => {
   // customers (Staff and Admins too); Inventory Managers keep the Limited view.
   const canProfile = canSeeCustomerProfile(profile?.role);
   // 418: Add, Edit, Change phone and Source are for Owners, Managers and
-  // Staff (and the old Admin role). Inventory Managers still find and view
-  // customers; the database refuses their changes too.
+  // Staff (and the old Admin role). The database refuses an Inventory Manager's
+  // changes too; since 539 it gives them no customer list at all (the list
+  // shows its sentence).
   const canEdit = canEditCustomers(profile?.role);
+  // 539 (security audit of 17 Nov 2026, M13; the user, 25 Nov 2026): only an Owner or a Manager
+  // exports the customer list; the server refuses anyone else and records each export.
+  const canExport = canExportCustomers(profile?.role);
   const [showDeleted, setShowDeleted] = useState(false);
   const [rows, setRows] = useState<Customer[]>([]);
   const [delFor, setDelFor] = useState<Customer | null>(null);
@@ -513,17 +518,29 @@ const CustomersPage: React.FC = () => {
   const filtered = rows;
 
   // The list is server-paginated, so the on-screen rows are only one page.
-  // Export re-runs the same search, page by page, in the list's one fixed
-  // order (409), and fails out loud rather than give a short or doubled file.
-  const fetchAllForExport = () => fetchAllCustomerRows<any>(async (limit, offset) => {
-    const { data, error } = await supabase.rpc('search_customers', {
-      p_query: debouncedSearch.trim() || null,
-      p_source: sourceFilter || null,
-      p_limit: limit, p_offset: offset,
-      ...visitArgs,
-    });
-    return { data: (data as any[]) ?? null, error };
-  });
+  // 539: an export is one call to export_customers, with the same search and
+  // filters (and the created dates chosen in the window, which it records):
+  // every customer they find, in the list's one fixed order (409), and one
+  // Audit Log entry. A refusal or a failure is shown, never a short file.
+  // On a database without 539 (the pages go live first) there is no
+  // export_customers: the export then reads the list page by page, as before.
+  const exportFor = (kind: CustomerExportKind) => async (range: { from: string; to: string }) => {
+    const { data, error } = await supabase.rpc('export_customers',
+      customerExportArgs(kind, { search: debouncedSearch, source: sourceFilter, visitArgs }, range));
+    if (error && exportFunctionMissing(error)) {
+      return fetchAllCustomerRows<any>(async (limit, offset) => {
+        const r = await supabase.rpc('search_customers', {
+          p_query: debouncedSearch.trim() || null,
+          p_source: sourceFilter || null,
+          p_limit: limit, p_offset: offset,
+          ...visitArgs,
+        });
+        return { data: (r.data as any[]) ?? null, error: r.error };
+      });
+    }
+    if (error) throw new Error(plainLoadError(error));
+    return ((data as { rows?: any[] } | null)?.rows ?? []) as any[];
+  };
 
 
   return (
@@ -532,10 +549,11 @@ const CustomersPage: React.FC = () => {
       <div className="page-header">
         <div><h2>Customers</h2><p>Customer database. Up to 3 non-deleted customers may share a phone number across all stores, including inactive customers.</p></div>
         <div style={{ display: 'flex', gap: 10 }}>
+          {canExport && <>
           <ExcelExportButton
             rows={filtered} filename="customers" sheetName="Customers"
             dateOf={(c: any) => c.created_at} dateLabel="Created"
-            fetchAll={fetchAllForExport}
+            fetchAll={exportFor('standard')}
             columns={[
               { header: 'Name', value: (c: any) => c.full_name },
               { header: 'Phone', value: (c: any) => c.phone ?? '' },
@@ -554,7 +572,7 @@ const CustomersPage: React.FC = () => {
             rows={filtered} filename="customers-selected" sheetName="Customers"
             label="Special Export" selectableColumns
             dateOf={(c: any) => c.created_at} dateLabel="Created"
-            fetchAll={fetchAllForExport}
+            fetchAll={exportFor('special')}
             columns={[
               { header: 'Name', value: (c: any) => c.full_name },
               { header: 'First Name', value: (c: any) => c.first_name ?? '' },
@@ -582,6 +600,7 @@ const CustomersPage: React.FC = () => {
               { header: 'First Visit', value: (c: any) => c.first_visit_on ? sgDate(c.first_visit_on) : '' },
               { header: 'Status', value: (c: any) => c.is_active ? 'Active' : 'Inactive' },
             ]} />
+          </>}
           <button className="btn btn-secondary" onClick={load}><RefreshCw size={15} className={loading ? 'spin' : ''} /> Refresh</button>
           {canComplete && <button className="btn btn-secondary" onClick={() => setShowDeleted(true)}>Deleted Customers</button>}
           {canEdit && <button className="btn btn-primary" onClick={openAdd}><Plus size={16} /> Add Customer</button>}

@@ -7,6 +7,9 @@ export type LocationType = 'warehouse' | 'store';
 export interface Profile {
   id: string;
   full_name: string;
+  // 539 (M13): email, personal_email and personal_phone are not columns a login
+  // reads from public.profiles; they come from my_profile_contact_details (one's
+  // own) or user_admin_list (an Owner's or Manager's), and are '' / null otherwise.
   email: string;             // Work Email — this IS the Supabase Auth login address
   personal_email: string | null;
   personal_phone: string | null;
@@ -15,7 +18,7 @@ export interface Profile {
   is_active: boolean;
   deleted_at: string | null;
   // 'pending' or 'cancelled' for an invited person who has not accepted; null
-  // or 'accepted' otherwise. Present on rows read with select('*').
+  // or 'accepted' otherwise. Present on rows read with PROFILE_COLUMNS (539).
   invitation_status?: string | null;
   created_at: string;
   updated_at: string;
