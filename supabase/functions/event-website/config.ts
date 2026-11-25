@@ -6,6 +6,7 @@
 // response or a log line.
 
 import { MissingConfigError } from '../_shared/auth-email/config.ts';
+import { loadServiceKey } from '../_shared/secret-key.ts';
 
 export interface EventWebsiteConfig {
   supabaseUrl: string;
@@ -16,9 +17,9 @@ const env = (name: string): string => Deno.env.get(name)?.trim() ?? '';
 
 export function loadEventWebsiteConfig(): EventWebsiteConfig {
   const supabaseUrl = env('SUPABASE_URL');
-  // Projects created before the new API keys inject SUPABASE_SERVICE_ROLE_KEY;
-  // newer ones inject SUPABASE_SECRET_KEY. Either is the service role.
-  const serviceRoleKey = env('SUPABASE_SERVICE_ROLE_KEY') || env('SUPABASE_SECRET_KEY');
+  // The key named 'edge_functions' when it exists; otherwise the legacy
+  // SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY (see secret-key.ts).
+  const serviceRoleKey = loadServiceKey();
   const missing: string[] = [];
   if (!supabaseUrl) missing.push('SUPABASE_URL');
   if (!serviceRoleKey) missing.push('SUPABASE_SERVICE_ROLE_KEY');

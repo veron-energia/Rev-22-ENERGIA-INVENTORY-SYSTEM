@@ -6,6 +6,7 @@
 // may appear in a response or a log line.
 
 import { MissingConfigError } from '../_shared/auth-email/config.ts';
+import { loadServiceKey } from '../_shared/secret-key.ts';
 
 export interface OrderConfig {
   supabaseUrl: string;
@@ -17,9 +18,9 @@ const env = (name: string): string => Deno.env.get(name)?.trim() ?? '';
 
 export function loadOrderConfig(): OrderConfig {
   const supabaseUrl = env('SUPABASE_URL');
-  // Projects created before the new API keys inject SUPABASE_SERVICE_ROLE_KEY;
-  // newer ones inject SUPABASE_SECRET_KEY. Either is the service role.
-  const serviceRoleKey = env('SUPABASE_SERVICE_ROLE_KEY') || env('SUPABASE_SECRET_KEY');
+  // The key named 'edge_functions' when it exists; otherwise the legacy
+  // SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY (see secret-key.ts).
+  const serviceRoleKey = loadServiceKey();
   const signingSecret = env('WEB_ORDER_SIGNING_SECRET');
 
   const missing: string[] = [];

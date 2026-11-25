@@ -16,7 +16,7 @@ const REQUIRED = {
 };
 
 const ALL_NAMES = [
-  ...Object.keys(REQUIRED), 'SUPABASE_SECRET_KEY', 'SUPABASE_PUBLISHABLE_KEY',
+  ...Object.keys(REQUIRED), 'SUPABASE_SECRET_KEY', 'SUPABASE_SECRET_KEYS', 'SUPABASE_PUBLISHABLE_KEY',
   'AUTH_EMAIL_REPLY_TO', 'AUTH_EMAIL_TEST_CALLBACK_URLS', 'AUTH_EMAIL_TEST_ORIGINS',
   'AUTH_EMAIL_TRUSTED_PROXY_HOPS', 'AUTH_EMAIL_PABBLY_TIMEOUT_MS',
 ];
@@ -47,6 +47,30 @@ Deno.test('either service-role key name works', () => {
   const { SUPABASE_SERVICE_ROLE_KEY: _drop, ...rest } = REQUIRED;
   withEnv({ ...rest, SUPABASE_SECRET_KEY: 'sb_secret_abc' }, () => {
     assertEquals(loadConfig().serviceRoleKey, 'sb_secret_abc');
+  });
+});
+
+Deno.test('the key named edge_functions wins; otherwise the legacy order is kept', () => {
+  const named = JSON.stringify({ default: 'sb_secret_test_default', edge_functions: 'sb_secret_test_edge_function_key_000' });
+  withEnv({ ...REQUIRED, SUPABASE_SECRET_KEYS: named }, () => {
+    assertEquals(loadConfig().serviceRoleKey, 'sb_secret_test_edge_function_key_000');
+  });
+  const { SUPABASE_SERVICE_ROLE_KEY: _drop, ...rest } = REQUIRED;
+  withEnv({ ...rest, SUPABASE_SECRET_KEYS: named }, () => {
+    assertEquals(loadConfig().serviceRoleKey, 'sb_secret_test_edge_function_key_000');
+  });
+  for (const raw of ['{broken', JSON.stringify({ edge_functions: '' }), JSON.stringify({ edge_functions: 'not-a-secret-key' }), JSON.stringify({ default: 'sb_secret_test_default' })]) {
+    withEnv({ ...REQUIRED, SUPABASE_SECRET_KEYS: raw }, () => {
+      assertEquals(loadConfig().serviceRoleKey, 'service-role-key', raw);
+    });
+  }
+});
+
+Deno.test('with only an unusable named key set, the missing name is still the legacy one', () => {
+  const { SUPABASE_SERVICE_ROLE_KEY: _drop, ...rest } = REQUIRED;
+  withEnv({ ...rest, SUPABASE_SECRET_KEYS: '{broken' }, () => {
+    const error = assertThrows(() => loadConfig(), MissingConfigError) as MissingConfigError;
+    assertEquals(error.names, ['SUPABASE_SERVICE_ROLE_KEY']);
   });
 });
 

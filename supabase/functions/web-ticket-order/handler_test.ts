@@ -441,7 +441,7 @@ Deno.test('a staff-link registration\'s logs carry its OFF id and status, nothin
 // Configuration
 // ---------------------------------------------------------------------------
 
-const NAMES = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY', 'WEB_ORDER_SIGNING_SECRET'];
+const NAMES = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY', 'SUPABASE_SECRET_KEYS', 'WEB_ORDER_SIGNING_SECRET'];
 
 async function withEnv<T>(values: Record<string, string>, fn: () => T | Promise<T>): Promise<T> {
   const saved = new Map(NAMES.map(n => [n, Deno.env.get(n)]));
@@ -476,4 +476,16 @@ Deno.test('either service-role key name works, and the secret is read from the e
     const response = await run(await signed({ type: 'paid', order: paidOrder() }), fakeClient().client, loadOrderConfig);
     assertEquals(response.status, 200);
   });
+});
+
+Deno.test('the key named edge_functions wins; a broken or unusable entry falls back to the legacy order', async () => {
+  const base = { SUPABASE_URL: 'https://project.supabase.co/', SUPABASE_SERVICE_ROLE_KEY: 'service-role-key', WEB_ORDER_SIGNING_SECRET: SECRET };
+  await withEnv({ ...base, SUPABASE_SECRET_KEYS: JSON.stringify({ default: 'sb_secret_test_default', edge_functions: 'sb_secret_test_edge_function_key_000' }) }, () => {
+    assertEquals(loadOrderConfig().serviceRoleKey, 'sb_secret_test_edge_function_key_000');
+  });
+  for (const raw of ['{broken', JSON.stringify({ edge_functions: '' }), JSON.stringify({ edge_functions: 'not-a-secret-key' })]) {
+    await withEnv({ ...base, SUPABASE_SECRET_KEYS: raw }, () => {
+      assertEquals(loadOrderConfig().serviceRoleKey, 'service-role-key', raw);
+    });
+  }
 });

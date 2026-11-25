@@ -183,6 +183,24 @@ Deno.test('config: the service role from either variable; nothing else is needed
   }
 });
 
+Deno.test('config: the key named edge_functions wins; a broken or unusable entry falls back', () => {
+  const names = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY', 'SUPABASE_SECRET_KEYS'];
+  const saved = names.map(k => [k, Deno.env.get(k)] as const);
+  try {
+    for (const k of names) Deno.env.delete(k);
+    Deno.env.set('SUPABASE_URL', 'https://project.supabase.co/');
+    Deno.env.set('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+    Deno.env.set('SUPABASE_SECRET_KEYS', JSON.stringify({ default: 'sb_secret_test_default', edge_functions: 'sb_secret_test_edge_function_key_000' }));
+    assertEquals(loadEventWebsiteConfig().serviceRoleKey, 'sb_secret_test_edge_function_key_000');
+    for (const raw of ['{broken', JSON.stringify({ edge_functions: '' }), JSON.stringify({ edge_functions: 'sb_publishable_test' })]) {
+      Deno.env.set('SUPABASE_SECRET_KEYS', raw);
+      assertEquals(loadEventWebsiteConfig().serviceRoleKey, 'service-role-key', raw);
+    }
+  } finally {
+    for (const [k, v] of saved) { if (v === undefined) Deno.env.delete(k); else Deno.env.set(k, v); }
+  }
+});
+
 Deno.test('no value is ever logged: not the key, a name, phone, email, token or reference', async () => {
   const m = messages();
   const log = await logsOf(async () => {

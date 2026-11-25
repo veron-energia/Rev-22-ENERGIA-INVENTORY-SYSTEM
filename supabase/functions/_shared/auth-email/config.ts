@@ -8,6 +8,7 @@
 //   supabase secrets set --env-file supabase/functions/.env.auth-email
 // (see PABBLY_GENERATELINK_AUTH_SETUP.md for the full list and the order).
 
+import { loadServiceKey } from '../secret-key.ts';
 export interface AuthEmailConfig {
   supabaseUrl: string;
   serviceRoleKey: string;
@@ -64,9 +65,9 @@ export function loadConfig(): AuthEmailConfig {
   if (cached) return cached;
 
   const supabaseUrl = env('SUPABASE_URL');
-  // Projects created before the new API keys inject SUPABASE_SERVICE_ROLE_KEY;
-  // newer ones inject SUPABASE_SECRET_KEY. Either is the service role.
-  const serviceRoleKey = firstOf('SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY');
+  // The key named 'edge_functions' when it exists; otherwise the legacy
+  // SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY (see secret-key.ts).
+  const serviceRoleKey = loadServiceKey();
   const publicApiKey = firstOf('SUPABASE_ANON_KEY', 'SUPABASE_PUBLISHABLE_KEY');
   const publicAppUrl = env('PUBLIC_APP_URL').replace(/\/+$/, '');
   const pabblyWebhookUrl = env('PABBLY_AUTH_EMAIL_WEBHOOK_URL');

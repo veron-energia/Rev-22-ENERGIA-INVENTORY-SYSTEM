@@ -138,6 +138,25 @@ Deno.test('the config reads its three values and names what is missing, never a 
   }
 });
 
+Deno.test('the config uses the key named edge_functions when present, and falls back otherwise', () => {
+  const names = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY', 'SUPABASE_SECRET_KEYS', 'CALCOM_WEBHOOK_SECRET'];
+  const saved = names.map(k => [k, Deno.env.get(k)] as const);
+  try {
+    for (const k of names) Deno.env.delete(k);
+    Deno.env.set('SUPABASE_URL', 'https://project.supabase.co/');
+    Deno.env.set('CALCOM_WEBHOOK_SECRET', 'made-up-webhook-secret');
+    Deno.env.set('SUPABASE_SERVICE_ROLE_KEY', 'made-up-service-key');
+    Deno.env.set('SUPABASE_SECRET_KEYS', JSON.stringify({ default: 'sb_secret_test_default', edge_functions: 'sb_secret_test_edge_function_key_000' }));
+    assertEquals(loadWebhookConfig().serviceRoleKey, 'sb_secret_test_edge_function_key_000');
+    Deno.env.set('SUPABASE_SECRET_KEYS', '{broken');
+    assertEquals(loadWebhookConfig().serviceRoleKey, 'made-up-service-key');
+    Deno.env.set('SUPABASE_SECRET_KEYS', JSON.stringify({ edge_functions: 'not-a-secret-key' }));
+    assertEquals(loadWebhookConfig().serviceRoleKey, 'made-up-service-key');
+  } finally {
+    for (const [k, v] of saved) { if (v === undefined) Deno.env.delete(k); else Deno.env.set(k, v); }
+  }
+});
+
 Deno.test('POST only', async () => {
   for (const method of ['GET', 'PUT', 'DELETE', 'PATCH']) {
     const response = await run(new Request(URL, { method, body: method === 'GET' ? undefined : '{}' }));
