@@ -215,6 +215,7 @@
 -- xxx), Singapore-style only for the old-phone case.
 \set ON_ERROR_STOP on
 begin;
+do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; end if; end $m536$;  -- 536: this suite back-dates or removes its own Audit Log rows; the trigger comes back with the rollback
 \if :{?skip_install}
 \else
 \ir ../../../supabase/436_event_website_registrations_and_vip.sql

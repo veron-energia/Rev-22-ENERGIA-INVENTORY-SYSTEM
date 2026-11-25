@@ -45,13 +45,17 @@ ok('migrations 230-231 apply over the pre-230 schema, and apply again, cleanly',
 // This database is shared with the other suites' fixtures, so the cleanup is
 // scoped to rows this file owns rather than truncating tables other tests and
 // their foreign keys depend on.
-sql(`delete from public.user_invitations;
+// 536: removing the earlier run's Audit Log rows needs the row trigger off; it
+// is switched back on in the same call (one transaction), as 536 made it.
+sql(`do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; end if; end $m536$;
+     delete from public.user_invitations;
      delete from public.audit_logs where table_name = 'user_invitations';
      delete from public.affiliate_accounts where email like '%@energia.test';
      delete from public.user_store_assignments
       where user_id in (select id from public.profiles where email like '%@energia.test');
      delete from public.profiles where email like '%@energia.test';
-     delete from public.stores where name like 'usertest-%';`);
+     delete from public.stores where name like 'usertest-%';
+     do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs enable always trigger audit_logs_keep_every_entry; end if; end $m536$;`);
 
 const store = n => sql(`insert into public.stores (name) values ('usertest-${n}') returning id;`);
 const STORE_A = store('Orchard'), STORE_B = store('Jurong');

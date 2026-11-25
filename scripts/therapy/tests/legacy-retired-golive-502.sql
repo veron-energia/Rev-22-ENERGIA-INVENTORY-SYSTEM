@@ -82,6 +82,13 @@
 \set t502g_presale `cat scripts/therapy/credit-package-presale-reward-502.sql`
 \set t502g_preview `cat scripts/therapy/golive-preview-502.sql`
 begin;
+-- 536 (security audit of 17 Nov 2026, M14) added a function and made the Audit Log keep every
+-- entry: where 536 is in, 536's UNDO takes it out, for this run only (rolled back with everything
+-- here), so the functions are those this suite knows and the clearing below can remove its rows.
+select to_regprocedure('public.audit_logs_keep_every_entry()') is not null as t502g_536_in \gset
+\if :t502g_536_in
+\ir ../../audit-log/undo-536.sql
+\endif
 -- 522 (18 Nov 2026) changed dashboard_alerts_summary(), one of the fifteen functions 502 patched,
 -- so 502's UNDO rightly refuses where 522 is in. This suite tests 502, not the Dashboard's TikTok
 -- counts: where 522 is in, 522's UNDO puts back the version 502 left, for this run only

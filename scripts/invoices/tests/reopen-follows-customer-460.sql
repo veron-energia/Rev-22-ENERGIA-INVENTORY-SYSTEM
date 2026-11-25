@@ -166,6 +166,7 @@
 -- +61491570601 to 699).
 \set ON_ERROR_STOP on
 begin;
+do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; end if; end $m536$;  -- 536: this suite back-dates or removes its own Audit Log rows; the trigger comes back with the rollback
 set local lock_timeout = '10s';
 
 create temp table t460(k text primary key, id uuid);

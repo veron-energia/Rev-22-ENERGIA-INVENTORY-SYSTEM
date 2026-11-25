@@ -46,6 +46,7 @@
 -- printed.
 \set ON_ERROR_STOP on
 begin;
+do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; grant insert on public.audit_logs to service_role; grant execute on function public.write_audit(text,uuid,text,jsonb,jsonb), public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text) to service_role; end if; end $m536$;  -- 536: this suite re-runs 431 and writes, changes and files entries as before 536 (the service role's insert and the two helpers, its own rows changed); all of it comes back with the rollback
 
 create temp table audm(k text primary key, id uuid not null);
 create temp table audm_fail(n serial, msg text);

@@ -302,6 +302,9 @@ declare
                              -- nine other tables, and the one that locks a payment method's
                              -- wallet settings (security audit of 17 Nov 2026, M7 and M8)
                              'trg_audit_direct_change','trg_payment_method_wallet_locked',
+                             -- 536: the trigger function that refuses changing, deleting and
+                             -- emptying the audit log (security audit of 17 Nov 2026, M14)
+                             'audit_logs_keep_every_entry',
                              -- 419: a customer's signed QR form into their consultant record,
                              -- called inside submit_health_survey and attach_held_health_survey
                              'health_survey_sign_into_record',
@@ -510,6 +513,23 @@ begin
           or not (select c.relrowsecurity from pg_class c where c.oid = to_regclass('public.referral_phone_notices'))
           or exists (select 1 from pg_policy p where p.polrelid = to_regclass('public.referral_phone_notices'))) then
     raise exception 'FAIL: referral_phone_notices is open to a client role, writable by the service role, without row-level security or with a policy'; end if;
+
+  -- 18. Once 536 is in (its trigger function is there), the audit log is
+  --     append-only: its grants are exactly 536's (SELECT for authenticated
+  --     and the service role, nothing for anon or PUBLIC, no column grant), so a
+  --     later blanket grant is named here; write_audit and write_audit_ex are
+  --     their owner's alone; and both of 536's triggers are there and enabled
+  --     ALWAYS (session_replication_role = replica does not skip them).
+  if to_regprocedure('public.audit_logs_keep_every_entry()') is not null
+     and ((select c.relacl::text from pg_class c where c.oid = 'public.audit_logs'::regclass)
+            is distinct from '{postgres=arwdDxtm/postgres,authenticated=r/postgres,service_role=r/postgres}'
+          or exists (select 1 from pg_attribute a where a.attrelid = 'public.audit_logs'::regclass and a.attnum > 0 and a.attacl is not null)
+          or has_function_privilege('service_role', 'public.write_audit(text,uuid,text,jsonb,jsonb)', 'execute')
+          or has_function_privilege('service_role', 'public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text)', 'execute')
+          or (select string_agg(t.tgname || '=' || t.tgenabled::text, ',' order by t.tgname) from pg_trigger t
+               where t.tgrelid = 'public.audit_logs'::regclass and t.tgname in ('audit_logs_keep_every_entry', 'audit_logs_never_emptied'))
+             is distinct from 'audit_logs_keep_every_entry=A,audit_logs_never_emptied=A') then
+    raise exception 'FAIL: the audit log is not append-only as 536 made it (its grants, the two helpers'' grants, or its two triggers enabled ALWAYS)'; end if;
 
   select count(*) into n from pg_proc p join pg_namespace n2 on n2.oid = p.pronamespace
    where n2.nspname = 'public' and p.prokind = 'f'
