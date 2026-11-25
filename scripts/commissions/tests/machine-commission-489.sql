@@ -250,8 +250,12 @@ declare v timestamptz;
 begin
   select machine_commission_from into v from public.app_settings where id = true;
   update public.app_settings set machine_commission_from = null where id = true;
-  perform pg_temp.check(pg_temp.previewed(pg_temp.fx('m2')) = 'own 1000.00/150.00' and pg_temp.previewed(pg_temp.fx('m5')) = 'own 1000.00/150.00',
-    'M10 with no cut-off a machine earns as ours again (got ' || pg_temp.previewed(pg_temp.fx('m2')) || ' and ' || pg_temp.previewed(pg_temp.fx('m5')) || ')');
+  -- (538, security audit of 17 Nov 2026, M12: where it is in, a line keeps the kind it first earned
+  -- as, so the third-party machine sold in m2 stays third party when the cut-off goes.)
+  perform pg_temp.check(pg_temp.previewed(pg_temp.fx('m2')) = case when to_regclass('public.invoice_line_commission_kinds') is not null
+                                                                   then 'third_party 1000.00/45.00' else 'own 1000.00/150.00' end
+                        and pg_temp.previewed(pg_temp.fx('m5')) = 'own 1000.00/150.00',
+    'M10 with no cut-off a machine earns as ours again, unless 538 keeps what it earned as (got ' || pg_temp.previewed(pg_temp.fx('m2')) || ' and ' || pg_temp.previewed(pg_temp.fx('m5')) || ')');
   update public.app_settings set machine_commission_from = v where id = true;
 end $$;
 

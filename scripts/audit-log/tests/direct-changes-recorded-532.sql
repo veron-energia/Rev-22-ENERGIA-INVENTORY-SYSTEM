@@ -83,6 +83,12 @@ set local statement_timeout = '300s';
 -- everything here). This suite tests 532.
 select to_regclass('public.invoice_affiliate_rates') is not null as m532_535_in \gset
 \if :m532_535_in
+-- 538 (security audit of 17 Nov 2026, M12) builds on 535: where it is in, its UNDO goes first
+-- (this run only).
+select to_regclass('public.invoice_line_commission_kinds') is not null as m532_538_in \gset
+\if :m532_538_in
+\ir ../../commissions/undo-538.sql
+\endif
 \ir ../../commissions/undo-535.sql
 \endif
 -- Before: every function's text and rights, and every rule of public.

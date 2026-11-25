@@ -315,10 +315,13 @@ end $$;
 -- sync_instalment_commissions and earn_invoice_commission): where it is in, its AFTER md5s
 -- stand for them, and B and U take it out first (undo-535), in a savepoint.
 select to_regclass('public.invoice_affiliate_rates') is not null as m527_has535 \gset
-select pg_temp.check(md5(pg_get_functiondef('public.earn_credit_package_commission(uuid)'::regprocedure)) in ('ad9bbf2183d6e19da85e7f59ce4a4b6e', '44d10e4bcceb9a94080f1802c1da946f')
-    and md5(pg_get_functiondef('public.earn_premium_bundle_commission(uuid)'::regprocedure)) in ('39429d3a496274811dce3c3f5f7ca29b', '86ea3b1215ed6fd896bfd63ceba21152')
+-- (538, security audit of 17 Nov 2026, M12, builds on 535: where it is in, its AFTER md5s stand too,
+-- and its UNDO goes before 535's.)
+select to_regclass('public.invoice_line_commission_kinds') is not null as m527_has538 \gset
+select pg_temp.check(md5(pg_get_functiondef('public.earn_credit_package_commission(uuid)'::regprocedure)) in ('ad9bbf2183d6e19da85e7f59ce4a4b6e', '44d10e4bcceb9a94080f1802c1da946f', 'd2d6c3a32c89a329852d2680aa66e504')
+    and md5(pg_get_functiondef('public.earn_premium_bundle_commission(uuid)'::regprocedure)) in ('39429d3a496274811dce3c3f5f7ca29b', '86ea3b1215ed6fd896bfd63ceba21152', '5bb0f5bf338a73f4b040dac2cf9e905c')
     and md5(pg_get_functiondef('public.invoice_package_commission_preview(uuid)'::regprocedure)) in ('966e8b7166607aa1d986f20fbbbc1e52', 'ef34e72a6bffaebb33af83f2b38f2ade'),
-  'G1 the three functions are 527''s (AFTER md5s), or 535''s where it is in');
+  'G1 the three functions are 527''s (AFTER md5s), or 535''s or 538''s where they are in');
 select pg_temp.check(bool_and(p.proacl::text = '{postgres=X/postgres,service_role=X/postgres}'
                               and not has_function_privilege('authenticated', p.oid, 'execute')
                               and not has_function_privilege('anon', p.oid, 'execute')),
@@ -330,12 +333,15 @@ select pg_temp.check(md5(pg_get_functiondef('public.is_eligible_affiliate(uuid)'
     and md5(pg_get_functiondef('public.affiliate_block_reason(uuid)'::regprocedure)) = '8cd46c7a29ed2701de7d8358a4d3dc88'
     and md5(pg_get_functiondef('public.customer_affiliate_state(uuid)'::regprocedure)) = '887d0b58f4d1f6670adbaf10591e0f9c'
     and md5(pg_get_functiondef('public.reconcile_invoice_commissions(uuid,text)'::regprocedure)) = '3c267728e215d17ebeb9cfe9cb7db47c'
-    and md5(pg_get_functiondef('public.sync_instalment_commissions(uuid,text,date,boolean,boolean)'::regprocedure)) in ('88d7b122778801a0d5eea0b6dd8395b7', '98fbe647100e8890957f098c6d90fca4')
-    and md5(pg_get_functiondef('public.earn_invoice_commission(uuid)'::regprocedure)) in ('40b040e35b23940bb19e14e53bdd4daa', '762c06868e2c2256f008b9468b8a255b'),
+    and md5(pg_get_functiondef('public.sync_instalment_commissions(uuid,text,date,boolean,boolean)'::regprocedure)) in ('88d7b122778801a0d5eea0b6dd8395b7', '98fbe647100e8890957f098c6d90fca4', '1f56177897bb6b67c276626128184c86')
+    and md5(pg_get_functiondef('public.earn_invoice_commission(uuid)'::regprocedure)) in ('40b040e35b23940bb19e14e53bdd4daa', '762c06868e2c2256f008b9468b8a255b', '8d7ccdee4eae2359b56995ebf60dbcfa'),
   'G3 what 527 relies on and what follows it unchanged (eligibility, its reason, reconcile, the part-payment layer, product lines) is as tested');
 
 -- ═════ B The same invoices under the functions of before 527 ═════
 savepoint b527;
+\if :m527_has538
+\ir ../undo-538.sql
+\endif
 \if :m527_has535
 \ir ../undo-535.sql
 \endif
@@ -353,6 +359,9 @@ rollback to savepoint b527;
 -- ═════ U Undo, and 527 again ═════
 \if :m527_has535
 savepoint u527_535;
+\if :m527_has538
+\ir ../undo-538.sql
+\endif
 \ir ../undo-535.sql
 \endif
 \ir ../undo-527.sql

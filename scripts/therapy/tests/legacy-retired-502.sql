@@ -78,6 +78,12 @@ select md5(pg_get_functiondef('public.dashboard_alerts_summary()'::regprocedure)
 -- UNDO puts back the versions 502 left, for this run only (rolled back with everything here).
 select to_regclass('public.invoice_affiliate_rates') is not null as t502_535_in \gset
 \if :t502_535_in
+-- 538 (security audit of 17 Nov 2026, M12) builds on 535: where it is in, its UNDO goes first
+-- (this run only).
+select to_regclass('public.invoice_line_commission_kinds') is not null as t502_538_in \gset
+\if :t502_538_in
+\ir ../../commissions/undo-538.sql
+\endif
 \ir ../../commissions/undo-535.sql
 \endif
 set local lock_timeout = '10s';

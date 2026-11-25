@@ -543,10 +543,13 @@ begin
      or obj_description(to_regclass('public.invoice_affiliate_rates'), 'pg_class') is distinct from c_table_comment then
     raise exception 'undo 535: public.invoice_affiliate_rates is missing or not 535''s. Nothing was changed.'; end if;
   for i in 1 .. cardinality(c_con_table) loop
+    -- Each constraint by its name and its text (535's "null or 0 to 100"), so a constraint of
+    -- that name but other text is never dropped.
     if not exists (select 1 from pg_constraint k
                     where k.conrelid = to_regclass('public.' || c_con_table[i])
-                      and k.conname = c_con_table[i] || '_' || c_con_col[i] || '_0_100') then
-      raise exception 'undo 535: the constraint %_%_0_100 is missing. Nothing was changed.', c_con_table[i], c_con_col[i]; end if;
+                      and k.conname = c_con_table[i] || '_' || c_con_col[i] || '_0_100'
+                      and pg_get_constraintdef(k.oid) = format('CHECK (((%1$I IS NULL) OR ((%1$I >= (0)::numeric) AND (%1$I <= (100)::numeric))))', c_con_col[i])) then
+      raise exception 'undo 535: the constraint %_%_0_100 is missing or not 535''s. Nothing was changed.', c_con_table[i], c_con_col[i]; end if;
   end loop;
   for i in 1 .. cardinality(c_trg_table) loop
     if (select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgrelid = to_regclass('public.' || c_trg_table[i])

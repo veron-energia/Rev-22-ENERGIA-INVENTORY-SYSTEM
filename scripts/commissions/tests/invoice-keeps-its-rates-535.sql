@@ -611,8 +611,17 @@ insert into g535 values
   ('trg_audit_direct_change()', '5dcea97b6479d9bb6a53adfa9dfbcba4', '{postgres=X/postgres,service_role=X/postgres}'),
   ('invoice_affiliate_rates_for(uuid)', '64e6ed85a8f169477fc85bd8452da453', '{postgres=X/postgres}'),
   ('record_invoice_affiliate_rates(uuid,numeric,numeric,numeric,numeric)', 'ae5132e23be0b0acbdec3d92e500bd4c', '{postgres=X/postgres}');
-select pg_temp.check(not exists (select 1 from g535 g where md5(pg_get_functiondef(to_regprocedure('public.' || g.fn))) is distinct from g.after_md5),
-  'G1 the ten functions and two helpers are 535''s (AFTER md5s)');
+-- (538, security audit of 17 Nov 2026, M12: where it is in, its AFTER md5s stand for the five
+-- functions it builds on.)
+select pg_temp.check(not exists (select 1 from g535 g where md5(pg_get_functiondef(to_regprocedure('public.' || g.fn))) is distinct from g.after_md5
+                                    and not (to_regclass('public.invoice_line_commission_kinds') is not null
+                                             and md5(pg_get_functiondef(to_regprocedure('public.' || g.fn))) = case g.fn
+                                                   when 'earn_invoice_commission(uuid)' then '8d7ccdee4eae2359b56995ebf60dbcfa'
+                                                   when 'invoice_affiliate_commission_preview(uuid)' then 'df92dacb660319a7c4ae44b439b1adaf'
+                                                   when 'earn_credit_package_commission(uuid)' then 'd2d6c3a32c89a329852d2680aa66e504'
+                                                   when 'earn_premium_bundle_commission(uuid)' then '5bb0f5bf338a73f4b040dac2cf9e905c'
+                                                   when 'sync_instalment_commissions(uuid,text,date,boolean,boolean)' then '1f56177897bb6b67c276626128184c86' end)),
+  'G1 the ten functions and two helpers are 535''s (AFTER md5s), or 538''s where it is in');
 select pg_temp.check(not exists (select 1 from g535 g
                                   where (select coalesce(string_agg(x::text, ',' order by x::text), '') from pg_proc p, unnest(p.proacl) x
                                           where p.oid = to_regprocedure('public.' || g.fn))

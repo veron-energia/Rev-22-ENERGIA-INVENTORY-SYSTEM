@@ -63,6 +63,7 @@ import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/credi
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
   goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
 import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
+import { CommissionBasisCorrection } from '../components/invoices/CommissionBasisCorrection';
 import { isService } from '../lib/stock/stockPages';
 import { suppliersOf, type ProductSupplierRow, type SupplierRow } from '../lib/special/consignment';
 
@@ -5084,6 +5085,9 @@ const InvoicesPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* 538 (M12, 25 Nov 2026): the Owner corrects this invoice's kept commission rates and line kinds. */}
+            {isOwner(profile?.role) && <div><CommissionBasisCorrection invoiceId={detail.id} role={profile?.role} onSaved={() => { void refreshDetail(detail.id).catch(() => undefined); }} /></div>}
 
             {revisions.length > 0 && (
               <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', padding: 10 }}>
