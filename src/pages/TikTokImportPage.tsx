@@ -1,6 +1,4 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import * as XLSX from 'xlsx';
-import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
 import { fetchAllFrom, fetchAllRows } from '../lib/supabasePaging';
 import { SettlementSummary, currentSgtMonth } from '../components/tiktok/SettlementSummary';
@@ -8,6 +6,7 @@ import { TikTokXeroExportButton } from '../components/tiktok/TikTokXeroExport';
 import { describeBalanceCounts, describeWithdrawals, readWithdrawalRecords } from '../lib/tiktok/withdrawals.mjs';
 import { settledDateSgt, reportingMonthFor, periodLabel, settlementPeriod, toIsoDate } from '../lib/tiktok/settlementPeriod.mjs';
 import { classifyTransaction, CATEGORY } from '../lib/tiktok/classification.mjs';
+import { readGridsFromFile } from '../lib/tiktok/readSpreadsheet.mjs';
 import { useAuth } from '../context/AuthContext';
 import { Store, Product, isOwnerOrManager } from '../types';
 import { Modal } from '../components/ui';
@@ -636,65 +635,10 @@ const TikTokImportPage: React.FC = () => {
     : noStoreToRead ? <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Nothing to show: you are not assigned to a store.</div>
     : content();
 
-  // ── Worksheet range repair ────────────────────────────────────────────────
-  //
-  // REGRESSION GUARD. TikTok settlement exports — and XLSX files written by WPS
-  // Office generally — can carry a STALE OR WRONG worksheet dimension. One real
-  // settlement file held rows 1-12 but declared its range as "A1:BG2".
-  //
-  // sheet_to_json() trusts !ref, so it read the header and ONE data row and
-  // silently dropped the other ten. Nothing errored: the import simply appeared
-  // to contain a single settlement line.
-  //
-  // So !ref is recomputed from the cell addresses actually present before any
-  // parsing. Keys beginning with "!" (!ref, !merges, !cols, !rows) are metadata
-  // and are skipped.
-  const repairWorksheetRange = (ws: XLSX.WorkSheet) => {
-    const addresses = Object.keys(ws).filter(
-      key => !key.startsWith('!') && /^[A-Z]+[1-9][0-9]*$/.test(key)
-    );
-    if (addresses.length === 0) return;
-
-    let minRow = Infinity;
-    let minCol = Infinity;
-    let maxRow = -1;
-    let maxCol = -1;
-
-    for (const address of addresses) {
-      const cell = XLSX.utils.decode_cell(address);
-      minRow = Math.min(minRow, cell.r);
-      minCol = Math.min(minCol, cell.c);
-      maxRow = Math.max(maxRow, cell.r);
-      maxCol = Math.max(maxCol, cell.c);
-    }
-
-    if (Number.isFinite(minRow) && Number.isFinite(minCol) && maxRow >= 0 && maxCol >= 0) {
-      ws['!ref'] = XLSX.utils.encode_range(
-        { r: minRow, c: minCol },
-        { r: maxRow, c: maxCol }
-      );
-    }
-  };
-
   // ── File parsing (both areas share it) ────────────────────────────────────
-  const readGrids = async (file: File): Promise<{ name: string; grid: string[][] }[]> => {
-    if (file.name.toLowerCase().endsWith('.csv')) {
-      const text = await file.text();
-      // dynamicTyping stays OFF: every cell is a string, IDs stay exact.
-      const parsed = Papa.parse<string[]>(text, { skipEmptyLines: 'greedy' });
-      return [{ name: 'CSV', grid: (parsed.data as string[][]).map(r => r.map(c => String(c ?? ''))) }];
-    }
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellText: true });
-    return wb.SheetNames.map(name => {
-      const ws = wb.Sheets[name];
-      // See repairWorksheetRange: TikTok's own !ref cannot be trusted.
-      repairWorksheetRange(ws);
-      // raw:false -> formatted text for every cell, so big IDs keep all digits.
-      const grid = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' }) as unknown as string[][];
-      return { name, grid: grid.map(r => r.map(c => String(c ?? ''))) };
-    });
-  };
+  // The size limit, row limit and the worksheet range repair live in
+  // src/lib/tiktok/readSpreadsheet.mjs (security audit M15), so node tests can run them.
+  const readGrids = (file: File): Promise<{ name: string; grid: string[][] }[]> => readGridsFromFile(file);
 
   const handleUpload = async (file: File, kind: 'order' | 'settlement') => {
     setErr(null); setImportNote(null);
