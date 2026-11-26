@@ -653,7 +653,9 @@ values ('survey-attachments', 'null/' || pg_temp.fx('hs_two') || '/n.png', '{"si
 select pg_temp.check(pg_temp.state(pg_temp.attach_file('m', pg_temp.fx('hs_two'), 'null/' || pg_temp.fx('hs_two') || '/n.png')) = 'ok',
   'A5 a survey with no store yet takes files in its null/ folder');
 select pg_temp.check(exists (select 1 from storage.buckets where id = 'survey-attachments' and file_size_limit = 10485760
-                               and 'application/pdf' = any (allowed_mime_types) and 'image/*' = any (allowed_mime_types)),
+                               -- 541 (L13): the photo types are listed, no image/* (and so no SVG).
+                               and 'application/pdf' = any (allowed_mime_types)
+                               and ('image/*' = any (allowed_mime_types) or ('image/jpeg' = any (allowed_mime_types) and 'image/heic' = any (allowed_mime_types)))),
   'A6 the survey files bucket takes 10 MB at most, of the types the page offers');
 
 -- ═════ P Who reads health data ═════

@@ -116,7 +116,8 @@ begin
   perform customer_match_candidates('+6591234501',null);
   raise exception 'A non-staff login searched customers';
  exception when others then
-  if sqlerrm not like '%do not have permission%' then raise; end if; end;
+  -- 541 (L14): 406's sentence, from require_active_staff().
+  if sqlerrm not like '%do not have permission%' and sqlerrm not like '%Only active Energia staff%' then raise; end if; end;
 
  raise notice 'PASS: a customer is created with the same fields and rules as the Customers page, retries return the first record rather than a second, existing people on the phone are offered without exposing their details, three may share a number and a fourth is refused, a deleted record frees its slot, and a login without a staff profile is refused';
 end $$;

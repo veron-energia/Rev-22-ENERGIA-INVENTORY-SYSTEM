@@ -108,6 +108,15 @@ begin;
 -- (this run only, rolled back with everything here).
 select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
 \if :t540_in
+-- 541, 542 (security audit of 17 Nov 2026, Lows): where they are in, their UNDOs go first, as 540's needs.
+select to_regprocedure('public.invoice_line_holds_stock(uuid,uuid)') is not null as t542_in,
+       position('541 (security audit' in pg_get_functiondef('public.record_document_send(text,text,text,uuid,uuid,text,text,text,text)'::regprocedure)) > 0 as t541_in \gset
+\if :t542_in
+\ir ../../invoice-actions/undo-542.sql
+\endif
+\if :t541_in
+\ir ../../permissions/undo-541.sql
+\endif
 \ir ../../customers/undo-540.sql
 \endif
 do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; end if; end $m536$;  -- 536: this suite back-dates or removes its own Audit Log rows; the trigger comes back with the rollback

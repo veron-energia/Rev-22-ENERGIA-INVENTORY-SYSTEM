@@ -18,8 +18,13 @@ select position('519:' in pg_get_functiondef('public.stage_tiktok_orders(uuid,te
 \else
 \ir ../../../supabase/519_tiktok_amounts_and_prices_are_numbers.sql
 \endif
--- A second run changes nothing.
+-- A second run changes nothing. (541, security audit L19, changes stage_tiktok_orders after 519, so
+-- 519 no longer recognises it: the second run only where 541 is not in.)
+select position('541 (security audit' in pg_get_functiondef('public.stage_tiktok_orders(uuid,text,text,jsonb)'::regprocedure)) > 0 as m541_in \gset
+\if :m541_in
+\else
 \ir ../../../supabase/519_tiktok_amounts_and_prices_are_numbers.sql
+\endif
 
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $f$ begin if ok is distinct from true then raise exception 'FAIL: %', msg; end if; raise notice 'PASS  %', msg; end $f$;
@@ -143,7 +148,7 @@ select pg_temp.check(count(*) = 17
          'voucher_store_prices', 'vouchers', 'therapy_service_stores', 'therapy_services', 'unlimited_therapy_store_prices',
          'special_products', 'credit_packages', 'premium_bundles', 'event_ticket_options', 'events', 'products', 'stores',
          'therapy_voucher_definitions']);
-select pg_temp.check(md5(pg_get_functiondef('public.stage_tiktok_orders(uuid,text,text,jsonb)'::regprocedure)) = 'ac4c840689c50433504377aa63664188'
+select pg_temp.check(md5(pg_get_functiondef('public.stage_tiktok_orders(uuid,text,text,jsonb)'::regprocedure)) in ('ac4c840689c50433504377aa63664188', '086b5958fa3d0e7c40cd5f333602cb53')  -- 519's, or 541's
                      and has_function_privilege('authenticated', 'public.stage_tiktok_orders(uuid,text,text,jsonb)', 'execute')
                      and not has_function_privilege('anon', 'public.stage_tiktok_orders(uuid,text,text,jsonb)', 'execute'),
   '3b stage_tiktok_orders is 519''s, its rights as before');

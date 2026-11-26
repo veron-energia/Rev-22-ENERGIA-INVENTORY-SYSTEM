@@ -686,9 +686,10 @@ begin
     -- (495's AFTER where it is in: no stock question for a service)
     -- (496's AFTER where it is in: a refund also asks about the units released for a special sale)
     -- (533's AFTER where it is in: a Manager takes back up to S$1,000 on an invoice)
+    -- (542's AFTER where it is in: a stock answer must be for a refunded line)
     and md5(pg_get_functiondef(s::regprocedure)) in ('804ecd829cfecf713783a09a05d93c7e', '3280f4ed6afb93aed7366eaf100c6383',
                                                      '49f6880e4e6395b1468f32e4126472eb', '3fb10ac55903b9346c4898d988b808ce',
-                                                     '4f81d244db8f8c5b6d35143456fa8cc7'), '10 446 is not installed as tested');
+                                                     '4f81d244db8f8c5b6d35143456fa8cc7', '7802bc26966f422978e2b764b289944f'), '10 446 is not installed as tested');
   if exists (select 1 from t446_fp where k = 'first') then
     perform pg_temp.t446_check((select fp from t446_fp where k = 'second') = (select fp from t446_fp where k = 'first'),
       '10 the second run of 446 changed functions');

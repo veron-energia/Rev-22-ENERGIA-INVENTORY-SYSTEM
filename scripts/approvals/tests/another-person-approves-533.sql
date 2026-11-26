@@ -801,6 +801,9 @@ begin
     ('resolve_inventory_adjustment(uuid,boolean,text)', '6aaa8f4ff405de2dde4cbf09ed7b1bcd'),
     ('resolve_invoice_action_v2(uuid,boolean,text,text,jsonb,jsonb,boolean)', 'd1ab83e457684ad3d010dd5a92719570'),
     ('refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)', '4f81d244db8f8c5b6d35143456fa8cc7'),
+    -- 542 (security audit of 17 Nov 2026, L20) changes these two: its AFTER md5s.
+    ('resolve_invoice_action_v2(uuid,boolean,text,text,jsonb,jsonb,boolean)', 'beb94a98887d55d8698a830f489e1225'),
+    ('refund_invoice_recorded(uuid,jsonb,jsonb,jsonb,text,uuid)', '7802bc26966f422978e2b764b289944f'),
     ('adjust_customer_credit(uuid,text,text,numeric,text,text,date,text,uuid,uuid)', '91d8bc8893f2be5df7c79a304067714b'),
     ('add_legacy_credit(uuid,text,numeric,date,uuid,text,text,date,uuid)', 'c1fc53090470a4e61a07aaf5a922d82d'),
     ('reverse_credit_lot(uuid,text,text,text)', '62ea75384be87010919f21a5884d0186'),

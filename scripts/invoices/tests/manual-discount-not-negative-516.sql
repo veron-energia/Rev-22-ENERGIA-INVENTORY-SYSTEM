@@ -16,6 +16,15 @@ begin;
 -- (this run only, rolled back with everything here).
 select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
 \if :t540_in
+-- 541, 542 (security audit of 17 Nov 2026, Lows): where they are in, their UNDOs go first, as 540's needs.
+select to_regprocedure('public.invoice_line_holds_stock(uuid,uuid)') is not null as t542_in,
+       position('541 (security audit' in pg_get_functiondef('public.record_document_send(text,text,text,uuid,uuid,text,text,text,text)'::regprocedure)) > 0 as t541_in \gset
+\if :t542_in
+\ir ../../invoice-actions/undo-542.sql
+\endif
+\if :t541_in
+\ir ../../permissions/undo-541.sql
+\endif
 \ir ../../customers/undo-540.sql
 \endif
 select position('516:' in pg_get_functiondef('public.create_invoice_with_details(uuid,uuid,jsonb,jsonb)'::regprocedure)) > 0 as m516_in \gset

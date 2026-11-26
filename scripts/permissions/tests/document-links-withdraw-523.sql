@@ -121,7 +121,8 @@ end $$;
 -- The sends, recorded by a Staff login as the page records them (and a failed send, with no copy).
 select pg_temp.check(pg_temp.as_login('staff', format($q$select public.record_document_send('invoice', %L, 'whatsapp', %L, null, '+61491570523', %L, 'sent', null)::text$q$,
                        (select invoice_no from public.invoices where id = pg_temp.fx('inv1')::uuid), pg_temp.fx('inv1'), pg_temp.fx('c1'))) !~ '^ERR'
-                     and pg_temp.as_login('staff', format($q$select public.record_document_send('invoice', %L, 'email', %L, null, 'l523-cust@example.invalid', %L, 'sent', null)::text$q$,
+                     -- 541 (L16): a send is logged only by someone who can see the invoice; store B's is the Owner's.
+                     and pg_temp.as_login('owner', format($q$select public.record_document_send('invoice', %L, 'email', %L, null, 'l523-cust@example.invalid', %L, 'sent', null)::text$q$,
                        (select invoice_no from public.invoices where id = pg_temp.fx('inv2')::uuid), pg_temp.fx('inv2'), pg_temp.fx('c3'))) !~ '^ERR'
                      and pg_temp.as_login('staff', format($q$select public.record_document_send('rental', %L, 'whatsapp', %L, null, '+61491570523', %L, 'sent', null)::text$q$,
                        (select rental_no from public.rentals where id = pg_temp.fx('rental')::uuid), pg_temp.fx('rental'), pg_temp.fx('c5'))) !~ '^ERR'
@@ -144,7 +145,8 @@ select pg_temp.check(pg_temp.as_login('owner', format($q$select channel || ' ' |
 -- does not make the copy that document's (security audit of 17 Nov 2026, 523's pre-check).
 select pg_temp.check(pg_temp.as_login('staff', format($q$select public.record_document_send('invoice', %L, 'whatsapp', %L, null, '+61491570524', %L, 'sent', null)::text$q$,
                        (select invoice_no from public.invoices where id = pg_temp.fx('inv1')::uuid), pg_temp.fx('inv1'), pg_temp.fx('c3'))) !~ '^ERR'
-                     and pg_temp.as_login('staff', format($q$select public.record_document_send('invoice', %L, 'whatsapp', %L, null, '+61491570525', %L, 'sent', null)::text$q$,
+                     -- 541 (L16): store B's invoice is logged by someone who can see it, the Owner.
+                     and pg_temp.as_login('owner', format($q$select public.record_document_send('invoice', %L, 'whatsapp', %L, null, '+61491570525', %L, 'sent', null)::text$q$,
                        (select invoice_no from public.invoices where id = pg_temp.fx('inv2')::uuid), pg_temp.fx('inv2'), pg_temp.fx('c2'))) !~ '^ERR',
   '1e Staff record a send of invoice 1 naming invoice 2''s copy, and one of invoice 2 naming invoice 1''s copy from before the log');
 select pg_temp.check(pg_temp.links('owner', 'invoice', 'inv1') = 'c1 send open, c2 before-log open'
