@@ -27,12 +27,12 @@ export const WRONG_FILE_TYPE_MESSAGE = (name) =>
 // rows 1-12 but declared "A1:BG2", and sheet_to_json() silently dropped ten
 // rows. So !ref is recomputed from the cell addresses actually present.
 // Keys beginning with "!" are metadata. (This relies on the default sparse
-// sheet, so dense mode is NOT used.)
+// sheet, so dense mode is NOT used.) Returns the number of cells found.
 export function repairWorksheetRange(ws) {
   const addresses = Object.keys(ws).filter(
     key => !key.startsWith('!') && /^[A-Z]+[1-9][0-9]*$/.test(key)
   );
-  if (addresses.length === 0) return;
+  if (addresses.length === 0) return 0;
   let minRow = Infinity, minCol = Infinity, maxRow = -1, maxCol = -1;
   for (const address of addresses) {
     const cell = XLSX.utils.decode_cell(address);
@@ -44,6 +44,7 @@ export function repairWorksheetRange(ws) {
   if (Number.isFinite(minRow) && Number.isFinite(minCol) && maxRow >= 0 && maxCol >= 0) {
     ws['!ref'] = XLSX.utils.encode_range({ r: minRow, c: minCol }, { r: maxRow, c: maxCol });
   }
+  return addresses.length;
 }
 
 // `file` is a File (or anything with name, size, text(), arrayBuffer()).
@@ -77,7 +78,9 @@ export async function readGridsFromFile(file) {
   });
   return wb.SheetNames.map(name => {
     const ws = wb.Sheets[name];
-    repairWorksheetRange(ws);
+    // A sheet with no cells is empty, whatever range it declares: an empty extra
+    // sheet that declares A1:C30000 must not make the whole file "too long".
+    if (repairWorksheetRange(ws) === 0) return { name, grid: [] };
     // Count by position, so blank rows count: the last row of the (repaired)
     // range, not the number of filled rows.
     if (ws['!ref'] && XLSX.utils.decode_range(ws['!ref']).e.r + 1 > MAX_IMPORT_ROWS) {

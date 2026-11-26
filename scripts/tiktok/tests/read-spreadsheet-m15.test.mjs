@@ -130,3 +130,14 @@ test('a real xlsx is read, also with an upper-case .XLSX name', async () => {
     assert.deepEqual(sheet.grid, [['Order ID'], ['1']]);
   }
 });
+
+test('an empty extra sheet that declares a large range is read as empty, not refused', async () => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Order ID', 'Total'], ['1', '2']]), 'Order details');
+  XLSX.utils.book_append_sheet(wb, { '!ref': 'A1:C30000' }, 'Empty');
+  const bytes = new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }));
+  // sanity: the written file really declares the large range on the cell-less sheet
+  assert.equal(XLSX.read(bytes, { type: 'array' }).Sheets['Empty']['!ref'], 'A1:C30000');
+  const sheets = await readGridsFromFile(fileFrom('two-sheets.xlsx', bytes));
+  assert.deepEqual(sheets.map(s => [s.name, s.grid.length]), [['Order details', 2], ['Empty', 0]]);
+});
