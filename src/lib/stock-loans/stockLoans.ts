@@ -272,3 +272,22 @@ export function returnPlaces(stores: { id: string; name: string }[], warehouses:
     ...(canWarehouse ? warehouses.map(w => ({ value: `warehouse:${w.id}`, label: `${w.name} (Warehouse)`, type: 'warehouse' as const, id: w.id })) : []),
   ];
 }
+
+/**
+ * The places this person may take a loan back into (security audit of 17 Nov 2026, L19). A loan's
+ * return goes back only into the store or warehouse it was lent from. An Owner or Manager
+ * (`mayChoose`) also gets the other active stores, and the warehouses their stock permission allows,
+ * with the loan's own place first. Anyone else gets that one place only, so no picker is shown;
+ * return_stock_loan (541) refuses the rest on the server.
+ */
+export function returnPlacesForLoan(
+  own: { type: LocationType; id: string; name: string },
+  stores: { id: string; name: string }[], warehouses: { id: string; name: string }[],
+  canWarehouse: boolean, mayChoose: boolean,
+): { value: string; label: string; type: LocationType; id: string }[] {
+  const ownValue = `${own.type}:${own.id}`;
+  const ownPlace = { value: ownValue, label: `${own.name} (${own.type === 'store' ? 'Store' : 'Warehouse'})`, type: own.type, id: own.id };
+  if (!mayChoose) return [ownPlace];
+  const others = returnPlaces(stores, warehouses, canWarehouse).filter(p => p.value !== ownValue);
+  return [ownPlace, ...others];
+}

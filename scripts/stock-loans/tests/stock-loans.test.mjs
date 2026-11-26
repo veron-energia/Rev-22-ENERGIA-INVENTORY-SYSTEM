@@ -121,6 +121,21 @@ test('places to return to: every store; warehouses only with the warehouse permi
   assert.deepEqual(sl.returnPlaces(st, wh, true).map(p => p.label), ['Fixture Store (Store)', 'Fixture Warehouse (Warehouse)']);
 });
 
+test('L19: a return goes back to the loan\'s own place; only an Owner or Manager may choose another', () => {
+  const st = [{ id: 'S1', name: 'Fixture Store' }, { id: 'S2', name: 'Other Store' }], wh = [{ id: 'W1', name: 'Fixture Warehouse' }];
+  const own = { type: 'store', id: 'S2', name: 'Other Store' };
+  // Staff, Admin, Inventory Manager: the one place, whatever else is passed in.
+  assert.deepEqual(sl.returnPlacesForLoan(own, st, wh, true, false).map(p => p.value), ['store:S2']);
+  assert.deepEqual(sl.returnPlacesForLoan(own, st, wh, false, false).map(p => p.label), ['Other Store (Store)']);
+  // Owner or Manager: the loan's own place first, then the others.
+  assert.deepEqual(sl.returnPlacesForLoan(own, st, wh, true, true).map(p => p.value), ['store:S2', 'store:S1', 'warehouse:W1']);
+  assert.deepEqual(sl.returnPlacesForLoan(own, st, wh, false, true).map(p => p.value), ['store:S2', 'store:S1']);
+  // A loan lent from a warehouse.
+  const wOwn = { type: 'warehouse', id: 'W1', name: 'Fixture Warehouse' };
+  assert.deepEqual(sl.returnPlacesForLoan(wOwn, st, wh, true, true).map(p => p.value), ['warehouse:W1', 'store:S1', 'store:S2']);
+  assert.deepEqual(sl.returnPlacesForLoan(wOwn, st, wh, true, false).map(p => p.label), ['Fixture Warehouse (Warehouse)']);
+});
+
 test('what the screens say', () => {
   assert.equal(sl.eventLabel({ outcome: 'returned', condition: 'good' }), 'Returned');
   assert.equal(sl.eventLabel({ outcome: 'returned', condition: 'damaged' }), 'Returned damaged, back in stock');

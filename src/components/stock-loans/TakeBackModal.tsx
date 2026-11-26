@@ -3,13 +3,15 @@ import { supabase } from '../../lib/supabase';
 import { Modal } from '../ui';
 import {
   StockLoan, TAKE_BACK_FIELDS, TakeBackDraft, blankTakeBack, borrowerLabel, formatDay, mayHaveSaved, newRequestId,
-  outstanding, returnPlaces, saveFailure, takeBackAll, takeBackEntries,
+  outstanding, returnPlacesForLoan, saveFailure, takeBackAll, takeBackEntries,
 } from '../../lib/stock-loans/stockLoans';
+import { useAuth } from '../../context/AuthContext';
+import { isOwnerOrManager } from '../../types';
 
 /**
  * Take a loan back, in part or in full (return_stock_loan, 401). For each
  * item staff enter what came back (into the place chosen below: any store, or
- * a warehouse for Owner/Manager), what came back damaged (back to stock, or
+ * the loan's own place; an Owner or Manager may choose another), what came back damaged (back to stock, or
  * recorded as used), and what did not come back (used / given away, lost /
  * damaged). The loan closes when every item is accounted for. After a
  * failure that may have saved, the form is locked, so pressing again sends the
@@ -22,23 +24,29 @@ const TakeBackModal: React.FC<{
   onClose: () => void;
   onDone: (message: string) => void;
 }> = ({ loan, canWarehouse, onClose, onDone }) => {
+  const { profile } = useAuth();
+  // L19: a return goes back only where the loan was lent from. Only an Owner or a Manager may choose another place.
+  const mayChoose = isOwnerOrManager(profile?.role);
+  const own = { type: loan.location_type, id: loan.location_id, name: loan.location_name };
   const [requestId] = useState(newRequestId);
   const [drafts, setDrafts] = useState<Record<string, TakeBackDraft>>(() =>
     Object.fromEntries(loan.lines.map(l => [l.line_id, blankTakeBack()])));
-  const [places, setPlaces] = useState<ReturnType<typeof returnPlaces>>([]);
-  const [place, setPlace] = useState(
-    loan.location_type === 'store' || canWarehouse ? `${loan.location_type}:${loan.location_id}` : '');
+  const [places, setPlaces] = useState<ReturnType<typeof returnPlacesForLoan>>(
+    () => returnPlacesForLoan(own, [], [], canWarehouse, false));
+  const [place, setPlace] = useState(`${loan.location_type}:${loan.location_id}`);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
 
   useEffect(() => {
+    if (!mayChoose) { setPlaces(returnPlacesForLoan(own, [], [], canWarehouse, false)); return; }
     Promise.all([
       supabase.from('stores').select('id,name').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('warehouses').select('id,name').is('deleted_at', null).eq('is_active', true).order('name'),
-    ]).then(([{ data: st }, { data: wh }]) => setPlaces(returnPlaces(st ?? [], wh ?? [], canWarehouse)));
-  }, [canWarehouse]);
+    ]).then(([{ data: st }, { data: wh }]) => setPlaces(returnPlacesForLoan(own, st ?? [], wh ?? [], canWarehouse, true)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canWarehouse, mayChoose, loan.location_type, loan.location_id, loan.location_name]);
 
   const chosen = places.find(p => p.value === place) ?? null;
   const open = loan.lines.filter(l => outstanding(l) > 0);
@@ -79,13 +87,17 @@ const TakeBackModal: React.FC<{
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label>Returned items go back to</label>
-          <select value={place} disabled={locked} onChange={e => { setErr(null); setPlace(e.target.value); }}>
-            <option value="">Choose a store{canWarehouse ? ' or warehouse' : ''}…</option>
-            {places.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-          </select>
+          {mayChoose ? (
+            <select value={place} disabled={locked} onChange={e => { setErr(null); setPlace(e.target.value); }}>
+              {places.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+          ) : (
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>{places[0]?.label ?? loan.location_name}</div>
+          )}
           <span style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>
-            Items back in different places? Save one take-back per place.
-            {!canWarehouse && ' Only an Owner, Manager or Inventory Manager can take stock back into a warehouse.'}
+            {mayChoose
+              ? 'The place it was lent from is chosen. Items back in different places? Save one take-back per place.'
+              : `Items go back where they were lent from. Only an Owner or a Manager can take a loan back into another place.`}
           </span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
