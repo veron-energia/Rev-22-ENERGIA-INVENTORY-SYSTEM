@@ -33,30 +33,30 @@ begin
 
   if phase = 'dry' then
     -- The rehearsal changed nothing: the old build's rows stand untouched.
-    perform pg_temp.check(pg_temp.live('REEARN-0222') = '', 'dry: 0222 still has nothing');
-    perform pg_temp.check(pg_temp.live('REEARN-0227') = 'tier1 Reearn Alaric (duplicate) 3.30 earned', 'dry: 0227 still credits the duplicate');
-    perform pg_temp.check(pg_temp.live('REEARN-0158') = 'tier1 Reearn Zoe 112.05 earned; tier2 Reearn Chiao 5.60 earned', 'dry: 0158 still at 5%');
+    perform pg_temp.check(pg_temp.live('REEARN-0001') = '', 'dry: 0001 still has nothing');
+    perform pg_temp.check(pg_temp.live('REEARN-0003') = 'tier1 Reearn Affiliate 0003 (duplicate) 3.30 earned', 'dry: 0003 still credits the duplicate');
+    perform pg_temp.check(pg_temp.live('REEARN-0004') = 'tier1 Reearn Affiliate 0004 112.05 earned; tier2 Reearn Referrer 0004 5.60 earned', 'dry: 0004 still at 5%');
     perform pg_temp.check(pg_temp.live('REEARN-NONE') = 'tier1 Reearn Erin 30.00 earned', 'dry: explicit None still paid');
-    perform pg_temp.check(pg_temp.live('REEARN-0220') = '', 'dry: 0220 still has nothing');
+    perform pg_temp.check(pg_temp.live('REEARN-0002') = '', 'dry: 0002 still has nothing');
     perform pg_temp.check((select count(*) from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no like 'REEARN-%' and x.status = 'reversed') = 0, 'dry: nothing reversed');
     perform pg_temp.check(not exists (select 1 from public.audit_logs where action = 'commission_reearned'), 'dry: no audit rows');
     return;
   end if;
 
   -- After the real run.
-  perform pg_temp.check(pg_temp.live('REEARN-0222') = 'tier1 Reearn Marlinah 11.55 earned', '0222: the selected affiliate earns 15% of the discounted line');
-  perform pg_temp.check(pg_temp.reversed('REEARN-0222') = 0, '0222: nothing to reverse');
+  perform pg_temp.check(pg_temp.live('REEARN-0001') = 'tier1 Reearn Affiliate 0001 11.55 earned', '0001: the selected affiliate earns 15% of the discounted line');
+  perform pg_temp.check(pg_temp.reversed('REEARN-0001') = 0, '0001: nothing to reverse');
 
-  perform pg_temp.check(pg_temp.live('REEARN-0227') = 'tier1 Reearn Alaric Ong 3.30 earned', '0227: commission moves to the selected affiliate');
-  perform pg_temp.check(pg_temp.reversed('REEARN-0227') = 1, '0227: the duplicate''s row is reversed');
-  perform pg_temp.check((select bool_and(reversal_reason like 'Re-earned after 334%') from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-0227' and x.status = 'reversed'), '0227: reversal carries the reason');
+  perform pg_temp.check(pg_temp.live('REEARN-0003') = 'tier1 Reearn Affiliate 0003 3.30 earned', '0003: commission moves to the selected affiliate');
+  perform pg_temp.check(pg_temp.reversed('REEARN-0003') = 1, '0003: the duplicate''s row is reversed');
+  perform pg_temp.check((select bool_and(reversal_reason like 'Re-earned after 334%') from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-0003' and x.status = 'reversed'), '0003: reversal carries the reason');
 
-  perform pg_temp.check(pg_temp.live('REEARN-0158') = 'tier1 Reearn Zoe 112.05 earned; tier2 Reearn Chiao 39.22 blocked', '0158: tier 2 at the configured 35%, blocked for a person not activated');
-  perform pg_temp.check((select block_reason = 'Affiliate Not Activated' from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-0158' and x.tier = 'tier2' and x.status = 'blocked'), '0158: block reason recorded');
+  perform pg_temp.check(pg_temp.live('REEARN-0004') = 'tier1 Reearn Affiliate 0004 112.05 earned; tier2 Reearn Referrer 0004 39.22 blocked', '0004: tier 2 at the configured 35%, blocked for a person not activated');
+  perform pg_temp.check((select block_reason = 'Affiliate Not Activated' from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-0004' and x.tier = 'tier2' and x.status = 'blocked'), '0004: block reason recorded');
 
-  perform pg_temp.check(pg_temp.live('REEARN-0215') = 'tier1 Reearn Madalene 38.85 earned', '0215: same answer');
-  perform pg_temp.check(pg_temp.reversed('REEARN-0215') = 0, '0215: untouched, no reversal');
-  perform pg_temp.check((select count(*) = 1 from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-0215'), '0215: still one row, the original');
+  perform pg_temp.check(pg_temp.live('REEARN-0013') = 'tier1 Reearn Affiliate 0013 38.85 earned', '0013: same answer');
+  perform pg_temp.check(pg_temp.reversed('REEARN-0013') = 0, '0013: untouched, no reversal');
+  perform pg_temp.check((select count(*) = 1 from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-0013'), '0013: still one row, the original');
 
   perform pg_temp.check(pg_temp.live('REEARN-PAID') = 'tier1 Reearn Carol 15.00 paid', 'PAID: money already paid out is not touched');
   perform pg_temp.check(pg_temp.reversed('REEARN-PAID') = 0, 'PAID: no reversal');
@@ -67,15 +67,15 @@ begin
 
   perform pg_temp.check((select count(*) = 0 from public.commissions x join public.invoices i on i.id = x.invoice_id where i.invoice_no = 'REEARN-REFUNDED'), 'REFUNDED: left alone');
 
-  perform pg_temp.check(pg_temp.live('REEARN-0220') = 'tier1 Reearn Ivy 9.15 earned; tier1 Reearn Ivy 9.15 earned', '0220: each promotion line earns for the selected affiliate');
+  perform pg_temp.check(pg_temp.live('REEARN-0002') = 'tier1 Reearn Ivy 9.15 earned; tier1 Reearn Ivy 9.15 earned', '0002: each promotion line earns for the selected affiliate');
 
   -- One audit row per changed invoice, none for the unchanged or reviewed.
   select count(*) into n from public.audit_logs a
    where a.action = 'commission_reearned'
-     and a.record_id in (select id from public.invoices where invoice_no in ('REEARN-0222','REEARN-0227','REEARN-0158','REEARN-NONE','REEARN-0220'));
+     and a.record_id in (select id from public.invoices where invoice_no in ('REEARN-0001','REEARN-0003','REEARN-0004','REEARN-NONE','REEARN-0002'));
   perform pg_temp.check(n = 5, format('five audit rows for the five changed invoices, got %s', n));
   perform pg_temp.check(not exists (select 1 from public.audit_logs a where a.action = 'commission_reearned'
-     and a.record_id in (select id from public.invoices where invoice_no in ('REEARN-0215','REEARN-PAID','REEARN-REFUNDED'))), 'no audit row where nothing changed');
+     and a.record_id in (select id from public.invoices where invoice_no in ('REEARN-0013','REEARN-PAID','REEARN-REFUNDED'))), 'no audit row where nothing changed');
 
   if phase = 'again' then
     -- The second real run found the same answer everywhere: no new rows, no

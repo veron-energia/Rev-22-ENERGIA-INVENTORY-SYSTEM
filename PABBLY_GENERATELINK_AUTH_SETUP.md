@@ -231,7 +231,7 @@ Gmail step field mapping, as configured:
 | Gmail field | Mapped to | Note |
 |---|---|---|
 | Sender Name | `from_name` | |
-| **Sender Email Address** | `stanley@rev22.com.sg` — **stale, see below** | Chosen from the dropdown, not typed. Must become `info@rev22.com.sg`, but only as part of reconnecting the Gmail account (§7a fix 1) |
+| **Sender Email Address** | `old-sender@example.invalid` — **stale, see below** | Chosen from the dropdown, not typed. Must become `info@rev22.com.sg`, but only as part of reconnecting the Gmail account (§7a fix 1) |
 | Recipient Email Addresses | `to` | |
 | Reply To | `reply_to` | |
 | Email Subject | `subject` | |
@@ -256,7 +256,7 @@ curl -X POST "<the webhook URL>" -H 'Content-Type: application/json' -d '{
   "delivery_secret":"<the shared secret>",
   "request_id":"00000000-0000-4000-8000-000000000000",
   "action_type":"verify_signup",
-  "to":"shinthantstanley@gmail.com",
+  "to":"owner-test@example.invalid",
   "from_name":"Rev 22 Global Energia",
   "from_email":"info@rev22.com.sg",
   "reply_to":"info@rev22.com.sg",
@@ -314,7 +314,7 @@ with it. The sender was never hardcoded anywhere in the function source — it i
 configuration, so this was a one-line change plus fixtures.
 
 **The Pabbly Gmail step has deliberately not been touched**, and it still reads
-`stanley@rev22.com.sg`. Changing that one field on the current connection would
+`old-sender@example.invalid`. Changing that one field on the current connection would
 be the wrong move, for two reasons:
 
 1. **It would not fix deliverability.** The Gmail step is connected to a personal
@@ -431,7 +431,7 @@ Two independent findings from the live workflow:
 
    ```
    From:     Rev22 Energia <info@rev22.com.sg>
-   To:       shinthantstanley@gmail.com
+   To:       owner-test@example.invalid
    Reply-To: info@rev22.com.sg
    Content-Type: text/html; charset=UTF-8
    ```
@@ -703,12 +703,15 @@ scripts/auth-email/bootstrap-local.sh destroy
 
 ```bash
 deno run --allow-env --allow-read --allow-net scripts/auth-email/live-pabbly-test.ts \
-  --confirm --to tiktokautomationtryout@gmail.com --first Stanley --last Aung
+  --confirm --to second-test@example.invalid --first Testing --last Owner
 ```
 
-Recipients come from an allowlist in the script — currently
-`shinthantstanley@gmail.com` and `tiktokautomationtryout@gmail.com`. Anything else
-is refused, so the script cannot later be pointed at an arbitrary address.
+Recipients come from the `LIVE_TEST_RECIPIENT` environment variable (a
+comma-separated allowlist), set on the Mac when running the script, for example
+`LIVE_TEST_RECIPIENT=you@yourdomain deno run …`. If it is missing or empty the
+script refuses to send. Anything not listed is refused, so the script cannot
+later be pointed at an arbitrary address. No test address is kept in the repo.
+(`verify-deployed.mjs --send-test-email` reads the same variable, first entry.)
 
 Each run posts two requests to the live webhook, both carrying an email rendered
 by the same template the Edge Function uses. Both get `200 {"status":"success",
@@ -717,10 +720,10 @@ exercise, because those two identical responses had opposite outcomes:
 
 | Run | Request | Secret | Pabbly task history |
 |---|---|---|---|
-| 13:45 → `shinthantstanley@` | `049c1871…` | wrong | **2 Steps** — trigger + filter, then stopped |
-| 13:45 → `shinthantstanley@` | `8fa05d8d…` | correct | **3 Steps** — trigger + filter + Gmail |
-| 13:54 → `tiktokautomationtryout@` | `4d74a1a8…` | wrong | **2 Steps** — trigger + filter, then stopped |
-| 13:54 → `tiktokautomationtryout@` | `d2f464f9…` | correct | **3 Steps** — trigger + filter + Gmail |
+| 13:45 → `owner-test@` | `049c1871…` | wrong | **2 Steps** — trigger + filter, then stopped |
+| 13:45 → `owner-test@` | `8fa05d8d…` | correct | **3 Steps** — trigger + filter + Gmail |
+| 13:54 → `second-test@` | `4d74a1a8…` | wrong | **2 Steps** — trigger + filter, then stopped |
+| 13:54 → `second-test@` | `d2f464f9…` | correct | **3 Steps** — trigger + filter + Gmail |
 
 Run twice, to two different inboxes, with the same result — so the filter's
 behaviour is reproducible rather than a one-off. The second run also delivers to
@@ -734,8 +737,8 @@ blocked request costs two steps, a delivered one costs three.
 It also demonstrates the distinction this system is built around — an HTTP 2xx
 from the webhook is not evidence that anything was sent.
 
-**Still needs a human at the inbox** — both `shinthantstanley@gmail.com` and
-`tiktokautomationtryout@gmail.com` — because "observed at the recipient" is the
+**Still needs a human at the inbox** — both addresses listed in
+`LIVE_TEST_RECIPIENT` — because "observed at the recipient" is the
 one thing no API can confirm:
 
 * exactly **one** new message should have arrived, subject ending `[delivery test]`;
@@ -800,7 +803,7 @@ whether the test messages actually landed in the inbox.
 | Shared-secret rejection tested | **Done** — blocked at the filter, Gmail never ran (§11) | — |
 | Gmail alias sends as `info@rev22.com.sg` | **Done** — confirmed by Gmail's own response headers (§7) | — |
 | Inbox check on the test messages (both addresses) | Outstanding | You — §11 |
-| Signup details validated server-side (`Stanley Aung`, `+6585777325`) | **Done** — accepted by the real validator | — |
+| Signup details validated server-side (a test name and Singapore mobile) | **Done** — accepted by the real validator | — |
 | Migration applied | Not run | You — §10 step 1 |
 | Secrets set + functions deployed | Not run | `scripts/auth-email/deploy.sh` after `npx supabase login` |
 | `/reset-password` redirect URL added | Not changed — production Auth setting | You — §8 |

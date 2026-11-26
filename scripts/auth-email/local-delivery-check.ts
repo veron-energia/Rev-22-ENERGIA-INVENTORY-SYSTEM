@@ -24,7 +24,7 @@ import type { AuthEmailConfig } from '../../supabase/functions/_shared/auth-emai
 const SHARED_SECRET = 'local-shared-secret-for-this-check-only';
 const SUPABASE_URL = 'https://jknfhpgryywsrzdstqzy.supabase.co';
 const APP_URL = 'https://rev-22-energia-inventory-system.vercel.app';
-const RECIPIENT = 'shinthantstanley@gmail.com';
+const RECIPIENT = 'owner-test@example.invalid';
 const ACTION_LINK = `${SUPABASE_URL}/auth/v1/verify?token=e1b7c0d9f2a4&type=signup&redirect_to=${encodeURIComponent(APP_URL + '/affiliate/verify')}`;
 
 // --- a stand-in for the Pabbly workflow -------------------------------------
@@ -75,7 +75,7 @@ const deps = (): FlowDeps => ({
   accountState: () => Promise.resolve('confirmed'),
   createConfirmedSignup: () => Promise.resolve({ status: 'created', userId: '00000000-0000-4000-8000-000000000437' }),
   affiliateSignupExisting: () => Promise.resolve({ matched: null, loginEmail: false }),
-  generateRecoveryLink: () => Promise.resolve({ status: 'ok', link: { actionLink: ACTION_LINK.replace('type=signup', 'type=recovery'), email: RECIPIENT, displayName: 'Shin Thant', userId: '00000000-0000-4000-8000-000000000531' } }),
+  generateRecoveryLink: () => Promise.resolve({ status: 'ok', link: { actionLink: ACTION_LINK.replace('type=signup', 'type=recovery'), email: RECIPIENT, displayName: 'Testing', userId: '00000000-0000-4000-8000-000000000531' } }),
   deliver: (cfg, request) => deliver(cfg, request),
   normalizePhone,
 });
@@ -93,7 +93,7 @@ const post = (body: unknown) => new Request(`${APP_URL}/x`, {
 });
 
 const signupBody = {
-  first_name: 'Shin Thant', last_name: 'Stanley', phone: '+6591234567',
+  first_name: 'Testing', last_name: 'Owner', phone: '+6591234567',
   email: RECIPIENT, password: 'a-local-check-password', terms_accepted: true,
 };
 
@@ -180,10 +180,10 @@ try {
   // --- 5. write the rendered emails out for a human to look at ------------
   await Deno.mkdir('scripts/auth-email/preview', { recursive: true });
   const previews = {
-    'verify-signup': renderVerifySignup('Shin Thant', ACTION_LINK),
+    'verify-signup': renderVerifySignup('Testing', ACTION_LINK),
     'verify-code': renderVerifyCode('482913'),
-    'password-recovery': renderPasswordRecovery('Shin Thant', ACTION_LINK.replace('type=signup', 'type=recovery')),
-    'password-changed': renderPasswordChanged('Shin Thant', new Date().toISOString(), 'info@rev22.com.sg'),
+    'password-recovery': renderPasswordRecovery('Testing', ACTION_LINK.replace('type=signup', 'type=recovery')),
+    'password-changed': renderPasswordChanged('Testing', new Date().toISOString(), 'info@rev22.com.sg'),
   };
   for (const [name, email] of Object.entries(previews)) {
     await Deno.writeTextFile(`scripts/auth-email/preview/${name}.html`, email.html);

@@ -2,7 +2,8 @@
 --
 -- The runner has already put the 5D2-era earn_invoice_commission in place, so
 -- the rows written here are what production wrote: each shape below is one
--- that exists on production, named after the invoice it copies.
+-- that exists on production, named after the invoice it copies (by its
+-- made-up number in COMMISSION_FUNCTION_REINSTALL.md, not the real one).
 \set ON_ERROR_STOP on
 begin;
 
@@ -43,10 +44,10 @@ end $$;
 do $$
 declare
   owner_id uuid := gen_random_uuid(); st uuid; prod uuid; promo uuid; inv uuid;
-  mariam uuid; marlinah uuid; marlinah_aff uuid;
-  manjil uuid; alaric_dup uuid; alaric uuid; alaric_aff uuid;
-  andrew uuid; chiao uuid; zoe uuid; zoe_aff uuid;
-  pauline uuid; madalene uuid;
+  buyer_0001 uuid; affiliate_0001 uuid; affiliate_0001_aff uuid;
+  buyer_0003 uuid; duplicate_0003 uuid; affiliate_0003 uuid; affiliate_0003_aff uuid;
+  buyer_0004 uuid; referrer_0004 uuid; affiliate_0004 uuid; affiliate_0004_aff uuid;
+  buyer_0013 uuid; affiliate_0013 uuid;
   bob uuid; carol uuid;
   dave uuid; erin uuid;
   fay uuid; gil uuid;
@@ -62,40 +63,40 @@ begin
   -- Production's rates: tier 2 is 35, which the old build never read.
   update public.app_settings set commission_tier2_own_rate = 35, commission_tier2_third_rate = 35 where id = true;
 
-  -- 0222: affiliate selected on the invoice, buyer has no referrer. Product
+  -- 0001: affiliate selected on the invoice, buyer has no referrer. Product
   -- with a voucher discount on the line. Old build: nothing at all.
-  mariam := pg_temp.person('Reearn Mariam', '+6591118901');
-  marlinah := pg_temp.person('Reearn Marlinah', '+6591118902');
-  marlinah_aff := pg_temp.affiliate(marlinah, st);
-  inv := pg_temp.paid_invoice('REEARN-0222', st, mariam, owner_id, marlinah_aff, true,
+  buyer_0001 := pg_temp.person('Reearn Buyer 0001', '+6591118901');
+  affiliate_0001 := pg_temp.person('Reearn Affiliate 0001', '+6591118902');
+  affiliate_0001_aff := pg_temp.affiliate(affiliate_0001, st);
+  inv := pg_temp.paid_invoice('REEARN-0001', st, buyer_0001, owner_id, affiliate_0001_aff, true,
     jsonb_build_array(jsonb_build_object('kind', 'product', 'product', prod, 'amount', 149, 'discount', 72)));
   perform public.earn_invoice_commission(inv);
 
-  -- 0227: buyer's profile referrer is a duplicate record that is not an
+  -- 0003: buyer's profile referrer is a duplicate record that is not an
   -- affiliate; the real affiliate is selected on the invoice. Old build: paid
   -- the duplicate.
-  alaric_dup := pg_temp.person('Reearn Alaric (duplicate)', '+6591118903');
-  alaric := pg_temp.person('Reearn Alaric Ong', '+6591118904');
-  alaric_aff := pg_temp.affiliate(alaric, st);
-  manjil := pg_temp.person('Reearn Manjil', '+6591118905', alaric_dup);
-  inv := pg_temp.paid_invoice('REEARN-0227', st, manjil, owner_id, alaric_aff, false,
+  duplicate_0003 := pg_temp.person('Reearn Affiliate 0003 (duplicate)', '+6591118903');
+  affiliate_0003 := pg_temp.person('Reearn Affiliate 0003', '+6591118904');
+  affiliate_0003_aff := pg_temp.affiliate(affiliate_0003, st);
+  buyer_0003 := pg_temp.person('Reearn Buyer 0003', '+6591118905', duplicate_0003);
+  inv := pg_temp.paid_invoice('REEARN-0003', st, buyer_0003, owner_id, affiliate_0003_aff, false,
     jsonb_build_array(jsonb_build_object('kind', 'voucher', 'amount', 22)));
   perform public.earn_invoice_commission(inv);
 
-  -- 0158: tier 1 is right, tier 2 goes to someone not activated at the fixed 5%.
-  chiao := pg_temp.person('Reearn Chiao', '+6591118906');
-  zoe := pg_temp.person('Reearn Zoe', '+6591118907', chiao);
-  zoe_aff := pg_temp.affiliate(zoe, st);
-  andrew := pg_temp.person('Reearn Andrew', '+6591118908', zoe);
-  inv := pg_temp.paid_invoice('REEARN-0158', st, andrew, owner_id, zoe_aff, true,
+  -- 0004: tier 1 is right, tier 2 goes to someone not activated at the fixed 5%.
+  referrer_0004 := pg_temp.person('Reearn Referrer 0004', '+6591118906');
+  affiliate_0004 := pg_temp.person('Reearn Affiliate 0004', '+6591118907', referrer_0004);
+  affiliate_0004_aff := pg_temp.affiliate(affiliate_0004, st);
+  buyer_0004 := pg_temp.person('Reearn Buyer 0004', '+6591118908', affiliate_0004);
+  inv := pg_temp.paid_invoice('REEARN-0004', st, buyer_0004, owner_id, affiliate_0004_aff, true,
     jsonb_build_array(jsonb_build_object('kind', 'product', 'product', prod, 'amount', 747)));
   perform public.earn_invoice_commission(inv);
 
-  -- 0215: profile referrer, active, nothing selected. Both builds agree.
-  madalene := pg_temp.person('Reearn Madalene', '+6591118909');
-  perform pg_temp.affiliate(madalene, st);
-  pauline := pg_temp.person('Reearn Pauline', '+6591118910', madalene);
-  inv := pg_temp.paid_invoice('REEARN-0215', st, pauline, owner_id, null, false,
+  -- 0013: profile referrer, active, nothing selected. Both builds agree.
+  affiliate_0013 := pg_temp.person('Reearn Affiliate 0013', '+6591118909');
+  perform pg_temp.affiliate(affiliate_0013, st);
+  buyer_0013 := pg_temp.person('Reearn Buyer 0013', '+6591118910', affiliate_0013);
+  inv := pg_temp.paid_invoice('REEARN-0013', st, buyer_0013, owner_id, null, false,
     jsonb_build_array(jsonb_build_object('kind', 'product', 'product', prod, 'amount', 259)));
   perform public.earn_invoice_commission(inv);
 
@@ -122,12 +123,12 @@ begin
   inv := pg_temp.paid_invoice('REEARN-REFUNDED', st, fay, owner_id, null, false,
     jsonb_build_array(jsonb_build_object('kind', 'product', 'product', prod, 'amount', 100)), 'refunded');
 
-  -- 0220: two promotion lines, affiliate selected, buyer not referred. Old
+  -- 0002: two promotion lines, affiliate selected, buyer not referred. Old
   -- build: nothing.
   ivy := pg_temp.person('Reearn Ivy', '+6591118917');
   ivy_aff := pg_temp.affiliate(ivy, st);
   hana := pg_temp.person('Reearn Hana', '+6591118918');
-  inv := pg_temp.paid_invoice('REEARN-0220', st, hana, owner_id, ivy_aff, true,
+  inv := pg_temp.paid_invoice('REEARN-0002', st, hana, owner_id, ivy_aff, true,
     jsonb_build_array(jsonb_build_object('kind', 'promotion', 'promotion', promo, 'amount', 61),
                       jsonb_build_object('kind', 'promotion', 'promotion', promo, 'amount', 61)));
   perform public.earn_invoice_commission(inv);

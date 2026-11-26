@@ -1,6 +1,6 @@
 # Affiliate commission: production was running the wrong function
 
-**Reported as:** the affiliate put on INV-2026-0222 did not earn anything.
+**Reported as:** the affiliate put on INV-9001-0001 did not earn anything.
 
 **Actual fault:** production's `earn_invoice_commission` is the 5D2-era body from
 migration file 19, not the current one. Everything around it is current.
@@ -16,7 +16,7 @@ migration file 19, not the current one. Everything around it is current.
 | Wallet-funded value, `no_commission` products, package lines | commissioned | excluded |
 | Discounts | prorated from `discount_total` | line discounts first, invoice-level share after |
 
-INV-2026-0222 hit the first row: Mariam has no referrer, so the old build
+INV-9001-0001 hit the first row: the buyer has no referrer, so the old build
 returned before looking at the affiliate the correction had just set. The
 correction itself worked (audit `invoice_corrected`, revision 1, staff
 commission re-earned); only the affiliate half was computed by the wrong code.
@@ -101,19 +101,19 @@ exact figures; this is the shape.
 
 | Invoice | Now | After |
 | --- | --- | --- |
-| INV-2026-0222 | nothing | 11.55 earned to Marlinah (Guoco Tower) — the selected affiliate |
-| INV-2026-0220 | nothing | 9.15 × 2 earned to Aishah Angullia — selected; buyer's referrer is not an affiliate |
-| INV-2026-0227 | 3.30 earned to "Alaric" (not activated, duplicate record) | reversed; 3.30 earned to Alaric Ong — selected |
-| INV-2026-0158 | tier 2 5.60 earned to Chiao Hsia Tan at 5 % | tier 2 at 35 %, `blocked` (not activated); tier 1 to Zoe re-created at the same 112.05 + 9.15 |
-| INV-2026-0181 | 60.65 + 7.91 earned to "Lynn (Alaric) Tan" (not activated) | reversed; earned to the buyer's current referrer Lynn Jue Li (Apollo) Tan — the records look like the same person twice |
-| INV-2026-0167, 0185 | nothing | earned to Aishah Angullia / Felicia Kuek (NEX): the referrer was recorded after payment |
-| INV-2026-0101, 0112, 0157 | nothing | `blocked` rows to Chiao Hsia Tan (not activated) — visible, never paid |
-| INV-2026-0045 | five rows paid out to Rosa | expected unchanged; if the new math differs by cents it is listed for review, not changed |
-| INV-2026-0151, 0215, 0218, 0221, 0233, 0235, EX-…00002 | correct person, same figures | untouched |
-| INV-2026-0028 (refunded) | reversed rows | out of scope |
+| INV-9001-0001 | nothing | 11.55 earned to Testing Affiliate A — the selected affiliate |
+| INV-9001-0002 | nothing | 9.15 × 2 earned to Testing Affiliate B — selected; buyer's referrer is not an affiliate |
+| INV-9001-0003 | 3.30 earned to "Testing C" (not activated, duplicate record) | reversed; 3.30 earned to Testing Affiliate C — selected |
+| INV-9001-0004 | tier 2 5.60 earned to Testing Referrer D at 5 % | tier 2 at 35 %, `blocked` (not activated); tier 1 to Testing Affiliate E re-created at the same 112.05 + 9.15 |
+| INV-9001-0005 | 60.65 + 7.91 earned to "Testing Referrer F (record 1)" (not activated) | reversed; earned to the buyer's current referrer Testing Referrer F (record 2) — the records look like the same person twice |
+| INV-9001-0006, 0007 | nothing | earned to Testing Affiliate B / Testing Affiliate G: the referrer was recorded after payment |
+| INV-9001-0008, 0009, 0010 | nothing | `blocked` rows to Testing Referrer D (not activated) — visible, never paid |
+| INV-9001-0011 | five rows paid out to Testing Affiliate H | expected unchanged; if the new math differs by cents it is listed for review, not changed |
+| INV-9001-0012, 0013, 0014, 0015, 0016, 0017, EX-9001-00001 | correct person, same figures | untouched |
+| INV-9001-0018 (refunded) | reversed rows | out of scope |
 
-Two of these deserve a decision before applying: 0181 moves money between two
-records of one person; 0167 and 0185 pay a referral that was recorded after
+Two of these deserve a decision before applying: 0005 moves money between two
+records of one person; 0006 and 0007 pay a referral that was recorded after
 the sale. Both are what the system does on any correction today; `-v skip=`
 leaves them out if you would rather not.
 
@@ -122,9 +122,8 @@ leaves them out if you would rather not.
 334 and 335 were applied by the owner. The re-earn was run through the
 Supabase SQL tool with the script's exact logic (rehearsal first, then the
 real run, actor = the owner profile): 20 invoices looked at, 10 changed, 7
-unchanged, 3 left for review (INV-2026-0020, 0027, 0045 — rows already paid
-out), no errors. INV-2026-0222 carries 11.55 earned to Marlinah (Guoco
-Tower). One `commission_reearned` audit row per changed invoice.
+unchanged, 3 left for review (INV-9001-0019, 0020, 0011 — rows already paid
+out), no errors. INV-9001-0001 carries 11.55 earned to Testing Affiliate A. One `commission_reearned` audit row per changed invoice.
 
 ## Steps for production
 

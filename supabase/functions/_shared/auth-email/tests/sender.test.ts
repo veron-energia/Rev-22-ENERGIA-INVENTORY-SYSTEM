@@ -57,12 +57,15 @@ Deno.test('the contact address shown to a user is the configured reply-to', () =
 });
 
 Deno.test('no template hardcodes a sender address', () => {
+  // Rendered with a made-up reply-to, so a company address left in any body can
+  // only be a literal in the template, one the configuration cannot move.
+  const replyTo = 'reply@example.invalid';
   const invitation = renderUserInvitation('Sam', 'https://project.supabase.co/auth/v1/verify?token=x');
-  const changed = renderPasswordChanged('Sam', '2026-09-09T00:00:00Z', CONFIG.replyTo);
+  const changed = renderPasswordChanged('Sam', '2026-09-09T00:00:00Z', replyTo);
   for (const email of [invitation, changed]) {
     for (const body of [email.html, email.text]) {
-      // A literal address in a template is one the configuration cannot move.
-      assertEquals(/stanley@rev22\.com\.sg/.test(body), false, 'a template names the old sender');
+      assertEquals(/@rev22\.com\.sg/i.test(body), false, 'a template names a company address itself');
     }
   }
+  assertStringIncludes(changed.text, replyTo);
 });

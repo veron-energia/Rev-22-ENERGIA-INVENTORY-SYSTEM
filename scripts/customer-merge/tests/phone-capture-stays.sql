@@ -5,7 +5,7 @@
 -- legacy imports of the same person — the merge failed on the primary key. The
 -- capture now stays with the record it describes.
 --
--- Shaped like the four "Alaric Ong" records of 26 Sep 2026: the kept affiliate
+-- Shaped like four records of one affiliate merged on 26 Sep 2026: the kept affiliate
 -- and two others carry a capture; one duplicate is a referrer with commission
 -- rows, a survey and a consultant note; one was referred by the kept record.
 --
@@ -25,24 +25,24 @@ begin
  perform set_product_prices(st,prod,100,100,'available');
 
  -- the kept record: an affiliate (a legacy import in the real case)
- insert into customers(first_name,last_name,phone) values('Al','Ong','+6598737299') returning id into keep;
+ insert into customers(first_name,last_name,phone) values('Testing','Merge','+6598737299') returning id into keep;
  insert into customer_affiliates(customer_id,status,store_id,activated_at) values(keep,'active',st,now()) returning id into aff;
  insert into affiliate_accounts(auth_user_id,customer_id,affiliate_id) values(au,keep,aff);
- insert into customer_phone_migration_map(customer_id,full_name,original_phone,inspection) values(keep,'Al Ong','LEGACY','{}');
+ insert into customer_phone_migration_map(customer_id,full_name,original_phone,inspection) values(keep,'Testing Merge','LEGACY','{}');
  -- d1: a referrer with commission rows, a survey, a note and its own capture
- insert into customers(first_name,phone,email) values('Al','+6598737201','pcs-'||tag||'@tests.invalid') returning id into d1;
- insert into customer_phone_migration_map(customer_id,full_name,original_phone,inspection) values(d1,'Al','98737201','{}');
- insert into health_surveys(survey_no,customer_id,full_name,first_name,phone) values('PCS-SV-'||tag,d1,'Al','Al','+6598737201') returning id into sv;
+ insert into customers(first_name,phone,email) values('Testing','+6598737201','pcs-'||tag||'@tests.invalid') returning id into d1;
+ insert into customer_phone_migration_map(customer_id,full_name,original_phone,inspection) values(d1,'Testing','98737201','{}');
+ insert into health_surveys(survey_no,customer_id,full_name,first_name,phone) values('PCS-SV-'||tag,d1,'Testing','Testing','+6598737201') returning id into sv;
  insert into consultant_notes(survey_id,customer_id,remarks_condition) values(sv,d1,'note');
  insert into customers(first_name,last_name,phone,referred_by) values('Buyer','One','+6598737202',d1) returning id into buyer;
  inv:=create_invoice(st,buyer,null,jsonb_build_array(jsonb_build_object('kind','product','product_id',prod,'quantity',1)));
  perform pay_invoice(inv,jsonb_build_array(jsonb_build_object('payment_method_id',pm,'amount',100)));
  select count(*) into n from commissions where referrer_customer_id=d1;
  -- d2: signed up through the kept record's own link; holds nothing
- insert into customers(first_name,last_name,phone,referred_by) values('Al','Ong','+6598737203',keep) returning id into d2;
+ insert into customers(first_name,last_name,phone,referred_by) values('Testing','Merge','+6598737203',keep) returning id into d2;
  -- d3: a second legacy import with its own capture
- insert into customers(first_name,last_name,phone) values('Al','(walk in) Ong','+6598737298') returning id into d3;
- insert into customer_phone_migration_map(customer_id,full_name,original_phone,inspection) values(d3,'Al (walk in) Ong','LEGACY','{}');
+ insert into customers(first_name,last_name,phone) values('Testing','(walk in) Merge','+6598737298') returning id into d3;
+ insert into customer_phone_migration_map(customer_id,full_name,original_phone,inspection) values(d3,'Testing (walk in) Merge','LEGACY','{}');
 
  r:=merge_customer_records(keep,d1,'same person',gen_random_uuid());
  if r ? 'moved' and (r->'moved') ? 'customer_phone_migration_map.customer_id' then raise exception 'A capture was moved: %', r->'moved'; end if;
@@ -51,7 +51,7 @@ begin
 
  if (select count(*) from customers where id in (d1,d2,d3) and deleted_at is not null)<>3 then raise exception 'Not every duplicate was retired'; end if;
  if (select count(*) from customer_phone_migration_map where customer_id in (keep,d1,d3))<>3
-    or (select customer_id from customer_phone_migration_map where full_name='Al (walk in) Ong' and customer_id in (keep,d3))<>d3 then
+    or (select customer_id from customer_phone_migration_map where full_name='Testing (walk in) Merge' and customer_id in (keep,d3))<>d3 then
   raise exception 'The captures did not stay with their own records'; end if;
  if (select count(*) from commissions where referrer_customer_id=keep)<>n then raise exception 'The referrer''s commission rows did not move'; end if;
  if (select customer_id from health_surveys where id=sv)<>keep then raise exception 'The survey did not move'; end if;

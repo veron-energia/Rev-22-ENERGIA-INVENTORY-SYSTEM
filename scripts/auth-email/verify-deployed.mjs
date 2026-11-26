@@ -21,7 +21,15 @@ const flag = (name, fallback = null) => {
 const BASE = (flag('--url') ?? '').replace(/\/+$/, '');
 const ANON = flag('--anon-key');
 const SEND_TEST = args.includes('--send-test-email');
-const AUTHORIZED_RECIPIENT = 'shinthantstanley@gmail.com';
+// The one address allowed to receive the --send-test-email message comes from
+// LIVE_TEST_RECIPIENT (the first entry if a comma-separated list is given).
+const AUTHORIZED_RECIPIENT = (process.env.LIVE_TEST_RECIPIENT ?? '').split(',').map((a) => a.trim()).filter(Boolean)[0] ?? '';
+
+if (SEND_TEST && !AUTHORIZED_RECIPIENT) {
+  console.error('Refusing to send: LIVE_TEST_RECIPIENT is not set.');
+  console.error('Set it to the address allowed to receive, e.g. LIVE_TEST_RECIPIENT=you@yourdomain node scripts/auth-email/verify-deployed.mjs --url ... --anon-key ... --send-test-email');
+  process.exit(2);
+}
 
 if (!BASE || !ANON) {
   console.error('Usage: node scripts/auth-email/verify-deployed.mjs --url https://<ref>.supabase.co --anon-key <publishable key> [--send-test-email]');
@@ -149,7 +157,7 @@ if (SEND_TEST) {
   console.log(`\nSending ONE real verification email to ${AUTHORIZED_RECIPIENT}…`);
   const r = await call('auth-signup-request', {
     body: {
-      first_name: 'Shin Thant', last_name: 'Stanley', phone: '+6591234567',
+      first_name: 'Testing', last_name: 'Owner', phone: '+6591234567',
       email: AUTHORIZED_RECIPIENT, password: `Energia-test-${Date.now()}`, terms_accepted: true,
     },
   });

@@ -74,7 +74,7 @@ the form as payments to edit (they were listed before, as if editable).
   removing the last payment → unpaid, staff refused, anon has no execute.
 - Existing invoice-correction, discount and invoice regression suites still pass.
 - Browser (Docker stack, owner): a S$1,000 invoice paid 600 cash + 400 card;
-  affiliate found by typing "Aishah"; cash corrected to 500 on 10 Sep, card
+  affiliate found by typing "Testing"; cash corrected to 500 on 10 Sep, card
   marked recorded by mistake; the preview listed the affiliate change, both
   payment changes and "goes back to partially paid with S$500.00 outstanding";
   after saving, the detail shows the reversal/replacement ledger, Partially

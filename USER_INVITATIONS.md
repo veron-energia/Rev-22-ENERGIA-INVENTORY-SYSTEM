@@ -247,9 +247,10 @@ No template hardcodes an address. The "contact us" line in the password-changed
 email already renders `config.replyTo`, so it moves with the configuration —
 there is a test asserting no template names the old address.
 
-`stanley@rev22.com.sg` appears nowhere in the code. It appears in
-`PABBLY_GENERATELINK_AUTH_SETUP.md`, which already documents it as stale, and it
-has deliberately **not** been globally replaced: it may legitimately identify an
+The old sender address (written `old-sender@example.invalid` here; the real one is
+kept out of this public repository) appears nowhere in the code.
+`PABBLY_GENERATELINK_AUTH_SETUP.md` documents it as stale. Outside the repository it
+has deliberately **not** been replaced everywhere: it may legitimately identify an
 account, a recipient or a historical record.
 
 ### The part an environment variable cannot do

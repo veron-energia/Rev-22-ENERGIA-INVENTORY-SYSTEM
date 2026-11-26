@@ -6,9 +6,10 @@
 //   2. Correct shared secret → one real verification email, rendered by the same
 //      template the Edge Function uses, to an authorized test recipient only.
 //
-// Recipients come from a fixed allowlist below. --to may pick one of them; there
-// is no way to send anywhere else. Add an address here only when the account
-// holder has authorized it in so many words.
+// Recipients come from the LIVE_TEST_RECIPIENT environment variable (a
+// comma-separated allowlist). --to may pick one of them; there is no way to send
+// anywhere else. List an address only when the account holder has authorized it
+// in so many words.
 //
 //   --to <address>   default: the first entry
 //   --first, --last  the name shown in the email
@@ -20,10 +21,17 @@
 
 import { renderVerifySignup } from '../../supabase/functions/_shared/auth-email/templates.ts';
 
-const AUTHORIZED_RECIPIENTS = [
-  'shinthantstanley@gmail.com',
-  'tiktokautomationtryout@gmail.com',
-];
+// The allowlist is read from LIVE_TEST_RECIPIENT (comma-separated), set on the
+// Mac when running this script. No address is kept in the repository.
+const AUTHORIZED_RECIPIENTS = (Deno.env.get('LIVE_TEST_RECIPIENT') ?? '')
+  .split(',').map(a => a.trim()).filter(Boolean);
+
+if (AUTHORIZED_RECIPIENTS.length === 0) {
+  console.error('Refusing to send: LIVE_TEST_RECIPIENT is not set.');
+  console.error('Set it to the address(es) allowed to receive, e.g.');
+  console.error('  LIVE_TEST_RECIPIENT=you@yourdomain deno run --allow-env --allow-read --allow-net scripts/auth-email/live-pabbly-test.ts --confirm');
+  Deno.exit(2);
+}
 
 const arg = (name: string, fallback: string) => {
   const i = Deno.args.indexOf(name);
@@ -31,7 +39,7 @@ const arg = (name: string, fallback: string) => {
 };
 
 const RECIPIENT = arg('--to', AUTHORIZED_RECIPIENTS[0]);
-const FIRST_NAME = arg('--first', 'Shin Thant');
+const FIRST_NAME = arg('--first', 'Testing');
 const LAST_NAME = arg('--last', '');
 
 if (!AUTHORIZED_RECIPIENTS.includes(RECIPIENT)) {

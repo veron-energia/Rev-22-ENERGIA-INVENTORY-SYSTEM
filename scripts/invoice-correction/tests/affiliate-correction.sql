@@ -18,7 +18,7 @@ begin
  insert into customers(full_name,phone) values('AFC Referrer','+6598937000') returning id into refr;
  -- the buyer HAS a profile referrer throughout, which must never win over an explicit choice
  insert into customers(full_name,phone,referred_by) values('AFC Buyer','+6598937001',refr) returning id into buyer;
- insert into customers(full_name,phone) values('Aishah Angullia','+6598937002') returning id into ca;
+ insert into customers(full_name,phone) values('AFC Affiliate','+6598937002') returning id into ca;
  insert into customers(full_name,phone) values('AFC Second','+6598937003') returning id into cb;
  insert into customer_affiliates(customer_id,status,store_id,activated_at) values(refr,'active',st,now()) returning id into affr;
  insert into customer_affiliates(customer_id,status,store_id,activated_at) values(ca,'active',st,now()) returning id into affa;
@@ -38,14 +38,14 @@ begin
  if diagnose_invoice_affiliate(inv)->>'resolution'<>'customer_profile_referrer' then
   raise exception 'The diagnosis does not report the fallback'; end if;
 
- -- ---- None -> Aishah (the reported case) ----------------------------------
+ -- ---- None -> AFC Affiliate (the reported case) ----------------------------------
  r:=correct_invoice(inv,jsonb_build_array(jsonb_build_object('invoice_item_id',it,'kind','product','product_id',prod,'quantity',1)),
-      jsonb_build_object('affiliate_id',affa),'credit Aishah',gen_random_uuid());
+      jsonb_build_object('affiliate_id',affa),'credit AFC Affiliate',gen_random_uuid());
  if (select affiliate_id from invoices where id=inv)<>affa then raise exception 'The affiliate was not persisted'; end if;
  if not (select affiliate_selection_explicit from invoices where id=inv) then
   raise exception 'The selection was not recorded as explicit'; end if;
  select count(*) into n from commissions where invoice_id=inv and status='earned' and referrer_customer_id=ca;
- if n<>1 then raise exception 'Expected one earned commission for Aishah, got %', n; end if;
+ if n<>1 then raise exception 'Expected one earned commission for AFC Affiliate, got %', n; end if;
  if (select count(*) from commissions where invoice_id=inv and status='earned' and referrer_customer_id=refr)<>0 then
   raise exception 'The previous referrer is still earning'; end if;
  if diagnose_invoice_affiliate(inv)->>'resolution'<>'explicit_affiliate' then
