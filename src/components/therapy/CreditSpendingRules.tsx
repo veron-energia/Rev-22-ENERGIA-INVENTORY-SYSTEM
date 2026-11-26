@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useBackdropClose } from '../../hooks/useBackdropClose';
 import { okToDiscard, useChangedSinceOpened } from '../../hooks/useChangedSinceOpened';
+import { creditCategoryLabel } from '../../lib/therapy/creditCategories.mjs';
 import './therapy.css';
 
 const money = (n: unknown) => `S$${Number(n || 0).toFixed(2)}`;
-const label = (c: string) => c.replace(/_/g, ' ').replace(/^\w/, s => s.toUpperCase());
+const label = creditCategoryLabel;
 
 type Rules = { paid: string[]; bonus: string[]; source?: string; updated_at?: string; updated_by?: string };
 type Preview = {

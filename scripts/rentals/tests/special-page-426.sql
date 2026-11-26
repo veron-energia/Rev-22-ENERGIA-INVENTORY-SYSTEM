@@ -23,6 +23,8 @@
 --      calling create_special_sale, create_rental, pay_rental,
 --      activate_rental, cancel_rental, cancel_special_sale or
 --      pay_special_with_credit is refused with 42501, and nothing is written.
+--      (544 drops pay_special_with_credit: where it is gone, that it is gone
+--      is checked instead.)
 --   4. The Rentals tab's "Receive returned item" (the owner, 10 Oct 2026)
 --      makes exactly the call the page makes: a rental cancelled while still
 --      with the customer goes back to the store it came from (417).
@@ -433,8 +435,11 @@ begin
     format('select public.pay_rental(%L::uuid, %L::uuid, null)', r, pg_temp.t426_id('cash')),
     format('select public.activate_rental(%L::uuid)', r),
     format('select public.cancel_rental(%L::uuid, false, null)', r),
-    format('select public.cancel_special_sale(%L::uuid, false, null)', gen_random_uuid()),
-    format('select public.pay_special_with_credit(''rental'', %L::uuid, %L::uuid, 10, %L::uuid)', r, pg_temp.t426_id('customer'), pg_temp.t426_id('store_a'))]
+    format('select public.cancel_special_sale(%L::uuid, false, null)', gen_random_uuid())]
+    -- 544 drops pay_special_with_credit; before 544 it is refused like the rest.
+    || case when to_regprocedure('public.pay_special_with_credit(text,uuid,uuid,numeric,uuid)') is not null
+            then array[format('select public.pay_special_with_credit(''rental'', %L::uuid, %L::uuid, 10, %L::uuid)', r, pg_temp.t426_id('customer'), pg_temp.t426_id('store_a'))]
+            else array[]::text[] end
   loop
     v := pg_temp.t426_try('owner', f);
     if v not like '42501 permission denied for function %' then
@@ -442,8 +447,9 @@ begin
   end loop;
   foreach f in array array['create_special_sale(uuid,uuid,uuid,integer,uuid,text,text)',
       'create_rental(uuid,uuid,uuid,integer,special_rate_type,integer,date,date,text)', 'pay_rental(uuid,uuid,text)',
-      'activate_rental(uuid)', 'cancel_rental(uuid,boolean,text)', 'cancel_special_sale(uuid,boolean,text)',
-      'pay_special_with_credit(text,uuid,uuid,numeric,uuid)'] loop
+      'activate_rental(uuid)', 'cancel_rental(uuid,boolean,text)', 'cancel_special_sale(uuid,boolean,text)']
+      || case when to_regprocedure('public.pay_special_with_credit(text,uuid,uuid,numeric,uuid)') is not null
+              then array['pay_special_with_credit(text,uuid,uuid,numeric,uuid)'] else array[]::text[] end loop
     if has_function_privilege('anon', 'public.' || f, 'execute') or has_function_privilege('authenticated', 'public.' || f, 'execute')
        or not has_function_privilege('service_role', 'public.' || f, 'execute') then
       raise exception 'FAIL 3: public.% is not the service role''s alone', f; end if;
@@ -464,7 +470,9 @@ begin
     if not has_function_privilege('authenticated', 'public.' || f, 'execute') then
       raise exception 'FAIL 3: the page can no longer call public.%', f; end if;
   end loop;
-  raise notice 'PASS 3: the seven old Special page functions are the service role''s alone (an Owner is refused with 42501, nothing written); the page''s own calls stay open';
+  raise notice 'PASS 3: the % old Special page functions are the service role''s alone (an Owner is refused with 42501, nothing written); the page''s own calls stay open',
+    case when to_regprocedure('public.pay_special_with_credit(text,uuid,uuid,numeric,uuid)') is null
+         then 'six (544 dropped pay_special_with_credit)' else 'seven' end;
 end $$;
 
 -- ===== 4. "Receive returned item" on the Rentals tab =====

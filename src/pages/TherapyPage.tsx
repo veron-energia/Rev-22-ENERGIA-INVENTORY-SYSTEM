@@ -15,6 +15,7 @@ import { CoverageLine, coveredFrom, serviceLimit, shortLimit } from '../componen
 import { HolidayAdmin } from '../components/therapy/HolidayAdmin';
 import { RecalculationPreview } from '../components/therapy/TherapyDiagnostics';
 import { CreditSpendingRules } from '../components/therapy/CreditSpendingRules';
+import { creditCategoryWords } from '../lib/therapy/creditCategories.mjs';
 import '../components/therapy/therapy.css';
 import { purchasedStatusOn } from '../lib/therapy/status';
 import { calendarDate } from '../lib/calendarDates';
@@ -91,8 +92,9 @@ type ListQuery = { search: string; applied: string; status: string; page: number
 type ListState = { rows: any[]; total: number; loading: boolean; error: string | null };
 const emptyList: ListState = { rows: [], total: 0, loading: false, error: null };
 
-// What a credit package's credit buys, in words (credit_spendable_categories).
-const categoryLabel = (c: string) => c.replace(/_/g, ' ');
+// What a credit package's credit buys, in words (credit_spendable_categories; 544: "special
+// products", "consignment products").
+const categoryLabel = (c: string) => creditCategoryWords(c);
 
 const TherapyPage: React.FC = () => {
   const { profile } = useAuth();
