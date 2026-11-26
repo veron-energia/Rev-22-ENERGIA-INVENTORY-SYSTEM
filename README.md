@@ -37,8 +37,10 @@ npm install
 ```
 
 ### 3. Configure environment
-Copy the example and fill in your Supabase project values
-(Supabase dashboard → Project Settings → API):
+Copy [`.env.local.example`](.env.local.example), the tracked file that lists every
+variable the app reads with placeholder values, and fill in your Supabase project
+values (Supabase dashboard → Project Settings → API). `.env.local` and any other
+`.env*` file stay out of Git; only `*.example` files are tracked:
 ```bash
 cp .env.local.example .env.local
 ```
@@ -119,5 +121,6 @@ energia-system/
 │  │  └─ ui.tsx              # RoleGate, Modal, NoAccess
 │  ├─ pages/                 # Login, Dashboard, Products, Warehouses, Stores, …
 │  └─ styles/globals.css     # design tokens
+├─ .env.local.example       # the variables the app reads, placeholders only (committed)
 └─ .env.local               # your Supabase keys (not committed)
 ```

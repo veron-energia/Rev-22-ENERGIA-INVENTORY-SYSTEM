@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Store as StoreT, Profile, UserStoreAssignment, ROLE_LABELS } from '../types';
 import { Modal } from '../components/ui';
 import { useChangedSinceOpened } from '../hooks/useChangedSinceOpened';
-import { uploadStoreAsset } from '../lib/storeAssets';
+import { uploadStoreAsset, STORE_ASSET_ACCEPT } from '../lib/storeAssets';
 import { Plus, Pencil, Trash2, Store, RefreshCw, Users2, RotateCcw } from 'lucide-react';
 import { canManagePlaces, canAddStore, canChangeStore, storeAssignmentBlock, worksAtEveryStore } from '../lib/permissions/products';
 import { PROFILE_COLUMNS } from '../lib/permissions/customers';
@@ -280,7 +280,7 @@ const StoresPage: React.FC = () => {
                       : <div style={{ height: 72, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 11 }}>None</div>}
                     <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-block' }}>
                       {uploadingField === field ? 'Uploading…' : (form[field] ? 'Replace' : 'Upload')}
-                      <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingField}
+                      <input type="file" accept={STORE_ASSET_ACCEPT} style={{ display: 'none' }} disabled={!!uploadingField}
                         onChange={async e => {
                           const file = e.target.files?.[0]; if (!file || !editId) return;
                           setUploadingField(field);

@@ -1,0 +1,59 @@
+# Edge Function settings that are kept in Git (security audit of 17 Nov 2026, L12).
+#
+# This file holds only the project id and each deployed function's "Verify JWT"
+# switch, so a deploy reads the switch from here instead of from whoever last
+# set it in the dashboard. It is deliberately NOT a full local-stack config:
+# there is no [auth], [db], [api] or storage section, so `supabase config push`
+# has nothing here to push to the hosted project.
+#
+# verify_jwt = true : the function needs a signed-in session's token.
+# verify_jwt = false: the caller is signed out or is a webhook; the function
+#                     checks its own signature, key or limits.
+#
+# The Supabase CLI treats a function with NO section here as verify_jwt = true,
+# so a public function left out would turn ON at its next deploy and stop
+# answering. Every tracked function folder therefore needs a section; the release
+# check fails when one is missing. sendfox-sync is not listed because it is not
+# tracked yet: add its section in the same commit that adds the folder.
+#
+# Holds nothing specific to the hosted project: the project id below is only a
+# local name, and there are no keys.
+#
+# Check this file against the hosted project (reads only):
+#   npm run live:check-edge-functions
+
+project_id = "rev22-energia-inventory"
+
+[functions.admin-invite-user]
+verify_jwt = true
+
+[functions.affiliate-details]
+verify_jwt = true
+
+[functions.auth-accept-invitation]
+verify_jwt = true
+
+[functions.auth-change-password]
+verify_jwt = true
+
+# Called by Supabase Auth itself (signed webhook), not by a browser.
+[functions.auth-email-hook]
+verify_jwt = false
+
+[functions.auth-request-recovery]
+verify_jwt = false
+
+[functions.auth-resend-verification]
+verify_jwt = false
+
+[functions.auth-signup-request]
+verify_jwt = false
+
+[functions.calcom-webhook]
+verify_jwt = false
+
+[functions.event-website]
+verify_jwt = false
+
+[functions.web-ticket-order]
+verify_jwt = false

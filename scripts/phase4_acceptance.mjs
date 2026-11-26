@@ -12,10 +12,13 @@
  *   SUPABASE_SERVICE_ROLE_KEY    service role key (admin; used to seed + to
  *                                mint user sessions and to clean up)
  *
- * Usage:  SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run test:phase4
+ * Usage:  SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run live:phase4
  *
  * SAFETY: every record it creates is prefixed 'P4TEST-' and removed in a
- * finally block. Run only against a disposable test database.
+ * finally block. Run only against a disposable test database. It refuses
+ * (exit 2) unless SUPABASE_URL is local (localhost, 127.0.0.1 or [::1]), so the
+ * secret key can never be used against a hosted project (security audit of
+ * 17 Nov 2026, L18). It is named live:phase4 because it reaches a database.
  * ===================================================================== */
 import { createClient } from '@supabase/supabase-js';
 
@@ -23,6 +26,12 @@ const URL = process.env.SUPABASE_URL;
 const SRK = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!URL || !SRK) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. Set them and re-run.');
+  process.exit(2);
+}
+// L18: refuse a URL that is not on this Mac, before anything is sent.
+const host = (() => { try { return new globalThis.URL(URL).hostname.toLowerCase(); } catch { return null; } })();
+if (!['localhost', '127.0.0.1', '[::1]'].includes(host)) {
+  console.error('Refused: SUPABASE_URL is not a local address (localhost, 127.0.0.1 or [::1]). This test creates and deletes data with a secret key, so it runs only against a local Supabase.');
   process.exit(2);
 }
 const admin = createClient(URL, SRK, { auth: { autoRefreshToken: false, persistSession: false } });

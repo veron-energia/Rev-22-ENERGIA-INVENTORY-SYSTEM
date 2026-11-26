@@ -11,6 +11,10 @@ build/
 .env.development.local
 .env.test.local
 .env.production.local
+# Any other .env file (.env.production, .env.staging, ...) stays out of Git;
+# only the placeholder examples are tracked (security audit of 17 Nov 2026, L17).
+.env*
+!*.example
 
 # Logs
 logs
@@ -90,7 +94,7 @@ uploads/
 #
 # They are ignored so they cannot be committed by accident while unfinished.
 # When the work resumes, delete these five lines and commit them properly.
-supabase/350_a_package_inside_a_promotion_grants_it.sql
-supabase/351_a_promotion_keeps_its_own_money.sql
+supabase/not-applied/350_a_package_inside_a_promotion_grants_it.sql
+supabase/not-applied/351_a_promotion_keeps_its_own_money.sql
 scripts/promotions/tests/promotion-package-benefits.sql
 scripts/promotions/tests/promotion-keeps-its-own-money.sql

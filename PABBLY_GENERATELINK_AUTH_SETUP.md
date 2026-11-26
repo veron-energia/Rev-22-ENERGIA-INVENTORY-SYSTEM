@@ -858,7 +858,7 @@ select action, outcome, count(*)
 | Nothing reaches Pabbly | Filter step — a wrong `delivery_secret` stops the workflow by design. |
 | Link lands on the wrong page | The redirect URL is not on Supabase's allowlist (§8), so Auth fell back to the Site URL. |
 | Wrong sender address | §7. Check the alias, then whether Pabbly's Gmail action can set `From`. |
-| **Mail lands in Junk, or never arrives at Outlook/Yahoo** | §7a. Run `npm run check:deliverability`. Almost always missing SPF/DKIM/DMARC on the sending domain, not the message. |
+| **Mail lands in Junk, or never arrives at Outlook/Yahoo** | §7a. Run `npm run live:check-deliverability`. Almost always missing SPF/DKIM/DMARC on the sending domain, not the message. |
 | `ip_seen: false` in logs | §9 — the `cf-connecting-ip` header did not arrive; those requests share one `unknown` bucket. |
 
 ### Is it even deployed?
@@ -889,8 +889,14 @@ asserts it.
 
 ## 15. Rollback
 
-There is **no legacy Auth email hook** in this project, and none was invented.
-Rolling back means pointing the application back at Supabase's default sender.
+The project **does** have an Auth email hook: the Send Email hook, which is ON.
+Its source is `supabase/functions/auth-email-hook/` (copied in exactly as
+deployed; Verify JWT is off, because the caller is Supabase Auth and the signed
+webhook is the check). While it is on, every email Supabase Auth sends itself goes
+through it to Pabbly. Rolling back therefore means pointing the application back at
+the old sender and, if the hook is to stop too, switching the Send Email hook off in
+the dashboard (Authentication, Hooks), which is a separate decision from this
+rollback.
 
 Rollback is a **frontend** change. Redeploy the previous frontend, and Supabase's
 built-in sender resumes immediately — the Edge Functions become unreachable dead

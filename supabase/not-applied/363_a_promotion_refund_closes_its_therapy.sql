@@ -1,4 +1,4 @@
--- 363_a_promotion_refund_closes_its_therapy.sql
+-- supabase/not-applied/363_a_promotion_refund_closes_its_therapy.sql
 --
 -- SUPERSEDED BY 417 — NEVER APPLY THIS FILE. It was never applied to
 -- production, and its guards no longer match production since 409 and 410

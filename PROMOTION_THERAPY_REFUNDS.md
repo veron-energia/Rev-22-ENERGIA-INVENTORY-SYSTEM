@@ -19,7 +19,7 @@ units is proposed separately and needs the owner's sign-off.
 
 Files:
 
-- `supabase/363_a_promotion_refund_closes_its_therapy.sql`: the migration
+- `supabase/not-applied/363_a_promotion_refund_closes_its_therapy.sql`: the migration
   (md5-guarded, as 359 is)
 - `scripts/invoice-actions/tests/promotion-therapy.sql`: the test suite, 21
   sections, begin/rollback
@@ -275,7 +275,7 @@ All confirmed findings are fixed or listed above.
 To run the suite without changing the shared database (363 rolls back with it):
 
 ```bash
-{ echo '\set ON_ERROR_STOP on'; echo 'begin;'; echo '\i supabase/363_a_promotion_refund_closes_its_therapy.sql'; echo '\i scripts/invoice-actions/tests/promotion-therapy.sql'; } | psql postgresql://postgres:postgres@127.0.0.1:54322/postgres
+{ echo '\set ON_ERROR_STOP on'; echo 'begin;'; echo '\i supabase/not-applied/363_a_promotion_refund_closes_its_therapy.sql'; echo '\i scripts/invoice-actions/tests/promotion-therapy.sql'; } | psql postgresql://postgres:postgres@127.0.0.1:54322/postgres
 ```
 
 ## Proposed repair (owner sign-off; not run)

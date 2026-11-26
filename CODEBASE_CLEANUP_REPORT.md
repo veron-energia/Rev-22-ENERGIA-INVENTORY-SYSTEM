@@ -75,7 +75,7 @@ rather than from a list written against one database.
 **Pre-existing failures, not caused by this work.** Two suites cannot run in
 this environment and did not run before the work either:
 
-- `test:phase4` needs a Supabase URL and a service-role key. Not run, because
+- `live:phase4` needs a Supabase URL and a service-role key. Not run, because
   the only real key available is production's.
 - the `*:db` suites need a second disposable cluster on port 55442. It was not
   running; `scripts/auth-email/bootstrap-local.sh` brought it up and they then
@@ -685,7 +685,7 @@ work either.**
 
 | Suite | Result |
 | --- | --- |
-| `test:phase4` | **Not run.** Needs a Supabase URL and a service-role key; the only real one available is production's. |
+| `live:phase4` | **Not run.** Needs a Supabase URL and a service-role key; the only real one available is production's. |
 | `test:commission-reinstall` | **Not run.** Needs its own disposable cluster, which is not provisioned and has no bootstrap wired to the script. |
 | Everything else — 43 suites | Pass, including all permission, invoice, payment, correction, exchange, therapy, voucher, credit-policy, TikTok, Xero, survey, auth-email and concurrency suites. |
 

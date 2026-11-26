@@ -31,7 +31,7 @@ done
 [ -n "$PROJECT_REF" ] || { echo "--project-ref is required (Supabase dashboard: Project Settings > General)" >&2; exit 2; }
 [ -f "$ENV_FILE" ]    || { echo "No $ENV_FILE. It must hold the values listed in the setup guide, section 3." >&2; exit 2; }
 
-SUPA="npx --yes supabase@latest"
+SUPA="npx --yes supabase@2.117.0"
 
 # The values come from your local env file rather than being generated here: the
 # shared secret must match the "Equal to" value already set in the Pabbly filter

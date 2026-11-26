@@ -11,7 +11,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:phase4": "node scripts/phase4_acceptance.mjs",
+    "live:phase4": "node scripts/phase4_acceptance.mjs",
     "test:customer-phones": "node --test scripts/customer-phones/tests/*.test.mjs",
     "test:survey": "node --test --test-timeout=20000 scripts/survey/tests/*.test.mjs",
     "test:survey:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -v mig=supabase/419_health_surveys_qr_form_and_read_rules.sql -f scripts/survey/tests/health-surveys-419.sql",
@@ -25,7 +25,7 @@
     "check:web-orders": "deno check --no-lock supabase/functions/web-ticket-order/index.ts && deno test --no-lock --allow-env supabase/functions/web-ticket-order/",
     "check:calcom-webhook": "deno check --no-lock supabase/functions/calcom-webhook/index.ts && deno test --no-lock --allow-env supabase/functions/calcom-webhook/",
     "test:auth-email:delivery": "deno run --no-lock --allow-net=127.0.0.1:8787 --allow-read --allow-write=scripts/auth-email/preview scripts/auth-email/local-delivery-check.ts",
-    "check:deliverability": "sh scripts/auth-email/check-deliverability.sh",
+    "live:check-deliverability": "sh scripts/auth-email/check-deliverability.sh",
     "test:invoice-dates": "node scripts/invoice-dates/tests/dates.test.mjs",
     "test:invoices": "node --test scripts/invoices/tests/*.test.mjs",
     "test:invoices:guards:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -f scripts/invoices/tests/promotion-switch.sql -f scripts/invoices/tests/foc-guards.sql -f scripts/invoices/tests/payment-decimals.sql -f scripts/invoices/tests/instalment-label.sql -f scripts/invoices/tests/create-request-id.sql -f scripts/invoices/tests/correction-preview.sql -f scripts/invoices/tests/sold-voucher-issuance.sql -f scripts/invoices/tests/rental-lifecycle.sql -f scripts/invoices/tests/historical-stock-review.sql",
@@ -136,15 +136,14 @@
     "test:special": "node --test scripts/special/tests/*.test.mjs",
     "test:special:browser": "node scripts/special/tests/special-page-browser.mjs",
     "test:special:db": "ENERGIA_INVOICE_DB=energia_integration_test sh scripts/invoices/local-sql.sh -v mig=supabase/426_special_rentals_and_orders.sql -f scripts/rentals/tests/special-page-426.sql",
-    "check:edge-functions": "node scripts/release/check-edge-functions-deployed.mjs",
-    "check:release": "node scripts/invoice-actions/release-gate-417.mjs && node scripts/release/check-edge-functions-deployed.mjs",
+    "live:check-edge-functions": "node scripts/release/check-edge-functions-deployed.mjs",
+    "live:check-release": "node scripts/invoice-actions/release-gate-417.mjs && node scripts/release/check-edge-functions-deployed.mjs",
     "test:release": "node scripts/release/check-edge-functions-deployed.mjs --self-test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "@types/papaparse": "^5.5.2",
     "@types/qrcode": "^1.5.6",
-    "jsdom": "^30.0.1",
     "jspdf": "^4.2.1",
     "jszip": "^3.10.1",
     "libphonenumber-js": "1.13.12",
@@ -160,6 +159,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^30.0.1",
     "typescript": "^5.5.3",
     "vite": "^5.4.0"
   }
