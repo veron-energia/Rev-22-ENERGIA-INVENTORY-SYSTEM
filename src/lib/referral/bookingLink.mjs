@@ -19,6 +19,23 @@ export function referralBookingPrefix(label) {
   return name ? `(${name}) ` : '';
 }
 
+// 549 (the user, 27 Nov 2026): cal.com's own pages for one booking, by its
+// uid: change its time, or cancel it. Only a cal.com uid makes a link (a
+// 'gcal:…' row filled from Google Calendar has none), and the uid's characters
+// are checked so nothing else can be put into the address.
+const CALCOM_UID = /^[A-Za-z0-9_-]{1,128}$/;
+const CALCOM_APP = 'https://app.cal.com';
+
+/** cal.com's page to move this booking to another time; null without a cal.com uid. */
+export function calcomRescheduleUrl(uid) {
+  return typeof uid === 'string' && CALCOM_UID.test(uid) ? `${CALCOM_APP}/reschedule/${uid}` : null;
+}
+
+/** cal.com's page to cancel this booking; null without a cal.com uid. */
+export function calcomCancelUrl(uid) {
+  return typeof uid === 'string' && CALCOM_UID.test(uid) ? `${CALCOM_APP}/booking/${uid}?cancel=true` : null;
+}
+
 /** The booking page with whatever is known filled in. */
 export function referralBookingUrl({ firstName, lastName, email, phone, affiliateLabel } = {}) {
   const params = [];

@@ -3,7 +3,8 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import PhoneInput from '../components/PhoneInput';
-import { referralBookingUrl } from '../lib/referral/bookingLink.mjs';
+import { calcomCancelUrl, calcomRescheduleUrl, referralBookingUrl } from '../lib/referral/bookingLink.mjs';
+import { bookingWhen } from '../lib/referral/booking.mjs';
 import { REFERRAL_NOTICE_VERSION, referralNotice } from '../lib/referral/notice.mjs';
 import { EMAIL_MAX, NAME_MAX, signupInputProblem } from '../lib/referral/signupInput.mjs';
 import '../styles/referral-landing.css';
@@ -82,6 +83,15 @@ const FAQ = [
   ['How do I claim my free bundle?', 'After you register you will land on our calendar page, where you can book an appointment to come in for the therapy.'],
 ] as const;
 
+// 549: what referral_booking_lookup answers for somebody already on file.
+// 'unknown' is the page's own: a database without 549, or no answer.
+type BookingAnswer = {
+  state: 'none' | 'needs_email' | 'booked' | 'try_later' | 'invalid' | 'unknown';
+  start_at?: string;
+  uid?: string | null;
+};
+const BOOKING_STATES = ['none', 'needs_email', 'booked', 'try_later', 'invalid'];
+
 const ReferralSignupPage: React.FC = () => {
   const { referralCode } = useParams();
   const [info, setInfo] = useState<any>(null);
@@ -95,7 +105,50 @@ const ReferralSignupPage: React.FC = () => {
   // not the same as a link that is not valid (AFFILIATES-7).
   const [unreachable, setUnreachable] = useState(false);
   const [checkTick, setCheckTick] = useState(0);
+  const [booking, setBooking] = useState<BookingAnswer>({ state: 'unknown' });
+  const [bookingEmail, setBookingEmail] = useState('');
+  const [bookingErr, setBookingErr] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
   const on = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+
+  // 549 (the user, 27 Nov 2026): does somebody already on file have an
+  // upcoming booking? The database decides. It gives the time and the
+  // booking's cal.com id only when the phone AND the email typed both match
+  // the booking ("Phone + email must match"), so a stranger who knows only the
+  // number cannot see or change it. A database without 549, or any failure,
+  // answers 'unknown', and the screen is as it was before.
+  const lookUpBooking = async (email: string): Promise<BookingAnswer> => {
+    try {
+      const { data, error } = await supabase.rpc('referral_booking_lookup', {
+        p_code: referralCode, p_phone: f.phone.trim(), p_email: email.trim() || null,
+      });
+      const answer = data as BookingAnswer | null;
+      if (error || !answer || !BOOKING_STATES.includes(answer.state)) return { state: 'unknown' };
+      return answer;
+    } catch {
+      return { state: 'unknown' };
+    }
+  };
+
+  // The "enter the email you booked with" box: looks again, never registers again.
+  const showMyBooking = async () => {
+    setBookingErr(null);
+    const email = bookingEmail.trim();
+    if (!email) { setBookingErr('Please enter the email you booked with.'); return; }
+    setChecking(true);
+    const answer = await lookUpBooking(email);
+    setChecking(false);
+    if (answer.state === 'booked' || answer.state === 'none') { setBooking(answer); return; }
+    if (answer.state === 'needs_email') {
+      setBookingErr('That email does not match the booking. Check the confirmation cal.com sent you, or contact Energia.');
+      return;
+    }
+    if (answer.state === 'try_later') {
+      setBookingErr('Too many tries. Please try again in an hour, or check the confirmation cal.com sent you.');
+      return;
+    }
+    setBookingErr('We could not check just now. Please try again, or check the confirmation cal.com sent you.');
+  };
 
   useEffect(() => {
     let live = true;
@@ -143,6 +196,13 @@ const ReferralSignupPage: React.FC = () => {
     // changed. `busy` is deliberately left true on the redirect so the button
     // cannot be pressed twice while the browser navigates away.
     if (res?.outcome === 'already_registered') {
+      // 549: look for an upcoming booking before the screen changes, so it
+      // shows once, whole. An email that was typed but does not match is said.
+      const answer = await lookUpBooking(f.email);
+      setBooking(answer);
+      setBookingEmail(f.email.trim());
+      setBookingErr(answer.state === 'needs_email' && f.email.trim()
+        ? 'The email you typed does not match the booking. Enter the email you booked with.' : null);
       setBusy(false);
       setDone(res?.message || 'You are already registered with Energia. Nothing was changed.');
       return;
@@ -187,12 +247,16 @@ const ReferralSignupPage: React.FC = () => {
     </div></Shell>
   );
 
-  // Somebody already on file may still not have booked a first visit (the
-  // user, 27 Nov 2026): the same booking page a new registration goes to, with
-  // what they typed filled in. No referrer label, because this answer does not
-  // say whose customer they are and the link's affiliate may not be theirs.
-  // Nothing about an existing booking is shown: this page checks nothing but a
-  // typed number, so a date, time or change link would go to whoever typed it.
+  // Somebody already on file (the user, 27 Nov 2026), by what 549 answers:
+  // - booked (phone AND email match an upcoming booking): its Singapore date and
+  //   time, with cal.com's own pages to change the time or cancel;
+  // - needs_email (an upcoming booking, but no or another email typed): asks
+  //   for the email they booked with, and shows nothing about the booking;
+  // - anything else: the same booking page a new registration goes to, with
+  //   what they typed filled in. No referrer label, because this answer does
+  //   not say whose customer they are and the link's affiliate may not be theirs.
+  const changeUrl = booking.state === 'booked' ? calcomRescheduleUrl(booking.uid) : null;
+  const cancelUrl = booking.state === 'booked' ? calcomCancelUrl(booking.uid) : null;
   if (done) return (
     <Shell><div className="rl-done">
       <h2>You are already registered</h2>
@@ -200,13 +264,47 @@ const ReferralSignupPage: React.FC = () => {
       <p style={{ marginTop: 14 }}>
         <Link className="rl-link" to="/affiliate/join">Want to become an affiliate instead?</Link>
       </p>
-      <div style={{ marginTop: 18 }}>
-        <a className="rl-cta" data-action="book-first-visit"
-          href={referralBookingUrl({ firstName: f.first, lastName: f.last, email: f.email, phone: f.phone })}>
-          Book your first-time appointment
-        </a>
-        <div className="rl-cta-note">Already booked? The confirmation cal.com sent you has your date and time, with links to reschedule or cancel.</div>
-      </div>
+      {booking.state === 'booked' ? (
+        <div style={{ marginTop: 18 }} data-booking="booked">
+          <p className="rl-booking-label">Your appointment</p>
+          <p className="rl-booking-when">{bookingWhen(booking.start_at) || 'Booked'}</p>
+          {changeUrl ? (
+            <>
+              <a className="rl-cta" data-action="change-time" href={changeUrl}>Change time</a>
+              {cancelUrl && (
+                <p style={{ marginTop: 12 }}>
+                  <a className="rl-link" data-action="cancel-booking" href={cancelUrl}>Cancel appointment</a>
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="rl-cta-note">To change it, please contact Energia.</div>
+          )}
+        </div>
+      ) : booking.state === 'needs_email' ? (
+        <div style={{ marginTop: 18 }} data-booking="needs-email">
+          <p><strong>You already have an appointment booked.</strong></p>
+          <p>To see or change it, enter the email you booked with.</p>
+          <div className="rl-field" style={{ textAlign: 'left', marginTop: 12 }}>
+            <label className="rl-label" htmlFor="rl-booking-email">Email you booked with</label>
+            <input id="rl-booking-email" type="email" value={bookingEmail} autoComplete="email" maxLength={EMAIL_MAX}
+              onChange={e => setBookingEmail(e.target.value)} />
+          </div>
+          {bookingErr && <p className="rl-error">{bookingErr}</p>}
+          <button className="rl-cta" disabled={checking} onClick={showMyBooking}>
+            {checking ? 'Checking…' : 'Show my appointment'}
+          </button>
+          <div className="rl-cta-note">Or check the confirmation cal.com sent you: it has your date and time, with links to reschedule or cancel.</div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 18 }}>
+          <a className="rl-cta" data-action="book-first-visit"
+            href={referralBookingUrl({ firstName: f.first, lastName: f.last, email: f.email, phone: f.phone })}>
+            Book your first-time appointment
+          </a>
+          <div className="rl-cta-note">Already booked? The confirmation cal.com sent you has your date and time, with links to reschedule or cancel.</div>
+        </div>
+      )}
     </div></Shell>
   );
 

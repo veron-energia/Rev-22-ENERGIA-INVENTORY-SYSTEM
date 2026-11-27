@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { REFERRAL_BOOKING_PAGE, referralBookingPrefix, referralBookingUrl }
+import { REFERRAL_BOOKING_PAGE, calcomCancelUrl, calcomRescheduleUrl, referralBookingPrefix, referralBookingUrl }
   from '../../../src/lib/referral/bookingLink.mjs';
 
 const read = p => readFileSync(new URL(`../../../${p}`, import.meta.url), 'utf8');
@@ -87,4 +87,14 @@ test('392 answers a new registration with affiliate_label, and the label strips 
   const sql = read('supabase/392_referral_booking_names_the_affiliate.sql');
   assert.match(sql, /''affiliate_label'', \(select public\.affiliate_calendar_label\(c\.full_name\)/);
   assert.match(sql, /'\(\\\(\[\^\(\)\]\*\\\)\|\\\[\[\^\]\[\]\*\\\]\)'/);
+});
+
+test('549: a booking\'s change and cancel pages need a cal.com uid, and nothing else gets into the address', () => {
+  assert.equal(calcomRescheduleUrl('t549AbC_d-1'), 'https://app.cal.com/reschedule/t549AbC_d-1');
+  assert.equal(calcomCancelUrl('t549AbC_d-1'), 'https://app.cal.com/booking/t549AbC_d-1?cancel=true');
+  for (const bad of [null, undefined, '', 'gcal:abc123', 'a b', 'a/b', '../x', 'x?y=1', 'x#y', '%2F', 'é', 7, 'a'.repeat(129)]) {
+    assert.equal(calcomRescheduleUrl(bad), null, String(bad));
+    assert.equal(calcomCancelUrl(bad), null, String(bad));
+  }
+  assert.equal(calcomRescheduleUrl('a'.repeat(128)), `https://app.cal.com/reschedule/${'a'.repeat(128)}`);
 });

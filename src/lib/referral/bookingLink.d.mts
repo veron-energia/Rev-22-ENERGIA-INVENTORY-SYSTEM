@@ -10,3 +10,7 @@ export interface ReferralBooking {
   affiliateLabel?: string | null;
 }
 export function referralBookingUrl(booking?: ReferralBooking): string;
+/** 549: cal.com's page to move a booking (by its cal.com uid); null without one. */
+export function calcomRescheduleUrl(uid: string | null | undefined): string | null;
+/** 549: cal.com's page to cancel a booking (by its cal.com uid); null without one. */
+export function calcomCancelUrl(uid: string | null | undefined): string | null;

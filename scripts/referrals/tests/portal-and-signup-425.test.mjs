@@ -270,3 +270,103 @@ test('27 Nov 2026: somebody already registered gets "Book your first-time appoin
   assert.ok(done.textContent.includes('Already booked? The confirmation cal.com sent you has your date and time'), 'booked people are pointed to their own confirmation');
   assert.ok(!/\b(19|20)\d\d-\d\d-\d\d\b|cal\.com\/(reschedule|booking)\//.test(done.innerHTML), 'no booking date or change link on this public page');
 });
+
+// 549 (the user, 27 Nov 2026): somebody already on file with an upcoming booking.
+const KNOWN = { ok: true, outcome: 'already_registered',
+  message: 'This phone number is already registered with Energia, so no new registration was created. Nothing about your existing record has changed.' };
+const BOOKED = { state: 'booked', start_at: '2026-12-07T02:00:00Z', uid: 't549Nia_1' };
+async function registerKnown(lookup, { email = '' } = {}) {
+  await mount(signup(), '/r/T425RIA', b => {
+    b.answers.affiliate_referral_signup_with_notice = KNOWN;
+    const rpc = b.rpc;
+    b.rpc = async (name, args) => {
+      if (name !== 'referral_booking_lookup') return rpc(name, args);
+      b.calls.push({ name, args });
+      await Promise.resolve();
+      return lookup(args);
+    };
+  });
+  const type = async (el, value) => {
+    assert.ok(el, 'the field exists');
+    const set = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    await act(async () => { set.call(el, value); el.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+  };
+  await type(document.getElementById('rl-top-first'), 'Nia');
+  await type(document.getElementById('rl-top-last'), 'Test');
+  if (email) await type(document.getElementById('rl-top-email'), email);
+  await type(document.querySelector('.rl-form-card input[type="tel"]'), '+61491570737');
+  await click(button('YES! I WANT THIS FREE BUNDLE'));
+  assert.ok(text().includes('You are already registered'), text());
+  return { type, lookups: () => backend.calls.filter(c => c.name === 'referral_booking_lookup') };
+}
+const bookButton = () => document.querySelector('a[data-action="book-first-visit"]');
+
+test('549: phone and email match an upcoming booking: its Singapore time, Change time and Cancel, and no Book button', async () => {
+  const { lookups } = await registerKnown(() => ({ data: BOOKED, error: null }), { email: 'nia@example.invalid' });
+  assert.deepEqual(lookups().map(c => c.args), [{ p_code: 'T425RIA', p_phone: '+61491570737', p_email: 'nia@example.invalid' }]);
+  const box = document.querySelector('[data-booking="booked"]');
+  assert.ok(box, 'the booking is shown');
+  assert.ok(box.textContent.includes('Your appointment'));
+  assert.ok(box.textContent.includes('Mon 7 Dec 2026, 10:00 am'), box.textContent);
+  assert.equal(box.querySelector('a[data-action="change-time"]').getAttribute('href'), 'https://app.cal.com/reschedule/t549Nia_1');
+  assert.equal(box.querySelector('a[data-action="change-time"]').textContent.trim(), 'Change time');
+  assert.equal(box.querySelector('a[data-action="cancel-booking"]').getAttribute('href'), 'https://app.cal.com/booking/t549Nia_1?cancel=true');
+  assert.equal(bookButton(), null, 'no Book button for somebody booked');
+  assert.ok(text().includes('Want to become an affiliate instead?'));
+});
+
+test('549: an upcoming booking but no email typed: asked for the email, nothing about the booking, then shown', async () => {
+  const { type, lookups } = await registerKnown(args => ({
+    data: args.p_email === 'nia@example.invalid' ? BOOKED : { state: 'needs_email' }, error: null }));
+  assert.equal(lookups()[0].args.p_email, null, 'no email typed: none sent');
+  const ask = document.querySelector('[data-booking="needs-email"]');
+  assert.ok(ask && ask.textContent.includes('You already have an appointment booked.'), text());
+  assert.ok(!/Dec 2026|cal\.com\/(reschedule|booking)\//.test(document.body.innerHTML), 'no time and no change link before the email matches');
+  assert.equal(bookButton(), null, 'no Book button: they have a booking');
+  assert.equal(ask.querySelector('.rl-error'), null, 'no error before they try');
+
+  await type(document.getElementById('rl-booking-email'), 'someone@example.invalid');
+  await click(button('Show my appointment'));
+  assert.ok(text().includes('That email does not match the booking.'), text());
+  assert.equal(document.querySelector('[data-booking="booked"]'), null);
+
+  await type(document.getElementById('rl-booking-email'), ' nia@example.invalid ');
+  await click(button('Show my appointment'));
+  assert.ok(document.querySelector('[data-booking="booked"]'), 'shown once the email matches');
+  assert.ok(text().includes('Mon 7 Dec 2026, 10:00 am'));
+  assert.deepEqual(lookups().map(c => c.args.p_email), [null, 'someone@example.invalid', 'nia@example.invalid']);
+  assert.equal(backend.calls.filter(c => c.name === 'affiliate_referral_signup_with_notice').length, 1, 'looking again never registers again');
+});
+
+test('549: a typed email that does not match is said at once; too many tries is said in the box', async () => {
+  let n = 0;
+  await registerKnown(() => ({ data: n++ === 0 ? { state: 'needs_email' } : { state: 'try_later' }, error: null }), { email: 'other@example.invalid' });
+  const ask = document.querySelector('[data-booking="needs-email"]');
+  assert.ok(ask.textContent.includes('The email you typed does not match the booking.'), ask.textContent);
+  assert.equal(document.getElementById('rl-booking-email').value, 'other@example.invalid');
+  await click(button('Show my appointment'));
+  assert.ok(text().includes('Too many tries. Please try again in an hour'), text());
+  assert.equal(bookButton(), null);
+});
+
+test('549: a booking filled from Google Calendar (no cal.com uid): its time, and "contact Energia" instead of links', async () => {
+  await registerKnown(() => ({ data: { state: 'booked', start_at: '2026-12-07T02:00:00Z', uid: null }, error: null }), { email: 'nia@example.invalid' });
+  const box = document.querySelector('[data-booking="booked"]');
+  assert.ok(box.textContent.includes('Mon 7 Dec 2026, 10:00 am'));
+  assert.equal(box.querySelector('a'), null, 'no change or cancel link');
+  assert.ok(box.textContent.includes('To change it, please contact Energia.'));
+});
+
+test('549: no upcoming booking, a database without 549, or a limit: the Book button as before', async () => {
+  for (const answer of [
+    { data: { state: 'none' }, error: null },
+    { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.referral_booking_lookup' } },
+    { data: { state: 'try_later' }, error: null },
+    { data: { state: 'something new' }, error: null },
+  ]) {
+    await registerKnown(() => answer);
+    assert.ok(bookButton(), JSON.stringify(answer));
+    assert.ok(text().includes('Already booked? The confirmation cal.com sent you'));
+    assert.equal(document.querySelector('[data-booking]'), null);
+  }
+});
