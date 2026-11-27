@@ -65,6 +65,12 @@
 \set t502_mig `cat supabase/502_legacy_therapy_retired.sql`
 \set t502_undo `cat scripts/therapy/undo-502.sql`
 begin;
+-- 543 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, since undo-539
+-- checks profiles' grants as 539 left them (this run only, rolled back with everything here).
+select not has_table_privilege('authenticated', 'public.app_settings', 'TRUNCATE') as t543_in \gset
+\if :t543_in
+\ir ../../permissions/undo-543.sql
+\endif
 -- 522 (18 Nov 2026) changed dashboard_alerts_summary(), one of the fifteen functions 502 patched,
 -- so 502's UNDO rightly refuses where 522 is in. This suite tests 502, not the Dashboard's TikTok
 -- counts: where 522 is in, 522's UNDO puts back the version 502 left, for this run only

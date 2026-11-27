@@ -457,7 +457,9 @@ select pg_temp.check((select pg_get_expr(polqual, polrelid) from pg_policy where
                      and (select count(*) from pg_policy where polrelid = 'public.customer_phone_history'::regclass and polcmd in ('r', '*')) = 1,
   'G3b the phone history''s one read rule names the same four roles');
 select pg_temp.check((select relacl::text from pg_class where oid = 'public.profiles'::regclass)
-                       = '{postgres=arwdDxtm/postgres,anon=awdDxtm/postgres,authenticated=awdDxtm/postgres,service_role=arwdDxtm/postgres}'
+                       -- 543 (security audit L15): without TRUNCATE, REFERENCES and TRIGGER for anon and authenticated.
+                       in ('{postgres=arwdDxtm/postgres,anon=awdDxtm/postgres,authenticated=awdDxtm/postgres,service_role=arwdDxtm/postgres}',
+                           '{postgres=arwdDxtm/postgres,anon=awdm/postgres,authenticated=awdm/postgres,service_role=arwdDxtm/postgres}')
                      and not has_table_privilege('anon', 'public.profiles', 'select') and not has_any_column_privilege('anon', 'public.profiles', 'select')
                      and not has_table_privilege('authenticated', 'public.profiles', 'select')
                      and (select string_agg(attname, ',' order by attnum) from pg_attribute

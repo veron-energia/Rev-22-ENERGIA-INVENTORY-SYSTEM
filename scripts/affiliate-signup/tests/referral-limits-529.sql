@@ -657,7 +657,9 @@ select pg_temp.check((select relrowsecurity from pg_class where oid = 'public.re
            from pg_policy where polrelid = 'public.referral_signup_events'::regclass)
         = 'aff_events_mgr_read r {0} ( SELECT is_owner_or_manager() AS is_owner_or_manager)'
     and (select string_agg(x::text, ',' order by x::text) from pg_class c, unnest(c.relacl) x where c.oid = 'public.referral_signup_events'::regclass)
-        = 'anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres,postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres',
+        -- 543 (security audit L15): anon and authenticated no longer hold TRUNCATE, REFERENCES, TRIGGER.
+        in ('anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres,postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres',
+            'anon=arwdm/postgres,authenticated=arwdm/postgres,postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres'),
   'G4 the events table: row level security on, its one policy (an Owner or Manager reads), its grants, as before');
 select pg_temp.check((select count(*) from pg_indexes where schemaname = 'public' and tablename = 'referral_signup_events'
                         and indexname in ('idx_referral_events_sender_time', 'idx_referral_events_all_links_time')) = 2,
