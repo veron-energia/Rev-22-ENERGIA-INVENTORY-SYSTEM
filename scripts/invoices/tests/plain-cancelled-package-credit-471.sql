@@ -194,6 +194,13 @@ begin;
 -- first (this run only, rolled back with everything here).
 select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
 \if :t540_in
+-- 547 (goods collected for special, consignment and rental items): where it is in, its UNDO goes
+-- first of all, before 546's.
+select to_regprocedure('public.invoice_special_collect_internal(uuid,uuid,jsonb)') is not null as t547_in \gset
+\if :t547_in
+select set_config('energia.undo547_test_only', 'on', true) \g /dev/null
+\ir ../../special/undo-547.sql
+\endif
 -- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first of all.
 select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
   from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset

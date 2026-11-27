@@ -748,6 +748,8 @@ begin
     ('special queue',          'om',     true,  false, 'select count(*)::text from public.special_docs_awaiting_fulfilment()'),
     ('special products',       'om',     true,  true,  'select string_agg(to_jsonb(x)::text, '','') from public.products_available_as_special() x'),
     ('special availability',   'om',     true,  false, 'select count(*)::text from public.special_product_availability(null)'),
+    -- 547: the waiting list's marks (what the customer already has), Owners and Managers
+    ('special queue marks',    'om',     true,  false, 'select count(*)::text from public.special_waiting_collected(null)'),
     -- 426: Change rental terms and the special product form, Owners and Managers
     -- (no such rental or product in the fixture, so each answers its own refusal);
     -- the old wallet payment is the service role's alone (check 1 below)

@@ -62,7 +62,7 @@ import { walletMethodOptions, creditPackageFirstNote, walletBySource, paymentMet
 import { walletCredit, walletLineLabel, type WalletRefundLike } from '../lib/invoices/walletCreditLines.mjs';
 import { creditReceiverNotes, type CreditReceivers } from '../lib/invoices/creditReceivers.mjs';
 import { goodsFromRpc, needsHandoverAnswer, handoverProblem, handoverPayload, emptyPick, copyTermsText, copyCollectionLines, copyCollection,
-  goodsOutBadge, goodsRefusal, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
+  goodsOutBadge, goodsRefusal, canHandOver, copyReadsGoods, type GoodsStatus, type HandoverAnswer, type HandoverPick } from '../lib/invoices/handover.mjs';
 import { HandoverQuestion, InvoiceGoodsPanel, HandoverModal, ReturnItemsModal } from '../components/invoices/InvoiceGoods';
 import { CommissionBasisCorrection } from '../components/invoices/CommissionBasisCorrection';
 import { isService } from '../lib/stock/stockPages';
@@ -2173,8 +2173,12 @@ const InvoicesPage: React.FC = () => {
     setPaymentRequestId(crypto.randomUUID());
     await openDetail(invRow as Invoice);
     const taken = (res?.handover?.items ?? []) as { name: string; quantity: number }[];
-    if (taken.length > 0 && detailIdRef.current === invoiceId) {
-      setGoodsNote(`Handed over with this payment: ${taken.map(i => `${i.name} × ${i.quantity}`).join(', ')}.`);
+    // 547: and the special, consignment and rental items recorded with it.
+    const takenSpecial = (res?.handover?.specials ?? []) as { name: string; quantity: number; how: string }[];
+    if ((taken.length > 0 || takenSpecial.length > 0) && detailIdRef.current === invoiceId) {
+      setGoodsNote([taken.length ? `Handed over with this payment: ${taken.map(i => `${i.name} × ${i.quantity}`).join(', ')}.` : '',
+                    takenSpecial.length ? `Recorded with this payment: ${takenSpecial.map(i => `${i.name} × ${i.quantity} ${i.how === 'delivered' ? 'delivered' : 'collected'}`).join(', ')}; it waits for an Owner or Manager to release it on Special & Rentals.` : '']
+        .filter(Boolean).join(' '));
     }
     void refreshList({ afterSave: 'The payment was recorded', changed: [invoiceId] });
   };
@@ -2759,8 +2763,10 @@ const InvoicesPage: React.FC = () => {
   // paid invoice keeps the standard line and reads nothing. If the read fails,
   // the goods already on screen for this invoice are used, else the copy says
   // nothing about collection.
+  // 547 (the Owner, 27 Nov 2026, answer 6): a paid one too, for a special,
+  // consignment or rental item still to collect.
   const goodsForCopy = async (inv: Invoice): Promise<GoodsStatus | null> => {
-    if (!['draft', 'unpaid', 'partially_paid'].includes(String(inv.status))) return null;
+    if (!copyReadsGoods(inv.status)) return null;
     const { data, error } = await supabase.rpc('invoice_goods_status', { p_invoice_id: inv.id });
     if (!error) return goodsFromRpc(data);
     return detailGoods && detailGoods.invoice_id === inv.id ? detailGoods : null;
@@ -2784,10 +2790,14 @@ const InvoicesPage: React.FC = () => {
   const docWaitTitle = docReady ? undefined : 'Loading this invoice…';
   // 399: goods a customer takes on an unpaid or part-paid invoice with no
   // payment (a later visit). Anyone who may record a payment here may.
-  const handOverButton = detail && detailGoods?.can_hand_over && detailGoods.invoice_id === detail.id ? (
+  // 547 (the Owner, 27 Nov 2026): and special, consignment or rental items,
+  // Collected or Delivered, on a paid invoice too (staff of its store).
+  const handOverButton = detail && canHandOver(detailGoods) && detailGoods?.invoice_id === detail.id ? (
     <button className="btn btn-secondary" onClick={() => { setGoodsNote(null); setGoodsModal('handover'); }}
-      disabled={!docReady} title={docWaitTitle ?? 'Record goods the customer takes now, before paying in full'}>
-      Hand over items</button>
+      disabled={!docReady} title={docWaitTitle ?? (detailGoods?.can_hand_over
+        ? 'Record goods the customer takes now, before paying in full'
+        : 'Record a special, consignment or rental item the customer collected, or its supplier delivered')}>
+      {detailGoods?.can_hand_over ? 'Hand over items' : 'Record items collected'}</button>
   ) : null;
 
   // The customer copy as a real A5 PDF — same content as the printed customer
@@ -2886,7 +2896,7 @@ const InvoicesPage: React.FC = () => {
       // collect, and its terms never say "checked and collected"; once paid
       // in full it keeps the standard line. On a long invoice the lists
       // shorten, or go into the terms in a few words (fitAroundCollection).
-      termsText: copyTermsText(detail.status),
+      termsText: copyTermsText(detail.status, goodsNow),  // 547: a paid one with a special item to collect too
       collection: copyCollection(detail.status, goodsNow),
       policyText: store.policy_text ?? null,
       footerBits: [
@@ -3031,7 +3041,7 @@ const InvoicesPage: React.FC = () => {
     const creditBlock = creditBalanceHtml(credit.line);
     // 399: an unpaid or part-paid invoice never says everything was collected:
     // it lists its goods, Collected and To collect, above the signatures.
-    const termsText = copyTermsText(detail.status);
+    const termsText = copyTermsText(detail.status, goodsNow);  // 547
     const collectionLines = copyCollectionLines(detail.status, goodsNow);
     const store = stores.find(s => s.id === detail.store_id);
     const cust = customerOf(detail.customer_id);
@@ -4860,6 +4870,7 @@ const InvoicesPage: React.FC = () => {
                       title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>
                   )}
+                  {handOverButton}
                   {refundCancelButton}</>
               : detail.status === 'cancelled' || detail.status === 'refunded'
               ? <>{copyButtons}{isOwnerOrManager(profile?.role) && !isLateFeeInvoice && <button className="btn btn-secondary" onClick={openEdit} disabled={!docReady} title={docWaitTitle}>Correct Invoice</button>}{recordRefundDueButton}{refundCancelButton}</>
@@ -4886,6 +4897,7 @@ const InvoicesPage: React.FC = () => {
                       title={docWaitTitle ?? 'Correct this invoice with a reason and revision history'}>
                       <FileText size={14} /> Correct Invoice</button>
                   )}
+                  {handOverButton}
                   {refundCancelButton}</>
               : <>{copyButtons}
                   {canCorrectInvoice && needsAuditedCorrection &&
@@ -5308,7 +5320,7 @@ const InvoicesPage: React.FC = () => {
             {/* 399: what the customer collected and what is still to collect,
                 and every hand-over, "Nothing taken" and return. */}
             {goodsNote && <div role="status" className="alert alert-info" data-testid="invoice-goods-note" style={{ marginBottom: 0 }}><span>ℹ</span><div>{goodsNote}</div></div>}
-            {(detailGoodsErr || (detailGoods && (detailGoods.open || detailGoods.history.length > 0))) && (
+            {(detailGoodsErr || (detailGoods && (detailGoods.open || detailGoods.history.length > 0 || detailGoods.specials.length > 0))) && (
               <InvoiceGoodsPanel goods={detailGoods} error={detailGoodsErr}
                 onRecordReturn={isOwnerOrManager(profile?.role) ? () => setGoodsModal('return') : undefined} />
             )}

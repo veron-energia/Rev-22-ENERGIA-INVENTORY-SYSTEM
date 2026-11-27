@@ -279,6 +279,14 @@ declare
                              'restore_released_special_stock','link_released_special_movements',
                              -- 497: a correction's special sales following its lines
                              'invoice_special_sales_follow_lines',
+                             -- 547: the special, consignment and rental items with the customer, per
+                             -- line; the checks a correction, a cancellation, a deletion and a refund
+                             -- make; and recording them (invoice_goods_status, the hand-over, Record
+                             -- items returned, the waiting list's marks and those checks call them, as
+                             -- the definer)
+                             'invoice_special_goods_out','invoice_special_lines','special_doc_collected',
+                             'invoice_special_kept_check','invoice_special_goods_block',
+                             'invoice_special_refund_check','invoice_special_collect_internal',
                              -- 431: the module an audit entry is filed under, the trigger that
                              -- files an entry saved with none, and write_audit_ex, which saves
                              -- any audit entry it is given (service role only, like write_audit)

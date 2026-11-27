@@ -26,6 +26,16 @@
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
+-- 547 (goods collected): its two tables are not among the relations 543 was made for, so where
+-- this file installs 543 itself (543 not in), 547's UNDO goes first. With 543 in, nothing is needed:
+-- they give a login SELECT alone.
+select to_regprocedure('public.invoice_special_collect_internal(uuid,uuid,jsonb)') is not null
+       and (select defaclacl::text from pg_default_acl where defaclrole = 'postgres'::regrole and defaclnamespace = 'public'::regnamespace and defaclobjtype = 'r')
+           is distinct from '{postgres=arwdDxtm/postgres,anon=arwdm/postgres,authenticated=arwdm/postgres,service_role=arwdDxtm/postgres}' as t547_in \gset
+\if :t547_in
+select set_config('energia.undo547_test_only', 'on', true) \g /dev/null
+\ir ../../special/undo-547.sql
+\endif
 create temp table acl0 as
   select c.oid, c.relname, c.relkind, c.relacl::text as acl, c.relrowsecurity as rls
     from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v', 'm', 'S', 'p', 'f');

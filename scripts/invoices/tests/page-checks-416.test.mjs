@@ -205,8 +205,8 @@ test('CREATE-14 (417, Q4 = A): the bin only where a delete can succeed, and a re
   assert.doesNotMatch(page, /Paid invoices cannot be deleted/, 'the server says why, not a page special case');
   // 457 (the Owner, 22 Oct 2026): and Owners and Managers correct it, as a paid invoice.
   assert.match(between("detail.status === 'completed_foc'", ': <>{copyButtons}\n'),
-    /\? <>\{copyButtons\}\s*\{canCorrectInvoice && \(\s*<button className="btn btn-secondary" onClick=\{openEdit\} disabled=\{!docReady\}\s*title=\{docWaitTitle \?\? 'Correct this invoice with a reason and revision history'\}>\s*<FileText size=\{14\} \/> Correct Invoice<\/button>\s*\)\}\s*\{refundCancelButton\}<\/>/,
-    'a completed FOC is corrected (Owners and Managers) or undone with the guided Cancel');
+    /\? <>\{copyButtons\}\s*\{canCorrectInvoice && \(\s*<button className="btn btn-secondary" onClick=\{openEdit\} disabled=\{!docReady\}\s*title=\{docWaitTitle \?\? 'Correct this invoice with a reason and revision history'\}>\s*<FileText size=\{14\} \/> Correct Invoice<\/button>\s*\)\}\s*\{handOverButton\}\s*\{refundCancelButton\}<\/>/,
+    'a completed FOC is corrected (Owners and Managers) or undone with the guided Cancel; 547: its special items recorded as collected');
 });
 
 test('CREATE-19: FOC is not offered to Inventory Managers; Confirm FOC asks; Remove FOC takes a reason', () => {

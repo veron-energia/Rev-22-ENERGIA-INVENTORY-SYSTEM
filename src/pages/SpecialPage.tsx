@@ -111,17 +111,27 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
   // of it is already claimed by pending transfer requests.
   const [avail, setAvail] = useState<Record<string, any[]>>({});
   const [availFailed, setAvailFailed] = useState(false);
+  // 547 (the Owner, 27 Nov 2026): the waiting items the customer already has (recorded on the
+  // invoice as Collected, or Delivered by its supplier), so they are released first.
+  const [hasIt, setHasIt] = useState<Record<string, 'collected' | 'delivered'>>({});
   /** The waiting list, or null when it could not be read. */
   const loadAwaiting = useCallback(async (): Promise<any[] | null> => {
     const { data, error } = await supabase.rpc('special_docs_awaiting_fulfilment');
     if (error) {
       // An old list could release or change what is no longer waiting.
-      setAwaiting([]); setAvail({}); setAwaitingFailed(true); setAvailFailed(false);
+      setAwaiting([]); setAvail({}); setAwaitingFailed(true); setAvailFailed(false); setHasIt({});
       return null;
     }
     const list = (data as any[]) ?? [];
     setAwaitingFailed(false);
     setAwaiting(list);
+    // 547: no mark when it cannot be read (or before 547): the list works as before.
+    if (list.length > 0) {
+      const { data: marks, error: markError } = await supabase.rpc('special_waiting_collected',
+        { p_doc_ids: list.map(r => r.doc_id) });
+      setHasIt(markError ? {} : Object.fromEntries(((marks as any[]) ?? [])
+        .map(m => [String(m.doc_id), m.how === 'delivered' ? 'delivered' : 'collected'])));
+    } else setHasIt({});
     const map: Record<string, any[]> = {};
     let missed = false;
     await Promise.all(list.map(async r => {
@@ -1064,6 +1074,12 @@ const SpecialPage: React.FC<{ view?: SpecialView }> = ({ view = 'special' }) => 
                     <span style={{ fontSize: 14, fontWeight: 700 }}>{row.product_name}</span>
                     <span className={`badge ${isRental ? 'badge-accent' : 'badge-muted'}`}
                       style={{ fontSize: 10.5 }}>{isRental ? 'Rental' : 'Sale'}</span>
+                    {/* 547: the customer already has it: release it first. */}
+                    {hasIt[row.doc_id] && (
+                      <span className="badge badge-success" data-testid="waiting-has-it" style={{ fontSize: 10.5 }}
+                        title="Recorded on the invoice: the customer already has it. Release it first.">
+                        {hasIt[row.doc_id] === 'delivered' ? 'Supplier delivered' : 'Customer has it'}</span>
+                    )}
                     {row.quantity > 1 && <span style={{ fontSize: 13 }}>× {row.quantity}</span>}
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2,

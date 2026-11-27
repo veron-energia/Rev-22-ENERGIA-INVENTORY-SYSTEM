@@ -59,7 +59,9 @@ export interface PdfDoc {
   /** An unpaid or part-paid invoice's goods (399), Collected and To
    *  collect, drawn under the payments in the blank space above the
    *  signatures (src/lib/invoices/handover.mjs, copyCollection). Absent once
-   *  paid in full. They give way when there is no room: fitAroundCollection. */
+   *  paid in full, unless (547) a special, consignment or rental item is still
+   *  to collect; then with Delivered too, when a supplier delivered one.
+   *  They give way when there is no room: fitAroundCollection. */
   collection?: CopyCollection | null;
   /** How the goods are drawn; set by fitAroundCollection, never by the page:
    *  'full' (the default) both lists, wrapped; 'short' one line each, ending
@@ -136,6 +138,9 @@ export function copyCollectionDrawn(d: PdfDoc, width: number, wrap: (t: string) 
   if (!d.collection || d.collectionFit === 'terms') return [];
   if (d.collectionFit === 'short') {
     return [collectionLineFitted('Collected', d.collection.collected, width, measure),
+            // 547: what a supplier delivered, only when there is some.
+            ...((d.collection.delivered ?? []).length
+              ? [collectionLineFitted('Delivered', d.collection.delivered ?? [], width, measure)] : []),
             collectionLineFitted('To collect', d.collection.toCollect, width, measure)];
   }
   return collectionText(d.collection).flatMap(wrap);

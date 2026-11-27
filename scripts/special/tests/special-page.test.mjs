@@ -31,6 +31,10 @@
 //                    note of where to deliver; a rental and any other product
 //                    are offered none; the Sales tab and its Excel name the
 //                    supplier, and say when the invoice was taken back.
+//   547              Waiting for a warehouse marks what the customer already has
+//                    (recorded on the invoice as Collected: "Customer has it";
+//                    Delivered by the supplier: "Supplier delivered"), read with
+//                    special_waiting_collected; none when it cannot be read.
 //
 // JSDOM, with the database, sendDoc and printing stubbed; invented data only.
 // Run: node --test scripts/special/tests/special-page.test.mjs
@@ -841,4 +845,29 @@ test('The form: the Consignment tick is sent after the save, only when it change
     await save(page, page.dialog('Edit Consignment Product'));
     assert.match(page.dialog('Edit Consignment Product').textContent, /That special product does not exist\./, 'still open, with the reason');
   } finally { page.close(); }
+});
+
+test('547: Waiting for a warehouse marks what the customer already has; none when that cannot be read', async () => {
+  let fail = false;
+  const asked = [];
+  const ui = await mount({ data: consignmentDb(), rpc: waitingRpc(() => [WAITING, SALE_WAITING], (n, a) => {
+    if (n !== 'special_waiting_collected') return undefined;
+    asked.push(a);
+    return fail ? { data: null, error: { message: 'Could not find the function' } }
+      : { data: [{ doc_kind: 'special_sale', doc_id: 's-9', how: 'delivered' }, { doc_kind: 'rental', doc_id: 'r-9', how: 'collected' }], error: null };
+  }) });
+  try {
+    await openWaiting(ui);
+    assert.deepEqual(asked.at(-1), { p_doc_ids: ['r-9', 's-9'] }, 'asked about the waiting items');
+    const rental = queueRow(ui, 'RNT-2026-9909'), sale = queueRow(ui, 'SPS-2026-9909');
+    assert.equal(rental.querySelector('[data-testid="waiting-has-it"]')?.textContent, 'Customer has it');
+    assert.equal(sale.querySelector('[data-testid="waiting-has-it"]')?.textContent, 'Supplier delivered');
+    assert.ok(rental.querySelector('[data-testid="waiting-has-it"]').closest('div').textContent.includes('Rental'),
+      'beside the Sale / Rental badge, in the item column');
+    fail = true;
+    await ui.click(ui.button('Refresh'));
+    await openWaiting(ui);
+    assert.equal(ui.node.querySelectorAll('[data-testid="waiting-has-it"]').length, 0, 'no mark when it cannot be read');
+    assert.ok(queueRow(ui, 'RNT-2026-9909') && queueRow(ui, 'SPS-2026-9909'), 'and the list is shown as before');
+  } finally { ui.close(); }
 });
