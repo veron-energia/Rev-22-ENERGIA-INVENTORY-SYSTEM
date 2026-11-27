@@ -187,6 +187,12 @@ const ReferralSignupPage: React.FC = () => {
     </div></Shell>
   );
 
+  // Somebody already on file may still not have booked a first visit (the
+  // user, 27 Nov 2026): the same booking page a new registration goes to, with
+  // what they typed filled in. No referrer label, because this answer does not
+  // say whose customer they are and the link's affiliate may not be theirs.
+  // Nothing about an existing booking is shown: this page checks nothing but a
+  // typed number, so a date, time or change link would go to whoever typed it.
   if (done) return (
     <Shell><div className="rl-done">
       <h2>You are already registered</h2>
@@ -194,6 +200,13 @@ const ReferralSignupPage: React.FC = () => {
       <p style={{ marginTop: 14 }}>
         <Link className="rl-link" to="/affiliate/join">Want to become an affiliate instead?</Link>
       </p>
+      <div style={{ marginTop: 18 }}>
+        <a className="rl-cta" data-action="book-first-visit"
+          href={referralBookingUrl({ firstName: f.first, lastName: f.last, email: f.email, phone: f.phone })}>
+          Book your first-time appointment
+        </a>
+        <div className="rl-cta-note">Already booked? The confirmation cal.com sent you has your date and time, with links to reschedule or cancel.</div>
+      </div>
     </div></Shell>
   );
 

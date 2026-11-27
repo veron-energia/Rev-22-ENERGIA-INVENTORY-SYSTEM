@@ -235,3 +235,38 @@ test('454: one card per seminar link (one per address), none when there is none 
   assert.equal(cards().length, 0, 'no link while suspended');
   assert.ok(text().includes('Your affiliate account is currently suspended'));
 });
+
+test('27 Nov 2026: somebody already registered gets "Book your first-time appointment" under the affiliate link, and nothing about a booking', async () => {
+  await mount(signup(), '/r/T425RIA', b => {
+    b.answers.affiliate_referral_signup_with_notice = { ok: true, outcome: 'already_registered',
+      message: 'This phone number is already registered with Energia, so no new registration was created. Nothing about your existing record has changed.' };
+  });
+  const type = async (el, value) => {
+    assert.ok(el, 'the field exists');
+    const set = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    await act(async () => { set.call(el, value); el.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+  };
+  await type(document.getElementById('rl-top-first'), 'Nia');
+  await type(document.getElementById('rl-top-last'), 'Test');
+  await type(document.getElementById('rl-top-email'), 'nia@example.invalid');
+  await type(document.querySelector('.rl-form-card input[type="tel"]'), '+61491570737');
+  await click(button('YES! I WANT THIS FREE BUNDLE'));
+  assert.ok(text().includes('You are already registered'), text());
+  assert.equal(backend.calls.filter(c => c.name === 'affiliate_referral_signup_with_notice').length, 1, 'registered once');
+
+  const done = document.querySelector('.rl-done');
+  const join = [...done.querySelectorAll('a')].find(a => a.textContent.includes('Want to become an affiliate instead?'));
+  const book = done.querySelector('a[data-action="book-first-visit"]');
+  assert.ok(join && book, 'both links are there');
+  assert.ok(join.compareDocumentPosition(book) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING, 'the booking button comes after the affiliate link');
+  assert.equal(book.textContent.trim(), 'Book your first-time appointment');
+  const url = new URL(book.getAttribute('href'));
+  assert.equal(url.origin + url.pathname, 'https://cal.com/energia/free', 'the free first-visit booking page');
+  assert.equal(url.searchParams.get('name'), 'Nia Test');
+  assert.equal(url.searchParams.get('email'), 'nia@example.invalid');
+  assert.equal(url.searchParams.get('WhatsApp-Number'), '+61491570737');
+  assert.equal(url.searchParams.get('smsReminderNumber'), '+61491570737');
+  assert.equal(url.searchParams.get('affiliate'), null, 'no referrer label: the answer does not say whose customer they are');
+  assert.ok(done.textContent.includes('Already booked? The confirmation cal.com sent you has your date and time'), 'booked people are pointed to their own confirmation');
+  assert.ok(!/\b(19|20)\d\d-\d\d-\d\d\b|cal\.com\/(reschedule|booking)\//.test(done.innerHTML), 'no booking date or change link on this public page');
+});
