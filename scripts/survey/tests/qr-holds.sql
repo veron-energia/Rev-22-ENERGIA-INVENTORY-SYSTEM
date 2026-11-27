@@ -74,6 +74,14 @@
 -- email below is invented; the phones are +65 8433 01xx.
 \set ON_ERROR_STOP on
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 -- Once 419 is applied, 433 cannot run again (419 changed four of its
 -- functions, so its guards refuse). The checks then run on 419's versions,
 -- which keep 433's rules; Edit details is 419's (update_survey_particulars_v2).

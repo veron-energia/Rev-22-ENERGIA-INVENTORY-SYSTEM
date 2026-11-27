@@ -65,11 +65,21 @@
 \set t502_mig `cat supabase/502_legacy_therapy_retired.sql`
 \set t502_undo `cat scripts/therapy/undo-502.sql`
 begin;
--- 543 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, since undo-539
--- checks profiles' grants as 539 left them (this run only, rolled back with everything here).
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
+-- 543 (security audit of 17 Nov 2026, L15): where it is in, profiles gets its three grants back first,
+-- since undo-539 checks profiles' grants as 539 left them (this run only, rolled back with everything here).
 select not has_table_privilege('authenticated', 'public.app_settings', 'TRUNCATE') as t543_in \gset
 \if :t543_in
-\ir ../../permissions/undo-543.sql
+-- undo-539 looks only at public.profiles: give back the three 543 took there, as 539 left them
+-- (anon=awdDxtm, authenticated=awdDxtm), not the whole of undo-543, which checks every relation.
+grant truncate, references, trigger on table public.profiles to anon, authenticated;
 \endif
 -- 522 (18 Nov 2026) changed dashboard_alerts_summary(), one of the fifteen functions 502 patched,
 -- so 502's UNDO rightly refuses where 522 is in. This suite tests 502, not the Dashboard's TikTok

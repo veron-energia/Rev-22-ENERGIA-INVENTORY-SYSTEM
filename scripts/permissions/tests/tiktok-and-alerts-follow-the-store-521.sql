@@ -14,6 +14,14 @@
 -- everything is rolled back. Made-up records only (L521, @example.invalid).
 \set ON_ERROR_STOP on
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../undo-546.sql
+\endif
 select position('521:' in pg_get_functiondef('public.tiktok_access_check(uuid)'::regprocedure)) > 0 as m521_in \gset
 \if :m521_in
 \else

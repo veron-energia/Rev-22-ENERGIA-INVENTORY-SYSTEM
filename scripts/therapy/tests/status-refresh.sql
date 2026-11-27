@@ -32,6 +32,13 @@ begin;
 -- is in, its UNDO goes first (this run only, rolled back with everything here).
 select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
 \if :t540_in
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first of all.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 -- 541, 542 (security audit of 17 Nov 2026, Lows): where they are in, their UNDOs go first, as 540's needs.
 select to_regprocedure('public.invoice_line_holds_stock(uuid,uuid)') is not null as t542_in,
        position('541 (security audit' in pg_get_functiondef('public.record_document_send(text,text,text,uuid,uuid,text,text,text,text)'::regprocedure)) > 0 as t541_in \gset

@@ -20,6 +20,14 @@
 -- scripts/affiliate-claims/tests/reject-protects.sql and
 -- scripts/affiliate-signup/tests/no-duplicate-customers.sql. Never run it on
 -- its own against a real database: it is only for a rolled-back test.
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 do $before437$
 declare
   c_437 constant text := '88ee10799d1c93ce93d0056740f05e01';  -- 437's AFTER (21 Oct 2026, AFF-SIGNUP-18)

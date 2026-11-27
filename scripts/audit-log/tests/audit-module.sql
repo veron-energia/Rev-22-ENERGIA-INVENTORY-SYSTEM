@@ -46,6 +46,14 @@
 -- printed.
 \set ON_ERROR_STOP on
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 do $m536$ begin if exists (select 1 from pg_trigger where tgrelid = to_regclass('public.audit_logs') and tgname = 'audit_logs_keep_every_entry') then alter table public.audit_logs disable trigger audit_logs_keep_every_entry; grant insert on public.audit_logs to service_role; grant execute on function public.write_audit(text,uuid,text,jsonb,jsonb), public.write_audit_ex(text,uuid,text,jsonb,jsonb,text,text,uuid,text,text) to service_role; end if; end $m536$;  -- 536: this suite re-runs 431 and writes, changes and files entries as before 536 (the service role's insert and the two helpers, its own rows changed); all of it comes back with the rollback
 
 create temp table audm(k text primary key, id uuid not null);

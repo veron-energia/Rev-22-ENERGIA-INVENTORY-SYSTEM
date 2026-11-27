@@ -43,6 +43,14 @@
 \set t502r_mig `cat supabase/502_legacy_therapy_retired.sql`
 \set t502r_undo `cat scripts/therapy/undo-502.sql`
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 -- 522 (18 Nov 2026) changed dashboard_alerts_summary(), one of the fifteen functions 502 patched,
 -- so 502's UNDO rightly refuses where 522 is in. This suite tests 502, not the Dashboard's TikTok
 -- counts: where 522 is in, 522's UNDO puts back the version 502 left, for this run only

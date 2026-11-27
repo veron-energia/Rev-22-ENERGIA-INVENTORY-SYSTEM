@@ -49,6 +49,14 @@
 -- +61491570000 to +61491570999).
 \set ON_ERROR_STOP on
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 create temp table t544(k text primary key, id uuid);
 create temp table t544_results(n serial, label text, ok boolean);
 create function pg_temp.t544_id(p_k text) returns uuid language sql as $f$ select id from t544 where k = p_k $f$;

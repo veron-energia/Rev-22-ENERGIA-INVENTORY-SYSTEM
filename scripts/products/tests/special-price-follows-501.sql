@@ -30,6 +30,13 @@
 \set t501_mig `cat supabase/501_product_page_price_sets_special_sale_price.sql`
 \set t501_undo `cat scripts/products/undo-501.sql`
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first of all.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 -- 541, 542 (security audit of 17 Nov 2026, Lows): where they are in, their UNDOs go first (541 changed
 -- set_product_prices, which 501 relies on); this run only, rolled back with everything here.
 select to_regprocedure('public.invoice_line_holds_stock(uuid,uuid)') is not null as t542_in,

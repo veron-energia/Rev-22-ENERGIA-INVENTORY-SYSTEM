@@ -12,6 +12,14 @@
 -- Included by scripts/referrals/tests/affiliate-network-phone-484.sql (before its section G; the sign-ups before
 -- that run on whatever the database has). Never run it on its own against a real database: it is only for a
 -- rolled-back test.
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 do $as529$
 declare
   v_path text := current_setting('search_path');

@@ -75,6 +75,14 @@
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/audit-log/tests/direct-changes-recorded-532.sql
 \set ON_ERROR_STOP on
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '300s';
 -- 535 (security audit of 17 Nov 2026, M12) extends trg_audit_direct_change() and attaches it to

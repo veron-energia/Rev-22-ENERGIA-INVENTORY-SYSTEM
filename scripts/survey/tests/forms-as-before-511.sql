@@ -16,6 +16,14 @@
 -- (inside the same rolled-back transaction), so that 511's own text is there to put back below.
 -- 530 (19 Nov 2026) changed it after 524 (limits, held existing customers): where 530 is in, it is
 -- put back first by its UNDO, scripts/survey/undo-530.sql, so that 524's text is there for 524's UNDO.
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 select position('-- 530 (security audit' in pg_get_functiondef('public.submit_health_survey(text,jsonb,jsonb,text)'::regprocedure)) > 0 as as511_m530 \gset
 \if :as511_m530
 \ir ../undo-530.sql

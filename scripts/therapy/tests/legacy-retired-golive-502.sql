@@ -82,6 +82,14 @@
 \set t502g_presale `cat scripts/therapy/credit-package-presale-reward-502.sql`
 \set t502g_preview `cat scripts/therapy/golive-preview-502.sql`
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 -- 536 (security audit of 17 Nov 2026, M14) added a function and made the Audit Log keep every
 -- entry: where 536 is in, 536's UNDO takes it out, for this run only (rolled back with everything
 -- here), so the functions are those this suite knows and the clearing below can remove its rows.

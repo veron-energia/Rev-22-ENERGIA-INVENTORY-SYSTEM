@@ -30,6 +30,14 @@
 \set t499_mig `cat supabase/499_product_page_price_sets_both_stores.sql`
 \set t499_undo `cat scripts/products/undo-499.sql`
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 set local lock_timeout = '10s';
 set local statement_timeout = '600s';
 select set_config('t499.mig', :'t499_mig', true), set_config('t499.undo', :'t499_undo', true) \g /dev/null

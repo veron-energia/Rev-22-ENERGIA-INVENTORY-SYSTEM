@@ -57,6 +57,14 @@
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/affiliate-signup/tests/signup-limits-and-email-codes-531.sql
 \set ON_ERROR_STOP on
 begin;
+-- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
+-- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
+select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in
+  from pg_proc where oid = 'public.current_user_role()'::regprocedure \gset
+\if :t546_in
+select set_config('energia.undo546_skip_body_check', 'on', true) \g /dev/null
+\ir ../../permissions/undo-546.sql
+\endif
 insert into public.auth_email_limits (action, scope, max_attempts, window_seconds)
 select * from (values ('signup','email',3,900), ('signup','ip',30,3600), ('resend','email',3,900),
                       ('resend','ip',30,3600), ('recovery','email',5,3600), ('recovery','ip',60,3600),
