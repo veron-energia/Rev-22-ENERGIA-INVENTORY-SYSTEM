@@ -15,8 +15,7 @@ import { CustomerSearchSelect } from '../components/SearchSelect';
 import { CoverageLine } from '../components/therapy/coverage';
 import DownlineModal from '../components/referrals/DownlineModal';
 import { visitFilterArgs, visitFilterActive, sgDate, sgDayOf } from '../lib/referral/campaign.mjs';
-import { fetchAllCustomerRows } from '../lib/customers/exportPaging.mjs';
-import { canExportCustomers, customerExportArgs, exportFunctionMissing, type CustomerExportKind } from '../lib/permissions/customers';
+import { canExportCustomers, customerExportArgs, type CustomerExportKind } from '../lib/permissions/customers';
 import { canEditCustomers, canSeeCustomerProfile } from '../lib/customers/customerRoles.mjs';
 import { emailChanged, mayAddReferrer, mayChangeEmail, EMAIL_LOCKED_HINT, REFERRER_LOCKED_HINT } from '../lib/customers/emailReferrerRules.mjs';
 import CustomerLoans from '../components/stock-loans/CustomerLoans';
@@ -522,22 +521,12 @@ const CustomersPage: React.FC = () => {
   // filters (and the created dates chosen in the window, which it records):
   // every customer they find, in the list's one fixed order (409), and one
   // Audit Log entry. A refusal or a failure is shown, never a short file.
-  // On a database without 539 (the pages go live first) there is no
-  // export_customers: the export then reads the list page by page, as before.
+  // There is no other route: the page-by-page fallback for a database without
+  // 539 is gone now that 539 is live (security audit of 17 Nov 2026, M13), so
+  // an export can never happen without its Audit Log entry.
   const exportFor = (kind: CustomerExportKind) => async (range: { from: string; to: string }) => {
     const { data, error } = await supabase.rpc('export_customers',
       customerExportArgs(kind, { search: debouncedSearch, source: sourceFilter, visitArgs }, range));
-    if (error && exportFunctionMissing(error)) {
-      return fetchAllCustomerRows<any>(async (limit, offset) => {
-        const r = await supabase.rpc('search_customers', {
-          p_query: debouncedSearch.trim() || null,
-          p_source: sourceFilter || null,
-          p_limit: limit, p_offset: offset,
-          ...visitArgs,
-        });
-        return { data: (r.data as any[]) ?? null, error: r.error };
-      });
-    }
     if (error) throw new Error(plainLoadError(error));
     return ((data as { rows?: any[] } | null)?.rows ?? []) as any[];
   };

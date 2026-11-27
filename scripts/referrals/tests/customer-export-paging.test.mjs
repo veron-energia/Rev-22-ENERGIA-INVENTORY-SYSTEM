@@ -76,8 +76,8 @@ test('the Customers page exports through export_customers (539), in one call, in
   // (Owner or Manager) and records once, so the page no longer pages through search_customers.
   const page = readFileSync(new URL('../../../src/pages/CustomersPage.tsx', import.meta.url), 'utf8');
   assert.match(page, /supabase\.rpc\('export_customers',/);
-  // The paging read stays only for a database without 539 (no export_customers yet).
-  assert.match(page, /if \(error && exportFunctionMissing\(error\)\) \{\n\s+return fetchAllCustomerRows<any>/, 'paging only as the fallback before 539');
+  // With 539 live, the page-by-page fallback (which wrote no Audit Log entry) is gone.
+  assert.ok(!page.includes('fetchAllCustomerRows') && !page.includes('exportFunctionMissing'), 'no export route without export_customers');
   assert.ok(!/for \(let offset = 0; ; offset \+= PAGE\)/.test(page), 'the old loop, which ignored errors, is gone');
   const sql = readFileSync(new URL('../../../supabase/409_refund_requests_refund_due_customer_order.sql', import.meta.url), 'utf8');
   assert.ok(sql.includes("order by m.created_at desc, m.id desc"), 'search_customers settles ties by id');

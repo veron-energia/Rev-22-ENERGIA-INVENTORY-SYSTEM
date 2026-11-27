@@ -12,8 +12,8 @@
 //   * no page or Edge Function asks public.profiles for select('*'), a bare select() or the three
 //     hidden columns, and the pages that read profiles name PROFILE_COLUMNS; the sign-in takes the
 //     login email from the session (so the pages work before and after 539);
-//   * on a database without 539 (no export_customers yet) the export pages through
-//     search_customers as before;
+//   * without export_customers the export fails plainly and makes no file (the page-by-page
+//     fallback, which wrote no Audit Log entry, is gone now that 539 is live);
 //   * an Inventory Manager is offered no Customers page.
 // Every id and name is invented. Run: node --test scripts/customers/tests/customer-export-and-contacts-539.test.mjs
 import { test, after } from 'node:test';
@@ -241,16 +241,17 @@ test('a refused export shows the server\'s sentence and writes no file', async (
   assert.equal(globalThis.__files.length, 0);
 });
 
-test('on a database without 539 the export pages through search_customers, as before', async () => {
+test('without export_customers the export fails plainly and reads nothing else (the fallback is gone)', async () => {
+  // M13 follow-up: the page-by-page fallback wrote no Audit Log entry, so with 539 live it is removed.
   const b = await mount('owner', { missing: ['export_customers'] });
   await click(byText('Export Excel'));
   await click(modalExport());
   await wait(50);
-  assert.equal(b.calls.filter(c => c.rpc === 'export_customers').length, 1, 'export_customers is asked first');
+  assert.equal(b.calls.filter(c => c.rpc === 'export_customers').length, 1, 'export_customers is asked');
   const pages = b.calls.filter(c => c.rpc === 'search_customers' && Number(c.args?.p_limit) === 1000);
-  assert.equal(pages.length, 1, 'then the old paging read (one page of 1,000 here)');
-  assert.equal(globalThis.__files.length, 1);
-  assert.equal(globalThis.__files[0].sheet.ws.body.length, 120, 'every customer');
+  assert.equal(pages.length, 0, 'no paging read through search_customers');
+  assert.equal(globalThis.__files.length, 0, 'no file');
+  assert.match(document.body.textContent, /Export failed/);
 });
 
 test('an Inventory Manager\'s list shows the server\'s sentence', async () => {
