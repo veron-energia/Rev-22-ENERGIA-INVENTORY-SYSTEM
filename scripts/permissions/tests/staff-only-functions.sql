@@ -18,7 +18,7 @@
 --      otherwise:
 --        * a SECURITY INVOKER function runs as the caller, under the table
 --          rules, so it can do nothing the login could not do directly;
---        * the seven signed-out endpoints and the affiliate portal;
+--        * the seven signed-out endpoints (eight with 549) and the affiliate portal;
 --        * functions that answer only about the caller (the policy helpers);
 --        * functions that refuse such a login with their own message, or that
 --          return only rows of the caller's stores or role (the inventory of
@@ -306,7 +306,7 @@ do $$
 declare
   -- Each list names functions by their full signature, so a new overload of a
   -- named function is not named: it must refuse like any new function.
-  -- The seven signed-out endpoints (339; function-grants.sql check 2).
+  -- The seven signed-out endpoints, eight with 549 (339; function-grants.sql check 2).
   c_public constant text[] := array[
       'active_customer_source_options()', 'affiliate_referral_signup(text,text,text,text,text,text)',
       -- 484: the app's /r/ page signs up through it, naming the notice it showed
@@ -314,7 +314,9 @@ declare
       'public_affiliate_referral_info(text)', 'submit_health_survey(text,jsonb,jsonb,text)',
       'survey_link_info(text)',
       -- 490: the public Rules and regulations page reads the rates and product lists
-      'affiliate_rules_info()'];
+      'affiliate_rules_info()',
+      -- 549: the /r/ page's booking lookup (it records each lookup for its limits)
+      'referral_booking_lookup(text,text,text)'];
   -- The affiliate portal: the signed-in affiliate's own figures (each starts
   -- from current_affiliate_customer_id() and refuses anyone else).
   c_affiliate constant text[] := array[
@@ -497,6 +499,7 @@ begin
       and not (pg_temp.has_513() and x = any (pg_temp.sof_513_revoked()))
       and not (pg_temp.has_515() and x = any (pg_temp.sof_515_revoked()))
       and not (not pg_temp.has_531() and x = 'confirm_affiliate_email_code(text)')
+      and not (x = 'referral_booking_lookup(text,text,text)' and to_regprocedure('public.' || x) is null)
       and not (pg_temp.has_533() and x = any (pg_temp.sof_533_revoked()));
   -- 533: the two it closed are the service role's and the server's alone.
   if pg_temp.has_533() then
