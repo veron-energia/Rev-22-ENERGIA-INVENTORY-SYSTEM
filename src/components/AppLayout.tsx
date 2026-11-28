@@ -7,7 +7,7 @@ import { canSeeCustomerList, worksWithStockOnly } from '../lib/permissions/custo
 import {
   LayoutDashboard, Package, Warehouse, Store, Users2, CreditCard,
   LogOut, Leaf, ShieldCheck, Boxes, ArrowLeftRight, History, PackageOpen,
-  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X , Upload, PartyPopper, RefreshCw, Truck } from 'lucide-react';
+  Users, Star, Tag, FileText, ClipboardCheck, SlidersHorizontal, ScrollText, BarChart3, Ticket, Package2, KeyRound, Repeat, Sparkles, ClipboardList, UserPlus, Menu, X , Upload, PartyPopper, RefreshCw, Truck, GraduationCap } from 'lucide-react';
 
 // Below this width the menu is a drawer that slides in (globals.css).
 const DRAWER_QUERY = '(max-width: 900px)';
@@ -78,6 +78,9 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { to: '/commissions', label: 'Commissions', icon: <Star size={17} />, show: isManagerOrAbove(role) },
     { to: '/price-list', label: 'Price List', icon: <Tag size={17} />, show: isOwnerOrManager(role) },
     { to: '/vouchers', label: 'Vouchers', icon: <Ticket size={17} />, show: isOwnerOrManager(role) },
+    // 548 (the Owner, 27 Nov 2026): the four class vouchers, their dates, who bought them and who attended.
+    // Every member of staff but an Inventory Manager (it names customers).
+    { to: '/classes', label: 'Class', icon: <GraduationCap size={17} />, show: !worksWithStockOnly(role) },
     { to: '/promotions', label: 'Promotions', icon: <Package2 size={17} />, show: isOwnerOrManager(role) },
   ];
 

@@ -753,6 +753,15 @@ begin
     ('special availability',   'om',     true,  false, 'select count(*)::text from public.special_product_availability(null)'),
     -- 547: the waiting list's marks (what the customer already has), Owners and Managers
     ('special queue marks',    'om',     true,  false, 'select count(*)::text from public.special_waiting_collected(null)'),
+    -- 548: the Class page: every staff role but an Inventory Manager reads it and records a seat's date and
+    -- its attendance (no such seat in the fixture, so those two answer their own refusal, never 42501, to
+    -- those who may); only Owners and Managers add, remove or change a date and edit the details
+    ('class page',             'notinv', true,  false, 'select public.class_page_data()::text'),
+    ('class seat date',        'notinv', false, false, 'select public.class_choose_date(gen_random_uuid(), 1, null)::text'),
+    ('class attendance',       'notinv', false, false, 'select public.class_set_attendance(gen_random_uuid(), gen_random_uuid(), 1, true)::text'),
+    ('class date add',         'om',     false, false, 'select public.class_save_session(gen_random_uuid(), null, ''{}'')::text'),
+    ('class date remove',      'om',     false, false, 'select public.class_remove_session(gen_random_uuid())::text'),
+    ('class details',          'om',     false, false, 'select public.class_save_details(gen_random_uuid(), ''{}'')::text'),
     -- 426: Change rental terms and the special product form, Owners and Managers
     -- (no such rental or product in the fixture, so each answers its own refusal);
     -- the old wallet payment is the service role's alone (check 1 below)

@@ -291,6 +291,13 @@ declare
                              'invoice_special_goods_out','invoice_special_lines','special_doc_collected',
                              'invoice_special_kept_check','invoice_special_goods_block',
                              'invoice_special_refund_check','invoice_special_collect_internal',
+                             -- 548: the Class page's live seats of a voucher line (refunds taken off) and the
+                             -- trigger that keeps a date to its capacity (the page functions
+                             -- class_page_data, class_choose_date, class_set_attendance and the three
+                             -- Owner / Manager edits call them, as the definer)
+                             'class_line_units','class_live_seats','trg_class_seat_date_capacity',
+                             -- 548 v3: the trigger function of the two invoice_items triggers (a changed or removed class line)
+                             'trg_class_line_changed',
                              -- 431: the module an audit entry is filed under, the trigger that
                              -- files an entry saved with none, and write_audit_ex, which saves
                              -- any audit entry it is given (service role only, like write_audit)

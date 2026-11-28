@@ -37,6 +37,7 @@ const CustomersPage = lazyPage(() => import('./pages/CustomersPage'));
 const PriceListPage = lazyPage(() => import('./pages/PriceListPage'));
 const CommissionsPage = lazyPage(() => import('./pages/CommissionsPage'));
 const VouchersPage = lazyPage(() => import('./pages/VouchersPage'));
+const ClassPage = lazyPage(() => import('./pages/ClassPage'));
 const PromotionsPage = lazyPage(() => import('./pages/PromotionsPage'));
 const SpecialPage = lazyPage(() => import('./pages/SpecialPage'));
 const ConsignmentPage = lazyPage(() => import('./pages/ConsignmentPage'));
@@ -125,6 +126,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/invoices" element={<Protected><InvoicesPage /></Protected>} />
       <Route path="/commissions" element={<Protected><CommissionsPage /></Protected>} />
       <Route path="/vouchers" element={<Protected><VouchersPage /></Protected>} />
+      <Route path="/classes" element={<Protected><ClassPage /></Protected>} />
       <Route path="/promotions" element={<Protected><PromotionsPage /></Protected>} />
       <Route path="/special" element={<Protected><SpecialPage /></Protected>} />
       <Route path="/consignment" element={<Protected><ConsignmentPage /></Protected>} />

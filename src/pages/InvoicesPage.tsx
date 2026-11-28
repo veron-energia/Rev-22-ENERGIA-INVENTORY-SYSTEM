@@ -121,6 +121,8 @@ interface LineDraft { invoice_item_id?: string; unit_price?: number; saved_topup
   // The same for Consignment (the user, 10 Nov 2026): it stays a
   // 'special_product' line.
   as_consignment?: boolean;
+  // The same for Class (the Owner, 27 Nov 2026, 548): a class is a voucher line.
+  as_class?: boolean;
   // An event ticket (370): the option, the day(s) it covers, and a name for
   // every person — the quantity is the number of people named.
   event_ticket_option_id?: string; event_days?: string[]; attendees?: TicketPerson[];
@@ -158,6 +160,10 @@ const InvoicesPage: React.FC = () => {
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  // 548 (the Owner, 27 Nov 2026): the vouchers that are classes. They are offered under Class in the
+  // Items dropdown and no longer under Voucher; the saved line is a voucher line either way. Empty
+  // until 548 is in (the read then finds no table), when every voucher is offered under Voucher as before.
+  const [classVoucherIds, setClassVoucherIds] = useState<string[]>([]);
   // Vouchers an open invoice already uses, read by id whatever their state
   // now: a voucher since retired or expired still names, and categorises,
   // the line it was given on. `vouchers` holds only the active ones.
@@ -629,7 +635,7 @@ const InvoicesPage: React.FC = () => {
    */
   const loadReferenceData = useCallback(async () => {
     setLoading(true);
-    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, utpk, utsp, vsp, psp, focr, services, serviceStores, sup, psu] = await Promise.all([
+    const [st, pr, pm, pp, vc, pm2, cg, pit, co, si, prof, myStore, myStoreList, specialRes, utpk, utsp, vsp, psp, focr, services, serviceStores, sup, psu, cls] = await Promise.all([
       supabase.from('stores').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       supabase.from('products').select('*').is('deleted_at', null).eq('is_active', true).order('name'),
       // The customers table is deliberately absent. It was read whole here —
@@ -658,6 +664,7 @@ const InvoicesPage: React.FC = () => {
       supabase.from('therapy_service_stores').select('*'),
       supabase.from('suppliers').select('id,name,phone,is_active,deleted_at').order('name'),
       supabase.from('product_suppliers').select('product_id,supplier_id'),
+      supabase.from('class_vouchers').select('voucher_id'),
     ]);
     if (!mountedRef.current) return;
     setStores((st.data as Store[]) ?? []);
@@ -665,6 +672,7 @@ const InvoicesPage: React.FC = () => {
     setMethods((pm.data as PaymentMethod[]) ?? []);
     setPrices(pp as StoreProductPrice[]);
     setVouchers((vc.data as Voucher[]) ?? []);
+    setClassVoucherIds(((cls?.data as { voucher_id: string }[] | null) ?? []).map(r => r.voucher_id));
     setPromotions((pm2.data as Promotion[]) ?? []);
     setChoiceGroups((cg.data as PromotionChoiceGroup[]) ?? []);
     setPromoItems((pit.data as any[]) ?? []);
@@ -829,6 +837,9 @@ const InvoicesPage: React.FC = () => {
   // Rental lists both, as a rental always comes from our own stock.
   const isConsignmentLine = (l: LineDraft) => l.kind === 'special_product'
     && (!!l.as_consignment || !!specialProducts.find((sp: any) => sp.id === l.special_product_id)?.is_consignment);
+  // 548: a class is a voucher line the form lists under Class (the box's other categories as before).
+  const isClassLine = (l: LineDraft) => l.kind === 'voucher'
+    && (!!l.as_class || (!!l.voucher_id && classVoucherIds.includes(l.voucher_id)));
   const suppliersText = (sp: any) => {
     const names = suppliersOf(sp.product_id, productSuppliers, suppliers).map(s => s.name);
     return names.length ? `Supplier: ${names.join(', ')}` : 'No supplier linked yet';
@@ -1046,7 +1057,9 @@ const InvoicesPage: React.FC = () => {
   // All vouchers can be sold as a line item (a discount voucher sold now is
   // redeemed by the buyer on a future invoice). Only discount vouchers can be
   // used in the Discount Voucher slot (Normal vouchers have no discount value).
-  const sellableVouchers = useMemo(() => vouchers, [vouchers]);
+  // 548: the classes are listed under Class, not under Voucher.
+  const sellableVouchers = useMemo(() => vouchers.filter(v => !classVoucherIds.includes(v.id)), [vouchers, classVoucherIds]);
+  const classVouchers = useMemo(() => vouchers.filter(v => classVoucherIds.includes(v.id)), [vouchers, classVoucherIds]);
 
   const resetCreate = () => {
     // Blank when there is a real choice to make.
@@ -4116,7 +4129,7 @@ const InvoicesPage: React.FC = () => {
                       <div className="invoice-editor-line" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         {/* 150 px holds the longest category, Premium Bundle (the user, 10 Nov
                             2026: Special Product was cut short at 130 px). */}
-                        <select value={isServiceLine(line) ? 'service' : isConsignmentLine(line) ? 'consignment' : line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: (e.target.value === 'service' ? 'product' : e.target.value === 'consignment' ? 'special_product' : e.target.value) as LineDraft['kind'], as_service: e.target.value === 'service', as_consignment: e.target.value === 'consignment', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
+                        <select value={isServiceLine(line) ? 'service' : isConsignmentLine(line) ? 'consignment' : isClassLine(line) ? 'class' : line.kind} onChange={e => setCLines(ls => ls.map((l, j) => j === i ? { ...l, invoice_item_id: undefined, unit_price: undefined, saved_topup: undefined, kind: (e.target.value === 'service' ? 'product' : e.target.value === 'consignment' ? 'special_product' : e.target.value === 'class' ? 'voucher' : e.target.value) as LineDraft['kind'], as_service: e.target.value === 'service', as_consignment: e.target.value === 'consignment', as_class: e.target.value === 'class', product_id: '', voucher_id: '', promotion_id: '', therapy_package_id: '', therapy_service_id: '', therapy_service_name: '',
                             special_product_id: '', rental_rate_type: 'day', rental_periods: 1,
                             credit_package_id: '', premium_bundle_id: '', bundle_voucher_selection: {},
                             event_ticket_option_id: '', event_days: [],
@@ -4132,6 +4145,7 @@ const InvoicesPage: React.FC = () => {
                           <option value="product">Product</option>
                           {products.some(isService) && <option value="service">Service</option>}
                           <option value="voucher">Voucher</option>
+                          {(classVouchers.length > 0 || isClassLine(line)) && <option value="class">Class</option>}
                           <option value="promotion">Promotion</option>
                           {(therapyPackages.length > 0 || therapyServices.length > 0) && <option value="therapy">Therapy</option>}
                           {creditPkgs.length > 0 && <option value="credit_package">Credit Package</option>}
@@ -4236,10 +4250,10 @@ const InvoicesPage: React.FC = () => {
                               value: p.id, label: `${p.name} — ${a.label}${a.needsOverride ? ' *' : ''}`,
                               sublabel: (p as any).sku, search: `${p.name} ${(p as any).sku ?? ''}`, searchPrices: [priceFor(activeStore, p.id)] }; })} />
                         ) : line.kind === 'voucher' ? (
-                          <SearchSelect style={{ flex: 1 }} placeholder="Search voucher name or code…"
+                          <SearchSelect style={{ flex: 1 }} placeholder={isClassLine(line) ? 'Search class name or code…' : 'Search voucher name or code…'}
                             value={line.voucher_id}
                             onChange={v => setCLines(ls => ls.map((l, j) => j === i ? withCatalogueItem(l, { voucher_id: v }) : l))}
-                            options={sellableVouchers.map(v => ({
+                            options={(isClassLine(line) ? classVouchers : sellableVouchers).map(v => ({
                               value: v.id,
                               label: `${v.name}${voucherPrice(v.id) != null ? ` — ${money(voucherPrice(v.id)!)}` : ' — no price for this store'}`,
                               sublabel: (v as any).code, search: `${v.name} ${(v as any).code ?? ''}`, searchPrices: [voucherPrice(v.id)] }))} />

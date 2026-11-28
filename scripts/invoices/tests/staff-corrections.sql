@@ -81,6 +81,13 @@ begin;
 -- (this run only, rolled back with everything here).
 select to_regprocedure('public.inventory_manager_guard(text)') is not null as t540_in \gset
 \if :t540_in
+-- 548 (the Class page): where it is in, its UNDO goes first of all, before 547's (it calls 540's
+-- inventory_manager_guard, which 540's UNDO refuses while any other function uses it).
+select to_regprocedure('public.class_page_data()') is not null as t548_in \gset
+\if :t548_in
+select set_config('energia.undo548_test_only', 'on', true) \g /dev/null
+\ir ../../classes/undo-548.sql
+\endif
 -- 547 (goods collected for special, consignment and rental items): where it is in, its UNDO goes
 -- first of all, before 546's.
 select to_regprocedure('public.invoice_special_collect_internal(uuid,uuid,jsonb)') is not null as t547_in \gset

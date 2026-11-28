@@ -26,6 +26,16 @@
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
+-- 548 (the Class page): its four tables are not among the relations 543 was made for either, so where this
+-- file installs 543 itself (543 not in), 548's UNDO goes first (it is after 547's), with its test flag. With
+-- 543 in, nothing is needed: they give a login SELECT alone.
+select to_regclass('public.class_vouchers') is not null
+       and (select defaclacl::text from pg_default_acl where defaclrole = 'postgres'::regrole and defaclnamespace = 'public'::regnamespace and defaclobjtype = 'r')
+           is distinct from '{postgres=arwdDxtm/postgres,anon=arwdm/postgres,authenticated=arwdm/postgres,service_role=arwdDxtm/postgres}' as t548_in \gset
+\if :t548_in
+select set_config('energia.undo548_test_only', 'on', true) \g /dev/null
+\ir ../../classes/undo-548.sql
+\endif
 -- 547 (goods collected): its two tables are not among the relations 543 was made for, so where
 -- this file installs 543 itself (543 not in), 547's UNDO goes first. With 543 in, nothing is needed:
 -- they give a login SELECT alone.

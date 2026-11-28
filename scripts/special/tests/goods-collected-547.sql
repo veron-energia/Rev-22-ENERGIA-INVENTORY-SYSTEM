@@ -40,6 +40,19 @@
 \set ON_ERROR_STOP on
 begin;
 set local lock_timeout = '10s';
+-- 548 (the Class page): where it is in, its UNDO goes first of all, before 547's (it calls 540's
+-- inventory_manager_guard, which 540's UNDO refuses while any other function uses it).
+select to_regprocedure('public.class_page_data()') is not null as t548_in \gset
+\if :t548_in
+select set_config('energia.undo548_test_only', 'on', true) \g /dev/null
+\ir ../../classes/undo-548.sql
+\endif
+-- 549 (the referral page's booking lookup): where it is in, its UNDO goes next, before 547's (production's
+-- order was 547, 549, then 548; this file's last checks pin the function fingerprint of production after 546).
+select to_regprocedure('public.referral_booking_lookup(text,text,text)') is not null as t549_in \gset
+\if :t549_in
+\ir ../../affiliate-signup/undo-549.sql
+\endif
 create temp table failed(n serial, msg text);
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $$begin
