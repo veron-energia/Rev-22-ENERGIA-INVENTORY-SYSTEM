@@ -85,4 +85,11 @@ insert into t545 (check_name, ok) values
 
 select count(*) filter (where ok) as passed, count(*) filter (where not ok or ok is null) as failed from t545;
 select n, check_name from t545 where not ok or ok is null order by n;
+-- A failed check stops the run with an error (exit code 3 under ON_ERROR_STOP), so a runner that
+-- goes by the exit code never counts it as a pass (the audit's note, 27 Nov 2026).
+do $done$
+declare v_failed int := (select count(*) from t545 where not ok or ok is null);
+begin
+  if v_failed > 0 then raise exception '545 suite: % check(s) failed (listed above)', v_failed; end if;
+end $done$;
 rollback;

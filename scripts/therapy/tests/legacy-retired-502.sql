@@ -65,6 +65,20 @@
 \set t502_mig `cat supabase/502_legacy_therapy_retired.sql`
 \set t502_undo `cat scripts/therapy/undo-502.sql`
 begin;
+-- 548 (the Class page): where it is in, its UNDO goes first of all, before 547's (it calls 540's
+-- inventory_manager_guard, which 540's UNDO refuses while any other function uses it).
+select to_regprocedure('public.class_page_data()') is not null as t548_in \gset
+\if :t548_in
+select set_config('energia.undo548_test_only', 'on', true) \g /dev/null
+\ir ../../classes/undo-548.sql
+\endif
+-- 547 (goods collected for special, consignment and rental items): where it is in, its UNDO goes
+-- first of all, before 546's.
+select to_regprocedure('public.invoice_special_collect_internal(uuid,uuid,jsonb)') is not null as t547_in \gset
+\if :t547_in
+select set_config('energia.undo547_test_only', 'on', true) \g /dev/null
+\ir ../../special/undo-547.sql
+\endif
 -- 546 (security audit of 17 Nov 2026, L15): where it is in, its UNDO goes first, as this file pins
 -- md5s of functions it changes (only their search path); this run only, rolled back with the rest.
 select coalesce('search_path=public, pg_temp' = any (proconfig), false) as t546_in

@@ -29,11 +29,16 @@
 --      sale left to collect; by the migration (source 'migration', no person, dated at the release,
 --      its note); no stock, sale or rental changes; a re-run adds nothing; UNDO takes them away.
 --   M  The waiting list's marks: what the customer has, to Owners and Managers of the store only.
+--   S  Signed in (the role authenticated or anon, with each login's claims, as 546's suite does):
+--      who records Collected, who reads the two tables (and that no login writes them), the seven
+--      internal functions refused, the waiting list's marks for the Owner and the store's Manager.
 --
 -- Run on a copy of production after 546 (createdb -T of a template equal to it; never the template):
 --   psql -X -d <copy> -v ON_ERROR_STOP=1 -f scripts/special/tests/goods-collected-547.sql
--- (with -v skip_install=1 where 547 is in: I1-I3 and O are then skipped). Every check runs, then the
--- file fails if any did. Everything is rolled back. Every name, phone and email is invented
+-- (with -v skip_install=1 where 547 is in: I1-I3, O and K are then skipped). On a copy whose functions
+-- after 546 are not production's, pass their fingerprint: -v base_fp=<md5>/<count> (I1, U0, U2 compare
+-- with it). Every check prints one line "PASS  <id> ..." (count them with grep -c 'NOTICE:  PASS  ';
+-- the closing "ALL PASSED" is not one); then the file fails if any did. Everything is rolled back. Every name, phone and email is invented
 -- (+61 2 5550 ...., @example.invalid); the repository is public.
 -- Note: a check that calls a function and reads what it changed in ONE expression reads the snapshot
 -- from before the call; call first, then check.
@@ -53,6 +58,12 @@ select to_regprocedure('public.referral_booking_lookup(text,text,text)') is not 
 \if :t549_in
 \ir ../../affiliate-signup/undo-549.sql
 \endif
+-- The functions of production after 546: the base 547 is installed on here and UNDO comes back to.
+\if :{?base_fp}
+\else
+\set base_fp f5f09a8bf80f379ccdf38b6edaad0dbc/1462
+\endif
+create temp table base_fp as select :'base_fp'::text as f;
 create temp table failed(n serial, msg text);
 create function pg_temp.check(ok boolean, msg text) returns void language plpgsql as
 $$begin
@@ -307,8 +318,8 @@ create temp table k_after1 as
 \ir ../../../supabase/547_special_consignment_rental_goods_collected.sql
 do $$
 begin
-  perform pg_temp.check((select f from before_install) = 'f5f09a8bf80f379ccdf38b6edaad0dbc/1462',
-    'I1 it was installed on production''s functions after 546 (f5f09a8b.../1462): ' || (select f from before_install));
+  perform pg_temp.check((select f from before_install) = (select f from base_fp),
+    'I1 it was installed on production''s functions after 546 (' || (select f from base_fp) || '): ' || (select f from before_install));
   perform pg_temp.check((select f from after_install) = pg_temp.fp(), 'I2 a second run changes no function');
   perform pg_temp.check(not exists (select 1 from acl_before b join pg_proc p on p.oid::regprocedure::text = b.sig
                                      where coalesce(array_to_string(p.proacl, ','), '') <> b.acl),
@@ -519,6 +530,98 @@ reset role;
 select pg_temp.check(:w9 = 1, 'W9 staff of the store read its record'),
        pg_temp.check(:w10 = 0, 'W10 staff of another store read none'),
        pg_temp.check(:w11 = 0, 'W11 nor does an Inventory Manager') \g /dev/null
+
+-- ═════ S Signed in: each call as the login itself (role authenticated or anon, with its claims),
+-- not as the database owner; every call is undone with its own savepoint ═════
+create function pg_temp.as_login(key text, q text) returns text language plpgsql as $f$
+declare v text; s text; m text; uid uuid := pg_temp.fx(key);
+begin
+  begin
+    perform set_config('request.jwt.claim.sub', coalesce(uid::text, ''), true);
+    perform set_config('request.jwt.claim.role', case when key is null then 'anon' else 'authenticated' end, true);
+    perform set_config('request.jwt.claims', case when key is null then '{"role":"anon"}'
+                                                  else json_build_object('sub', uid, 'role', 'authenticated')::text end, true);
+    execute case when key is null then 'set local role anon' else 'set local role authenticated' end;
+    execute q into v;
+    raise exception using errcode = 'P0999', message = coalesce(v, '');
+  exception
+    when sqlstate 'P0999' then get stacked diagnostics m = message_text; return 'ok:' || m;
+    when others then get stacked diagnostics s = returned_sqlstate, m = message_text; return 'ERR ' || s || ' ' || m;
+  end;
+end $f$;
+do $$
+declare inv uuid; line uuid; sale uuid; q text; k text; f text; r text; t text;
+begin
+  -- Store A's invoice, two chairs, one already recorded as collected (by staff A, as the fixture).
+  inv := pg_temp.mk(jsonb_build_array(pg_temp.sale_line('chair', 2)));
+  line := pg_temp.line_of(inv, 'special_product', 'chair');
+  perform pg_temp.collect(inv, pg_temp.sp(line, 1));
+  sale := (pg_temp.sales(inv))[1];
+  perform set_config('request.jwt.claim.sub', '', true);  -- the fixture's claims go; each login sets its own
+  q := format('select (public.record_invoice_handover(%L, %L::jsonb, gen_random_uuid())->>''success'')', inv, pg_temp.sp(line, 1));
+  foreach k in array array['owner', 'manager', 'staff'] loop
+    r := pg_temp.as_login(k, q);
+    perform pg_temp.check(r = 'ok:true', 'S1 signed in as ' || k || ' of store A: records the chair as collected: ' || r);
+  end loop;
+  foreach k in array array['other', 'im'] loop
+    r := pg_temp.as_login(k, q);
+    perform pg_temp.check(r like 'ERR %', 'S2 signed in as ' || k || ' (staff of store B / Inventory Manager): refused: ' || r);
+  end loop;
+  r := pg_temp.as_login(null, q);
+  perform pg_temp.check(r like 'ERR 42501%', 'S3 with the public key: refused (no grant): ' || r);
+  -- The two tables: store A's staff read the record; staff of store B and the Inventory Manager none.
+  foreach t in array array['invoice_special_handover_lines', 'invoice_special_handover_returns'] loop
+    foreach k in array array['owner', 'manager', 'staff', 'other', 'im'] loop
+      r := pg_temp.as_login(k, format('select count(*)::text from public.%I where invoice_id = %L', t, inv));
+      perform pg_temp.check(r = case when t = 'invoice_special_handover_returns' then 'ok:0'
+                                     when k in ('owner', 'manager', 'staff') then 'ok:1' else 'ok:0' end,
+        'S4 ' || t || ' as ' || k || ': ' || r);
+    end loop;
+    r := pg_temp.as_login(null, format('select count(*)::text from public.%I', t));
+    perform pg_temp.check(r like 'ERR 42501%', 'S5 ' || t || ' with the public key: no read: ' || r);
+    foreach k in array array['owner', 'staff'] loop
+      r := pg_temp.as_login(k, format('insert into public.%I (handover_id) values (gen_random_uuid()) returning 1', t));
+      perform pg_temp.check(r like 'ERR 42501%', 'S6 ' || t || ': no insert as ' || k || ': ' || r);
+      r := pg_temp.as_login(k, format('with u as (update public.%I set created_by = null returning 1) select count(*)::text from u', t));
+      perform pg_temp.check(r like 'ERR 42501%', 'S7 ' || t || ': no update as ' || k || ': ' || r);
+      r := pg_temp.as_login(k, format('with d as (delete from public.%I returning 1) select count(*)::text from d', t));
+      perform pg_temp.check(r like 'ERR 42501%', 'S8 ' || t || ': no delete as ' || k || ': ' || r);
+    end loop;
+    r := pg_temp.as_login(null, format('with d as (delete from public.%I returning 1) select count(*)::text from d', t));
+    perform pg_temp.check(r like 'ERR 42501%', 'S9 ' || t || ': no delete with the public key: ' || r);
+  end loop;
+  perform pg_temp.check((select count(*) from public.invoice_special_handover_lines where invoice_id = inv) = 1,
+    'S10 and the record is still there, once');
+  -- The seven internal functions: no login, no public key.
+  foreach f in array array['public.invoice_special_goods_out(null::uuid)', 'public.invoice_special_lines(null::uuid)',
+      'public.special_doc_collected(null::text, null::uuid)', 'public.invoice_special_kept_check(null::uuid)',
+      'public.invoice_special_goods_block(null::uuid, null::text)',
+      'public.invoice_special_refund_check(null::uuid, null::uuid, null::boolean, null::jsonb, null::jsonb)',
+      'public.invoice_special_collect_internal(null::uuid, null::uuid, null::jsonb)'] loop
+    -- Called so its answer is used (a call whose answer nothing reads can be left out by the planner):
+    -- the two that return rows in FROM, the others as a value.
+    q := case when f like '%goods_out%' or f like '%special_lines%' then 'select count(*)::text from ' || f
+              else 'select (' || f || ')::text' end;
+    r := pg_temp.as_login('owner', q);
+    perform pg_temp.check(r like 'ERR 42501%', 'S11 ' || split_part(f, '(', 1) || ' refused to a signed-in Owner: ' || r);
+    r := pg_temp.as_login(null, q);
+    perform pg_temp.check(r like 'ERR 42501%', 'S12 ' || split_part(f, '(', 1) || ' refused to the public key: ' || r);
+  end loop;
+  -- The waiting list's marks: the Owner and store A's Manager see the chair the customer has.
+  q := format('select count(*)::text from public.special_waiting_collected(array[%L]::uuid[])', sale);
+  foreach k in array array['owner', 'manager'] loop
+    r := pg_temp.as_login(k, q);
+    perform pg_temp.check(r = 'ok:1', 'S13 marks as ' || k || ': the chair the customer has: ' || r);
+  end loop;
+  r := pg_temp.as_login('other_mgr', q);
+  perform pg_temp.check(r = 'ok:0', 'S14 marks as the Manager of store B: none: ' || r);
+  foreach k in array array['staff', 'other', 'im'] loop
+    r := pg_temp.as_login(k, q);
+    perform pg_temp.check(r like 'ERR %', 'S15 marks as ' || k || ': refused: ' || r);
+  end loop;
+  r := pg_temp.as_login(null, q);
+  perform pg_temp.check(r like 'ERR 42501%', 'S16 marks with the public key: refused: ' || r);
+end $$;
 
 -- ═════ C Before full payment ═════
 do $$
@@ -1000,7 +1103,7 @@ savepoint u0;
 select set_config('energia.undo547_test_only', 'on', true) \g /dev/null
 \ir ../undo-547.sql
 select pg_temp.check(to_regclass('public.invoice_special_handover_lines') is null
-                     and pg_temp.fp() = 'f5f09a8bf80f379ccdf38b6edaad0dbc/1462'
+                     and pg_temp.fp() = (select f from base_fp)
                      and coalesce(current_setting('energia.undo547_test_only', true), '') = ''
                      and not exists (select 1 from public.special_sale_returns where why = 'item returned'),
     'U0 with the test-only flag UNDO goes through though staff recorded items (rolled back here), and clears the flag') \g /dev/null
@@ -1014,7 +1117,7 @@ select pg_temp.check(not exists (select 1 from public.invoice_handovers where so
                      and pg_get_constraintdef((select oid from pg_constraint where conname = 'invoice_handovers_source_check')) not like '%migration%',
     'U3b UNDO removed the migration''s own records (' || :k_migration || ') and gave the hand-overs their three sources again') \g /dev/null
 do $$ begin
-  perform pg_temp.check(pg_temp.fp() = 'f5f09a8bf80f379ccdf38b6edaad0dbc/1462', 'U2 UNDO puts every function back as after 546: ' || pg_temp.fp());
+  perform pg_temp.check(pg_temp.fp() = (select f from base_fp), 'U2 UNDO puts every function back as after 546: ' || pg_temp.fp());
   perform pg_temp.check(to_regclass('public.invoice_special_handover_lines') is null and to_regclass('public.invoice_special_handover_returns') is null
                         and pg_get_constraintdef((select oid from pg_constraint where conname = 'special_sale_returns_why_check')) not like '%item returned%',
     'U3 and drops its tables and its "item returned"');
